@@ -26,8 +26,8 @@ async for wf in list_in_flight_workflows(store):
 Inspect the actual records (the framework's transparency promise — they're protobuf at deterministic paths):
 
 ```sh
-aws s3 ls s3://your-bucket/temporaless/v1/namespaces/default/workflows/<wf_id>/runs/<run_id>/
-# Should show workflow.binpb + activities/ + timers/ + events/
+aws s3 ls s3://your-bucket/temporaless/v1/namespace=default/workflow_id=<wf_id>/run_id=<run_id>/
+# Should show kind=workflow/, kind=activity/, kind=timer/, kind=event/, kind=claim/ subdirs
 ```
 
 **Common causes & fixes:**

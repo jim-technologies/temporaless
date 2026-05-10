@@ -29,7 +29,7 @@ Schedulers are adapters. A scheduler can be:
 
 SQL is useful for efficient due-time queries, but it should stay optional. The core should remain storage-first and stateless.
 
-The bundled scanner walks `temporaless/v1/namespaces/.../timers/*.binpb`, returns timers with `TIMER_STATUS_SCHEDULED` and `fire_at <= now`, and attaches each timer's workflow record so callers have enough context to dispatch a re-invocation. Re-invocation itself is left to the caller because the right transport (HTTP, queue, in-process) varies by deployment.
+The bundled scanner walks the Hive partition `temporaless/v1/.../kind=timer/timer_id=*/record.binpb`, returns timers with `TIMER_STATUS_SCHEDULED` and `fire_at <= now`, and attaches each timer's workflow record so callers have enough context to dispatch a re-invocation. Re-invocation itself is left to the caller because the right transport (HTTP, queue, in-process) varies by deployment.
 
 The same operation is exposed as the `DueTimers` RPC on `RecordStoreService`. When the storage backend lives behind ConnectRPC (`ConnectStore`), the client makes one round-trip and the server runs the list-and-filter loop locally. For remote stores this is a substantial latency win — the Python `timerscanner.due_timers` helper transparently routes through that single round-trip.
 

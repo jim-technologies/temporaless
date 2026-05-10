@@ -53,17 +53,19 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
 
 ## Storage
 
-Stored records are protobuf binary files:
+Stored records are protobuf binary files at strict Hive-partitioned paths (every directory level is `key=value`):
 
 ```text
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/workflow.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/timers/{timer_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/events/{event_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/claims/{claim_id}.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=workflow/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=activity/activity_id={activity_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=timer/timer_id={timer_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=event/event_id={event_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=claim/claim_id={claim_id}/record.binpb
 ```
 
-IDs may contain only ASCII letters, numbers, `.`, `_`, `-`, and `:`. Slashes are invalid.
+Hive partitioning means analytical engines (Spark / Trino / DuckDB / Athena) pointed at `temporaless/v1/` auto-discover `namespace`, `workflow_id`, `run_id`, `kind`, and the per-kind id as partition columns — predicates push down to the bucket.
+
+IDs may contain only ASCII letters, numbers, `.`, `_`, `-`, and `:`. Slashes and `=` are rejected so Hive paths stay unambiguous.
 
 Do not generate workflow IDs, run IDs, activity IDs, timer IDs, or claim owner IDs inside the framework. The caller must provide them explicitly. Temporaless may validate storage-safe characters for path components, but it must not choose an ID scheme for the application.
 

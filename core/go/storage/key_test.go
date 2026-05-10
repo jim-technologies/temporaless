@@ -16,7 +16,7 @@ func TestRecordKeyPaths(t *testing.T) {
 					RunID:      "2026-05-02",
 				}.Path()
 			},
-			want: "temporaless/v1/namespaces/default/workflows/prices:aapl/runs/2026-05-02/workflow.binpb",
+			want: "temporaless/v1/namespace=default/workflow_id=prices:aapl/run_id=2026-05-02/kind=workflow/record.binpb",
 		},
 		{
 			name: "activity",
@@ -27,7 +27,7 @@ func TestRecordKeyPaths(t *testing.T) {
 					ActivityID: "fetch:price",
 				}.Path()
 			},
-			want: "temporaless/v1/namespaces/default/workflows/prices:aapl/runs/2026-05-02/activities/fetch:price.binpb",
+			want: "temporaless/v1/namespace=default/workflow_id=prices:aapl/run_id=2026-05-02/kind=activity/activity_id=fetch:price/record.binpb",
 		},
 		{
 			name: "timer",
@@ -38,7 +38,7 @@ func TestRecordKeyPaths(t *testing.T) {
 					TimerID:    "wait:vendor-window",
 				}.Path()
 			},
-			want: "temporaless/v1/namespaces/default/workflows/prices:aapl/runs/2026-05-02/timers/wait:vendor-window.binpb",
+			want: "temporaless/v1/namespace=default/workflow_id=prices:aapl/run_id=2026-05-02/kind=timer/timer_id=wait:vendor-window/record.binpb",
 		},
 		{
 			name: "claim",
@@ -49,7 +49,7 @@ func TestRecordKeyPaths(t *testing.T) {
 					ClaimID:    "activity:fetch:price",
 				}.Path()
 			},
-			want: "temporaless/v1/namespaces/default/workflows/prices:aapl/runs/2026-05-02/claims/activity:fetch:price.binpb",
+			want: "temporaless/v1/namespace=default/workflow_id=prices:aapl/run_id=2026-05-02/kind=claim/claim_id=activity:fetch:price/record.binpb",
 		},
 	}
 

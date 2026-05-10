@@ -241,11 +241,11 @@ func (store *OpenDALStore) ListWorkflows(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root := "temporaless/v1/namespaces/"
+	root := StorageRootPrefix + "/"
 	if namespace != "" {
-		root = root + namespace + "/"
+		root = root + "namespace=" + namespace + "/"
 		if workflowID != "" {
-			root = root + "workflows/" + workflowID + "/runs/"
+			root = root + "workflow_id=" + workflowID + "/"
 		}
 	}
 	paths, err := walkOpenDAL(ctx, store.operator, root)
@@ -261,7 +261,7 @@ func (store *OpenDALStore) ListWorkflows(
 	}
 	var records []*temporalessv1.WorkflowRecord
 	for _, path := range paths {
-		if !strings.HasSuffix(path, "/workflow.binpb") {
+		if !strings.HasSuffix(path, "/kind=workflow/record.binpb") {
 			continue
 		}
 		key, ok := parseWorkflowPath(path)
@@ -313,25 +313,16 @@ func (store *OpenDALStore) ListActivities(
 	if err != nil {
 		return nil, err
 	}
-	lister, err := store.operator.List(dir)
+	paths, err := walkOpenDAL(ctx, store.operator, dir)
 	if err != nil {
-		if isOpenDALNotFound(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	defer lister.Close()
 	var records []*temporalessv1.ActivityRecord
-	for lister.Next() {
-		if err := ctx.Err(); err != nil {
-			return records, err
-		}
-		entry := lister.Entry()
-		path := entry.Path()
-		if path == dir || !strings.HasSuffix(path, ".binpb") {
+	for _, path := range paths {
+		activityID, ok := extractIDFromHivePath(path, dir, "activity_id=")
+		if !ok {
 			continue
 		}
-		activityID := strings.TrimSuffix(strings.TrimPrefix(path, dir), ".binpb")
 		record, found, err := store.GetActivity(ctx, ActivityKey{
 			Namespace:  key.Namespace,
 			WorkflowID: key.WorkflowID,
@@ -346,7 +337,7 @@ func (store *OpenDALStore) ListActivities(
 		}
 		records = append(records, record)
 	}
-	return records, lister.Error()
+	return records, nil
 }
 
 func (store *OpenDALStore) DeleteActivity(ctx context.Context, key ActivityKey) (bool, error) {
@@ -377,25 +368,16 @@ func (store *OpenDALStore) ListTimers(
 	if err != nil {
 		return nil, err
 	}
-	lister, err := store.operator.List(dir)
+	paths, err := walkOpenDAL(ctx, store.operator, dir)
 	if err != nil {
-		if isOpenDALNotFound(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	defer lister.Close()
 	var records []*temporalessv1.TimerRecord
-	for lister.Next() {
-		if err := ctx.Err(); err != nil {
-			return records, err
-		}
-		entry := lister.Entry()
-		path := entry.Path()
-		if path == dir || !strings.HasSuffix(path, ".binpb") {
+	for _, path := range paths {
+		timerID, ok := extractIDFromHivePath(path, dir, "timer_id=")
+		if !ok {
 			continue
 		}
-		timerID := strings.TrimSuffix(strings.TrimPrefix(path, dir), ".binpb")
 		record, found, err := store.GetTimer(ctx, TimerKey{
 			Namespace:  key.Namespace,
 			WorkflowID: key.WorkflowID,
@@ -413,7 +395,7 @@ func (store *OpenDALStore) ListTimers(
 		}
 		records = append(records, record)
 	}
-	return records, lister.Error()
+	return records, nil
 }
 
 func (store *OpenDALStore) DeleteTimer(ctx context.Context, key TimerKey) (bool, error) {
@@ -443,25 +425,16 @@ func (store *OpenDALStore) ListEvents(
 	if err != nil {
 		return nil, err
 	}
-	lister, err := store.operator.List(dir)
+	paths, err := walkOpenDAL(ctx, store.operator, dir)
 	if err != nil {
-		if isOpenDALNotFound(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	defer lister.Close()
 	var records []*temporalessv1.EventRecord
-	for lister.Next() {
-		if err := ctx.Err(); err != nil {
-			return records, err
-		}
-		entry := lister.Entry()
-		path := entry.Path()
-		if path == dir || !strings.HasSuffix(path, ".binpb") {
+	for _, path := range paths {
+		eventID, ok := extractIDFromHivePath(path, dir, "event_id=")
+		if !ok {
 			continue
 		}
-		eventID := strings.TrimSuffix(strings.TrimPrefix(path, dir), ".binpb")
 		record, found, err := store.GetEvent(ctx, EventKey{
 			Namespace:  key.Namespace,
 			WorkflowID: key.WorkflowID,
@@ -476,7 +449,7 @@ func (store *OpenDALStore) ListEvents(
 		}
 		records = append(records, record)
 	}
-	return records, lister.Error()
+	return records, nil
 }
 
 func (store *OpenDALStore) DeleteEvent(ctx context.Context, key EventKey) (bool, error) {
@@ -622,23 +595,61 @@ func walkOpenDAL(ctx context.Context, operator *opendal.Operator, root string) (
 	return files, nil
 }
 
+// parseWorkflowPath inverts the Hive layout for the workflow record:
+//
+//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb
 func parseWorkflowPath(path string) (WorkflowKey, bool) {
 	var zero WorkflowKey
 	parts := strings.Split(path, "/")
-	if len(parts) != 9 {
+	if len(parts) != 7 {
 		return zero, false
 	}
-	if parts[0] != "temporaless" || parts[1] != "v1" || parts[2] != "namespaces" {
+	if parts[0] != "temporaless" || parts[1] != "v1" {
 		return zero, false
 	}
-	if parts[4] != "workflows" || parts[6] != "runs" || parts[8] != "workflow.binpb" {
+	if parts[5] != "kind=workflow" || parts[6] != "record.binpb" {
+		return zero, false
+	}
+	namespace, ok := stripPrefix(parts[2], "namespace=")
+	if !ok {
+		return zero, false
+	}
+	workflowID, ok := stripPrefix(parts[3], "workflow_id=")
+	if !ok {
+		return zero, false
+	}
+	runID, ok := stripPrefix(parts[4], "run_id=")
+	if !ok {
 		return zero, false
 	}
 	return WorkflowKey{
-		Namespace:  parts[3],
-		WorkflowID: parts[5],
-		RunID:      parts[7],
+		Namespace:  namespace,
+		WorkflowID: workflowID,
+		RunID:      runID,
 	}, true
+}
+
+func stripPrefix(s, prefix string) (string, bool) {
+	if !strings.HasPrefix(s, prefix) {
+		return "", false
+	}
+	return s[len(prefix):], true
+}
+
+// extractIDFromHivePath parses the per-kind ID out of a record path. With
+// `dir` set to the kind partition (e.g. ".../kind=activity/") and
+// `idPrefix` to the column name (e.g. "activity_id="), the path inside
+// `dir` is `{idPrefix}{value}/record.binpb`.
+func extractIDFromHivePath(path, dir, idPrefix string) (string, bool) {
+	if !strings.HasSuffix(path, "/record.binpb") {
+		return "", false
+	}
+	rel, ok := strings.CutPrefix(path, dir)
+	if !ok {
+		return "", false
+	}
+	rel = strings.TrimSuffix(rel, "/record.binpb")
+	return strings.CutPrefix(rel, idPrefix)
 }
 
 func isOpenDALNotFound(err error) bool {

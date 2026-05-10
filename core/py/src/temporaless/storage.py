@@ -23,6 +23,25 @@ CREATE_ONLY_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
 CAS_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS
 ClaimCapability = temporaless_pb2.ClaimCapability
 
+# Storage paths follow strict Hive partitioning. Every directory level is
+# `key=value` so Spark / Trino / DuckDB / Athena pointed at
+# `<bucket>/temporaless/v1/` auto-discovers `namespace`, `workflow_id`,
+# `run_id`, `kind`, and the per-kind id as partition columns.
+#
+# Layout (line-wrapped here for readability; one path per line in storage):
+#
+#   {ROOT}/namespace={ns}/workflow_id={wf}/run_id={rid}
+#       /kind=workflow/record.binpb
+#       /kind=activity/activity_id={aid}/record.binpb
+#       /kind=timer/timer_id={tid}/record.binpb
+#       /kind=event/event_id={eid}/record.binpb
+#       /kind=claim/claim_id={cid}/record.binpb
+STORAGE_ROOT_PREFIX = "temporaless/v1"
+
+
+def _run_prefix(namespace: str, workflow_id: str, run_id: str) -> str:
+    return f"{STORAGE_ROOT_PREFIX}/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}"
+
 
 @dataclass(frozen=True)
 class WorkflowKey:
@@ -40,17 +59,14 @@ class WorkflowKey:
 
     def path(self) -> str:
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/workflow.binpb"
-        )
+        prefix = _run_prefix(self.namespace, self.workflow_id, self.run_id)
+        return f"{prefix}/kind=workflow/record.binpb"
 
     def dir_path(self) -> str:
+        """Run-level partition. Everything for this run lives under it across
+        all kinds. Useful for "delete the whole run"."""
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/"
-        )
+        return f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}/"
 
     def validate(self) -> None:
         validate(
@@ -81,16 +97,13 @@ class ActivityKey:
     def path(self) -> str:
         self.validate()
         return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/activities/{self.activity_id}.binpb"
+            f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}"
+            f"/kind=activity/activity_id={self.activity_id}/record.binpb"
         )
 
     def dir_path(self) -> str:
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/activities/"
-        )
+        return f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}/kind=activity/"
 
     def validate(self) -> None:
         validate(
@@ -122,16 +135,13 @@ class TimerKey:
     def path(self) -> str:
         self.validate()
         return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/timers/{self.timer_id}.binpb"
+            f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}"
+            f"/kind=timer/timer_id={self.timer_id}/record.binpb"
         )
 
     def dir_path(self) -> str:
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/timers/"
-        )
+        return f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}/kind=timer/"
 
     def validate(self) -> None:
         validate(
@@ -163,16 +173,13 @@ class EventKey:
     def path(self) -> str:
         self.validate()
         return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/events/{self.event_id}.binpb"
+            f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}"
+            f"/kind=event/event_id={self.event_id}/record.binpb"
         )
 
     def dir_path(self) -> str:
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/events/"
-        )
+        return f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}/kind=event/"
 
     def validate(self) -> None:
         validate(
@@ -204,16 +211,13 @@ class ClaimKey:
     def path(self) -> str:
         self.validate()
         return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/claims/{self.claim_id}.binpb"
+            f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}"
+            f"/kind=claim/claim_id={self.claim_id}/record.binpb"
         )
 
     def dir_path(self) -> str:
         self.validate()
-        return (
-            f"temporaless/v1/namespaces/{self.namespace}/workflows/{self.workflow_id}"
-            f"/runs/{self.run_id}/claims/"
-        )
+        return f"{_run_prefix(self.namespace, self.workflow_id, self.run_id)}/kind=claim/"
 
     def validate(self) -> None:
         validate(
@@ -403,17 +407,17 @@ class OpenDALStore:
         workflow_id: str,
         status: temporaless_pb2.WorkflowStatus,
     ) -> list[temporaless_pb2.WorkflowRecord]:
-        root = "temporaless/v1/namespaces/"
+        root = f"{STORAGE_ROOT_PREFIX}/"
         if namespace:
-            root = f"{root}{namespace}/"
+            root = f"{root}namespace={namespace}/"
             if workflow_id:
-                root = f"{root}workflows/{workflow_id}/runs/"
+                root = f"{root}workflow_id={workflow_id}/"
         # Defense-in-depth: when the path can't fully encode the filter
         # (empty namespace + non-empty workflow_id), filter in code too.
         match_workflow_id = workflow_id if not namespace and workflow_id else ""
         records: list[temporaless_pb2.WorkflowRecord] = []
         async for path in _walk_binpb(self._operator, root):
-            if not path.endswith("/workflow.binpb"):
+            if not path.endswith("/kind=workflow/record.binpb"):
                 continue
             key = _parse_workflow_path(path)
             if key is None:
@@ -439,15 +443,10 @@ class OpenDALStore:
             namespace=key.namespace,
         ).dir_path()
         records: list[temporaless_pb2.ActivityRecord] = []
-        try:
-            entries = [entry async for entry in await self._operator.list(dir_path)]
-        except opendal.exceptions.NotFound:
-            return records
-        for entry in entries:
-            path = entry.path
-            if path == dir_path or not path.endswith(".binpb"):
+        async for path in _walk_binpb(self._operator, dir_path):
+            activity_id = _extract_id_from_hive_path(path, dir_path, "activity_id=")
+            if activity_id is None:
                 continue
-            activity_id = path.removeprefix(dir_path).removesuffix(".binpb")
             record = await self.get_activity(
                 ActivityKey(
                     workflow_id=key.workflow_id,
@@ -475,15 +474,10 @@ class OpenDALStore:
             namespace=key.namespace,
         ).dir_path()
         records: list[temporaless_pb2.TimerRecord] = []
-        try:
-            entries = [entry async for entry in await self._operator.list(dir_path)]
-        except opendal.exceptions.NotFound:
-            return records
-        for entry in entries:
-            path = entry.path
-            if path == dir_path or not path.endswith(".binpb"):
+        async for path in _walk_binpb(self._operator, dir_path):
+            timer_id = _extract_id_from_hive_path(path, dir_path, "timer_id=")
+            if timer_id is None:
                 continue
-            timer_id = path.removeprefix(dir_path).removesuffix(".binpb")
             record = await self.get_timer(
                 TimerKey(
                     workflow_id=key.workflow_id,
@@ -510,15 +504,10 @@ class OpenDALStore:
             namespace=key.namespace,
         ).dir_path()
         records: list[temporaless_pb2.EventRecord] = []
-        try:
-            entries = [entry async for entry in await self._operator.list(dir_path)]
-        except opendal.exceptions.NotFound:
-            return records
-        for entry in entries:
-            path = entry.path
-            if path == dir_path or not path.endswith(".binpb"):
+        async for path in _walk_binpb(self._operator, dir_path):
+            event_id = _extract_id_from_hive_path(path, dir_path, "event_id=")
+            if event_id is None:
                 continue
-            event_id = path.removeprefix(dir_path).removesuffix(".binpb")
             record = await self.get_event(
                 EventKey(
                     workflow_id=key.workflow_id,
@@ -650,14 +639,44 @@ async def _walk_binpb(operator: opendal.AsyncOperator, root: str) -> AsyncIterab
 
 
 def _parse_workflow_path(path: str) -> WorkflowKey | None:
+    """Invert the Hive layout for the workflow record:
+
+    ``temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb``
+    """
     parts = path.split("/")
-    if len(parts) != 9:
+    if len(parts) != 7:
         return None
-    if parts[0] != "temporaless" or parts[1] != "v1" or parts[2] != "namespaces":
+    if parts[0] != "temporaless" or parts[1] != "v1":
         return None
-    if parts[4] != "workflows" or parts[6] != "runs" or parts[8] != "workflow.binpb":
+    if parts[5] != "kind=workflow" or parts[6] != "record.binpb":
         return None
-    return WorkflowKey(namespace=parts[3], workflow_id=parts[5], run_id=parts[7])
+    namespace = _strip_prefix(parts[2], "namespace=")
+    workflow_id = _strip_prefix(parts[3], "workflow_id=")
+    run_id = _strip_prefix(parts[4], "run_id=")
+    if namespace is None or workflow_id is None or run_id is None:
+        return None
+    return WorkflowKey(namespace=namespace, workflow_id=workflow_id, run_id=run_id)
+
+
+def _strip_prefix(s: str, prefix: str) -> str | None:
+    if not s.startswith(prefix):
+        return None
+    return s[len(prefix) :]
+
+
+def _extract_id_from_hive_path(path: str, dir_path: str, id_prefix: str) -> str | None:
+    """Pull the ID out of a per-kind record path.
+
+    With ``dir_path`` set to the kind partition (e.g. ``.../kind=activity/``)
+    and ``id_prefix`` set to the column name (e.g. ``activity_id=``), the
+    inner path is ``{id_prefix}{value}/record.binpb``.
+    """
+    if not path.endswith("/record.binpb"):
+        return None
+    if not path.startswith(dir_path):
+        return None
+    inner = path[len(dir_path) : -len("/record.binpb")]
+    return _strip_prefix(inner, id_prefix)
 
 
 async def _delete_if_exists(operator: opendal.AsyncOperator, path: str) -> bool:

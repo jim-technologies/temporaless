@@ -86,14 +86,16 @@ The Flox manifest intentionally stays thin: just `go`, `python313`, `uv`, `buf`,
 Records are stored as protobuf binary at:
 
 ```text
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/workflow.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/timers/{timer_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/events/{event_id}.binpb
-temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/claims/{claim_id}.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=workflow/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=activity/activity_id={activity_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=timer/timer_id={timer_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=event/event_id={event_id}/record.binpb
+temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=claim/claim_id={claim_id}/record.binpb
 ```
 
-IDs may contain letters, numbers, `.`, `_`, `-`, and `:` only. Slashes are intentionally rejected so storage paths stay predictable. The framework does not generate IDs — workflow IDs, run IDs, activity IDs, timer IDs, claim owner IDs, and event IDs are application-owned and must be passed explicitly.
+Paths follow strict **Hive partitioning** (every directory level is `key=value`). Pointing Spark / Trino / DuckDB / Athena at the bucket auto-discovers `namespace`, `workflow_id`, `run_id`, `kind`, and the per-kind id (`activity_id` / `timer_id` / `event_id` / `claim_id`) as partition columns — predicates push down to the bucket so `WHERE namespace='default' AND kind='activity'` only fetches activity records.
+
+IDs may contain letters, numbers, `.`, `_`, `-`, and `:` only. Slashes and `=` are rejected so the Hive-style paths stay predictable. The framework does not generate IDs — workflow IDs, run IDs, activity IDs, timer IDs, claim owner IDs, and event IDs are application-owned and must be passed explicitly.
 
 The storage service contract is generated from `temporaless.v1.RecordStoreService`. Record schema versions, timer kinds, claim resource types, and claim capabilities are protobuf enums, not handwritten per-language string constants.
 
