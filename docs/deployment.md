@@ -106,7 +106,7 @@ remote = ConnectStore.from_address(
 )
 ```
 
-A complete runnable production server — auth, structured JSON logging with correlation IDs, `/healthz` + `/readyz` for K8s probes, graceful shutdown on SIGTERM — lives at `examples/py/production_server.py`.
+A complete runnable production server — auth, structured JSON logging with correlation IDs, `/healthz` + `/readyz` for any platform's health probes, graceful shutdown on SIGTERM — lives at `examples/py/production_server.py`.
 
 The trigger surface — your own `WorkflowService` that calls `workflow.run` — is also a normal ConnectRPC service, so the same interceptors apply there. There's no framework-specific auth model to learn.
 
@@ -335,7 +335,7 @@ Run daily.
 
 ### Multi-process within one region
 
-Default: claims serialize activities, replays serialize results. Multiple workflow workers, schedulers, scanners, and janitors can all run concurrently against the same Store. Recommended setup: one Kubernetes Deployment per role, each scaled horizontally.
+Default: claims serialize activities, replays serialize results. Multiple workflow workers, schedulers, scanners, and janitors can all run concurrently against the same Store. Recommended setup: one process pool per role (Lambda function, Cloud Run service, K8s Deployment, etc.), each scaled horizontally.
 
 ### Multi-region active/active
 
@@ -403,16 +403,25 @@ For activity-level spans inside a workflow body, use your tracer directly inline
 - **Storage unavailable**: `workflow.Run` returns the storage error. Caller's responsibility to retry.
 - **Schedule missed during outage**: `cronscheduler.Tick` catches up — it dispatches every fire time between `last_fire` and `now`.
 
-## 8. Recommended Kubernetes layout
+## 8. Deployment shape
+
+The framework is platform-agnostic. The pieces you actually deploy:
 
 ```
-Deployment: workflow-worker     replicas: 3-N    serves the ConnectRPC trigger
-CronJob:    cron-scheduler      schedule: */1 * * * *  runs Tick once per minute
-CronJob:    timer-scanner       schedule: */1 * * * *  runs DueTimers + dispatch
-CronJob:    janitor             schedule: 0 4 * * *    runs Sweep daily
-ConfigMap:  TEMPORALESS_CODE_VERSION=<git-sha>
-Secret:     S3 / GCS credentials
-Bucket:     production-temporaless
+Workflow service     N replicas    serves the ConnectRPC trigger surface
+Cron scheduler tick  1/min         calls Scheduler.tick(now)
+Timer scanner tick   1/min         calls DueTimers + dispatches re-invocations
+Janitor (optional)   1/day         calls Sweep(maxAge)
+Code version env     git short SHA bumped on breaking workflow body changes
+Storage credentials  S3 / GCS / Azure Blob via your secret manager
+Bucket               production-temporaless
 ```
 
-The state lives in the bucket. The pods are interchangeable.
+Pick whichever platform you already operate:
+
+- **Serverless (recommended for new deploys):** AWS Lambda + API Gateway + EventBridge schedules, or Cloud Run + Cloud Scheduler, or Modal, or Fly Machines. The 3 "tick" jobs map to scheduled functions.
+- **Containers:** ECS / Cloud Run / Knative — the same image runs the workflow service; the ticks are scheduled invocations.
+- **VMs + cron:** the workflow service is a long-lived `uvicorn` process; the ticks are cron(8) entries.
+- **Kubernetes:** Deployment for the workflow service, three CronJobs for the ticks. Most heavyweight option; pick only if you already operate K8s for unrelated reasons.
+
+The state lives in the bucket. The processes are interchangeable.

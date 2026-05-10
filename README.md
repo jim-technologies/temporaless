@@ -58,7 +58,6 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 - [`docs/deployment.md`](docs/deployment.md) — production deployment patterns
 - [`docs/production-checklist.md`](docs/production-checklist.md) — pre-launch checklist (storage, ConnectStore, workflow service, operators, observability, failure modes)
 - [`docs/runbook.md`](docs/runbook.md) — operator runbook for common incidents (stuck workflows, claim leaks, storage outages, DR)
-- [`deploy/k8s/`](deploy/k8s) — Kubernetes manifests (Deployment + Service + PDB + HPA + NetworkPolicy + ConfigMap)
 - [`docs/architecture.md`](docs/architecture.md) — goals and core model
 - [`docs/storage-rpc.md`](docs/storage-rpc.md) — `RecordStoreService` contract
 - [`docs/scheduling.md`](docs/scheduling.md) — durable timers, cron, scanner, distribution

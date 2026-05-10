@@ -88,7 +88,7 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 **Fix:**
 
-- Confirm via `kubectl get secret temporaless-auth -o yaml | base64 -d` that the deployment's secret matches what clients have.
+- Confirm via your secret manager (Vault / SSM / Secret Manager / env var) that the server-side token matches what clients have.
 - Rotate clients to the new token (push via your config-management tool).
 - For graceful rotation in the future: support two valid tokens during a window. Update `BearerTokenAuth` in `examples/{go,py}/production_server.py` to accept a list:
 
@@ -97,7 +97,7 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
       raise ConnectError(Code.UNAUTHENTICATED, ...)
   ```
 
-  Apply the new secret with both `auth-token-current` and `auth-token-previous` keys, rotate clients, then drop the old key.
+  Issue both tokens (current + previous) for the rotation window, rotate clients, then drop the old token.
 
 ---
 
@@ -136,20 +136,18 @@ report2 = await backfill(invoke, run_ids, concurrency=10)
 
 ---
 
-## 7. Pod fails liveness check, restart loop
+## 7. Process fails health check, supervisor restart loop
 
-**Symptom:** Kubernetes restarts the pod every 10s. `kubectl describe pod` shows `Liveness probe failed: HTTP probe failed with statuscode: 500`.
+**Symptom:** Your supervisor (Lambda runtime / Cloud Run / systemd / K8s / ...) keeps restarting the process. Health probe returns non-200 or times out.
 
 **Diagnose:**
 
-```sh
-kubectl logs -n temporaless <pod> --previous | tail -50
-```
+Read the previous-instance logs (Lambda → CloudWatch, Cloud Run → Logging, systemd → `journalctl -u <unit>`, etc.). The process emits structured JSON to stdout; the last few lines before the restart usually have the cause.
 
 **Common causes:**
 
-- **Storage backend init failed at startup.** OpenDAL operator construction errored (bad credentials, region misconfigured). The pod was alive but `/healthz` returned 500. Fix the config, redeploy.
-- **Out-of-memory.** Check `kubectl top pod`; bump `resources.limits.memory` in `deploy/k8s/deployment.yaml`. The framework's per-RPC overhead is small but per-workflow with large protobuf messages can grow.
+- **Storage backend init failed at startup.** OpenDAL operator construction errored (bad credentials, region misconfigured). The process was alive but `/healthz` returned 500. Fix the config, redeploy.
+- **Out-of-memory.** Per-RPC overhead is small but per-workflow with large protobuf messages can grow. Bump the platform's memory limit (Lambda memory, Cloud Run memory, container limits).
 - **Stuck event loop.** Rare; usually indicates a sync function called from an async context. The framework rejects sync workflow bodies at wrap time, but an activity body that calls a blocking C extension can still cause this. Profile with `py-spy dump --pid <pid>` to see the stuck frame.
 
 ---
