@@ -27,6 +27,8 @@ var ErrEventPending = errors.New("event is pending")
 var ErrTimerConflict = errors.New("timer record conflicts with requested timer")
 var ErrTimerPending = errors.New("timer is pending")
 var ErrWorkflowConflict = errors.New("workflow record conflicts with requested workflow")
+var ErrWorkflowDependencyPending = errors.New("workflow dependency has not completed")
+var ErrWorkflowDependencyFailed = errors.New("workflow dependency ended in a non-COMPLETED terminal state")
 
 const DefaultClaimLeaseDuration = 15 * time.Minute
 
@@ -116,6 +118,11 @@ func (w *Workflow) WorkflowID() string  { return w.workflowID }
 func (w *Workflow) RunID() string       { return w.runID }
 func (w *Workflow) CodeVersion() string { return w.codeVersion }
 
+// Store returns the Store this workflow is replaying against. Exposed so
+// adapter helpers (e.g. dependencies.WaitForWorkflow) can read records
+// without reaching into private state.
+func (w *Workflow) Store() storage.Store { return w.store }
+
 type TimerPendingError struct {
 	TimerID string
 	WakeAt  time.Time
@@ -161,6 +168,47 @@ func (err *ClaimBusyError) Error() string {
 
 func (err *ClaimBusyError) Unwrap() error {
 	return ErrClaimBusy
+}
+
+// WorkflowDependencyPendingError is raised when a workflow body waits on
+// another workflow that hasn't completed yet. Like EventPendingError, this
+// leaves the calling workflow IN_PROGRESS so a scanner / re-invoke can resume
+// it later.
+type WorkflowDependencyPendingError struct {
+	WorkflowID string
+	RunID      string
+}
+
+func (err *WorkflowDependencyPendingError) Error() string {
+	return fmt.Sprintf("workflow %q/%q has not completed", err.WorkflowID, err.RunID)
+}
+
+func (err *WorkflowDependencyPendingError) Unwrap() error {
+	return ErrWorkflowDependencyPending
+}
+
+// WorkflowDependencyFailedError is raised when a workflow body waits on
+// another workflow that ended in a non-COMPLETED terminal status. The
+// dependency is unrecoverable without operator action — propagating as a
+// typed error means downstream workflows fail loudly rather than waiting
+// forever.
+type WorkflowDependencyFailedError struct {
+	WorkflowID string
+	RunID      string
+	Status     int32
+}
+
+func (err *WorkflowDependencyFailedError) Error() string {
+	return fmt.Sprintf(
+		"workflow %q/%q dependency failed (status=%d)",
+		err.WorkflowID,
+		err.RunID,
+		err.Status,
+	)
+}
+
+func (err *WorkflowDependencyFailedError) Unwrap() error {
+	return ErrWorkflowDependencyFailed
 }
 
 func Run[Req proto.Message, Resp proto.Message](

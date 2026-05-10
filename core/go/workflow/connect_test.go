@@ -100,11 +100,13 @@ func TestErrorToConnectCodeMapsEachErrorType(t *testing.T) {
 	}{
 		{"timer pending", &workflow.TimerPendingError{TimerID: "t1", WakeAt: time.Now()}, connect.CodeUnavailable},
 		{"event pending", &workflow.EventPendingError{EventID: "e1"}, connect.CodeUnavailable},
+		{"workflow dep pending", &workflow.WorkflowDependencyPendingError{WorkflowID: "upstream", RunID: "2026-05-04"}, connect.CodeUnavailable},
 		{"claim busy", &workflow.ClaimBusyError{ClaimID: "activity:fetch"}, connect.CodeAlreadyExists},
 		{"workflow conflict", workflow.ErrWorkflowConflict, connect.CodeFailedPrecondition},
 		{"activity conflict", workflow.ErrActivityConflict, connect.CodeFailedPrecondition},
 		{"timer conflict", workflow.ErrTimerConflict, connect.CodeFailedPrecondition},
 		{"activity error", workflow.NewActivityError("rate_limited", "vendor 429", nil), connect.CodeInternal},
+		{"workflow dep failed", &workflow.WorkflowDependencyFailedError{WorkflowID: "upstream", RunID: "2026-05-04", Status: 3}, connect.CodeInternal},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

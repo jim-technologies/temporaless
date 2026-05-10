@@ -89,6 +89,10 @@ func ErrorToConnectCode(err error) (connect.Code, string, bool) {
 	if errors.As(err, &eventPending) {
 		return connect.CodeUnavailable, eventPending.Error(), true
 	}
+	var depPending *WorkflowDependencyPendingError
+	if errors.As(err, &depPending) {
+		return connect.CodeUnavailable, depPending.Error(), true
+	}
 	var claimBusy *ClaimBusyError
 	if errors.As(err, &claimBusy) {
 		return connect.CodeAlreadyExists, claimBusy.Error(), true
@@ -101,6 +105,10 @@ func ErrorToConnectCode(err error) (connect.Code, string, bool) {
 	var activityErr *ActivityError
 	if errors.As(err, &activityErr) {
 		return connect.CodeInternal, activityErr.Error(), true
+	}
+	var depFailed *WorkflowDependencyFailedError
+	if errors.As(err, &depFailed) {
+		return connect.CodeInternal, depFailed.Error(), true
 	}
 	return 0, "", false
 }

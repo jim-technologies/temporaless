@@ -32,6 +32,8 @@ docs/                 Architecture and design notes
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
 | [`adapters/go/inspector`](adapters/go/inspector) | List in-flight / failed workflows, reset records for re-execution |
 | [`adapters/go/janitor`](adapters/go/janitor) | Sweep COMPLETED runs older than a max-age threshold |
+| [`adapters/go/backfill`](adapters/go/backfill) | Run a workflow over many run_ids with bounded concurrency + per-run status (Dagster/Prefect/Airflow-style backfill) |
+| [`adapters/go/dependencies`](adapters/go/dependencies) | Cross-pipeline durable wait — `WaitForWorkflow(store, key, newResult)` returns upstream's result or a typed pending/failed error |
 
 Python equivalents for the operations adapters live in `core/py/src/temporaless/{timerscanner,cronscheduler,inspector,janitor,backfill,dependencies}.py` (no separate uv project — they have no third-party deps). `backfill` runs a workflow over many run_ids with bounded concurrency; `dependencies.wait_for_workflow` is the cross-pipeline durable wait primitive.
 
