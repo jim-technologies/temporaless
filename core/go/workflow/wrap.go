@@ -30,7 +30,7 @@ func WrapWorkflow[Req proto.Message, Resp proto.Message](
 	return func(ctx context.Context, input Req) (Resp, error) {
 		if options.Options != nil && options.OptionsFor != nil {
 			var zero Resp
-			return zero, fmt.Errorf("workflow wrap options are ambiguous")
+			return zero, fmt.Errorf("workflow wrap options are ambiguous: set Options OR OptionsFor, not both")
 		}
 		var runOptions *Options
 		if options.OptionsFor != nil {
@@ -56,7 +56,7 @@ func WrapActivity[Req proto.Message, Resp proto.Message](
 	return func(ctx context.Context, input Req) (Resp, error) {
 		if options.Options != nil && options.OptionsFor != nil {
 			var zero Resp
-			return zero, fmt.Errorf("activity wrap options are ambiguous")
+			return zero, fmt.Errorf("activity wrap options are ambiguous: set Options OR OptionsFor, not both")
 		}
 		var activityOptions *ActivityOptions
 		if options.OptionsFor != nil {

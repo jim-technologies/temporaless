@@ -685,7 +685,9 @@ def wrap_workflow(
         @wraps(execute)
         async def wrapped(input_message: RequestT) -> ResultT:
             if options.options is not None and options.options_for is not None:
-                raise ValueError("workflow wrap options are ambiguous")
+                raise ValueError(
+                    "workflow wrap options are ambiguous: set options OR options_for, not both"
+                )
             if options.options_for is not None:
                 run_options = options.options_for(input_message)
             elif options.options is not None:
@@ -722,7 +724,9 @@ def wrap_activity(
         @wraps(execute)
         async def wrapped(input_message: RequestT) -> ResultT:
             if options.options is not None and options.options_for is not None:
-                raise ValueError("activity wrap options are ambiguous")
+                raise ValueError(
+                    "activity wrap options are ambiguous: set options OR options_for, not both"
+                )
             if options.options_for is not None:
                 activity_options = options.options_for(input_message)
             elif options.options is not None:
@@ -811,7 +815,11 @@ def _assert_activity_fingerprint(
             f"code version changed from {record.code_version!r} to {code_version!r}"
         )
     if record.input_digest != input_digest:
-        raise ActivityConflictError("input digest changed")
+        raise ActivityConflictError(
+            "input digest changed (the activity's request differs from the stored attempt; "
+            "either pass the original request, delete the activity record to re-execute, "
+            "or bump code_version if this change is intentional)"
+        )
 
 
 def _replay_record(
@@ -917,7 +925,11 @@ def _assert_workflow_fingerprint(
             f"code version changed from {record.code_version!r} to {code_version!r}"
         )
     if record.input_digest != input_digest:
-        raise WorkflowConflictError("input digest changed")
+        raise WorkflowConflictError(
+            "input digest changed (the workflow's request differs from the stored run; "
+            "either pass the original request, delete the workflow record to re-execute, "
+            "or bump code_version if this change is intentional)"
+        )
 
 
 def wrap_workflow_method[RequestT: Message, ResultT: Message](

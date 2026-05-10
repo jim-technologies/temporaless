@@ -794,7 +794,12 @@ func assertActivityFingerprint(
 		return fmt.Errorf("%w: code version changed from %q to %q", ErrActivityConflict, record.GetCodeVersion(), codeVersion)
 	}
 	if record.GetInputDigest() != inputDigest {
-		return fmt.Errorf("%w: input digest changed", ErrActivityConflict)
+		return fmt.Errorf(
+			"%w: input digest changed (the activity's request differs from the stored attempt; "+
+				"either pass the original request, delete the activity record to re-execute, "+
+				"or bump code_version if this change is intentional)",
+			ErrActivityConflict,
+		)
 	}
 	return nil
 }
@@ -951,7 +956,12 @@ func assertWorkflowFingerprint(
 		return fmt.Errorf("%w: code version changed from %q to %q", ErrWorkflowConflict, record.GetCodeVersion(), codeVersion)
 	}
 	if record.GetInputDigest() != inputDigest {
-		return fmt.Errorf("%w: input digest changed", ErrWorkflowConflict)
+		return fmt.Errorf(
+			"%w: input digest changed (the workflow's request differs from the stored run; "+
+				"either pass the original request, delete the workflow record to re-execute, "+
+				"or bump code_version if this change is intentional)",
+			ErrWorkflowConflict,
+		)
 	}
 	return nil
 }
