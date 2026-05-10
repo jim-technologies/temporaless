@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+buf lint
+buf format -w api
+buf generate
+go test ./...
+go vet ./...
+uv sync --project core/py
+uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py
+uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py
+uv run --project core/py ty check core/py/src/temporaless core/py/benchmarks examples/py --exclude='**/temporaless/v1/**' --exclude='**/buf/**'
+uv run --project core/py pytest core/py/tests
+uv sync --project adapters/py/temporalcompat
+uv run --project adapters/py/temporalcompat ruff format adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
+uv run --project adapters/py/temporalcompat ruff check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
+uv run --project adapters/py/temporalcompat ty check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
+uv run --project adapters/py/temporalcompat pytest adapters/py/temporalcompat/tests
+uv sync --project adapters/py/prefectcompat
+uv run --project adapters/py/prefectcompat ruff format adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
+uv run --project adapters/py/prefectcompat ruff check adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
+uv run --project adapters/py/prefectcompat ty check adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
+uv run --project adapters/py/prefectcompat pytest adapters/py/prefectcompat/tests

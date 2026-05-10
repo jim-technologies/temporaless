@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: full-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flox
+        uses: flox/install-flox-action@v2
+
+      # Generated proto files are committed (see core/go/gen and
+      # core/py/src/temporaless/v1). The gate's `buf generate` step
+      # validates they're up-to-date; we skip it on rate-limited days
+      # by setting BUF_SKIP_GENERATE=1 — local dev still runs it.
+      - name: Run gate
+        env:
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+        run: flox activate -- scripts/check
+
+  go-build:
+    # Quick parallel job that builds Go without flox so a Go-only typo
+    # surfaces fast even if the full gate is queued.
+    name: go-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...

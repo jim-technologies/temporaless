@@ -1,0 +1,839 @@
+// Temporaless v1 protobuf contract.
+//
+// Temporaless is a storage-first, serverless workflow framework. Workflow runs,
+// activity invocations, durable timers, signals (events), and coordination
+// claims are all serialized as protobuf records at deterministic paths under
+// `temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/`.
+//
+// `RecordStoreService` is the cross-language storage contract. Any backend
+// (OpenDAL filesystem, S3, GCS, SQL, ...) implements the same RPC surface, so
+// generated CLI / gRPC / HTTP / MCP wrappers all see the same operations.
+syntax = "proto3";
+
+package temporaless.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1;temporalessv1";
+
+// WorkflowOptions identifies a single workflow run plus its replay context.
+//
+// IDs are caller-provided. The framework validates path-safe ASCII but never
+// generates them — the application owns the ID scheme (e.g. `prices:aapl`,
+// `tweet:12345`, `llm:answer`).
+message WorkflowOptions {
+  // Stable identifier for the workflow definition. Reused across runs.
+  string workflow_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_options.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  // Identifier for this particular run of the workflow. By convention,
+  // schedule-driven workflows embed the fire time (e.g. `2026-05-04T09:30:00Z`)
+  // so reruns and backfills are explicit.
+  string run_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_options.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  // Application-supplied build identity (git SHA, release tag, immutable build
+  // ID). Bumping it invalidates stored results because the digest changes.
+  // Defaults to the `TEMPORALESS_CODE_VERSION` env var, or `dev` when unset.
+  string code_version = 3;
+  // Owner identity for activity claims. Required when a claim store is
+  // configured; otherwise should be empty. Reusing the same owner across
+  // invocations is what allows resume of a stuck claim by the same logical
+  // worker.
+  string claim_owner_id = 4 [
+    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:-]+$"},
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_options.claim_owner_id.not_dot_path"
+      message: "claim_owner_id must not be . or .."
+      expression: "this == '' || (this != '.' && this != '..')"
+    }
+  ];
+}
+
+// ActivityOptions controls how a single activity executes within a workflow.
+message ActivityOptions {
+  // Stable identifier for the activity within its workflow run. Authoring
+  // responsibility: must be deterministic across replays of the same logical
+  // step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). Reusing the
+  // same activity_id with different input is treated as a workflow bug.
+  string activity_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.id.activity_id.not_dot_path"
+      message: "activity_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  // Optional retry policy. When unset, the activity runs at most once.
+  RetryPolicy retry_policy = 2;
+}
+
+// RetryPolicy controls in-process retry behavior for a single activity.
+//
+// Failures matched by `non_retryable_error_codes` short-circuit the loop and
+// surface immediately. Between attempts, the runtime persists an
+// `ActivityRecord` with status `ACTIVITY_STATUS_RETRYING` so a process death
+// during the backoff sleep doesn't lose the attempt history.
+message RetryPolicy {
+  // Wait before the second attempt. Required when `maximum_attempts > 1`.
+  google.protobuf.Duration initial_interval = 1;
+  // Multiplier applied to the previous interval to compute the next. Zero is
+  // treated as 1.0 (linear, no growth). Typical value: 2.0.
+  double backoff_coefficient = 2;
+  // Cap on backoff growth. Zero means uncapped.
+  google.protobuf.Duration maximum_interval = 3;
+  // Total attempts including the initial one. Must be > 0 when a policy is
+  // set; an unset policy implies a single attempt.
+  uint32 maximum_attempts = 4;
+  // Activity error codes (carried via `ActivityFailure.code`) that should
+  // skip remaining retries and surface the failure immediately.
+  repeated string non_retryable_error_codes = 5;
+}
+
+// ActivityStatus tracks an activity's lifecycle in storage.
+enum ActivityStatus {
+  ACTIVITY_STATUS_UNSPECIFIED = 0;
+  // Activity returned a result. The `result` field carries the response.
+  ACTIVITY_STATUS_COMPLETED = 1;
+  // Activity exhausted retries. The `failure` field carries the terminal
+  // error; `attempts` carries the full per-attempt history. Replay surfaces
+  // this failure to the workflow.
+  ACTIVITY_STATUS_FAILED = 2;
+  // Intermediate state between attempts: persisted after a failed attempt
+  // that still has retries remaining, so a re-invocation can resume from
+  // `len(attempts) + 1` instead of restarting from attempt 1.
+  ACTIVITY_STATUS_RETRYING = 3;
+}
+
+// WorkflowStatus tracks a workflow run's lifecycle in storage.
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  // Workflow returned a result.
+  WORKFLOW_STATUS_COMPLETED = 1;
+  // Workflow body returned a non-pending error. Replay surfaces the failure.
+  WORKFLOW_STATUS_FAILED = 2;
+  // Workflow body started but did not return a terminal result — typically
+  // because it returned a typed pending error (timer, claim busy, event
+  // pending). The next invocation re-executes the body.
+  WORKFLOW_STATUS_IN_PROGRESS = 3;
+}
+
+// TimerStatus tracks the lifecycle of a durable sleep timer.
+enum TimerStatus {
+  TIMER_STATUS_UNSPECIFIED = 0;
+  // Timer is waiting for `fire_at`. The workflow returned `ErrTimerPending`
+  // and should be re-invoked after `fire_at`.
+  TIMER_STATUS_SCHEDULED = 1;
+  // Timer's `fire_at` has passed and a workflow re-invocation has consumed it.
+  TIMER_STATUS_FIRED = 2;
+  // Timer was canceled before firing. Replay treats this as a conflict.
+  TIMER_STATUS_CANCELED = 3;
+}
+
+// TimerKind discriminates timer record uses.
+enum TimerKind {
+  TIMER_KIND_UNSPECIFIED = 0;
+  // Plain durable sleep written by `workflow.Sleep`.
+  TIMER_KIND_SLEEP = 1;
+}
+
+// RecordSchemaVersion identifies the record family. Each protobuf record sets
+// this to allow forward-compatible decoding.
+enum RecordSchemaVersion {
+  RECORD_SCHEMA_VERSION_UNSPECIFIED = 0;
+  RECORD_SCHEMA_VERSION_ACTIVITY = 1;
+  RECORD_SCHEMA_VERSION_WORKFLOW = 2;
+  RECORD_SCHEMA_VERSION_TIMER = 3;
+  RECORD_SCHEMA_VERSION_CLAIM = 4;
+  RECORD_SCHEMA_VERSION_EVENT = 5;
+}
+
+// ClaimResourceType identifies what kind of work a claim coordinates.
+enum ClaimResourceType {
+  CLAIM_RESOURCE_TYPE_UNSPECIFIED = 0;
+  CLAIM_RESOURCE_TYPE_WORKFLOW = 1;
+  CLAIM_RESOURCE_TYPE_ACTIVITY = 2;
+  CLAIM_RESOURCE_TYPE_TIMER = 3;
+}
+
+// ClaimCapability declares what the configured claim store can do. Adapters
+// must report this honestly via `GetStoreCapabilities`.
+enum ClaimCapability {
+  CLAIM_CAPABILITY_UNSPECIFIED = 0;
+  // No claim coordination. Activities run with at-least-once semantics; side
+  // effects must be idempotent.
+  CLAIM_CAPABILITY_NO_CLAIMS = 1;
+  // Storage supports atomic create-if-absent. Claims prevent concurrent
+  // execution within a run, but cannot safely take over stale claims.
+  CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS = 2;
+  // Storage supports compare-and-swap (e.g. via S3 If-None-Match or GCS
+  // generation). Claims can be refreshed and stale ones can be taken over.
+  CLAIM_CAPABILITY_CAS_CLAIMS = 3;
+}
+
+// WorkflowKey addresses a single workflow run.
+message WorkflowKey {
+  string namespace = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_key.namespace.not_dot_path"
+      message: "namespace must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string workflow_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_key.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string run_id = 3 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_key.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+}
+
+// ActivityKey addresses a single activity invocation within a workflow run.
+message ActivityKey {
+  string namespace = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.namespace.not_dot_path"
+      message: "namespace must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string workflow_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string run_id = 3 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string activity_id = 4 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.activity_id.not_dot_path"
+      message: "activity_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+}
+
+// TimerKey addresses a single durable timer within a workflow run.
+message TimerKey {
+  string namespace = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.namespace.not_dot_path"
+      message: "namespace must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string workflow_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string run_id = 3 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string timer_id = 4 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.timer_id.not_dot_path"
+      message: "timer_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+}
+
+// EventKey addresses a single signal/event payload delivered to a workflow run.
+message EventKey {
+  string namespace = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.namespace.not_dot_path"
+      message: "namespace must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string workflow_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string run_id = 3 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string event_id = 4 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.event_id.not_dot_path"
+      message: "event_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+}
+
+// ClaimKey addresses a single coordination claim within a workflow run.
+message ClaimKey {
+  string namespace = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.namespace.not_dot_path"
+      message: "namespace must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string workflow_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.workflow_id.not_dot_path"
+      message: "workflow_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string run_id = 3 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.run_id.not_dot_path"
+      message: "run_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string claim_id = 4 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.claim_id.not_dot_path"
+      message: "claim_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+}
+
+// ActivityFailure is the typed error surface that retry policies match on.
+message ActivityFailure {
+  // Stable identifier the user supplies (e.g. `rate_limited`, `invalid_argument`,
+  // `upstream_5xx`). Empty when the error did not carry a typed code.
+  string code = 1;
+  // Human-readable description of the failure.
+  string message = 2;
+}
+
+// ActivityAttempt is one invocation of the activity body within a retry loop.
+message ActivityAttempt {
+  // 1-indexed attempt counter.
+  uint32 attempt = 1;
+  google.protobuf.Timestamp started_at = 2;
+  google.protobuf.Timestamp completed_at = 3;
+  // Set when the attempt failed; absent when the attempt succeeded.
+  ActivityFailure failure = 4;
+}
+
+// ActivityRecord captures everything the runtime needs to replay or resume an
+// activity. Stored at `activities/{activity_id}.binpb` under the workflow run.
+message ActivityRecord {
+  RecordSchemaVersion schema_version = 1;
+  ActivityKey key = 2;
+  // Derived from the request and response message types — used for replay
+  // fingerprinting alongside `code_version` and `input_digest`.
+  string activity_type = 3;
+  string code_version = 4;
+  // Hex-encoded SHA-256 over the deterministic protobuf input bytes plus the
+  // execution kind, type, and code version. Mismatch on replay is a hard error.
+  string input_digest = 5;
+  google.protobuf.Any input = 6;
+  ActivityStatus status = 7;
+  // Set when status is COMPLETED.
+  google.protobuf.Any result = 8;
+  // Set when status is FAILED.
+  ActivityFailure failure = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp completed_at = 11;
+  // Per-attempt history. Always carries every attempt the runtime has run so
+  // far, including the one that produced the current `status`.
+  repeated ActivityAttempt attempts = 12;
+  // Application-supplied structured metadata (model, tokens, vendor, etc.)
+  // attached via `workflow.Annotate` from inside the activity body.
+  map<string, string> annotations = 13;
+}
+
+// WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
+// under the workflow run.
+message WorkflowRecord {
+  RecordSchemaVersion schema_version = 1;
+  WorkflowKey key = 2;
+  string workflow_type = 3;
+  string code_version = 4;
+  string input_digest = 5;
+  google.protobuf.Any input = 6;
+  WorkflowStatus status = 7;
+  // Set when status is COMPLETED.
+  google.protobuf.Any result = 8;
+  // Set when status is FAILED.
+  ActivityFailure failure = 9;
+  google.protobuf.Timestamp created_at = 10;
+  // Set when the workflow has reached a terminal status (COMPLETED or FAILED).
+  google.protobuf.Timestamp completed_at = 11;
+  // Annotations attached via `workflow.Annotate` from within the workflow body
+  // (between activity calls). Activity-scope annotations live on the
+  // ActivityRecord instead.
+  map<string, string> annotations = 12;
+}
+
+// TimerRecord backs `workflow.Sleep`. Stored at `timers/{timer_id}.binpb`.
+message TimerRecord {
+  RecordSchemaVersion schema_version = 1;
+  TimerKey key = 2;
+  TimerKind timer_kind = 3;
+  string code_version = 4;
+  string input_digest = 5;
+  // Original duration the workflow body asked to sleep for.
+  google.protobuf.Duration duration = 6;
+  TimerStatus status = 7;
+  // Wall-clock instant at which the timer becomes due. Schedulers compare this
+  // against `now` to find re-invocations to dispatch.
+  google.protobuf.Timestamp fire_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+  // Set when the workflow re-invocation consumed the timer.
+  google.protobuf.Timestamp fired_at = 10;
+}
+
+// EventRecord delivers an external signal payload to a waiting workflow.
+// Written by external services (webhook handlers, approval flows) via
+// `SendEvent` / `PutEvent`. Stored at `events/{event_id}.binpb`.
+message EventRecord {
+  RecordSchemaVersion schema_version = 1;
+  EventKey key = 2;
+  // Application-typed payload packed as Any. The waiting workflow declares
+  // the expected message type via `WaitEvent`'s payload factory.
+  google.protobuf.Any payload = 3;
+  google.protobuf.Timestamp received_at = 4;
+}
+
+// ClaimRecord coordinates execution between concurrent invocations. Stored
+// at `claims/{claim_id}.binpb`. Write semantics depend on the backend's
+// `ClaimCapability`.
+message ClaimRecord {
+  RecordSchemaVersion schema_version = 1;
+  ClaimKey key = 2;
+  // Caller-supplied identity. The runtime checks this on resume to confirm
+  // that the resumer owns the claim.
+  string owner_id = 3;
+  ClaimResourceType resource_type = 4;
+  // Domain ID of the resource being claimed (activity_id, timer_id, etc.).
+  string resource_id = 5;
+  string code_version = 6;
+  string input_digest = 7;
+  google.protobuf.Timestamp lease_expires_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+  // Updated by CAS-capable adapters to extend the lease. Create-only adapters
+  // never update this after creation.
+  google.protobuf.Timestamp heartbeat_at = 10;
+}
+
+message GetWorkflowRequest {
+  WorkflowKey key = 1;
+}
+
+message GetWorkflowResponse {
+  // False when no record exists for the key. Read this before assuming
+  // `record` is populated.
+  bool found = 1;
+  WorkflowRecord record = 2;
+}
+
+message PutWorkflowRequest {
+  WorkflowRecord record = 1;
+}
+
+message PutWorkflowResponse {}
+
+message GetTimerRequest {
+  TimerKey key = 1;
+}
+
+message GetTimerResponse {
+  bool found = 1;
+  TimerRecord record = 2;
+}
+
+message PutTimerRequest {
+  TimerRecord record = 1;
+}
+
+message PutTimerResponse {}
+
+message GetActivityRequest {
+  ActivityKey key = 1;
+}
+
+message GetActivityResponse {
+  bool found = 1;
+  ActivityRecord record = 2;
+}
+
+message PutActivityRequest {
+  ActivityRecord record = 1;
+}
+
+message PutActivityResponse {}
+
+message GetEventRequest {
+  EventKey key = 1;
+}
+
+message GetEventResponse {
+  bool found = 1;
+  EventRecord record = 2;
+}
+
+message PutEventRequest {
+  EventRecord record = 1;
+}
+
+message PutEventResponse {}
+
+// ListWorkflowsRequest filters by namespace, workflow_id, and status.
+message ListWorkflowsRequest {
+  // Empty namespace lists across all namespaces.
+  string namespace = 1;
+  // UNSPECIFIED matches all statuses. Use specific statuses to find in-flight
+  // (`WORKFLOW_STATUS_IN_PROGRESS`) or failed (`WORKFLOW_STATUS_FAILED`) runs.
+  WorkflowStatus status = 2;
+  // Empty workflow_id lists across all workflow_ids in the namespace(s).
+  // Setting this scopes the storage-level walk to a single workflow's runs,
+  // which is much faster than listing everything and filtering client-side.
+  string workflow_id = 3;
+}
+
+message ListWorkflowsResponse {
+  repeated WorkflowRecord records = 1;
+}
+
+// ListActivitiesRequest scopes to a single workflow run.
+message ListActivitiesRequest {
+  WorkflowKey key = 1;
+}
+
+message ListActivitiesResponse {
+  repeated ActivityRecord records = 1;
+}
+
+// ListTimersRequest scopes to a single workflow run, optionally filtering by
+// timer status (e.g. `TIMER_STATUS_SCHEDULED` to find pending timers).
+message ListTimersRequest {
+  WorkflowKey key = 1;
+  // UNSPECIFIED matches all statuses.
+  TimerStatus status = 2;
+}
+
+message ListTimersResponse {
+  repeated TimerRecord records = 1;
+}
+
+// ListEventsRequest scopes to a single workflow run.
+message ListEventsRequest {
+  WorkflowKey key = 1;
+}
+
+message ListEventsResponse {
+  repeated EventRecord records = 1;
+}
+
+// DeleteWorkflowRequest removes only the workflow record. Activities, timers,
+// events, and claims under the run are left intact — call the corresponding
+// Delete* RPCs or use a higher-level adapter (e.g. `janitor.Sweep`) for
+// recursive deletion.
+message DeleteWorkflowRequest {
+  WorkflowKey key = 1;
+}
+
+message DeleteWorkflowResponse {
+  // True if the record existed and was removed; false if it was already gone
+  // (idempotent).
+  bool deleted = 1;
+}
+
+message DeleteActivityRequest {
+  ActivityKey key = 1;
+}
+
+message DeleteActivityResponse {
+  bool deleted = 1;
+}
+
+message DeleteTimerRequest {
+  TimerKey key = 1;
+}
+
+message DeleteTimerResponse {
+  bool deleted = 1;
+}
+
+message DeleteEventRequest {
+  EventKey key = 1;
+}
+
+message DeleteEventResponse {
+  bool deleted = 1;
+}
+
+message GetClaimRequest {
+  ClaimKey key = 1;
+}
+
+message GetClaimResponse {
+  bool found = 1;
+  ClaimRecord record = 2;
+}
+
+// TryCreateClaimRequest writes the claim record only if no claim exists at the
+// key. Other write semantics (refresh, takeover) are exposed via separate
+// adapter APIs only when the backend's `ClaimCapability` allows them.
+message TryCreateClaimRequest {
+  ClaimRecord record = 1;
+}
+
+message TryCreateClaimResponse {
+  // True if the claim was created; false if a claim already existed at the key.
+  bool created = 1;
+}
+
+message GetStoreCapabilitiesRequest {}
+
+message GetStoreCapabilitiesResponse {
+  // What the configured claim store can do. Callers should treat
+  // `CLAIM_CAPABILITY_NO_CLAIMS` as "no coordination available — use external
+  // idempotency keys for side effects".
+  ClaimCapability claim_capability = 1;
+}
+
+// SweepRequest deletes every COMPLETED workflow run whose `completed_at` is
+// older than `now - max_age`. Activities, timers, and events under each swept
+// run are deleted before the workflow record itself.
+message SweepRequest {
+  // Namespace to scope the sweep to. Empty means "all namespaces".
+  string namespace = 1;
+  // Reference time. Operators pass the current wall clock; backends compare
+  // each record's `completed_at` against `now - max_age`. Required so the RPC
+  // is deterministic — no implicit server-side clocks.
+  google.protobuf.Timestamp now = 2;
+  // Minimum age for a COMPLETED run to be eligible for deletion.
+  google.protobuf.Duration max_age = 3;
+}
+
+message SweepResponse {
+  // Number of COMPLETED workflow runs deleted (and their children swept).
+  uint32 deleted = 1;
+}
+
+// DueTimer pairs a timer record with the workflow that owns it. Returned by
+// `DueTimers` so callers can re-invoke the parent workflow when its sleep is
+// up.
+message DueTimer {
+  TimerKey key = 1;
+  TimerRecord record = 2;
+  WorkflowRecord workflow = 3;
+}
+
+// DueTimersRequest finds SCHEDULED timer records whose `fire_at` is at or
+// before `now` and whose parent workflow is still IN_PROGRESS. Used by the
+// timer-scanner adapter to re-invoke workflows after a durable sleep.
+message DueTimersRequest {
+  // Namespace to scope the scan to. Empty means "all namespaces".
+  string namespace = 1;
+  // Reference time. Timers with `fire_at <= now` and status=SCHEDULED are
+  // returned.
+  google.protobuf.Timestamp now = 2;
+}
+
+message DueTimersResponse {
+  repeated DueTimer due = 1;
+}
+
+// RecordStoreService is the cross-language storage contract.
+//
+// Every record kind (workflow, activity, timer, event, claim) supports
+// Get/Put. Workflow / activity / timer / event additionally support List + Delete.
+// Claims have specialized creation semantics (`TryCreateClaim`) and intentionally
+// no Delete in V1 — they are write-once for create-only adapters.
+//
+// Backends implement this same surface so generated CLI / gRPC / HTTP / MCP
+// wrappers all see the same operations regardless of where records live.
+service RecordStoreService {
+  // Report what the configured store can do (claim coordination tier, etc.).
+  rpc GetStoreCapabilities(GetStoreCapabilitiesRequest) returns (GetStoreCapabilitiesResponse);
+
+  // Read a single workflow record by key.
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+  // Write or replace a single workflow record.
+  rpc PutWorkflow(PutWorkflowRequest) returns (PutWorkflowResponse);
+
+  // Read a single durable timer record by key.
+  rpc GetTimer(GetTimerRequest) returns (GetTimerResponse);
+  // Write or replace a single timer record.
+  rpc PutTimer(PutTimerRequest) returns (PutTimerResponse);
+
+  // Read a single activity record by key.
+  rpc GetActivity(GetActivityRequest) returns (GetActivityResponse);
+  // Write or replace a single activity record.
+  rpc PutActivity(PutActivityRequest) returns (PutActivityResponse);
+
+  // Read a single coordination claim by key.
+  rpc GetClaim(GetClaimRequest) returns (GetClaimResponse);
+  // Write a claim only if none already exists at the key. Returns `created=false`
+  // when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
+  // safe-to-resume.
+  rpc TryCreateClaim(TryCreateClaimRequest) returns (TryCreateClaimResponse);
+
+  // Read a single signal/event record by key.
+  rpc GetEvent(GetEventRequest) returns (GetEventResponse);
+  // Deliver a signal payload to a waiting workflow. External services
+  // (webhooks, approvals) call this to wake up a `WaitEvent`.
+  rpc PutEvent(PutEventRequest) returns (PutEventResponse);
+
+  // List workflow records, optionally filtered by namespace and status.
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  // List all activity records under a single workflow run.
+  rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);
+  // List timer records under a single workflow run, optionally filtered by status.
+  rpc ListTimers(ListTimersRequest) returns (ListTimersResponse);
+  // List event records under a single workflow run.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+
+  // Idempotently remove a workflow record. Children (activities/timers/events/claims)
+  // are not touched; use list+delete or `janitor.Sweep` for recursive cleanup.
+  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
+  // Idempotently remove an activity record so the next `ExecuteActivity`
+  // re-executes the activity body.
+  rpc DeleteActivity(DeleteActivityRequest) returns (DeleteActivityResponse);
+  // Idempotently remove a timer record.
+  rpc DeleteTimer(DeleteTimerRequest) returns (DeleteTimerResponse);
+  // Idempotently remove an event record. Resets a delivered signal so
+  // `WaitEvent` returns pending again on the next workflow invocation.
+  rpc DeleteEvent(DeleteEventRequest) returns (DeleteEventResponse);
+
+  // Sweep COMPLETED workflow runs older than `max_age`, deleting their
+  // activities, timers, and events first. The retention story for the
+  // storage-first model — operators run this on a daily cron. Idempotent;
+  // returns the number of runs deleted.
+  rpc Sweep(SweepRequest) returns (SweepResponse);
+
+  // Find SCHEDULED durable timers whose `fire_at <= now` and whose parent
+  // workflow is still IN_PROGRESS. Operators run this on a minute cron and
+  // re-invoke the workflow handler for each entry, which lets a stored
+  // `Workflow.Sleep` resume.
+  rpc DueTimers(DueTimersRequest) returns (DueTimersResponse);
+}

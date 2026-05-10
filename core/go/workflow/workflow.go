@@ -1,0 +1,971 @@
+package workflow
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"reflect"
+	"sync"
+	"time"
+
+	"buf.build/go/protovalidate"
+	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
+	"github.com/jim-technologies/temporaless/core/go/storage"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+var ErrActivityConflict = errors.New("activity record conflicts with requested activity")
+var ErrActivityFailed = errors.New("activity failed")
+var ErrClaimBusy = errors.New("claim is busy")
+var ErrEventPending = errors.New("event is pending")
+var ErrTimerConflict = errors.New("timer record conflicts with requested timer")
+var ErrTimerPending = errors.New("timer is pending")
+var ErrWorkflowConflict = errors.New("workflow record conflicts with requested workflow")
+
+const DefaultClaimLeaseDuration = 15 * time.Minute
+
+type WorkflowFunc[Req proto.Message, Resp proto.Message] func(context.Context, Req) (Resp, error)
+type ActivityFunc[Req proto.Message, Resp proto.Message] func(context.Context, Req) (Resp, error)
+
+type Options = temporalessv1.WorkflowOptions
+type ActivityOptions = temporalessv1.ActivityOptions
+type RetryPolicy = temporalessv1.RetryPolicy
+
+type ActivityError struct {
+	Code    string
+	Message string
+	Cause   error
+}
+
+func (err *ActivityError) Error() string {
+	if err.Code != "" {
+		return fmt.Sprintf("activity error [%s]: %s", err.Code, err.Message)
+	}
+	return fmt.Sprintf("activity error: %s", err.Message)
+}
+
+func (err *ActivityError) Unwrap() error {
+	if err.Cause != nil {
+		return err.Cause
+	}
+	return ErrActivityFailed
+}
+
+func NewActivityError(code string, message string, cause error) *ActivityError {
+	return &ActivityError{Code: code, Message: message, Cause: cause}
+}
+
+type Workflow struct {
+	store       storage.Store
+	claimStore  storage.ClaimStore
+	workflowID  string
+	runID       string
+	codeVersion string
+	claimOwner  string
+}
+
+type workflowContextKey struct{}
+
+type annotationsKey struct{}
+
+type annotationsBag struct {
+	mu   sync.Mutex
+	data map[string]string
+}
+
+func newAnnotationsBag() *annotationsBag {
+	return &annotationsBag{data: map[string]string{}}
+}
+
+func (a *annotationsBag) set(key, value string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.data[key] = value
+}
+
+func (a *annotationsBag) snapshot() map[string]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.data) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(a.data))
+	for k, v := range a.data {
+		out[k] = v
+	}
+	return out
+}
+
+// Annotate attaches a key/value pair to the running activity record (when called
+// from inside an activity) or to the running workflow record (when called from
+// the workflow body between activity calls). Annotations are persisted on the
+// stored record and survive replay.
+func Annotate(ctx context.Context, key string, value string) {
+	if bag, ok := ctx.Value(annotationsKey{}).(*annotationsBag); ok && bag != nil {
+		bag.set(key, value)
+	}
+}
+
+func (w *Workflow) WorkflowID() string  { return w.workflowID }
+func (w *Workflow) RunID() string       { return w.runID }
+func (w *Workflow) CodeVersion() string { return w.codeVersion }
+
+type TimerPendingError struct {
+	TimerID string
+	WakeAt  time.Time
+}
+
+func (err *TimerPendingError) Error() string {
+	return fmt.Sprintf("timer %q is pending until %s", err.TimerID, err.WakeAt.UTC().Format(time.RFC3339Nano))
+}
+
+func (err *TimerPendingError) Unwrap() error {
+	return ErrTimerPending
+}
+
+type EventPendingError struct {
+	EventID string
+}
+
+func (err *EventPendingError) Error() string {
+	return fmt.Sprintf("event %q is pending", err.EventID)
+}
+
+func (err *EventPendingError) Unwrap() error {
+	return ErrEventPending
+}
+
+type ClaimBusyError struct {
+	ClaimID        string
+	OwnerID        string
+	LeaseExpiresAt time.Time
+	Capability     storage.ClaimCapability
+}
+
+func (err *ClaimBusyError) Error() string {
+	if err.LeaseExpiresAt.IsZero() {
+		return fmt.Sprintf("claim %q is busy", err.ClaimID)
+	}
+	return fmt.Sprintf(
+		"claim %q is busy until %s",
+		err.ClaimID,
+		err.LeaseExpiresAt.UTC().Format(time.RFC3339Nano),
+	)
+}
+
+func (err *ClaimBusyError) Unwrap() error {
+	return ErrClaimBusy
+}
+
+func Run[Req proto.Message, Resp proto.Message](
+	ctx context.Context,
+	store storage.Store,
+	options *Options,
+	claimStore storage.ClaimStore,
+	input Req,
+	newResult func() Resp,
+	execute WorkflowFunc[Req, Resp],
+) (Resp, error) {
+	var zero Resp
+	if store == nil {
+		return zero, fmt.Errorf("store is required")
+	}
+	if isNilMessage(input) {
+		return zero, fmt.Errorf("workflow input is required")
+	}
+	if newResult == nil {
+		return zero, fmt.Errorf("workflow result constructor is required")
+	}
+	if execute == nil {
+		return zero, fmt.Errorf("workflow executor is required")
+	}
+	runOptions, err := normalizedWorkflowOptions(options)
+	if err != nil {
+		return zero, err
+	}
+	if claimStore != nil && runOptions.GetClaimOwnerId() == "" {
+		return zero, fmt.Errorf("claim owner is required when claim store is configured")
+	}
+
+	resultTemplate := newResult()
+	if isNilMessage(resultTemplate) {
+		return zero, fmt.Errorf("workflow result constructor returned nil")
+	}
+
+	workflowType := messagePairType("workflow", input, resultTemplate)
+	digest, err := executionDigest("workflow", workflowType, runOptions.GetCodeVersion(), input)
+	if err != nil {
+		return zero, err
+	}
+	key := storage.WorkflowKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: runOptions.GetWorkflowId(),
+		RunID:      runOptions.GetRunId(),
+	}
+
+	record, found, err := store.GetWorkflow(ctx, key)
+	if err != nil {
+		return zero, err
+	}
+	var createdAt *timestamppb.Timestamp
+	if found {
+		switch record.GetStatus() {
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+			return replayWorkflowRecord(record, workflowType, runOptions.GetCodeVersion(), digest, newResult)
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS:
+			if err := assertWorkflowFingerprint(record, workflowType, runOptions.GetCodeVersion(), digest); err != nil {
+				return zero, err
+			}
+			createdAt = record.GetCreatedAt()
+		default:
+			return zero, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
+		}
+	}
+
+	inputAny, err := anypb.New(input)
+	if err != nil {
+		return zero, err
+	}
+
+	if createdAt == nil {
+		createdAt = timestamppb.New(time.Now().UTC())
+		inProgress := &temporalessv1.WorkflowRecord{
+			SchemaVersion: storage.WorkflowRecordSchemaVersion,
+			Key:           key.Proto(),
+			WorkflowType:  workflowType,
+			CodeVersion:   runOptions.GetCodeVersion(),
+			InputDigest:   digest,
+			Input:         inputAny,
+			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+			CreatedAt:     createdAt,
+		}
+		if err := store.PutWorkflow(ctx, inProgress); err != nil {
+			return zero, err
+		}
+	}
+
+	workflowContext := &Workflow{
+		store:       store,
+		claimStore:  claimStore,
+		workflowID:  runOptions.GetWorkflowId(),
+		runID:       runOptions.GetRunId(),
+		codeVersion: runOptions.GetCodeVersion(),
+		claimOwner:  runOptions.GetClaimOwnerId(),
+	}
+	ctx = context.WithValue(ctx, workflowContextKey{}, workflowContext)
+	workflowAnnotations := newAnnotationsBag()
+	ctx = context.WithValue(ctx, annotationsKey{}, workflowAnnotations)
+
+	result, runErr := execute(ctx, input)
+	if runErr != nil {
+		if errors.Is(runErr, ErrTimerPending) || errors.Is(runErr, ErrClaimBusy) || errors.Is(runErr, ErrEventPending) {
+			return zero, runErr
+		}
+		failure := failureFromError(runErr)
+		failed := &temporalessv1.WorkflowRecord{
+			SchemaVersion: storage.WorkflowRecordSchemaVersion,
+			Key:           key.Proto(),
+			WorkflowType:  workflowType,
+			CodeVersion:   runOptions.GetCodeVersion(),
+			InputDigest:   digest,
+			Input:         inputAny,
+			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED,
+			Failure:       failure,
+			CreatedAt:     createdAt,
+			CompletedAt:   timestamppb.New(time.Now().UTC()),
+			Annotations:   workflowAnnotations.snapshot(),
+		}
+		if err := store.PutWorkflow(ctx, failed); err != nil {
+			return zero, err
+		}
+		return zero, runErr
+	}
+	if isNilMessage(result) {
+		return zero, fmt.Errorf("workflow %q returned a nil result", runOptions.GetWorkflowId())
+	}
+
+	resultAny, err := anypb.New(result)
+	if err != nil {
+		return zero, err
+	}
+	completed := &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  workflowType,
+		CodeVersion:   runOptions.GetCodeVersion(),
+		InputDigest:   digest,
+		Input:         inputAny,
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		Result:        resultAny,
+		CreatedAt:     createdAt,
+		CompletedAt:   timestamppb.New(time.Now().UTC()),
+		Annotations:   workflowAnnotations.snapshot(),
+	}
+	if err := store.PutWorkflow(ctx, completed); err != nil {
+		return zero, err
+	}
+	return result, nil
+}
+
+func Current(ctx context.Context) (*Workflow, bool) {
+	workflow, ok := ctx.Value(workflowContextKey{}).(*Workflow)
+	return workflow, ok && workflow != nil
+}
+
+func ExecuteActivity[Req proto.Message, Resp proto.Message](
+	ctx context.Context,
+	options *ActivityOptions,
+	input Req,
+	newResult func() Resp,
+	execute ActivityFunc[Req, Resp],
+) (Resp, error) {
+	var zero Resp
+	workflow, ok := Current(ctx)
+	if !ok {
+		return zero, fmt.Errorf("workflow context is required")
+	}
+	if options == nil {
+		return zero, fmt.Errorf("activity options are required")
+	}
+	if err := protovalidate.Validate(options); err != nil {
+		return zero, err
+	}
+	if isNilMessage(input) {
+		return zero, fmt.Errorf("activity input is required")
+	}
+	if newResult == nil {
+		return zero, fmt.Errorf("activity result constructor is required")
+	}
+	if execute == nil {
+		return zero, fmt.Errorf("activity executor is required")
+	}
+
+	resultTemplate := newResult()
+	if isNilMessage(resultTemplate) {
+		return zero, fmt.Errorf("activity result constructor returned nil")
+	}
+	activityType := messagePairType("activity", input, resultTemplate)
+
+	return runActivity(
+		ctx,
+		workflow,
+		options.GetActivityId(),
+		activityType,
+		options.GetRetryPolicy(),
+		input,
+		newResult,
+		func(ctx context.Context) (Resp, error) {
+			return execute(ctx, input)
+		},
+	)
+}
+
+func WaitEvent[T proto.Message](
+	ctx context.Context,
+	eventID string,
+	newPayload func() T,
+) (T, error) {
+	var zero T
+	workflow, ok := Current(ctx)
+	if !ok {
+		return zero, fmt.Errorf("workflow context is required")
+	}
+	if newPayload == nil {
+		return zero, fmt.Errorf("event payload constructor is required")
+	}
+	key := storage.EventKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		EventID:    eventID,
+	}
+	if err := key.Validate(); err != nil {
+		return zero, err
+	}
+	record, found, err := workflow.store.GetEvent(ctx, key)
+	if err != nil {
+		return zero, err
+	}
+	if !found {
+		return zero, &EventPendingError{EventID: eventID}
+	}
+	payload := newPayload()
+	if isNilMessage(payload) {
+		return zero, fmt.Errorf("event payload constructor returned nil")
+	}
+	if record.GetPayload() == nil {
+		return zero, fmt.Errorf("stored event has no payload")
+	}
+	if err := record.GetPayload().UnmarshalTo(payload); err != nil {
+		return zero, err
+	}
+	return payload, nil
+}
+
+func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
+	workflow, ok := Current(ctx)
+	if !ok {
+		return fmt.Errorf("workflow context is required")
+	}
+
+	key := storage.TimerKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		TimerID:    timerID,
+	}
+	if err := key.Validate(); err != nil {
+		return err
+	}
+	timerKind := storage.SleepTimerKind
+	digest, err := timerDigest(timerKind, workflow.codeVersion, duration)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	record, found, err := workflow.store.GetTimer(ctx, key)
+	if err != nil {
+		return err
+	}
+	if found {
+		if record.GetTimerKind() != timerKind {
+			return fmt.Errorf("%w: timer kind changed from %s to %s", ErrTimerConflict, record.GetTimerKind(), timerKind)
+		}
+		if record.GetCodeVersion() != workflow.codeVersion {
+			return fmt.Errorf("%w: code version changed from %q to %q", ErrTimerConflict, record.GetCodeVersion(), workflow.codeVersion)
+		}
+		if record.GetInputDigest() != digest {
+			return fmt.Errorf("%w: timer duration changed", ErrTimerConflict)
+		}
+		if record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_FIRED {
+			return nil
+		}
+		if record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_CANCELED {
+			return fmt.Errorf("%w: timer was canceled", ErrTimerConflict)
+		}
+		fireAt := record.GetFireAt().AsTime()
+		if now.Before(fireAt) {
+			return &TimerPendingError{TimerID: timerID, WakeAt: fireAt}
+		}
+		record.Status = temporalessv1.TimerStatus_TIMER_STATUS_FIRED
+		record.FiredAt = timestamppb.New(now)
+		return workflow.store.PutTimer(ctx, record)
+	}
+
+	fireAt := now.Add(duration)
+	status := temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED
+	var firedAt *timestamppb.Timestamp
+	if !now.Before(fireAt) {
+		status = temporalessv1.TimerStatus_TIMER_STATUS_FIRED
+		firedAt = timestamppb.New(now)
+	}
+	record = &temporalessv1.TimerRecord{
+		SchemaVersion: storage.TimerRecordSchemaVersion,
+		Key:           key.Proto(),
+		TimerKind:     timerKind,
+		CodeVersion:   workflow.codeVersion,
+		InputDigest:   digest,
+		Duration:      durationpb.New(duration),
+		Status:        status,
+		FireAt:        timestamppb.New(fireAt),
+		CreatedAt:     timestamppb.New(now),
+		FiredAt:       firedAt,
+	}
+	if err := workflow.store.PutTimer(ctx, record); err != nil {
+		return err
+	}
+	if status == temporalessv1.TimerStatus_TIMER_STATUS_FIRED {
+		return nil
+	}
+	return &TimerPendingError{TimerID: timerID, WakeAt: fireAt}
+}
+
+func runActivity[T proto.Message](
+	ctx context.Context,
+	workflow *Workflow,
+	activityID string,
+	activityType string,
+	retryPolicy *temporalessv1.RetryPolicy,
+	input proto.Message,
+	newResult func() T,
+	execute func(context.Context) (T, error),
+) (T, error) {
+	var zero T
+	if workflow == nil {
+		return zero, fmt.Errorf("workflow is required")
+	}
+	if err := protovalidate.Validate(&temporalessv1.ActivityOptions{ActivityId: activityID}); err != nil {
+		return zero, err
+	}
+	if activityType == "" {
+		return zero, fmt.Errorf("activity type is required")
+	}
+	if isNilMessage(input) {
+		return zero, fmt.Errorf("activity input is required")
+	}
+	if newResult == nil {
+		return zero, fmt.Errorf("activity result constructor is required")
+	}
+	if execute == nil {
+		return zero, fmt.Errorf("activity executor is required")
+	}
+
+	plan, err := planRetries(retryPolicy)
+	if err != nil {
+		return zero, err
+	}
+
+	digest, err := activityDigest(activityType, workflow.codeVersion, input)
+	if err != nil {
+		return zero, err
+	}
+	key := storage.ActivityKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		ActivityID: activityID,
+	}
+
+	record, found, err := workflow.store.GetActivity(ctx, key)
+	if err != nil {
+		return zero, err
+	}
+
+	var attempts []*temporalessv1.ActivityAttempt
+	if found {
+		switch record.GetStatus() {
+		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
+			temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED:
+			return replayRecord(record, activityType, workflow.codeVersion, digest, newResult)
+		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
+			if err := assertActivityFingerprint(record, activityType, workflow.codeVersion, digest); err != nil {
+				return zero, err
+			}
+			attempts = record.GetAttempts()
+		default:
+			return zero, fmt.Errorf("%w: stored activity has unknown status", ErrActivityConflict)
+		}
+	}
+
+	if workflow.claimStore != nil {
+		claimKey := storage.ClaimKey{
+			Namespace:  storage.DefaultNamespace,
+			WorkflowID: workflow.workflowID,
+			RunID:      workflow.runID,
+			ClaimID:    "activity:" + activityID,
+		}
+		now := time.Now().UTC()
+		claim := &temporalessv1.ClaimRecord{
+			SchemaVersion:  storage.ClaimRecordSchemaVersion,
+			Key:            claimKey.Proto(),
+			OwnerId:        workflow.claimOwner,
+			ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
+			ResourceId:     activityID,
+			CodeVersion:    workflow.codeVersion,
+			InputDigest:    digest,
+			LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
+			CreatedAt:      timestamppb.New(now),
+			HeartbeatAt:    timestamppb.New(now),
+		}
+		created, err := workflow.claimStore.TryCreateClaim(ctx, claim)
+		if err != nil {
+			return zero, err
+		}
+		if !created {
+			record, found, err := workflow.store.GetActivity(ctx, key)
+			if err != nil {
+				return zero, err
+			}
+			if found && record.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING {
+				return replayRecord(record, activityType, workflow.codeVersion, digest, newResult)
+			}
+
+			existing, found, err := workflow.claimStore.GetClaim(ctx, claimKey)
+			if err != nil {
+				return zero, err
+			}
+			capability, err := workflow.claimStore.ClaimCapability(ctx)
+			if err != nil {
+				return zero, err
+			}
+			if found && existing.GetOwnerId() == workflow.claimOwner {
+				// We already own the claim — resuming a prior attempt by the
+				// same owner. Safe to proceed.
+			} else if !found {
+				return zero, &ClaimBusyError{
+					ClaimID:    claimKey.ClaimID,
+					Capability: capability,
+				}
+			} else {
+				var expiresAt time.Time
+				if existing.GetLeaseExpiresAt() != nil {
+					expiresAt = existing.GetLeaseExpiresAt().AsTime()
+				}
+				return zero, &ClaimBusyError{
+					ClaimID:        claimKey.ClaimID,
+					OwnerID:        existing.GetOwnerId(),
+					LeaseExpiresAt: expiresAt,
+					Capability:     capability,
+				}
+			}
+		}
+	}
+
+	inputAny, err := anypb.New(input)
+	if err != nil {
+		return zero, err
+	}
+
+	if attempts == nil {
+		attempts = make([]*temporalessv1.ActivityAttempt, 0, plan.maxAttempts)
+	}
+	interval := plan.initialInterval
+	activityAnnotations := newAnnotationsBag()
+	if found && record != nil {
+		// Restore annotations from the prior RETRYING record so per-attempt
+		// metadata (model, tokens, vendor, etc.) survives cross-invocation
+		// resumes.
+		for k, v := range record.GetAnnotations() {
+			activityAnnotations.set(k, v)
+		}
+	}
+	activityCtx := context.WithValue(ctx, annotationsKey{}, activityAnnotations)
+	startIdx := uint32(len(attempts)) + 1
+
+	for attemptIdx := startIdx; attemptIdx <= plan.maxAttempts; attemptIdx++ {
+		startedAt := time.Now().UTC()
+		result, runErr := execute(activityCtx)
+		completedAt := time.Now().UTC()
+
+		if runErr == nil {
+			if isNilMessage(result) {
+				return zero, fmt.Errorf("activity %q returned a nil result", activityID)
+			}
+			attempts = append(attempts, &temporalessv1.ActivityAttempt{
+				Attempt:     attemptIdx,
+				StartedAt:   timestamppb.New(startedAt),
+				CompletedAt: timestamppb.New(completedAt),
+			})
+			resultAny, err := anypb.New(result)
+			if err != nil {
+				return zero, err
+			}
+			completedRecord := &temporalessv1.ActivityRecord{
+				SchemaVersion: storage.ActivityRecordSchemaVersion,
+				Key:           key.Proto(),
+				ActivityType:  activityType,
+				CodeVersion:   workflow.codeVersion,
+				InputDigest:   digest,
+				Input:         inputAny,
+				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
+				Result:        resultAny,
+				CreatedAt:     timestamppb.New(attempts[0].GetStartedAt().AsTime()),
+				CompletedAt:   timestamppb.New(completedAt),
+				Attempts:      attempts,
+				Annotations:   activityAnnotations.snapshot(),
+			}
+			if err := workflow.store.PutActivity(ctx, completedRecord); err != nil {
+				return zero, err
+			}
+			return result, nil
+		}
+
+		failure := failureFromError(runErr)
+		attempts = append(attempts, &temporalessv1.ActivityAttempt{
+			Attempt:     attemptIdx,
+			StartedAt:   timestamppb.New(startedAt),
+			CompletedAt: timestamppb.New(completedAt),
+			Failure:     failure,
+		})
+
+		nonRetryable := plan.nonRetryable[failure.GetCode()]
+		if attemptIdx >= plan.maxAttempts || nonRetryable {
+			failedRecord := &temporalessv1.ActivityRecord{
+				SchemaVersion: storage.ActivityRecordSchemaVersion,
+				Key:           key.Proto(),
+				ActivityType:  activityType,
+				CodeVersion:   workflow.codeVersion,
+				InputDigest:   digest,
+				Input:         inputAny,
+				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED,
+				Failure:       failure,
+				CreatedAt:     timestamppb.New(attempts[0].GetStartedAt().AsTime()),
+				CompletedAt:   timestamppb.New(completedAt),
+				Attempts:      attempts,
+				Annotations:   activityAnnotations.snapshot(),
+			}
+			if err := workflow.store.PutActivity(ctx, failedRecord); err != nil {
+				return zero, err
+			}
+			return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage(), Cause: runErr}
+		}
+
+		retryingRecord := &temporalessv1.ActivityRecord{
+			SchemaVersion: storage.ActivityRecordSchemaVersion,
+			Key:           key.Proto(),
+			ActivityType:  activityType,
+			CodeVersion:   workflow.codeVersion,
+			InputDigest:   digest,
+			Input:         inputAny,
+			Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
+			Failure:       failure,
+			CreatedAt:     timestamppb.New(attempts[0].GetStartedAt().AsTime()),
+			Attempts:      attempts,
+			Annotations:   activityAnnotations.snapshot(),
+		}
+		if err := workflow.store.PutActivity(ctx, retryingRecord); err != nil {
+			return zero, err
+		}
+
+		if err := sleepCtx(ctx, interval); err != nil {
+			return zero, err
+		}
+		interval = nextInterval(interval, plan)
+	}
+
+	return zero, fmt.Errorf("activity %q exhausted retry plan", activityID)
+}
+
+func assertActivityFingerprint(
+	record *temporalessv1.ActivityRecord,
+	activityType string,
+	codeVersion string,
+	inputDigest string,
+) error {
+	if record.GetActivityType() != activityType {
+		return fmt.Errorf("%w: activity type changed from %q to %q", ErrActivityConflict, record.GetActivityType(), activityType)
+	}
+	if record.GetCodeVersion() != codeVersion {
+		return fmt.Errorf("%w: code version changed from %q to %q", ErrActivityConflict, record.GetCodeVersion(), codeVersion)
+	}
+	if record.GetInputDigest() != inputDigest {
+		return fmt.Errorf("%w: input digest changed", ErrActivityConflict)
+	}
+	return nil
+}
+
+func replayRecord[T proto.Message](
+	record *temporalessv1.ActivityRecord,
+	activityType string,
+	codeVersion string,
+	inputDigest string,
+	newResult func() T,
+) (T, error) {
+	var zero T
+	if err := assertActivityFingerprint(record, activityType, codeVersion, inputDigest); err != nil {
+		return zero, err
+	}
+
+	switch record.GetStatus() {
+	case temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED:
+		if record.GetResult() == nil {
+			return zero, fmt.Errorf("%w: stored activity has no result", ErrActivityConflict)
+		}
+		result := newResult()
+		if isNilMessage(result) {
+			return zero, fmt.Errorf("activity result constructor returned nil")
+		}
+		if err := record.GetResult().UnmarshalTo(result); err != nil {
+			return zero, err
+		}
+		return result, nil
+	case temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED:
+		failure := record.GetFailure()
+		return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage()}
+	default:
+		return zero, fmt.Errorf("%w: stored activity has unknown status", ErrActivityConflict)
+	}
+}
+
+type retryPlan struct {
+	maxAttempts        uint32
+	initialInterval    time.Duration
+	backoffCoefficient float64
+	maximumInterval    time.Duration
+	nonRetryable       map[string]bool
+}
+
+func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
+	if policy == nil {
+		return retryPlan{maxAttempts: 1}, nil
+	}
+	plan := retryPlan{
+		maxAttempts:        policy.GetMaximumAttempts(),
+		initialInterval:    policy.GetInitialInterval().AsDuration(),
+		backoffCoefficient: policy.GetBackoffCoefficient(),
+		maximumInterval:    policy.GetMaximumInterval().AsDuration(),
+	}
+	if plan.maxAttempts == 0 {
+		return retryPlan{}, fmt.Errorf("retry policy maximum_attempts must be > 0")
+	}
+	if plan.maxAttempts > 1 && plan.initialInterval <= 0 {
+		return retryPlan{}, fmt.Errorf("retry policy initial_interval must be > 0 when maximum_attempts > 1")
+	}
+	if plan.backoffCoefficient == 0 {
+		plan.backoffCoefficient = 1.0
+	}
+	if codes := policy.GetNonRetryableErrorCodes(); len(codes) > 0 {
+		plan.nonRetryable = make(map[string]bool, len(codes))
+		for _, code := range codes {
+			plan.nonRetryable[code] = true
+		}
+	}
+	return plan, nil
+}
+
+func nextInterval(prev time.Duration, plan retryPlan) time.Duration {
+	next := time.Duration(float64(prev) * plan.backoffCoefficient)
+	if plan.maximumInterval > 0 && next > plan.maximumInterval {
+		next = plan.maximumInterval
+	}
+	return next
+}
+
+func sleepCtx(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func failureFromError(err error) *temporalessv1.ActivityFailure {
+	var typed *ActivityError
+	if errors.As(err, &typed) {
+		return &temporalessv1.ActivityFailure{Code: typed.Code, Message: typed.Message}
+	}
+	return &temporalessv1.ActivityFailure{Message: err.Error()}
+}
+
+func activityDigest(activityType string, codeVersion string, input proto.Message) (string, error) {
+	return executionDigest("activity", activityType, codeVersion, input)
+}
+
+func timerDigest(timerKind temporalessv1.TimerKind, codeVersion string, duration time.Duration) (string, error) {
+	return executionDigest("timer", timerKind.String(), codeVersion, durationpb.New(duration))
+}
+
+func replayWorkflowRecord[T proto.Message](
+	record *temporalessv1.WorkflowRecord,
+	workflowType string,
+	codeVersion string,
+	inputDigest string,
+	newResult func() T,
+) (T, error) {
+	var zero T
+	if err := assertWorkflowFingerprint(record, workflowType, codeVersion, inputDigest); err != nil {
+		return zero, err
+	}
+	switch record.GetStatus() {
+	case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED:
+		if record.GetResult() == nil {
+			return zero, fmt.Errorf("%w: stored workflow has no result", ErrWorkflowConflict)
+		}
+		result := newResult()
+		if isNilMessage(result) {
+			return zero, fmt.Errorf("workflow result constructor returned nil")
+		}
+		if err := record.GetResult().UnmarshalTo(result); err != nil {
+			return zero, err
+		}
+		return result, nil
+	case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+		failure := record.GetFailure()
+		return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage()}
+	default:
+		return zero, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
+	}
+}
+
+func assertWorkflowFingerprint(
+	record *temporalessv1.WorkflowRecord,
+	workflowType string,
+	codeVersion string,
+	inputDigest string,
+) error {
+	if record.GetWorkflowType() != workflowType {
+		return fmt.Errorf("%w: workflow type changed from %q to %q", ErrWorkflowConflict, record.GetWorkflowType(), workflowType)
+	}
+	if record.GetCodeVersion() != codeVersion {
+		return fmt.Errorf("%w: code version changed from %q to %q", ErrWorkflowConflict, record.GetCodeVersion(), codeVersion)
+	}
+	if record.GetInputDigest() != inputDigest {
+		return fmt.Errorf("%w: input digest changed", ErrWorkflowConflict)
+	}
+	return nil
+}
+
+func executionDigest(kind string, executionType string, codeVersion string, input proto.Message) (string, error) {
+	inputBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+
+	hash := sha256.New()
+	hash.Write([]byte("temporaless." + kind + ".v1"))
+	hash.Write([]byte{0})
+	hash.Write([]byte(executionType))
+	hash.Write([]byte{0})
+	hash.Write([]byte(codeVersion))
+	hash.Write([]byte{0})
+	hash.Write([]byte(input.ProtoReflect().Descriptor().FullName()))
+	hash.Write([]byte{0})
+	hash.Write(inputBytes)
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func messagePairType(kind string, input proto.Message, output proto.Message) string {
+	return fmt.Sprintf(
+		"%s:%s->%s",
+		kind,
+		input.ProtoReflect().Descriptor().FullName(),
+		output.ProtoReflect().Descriptor().FullName(),
+	)
+}
+
+func codeVersionFromEnv() string {
+	if value := os.Getenv("TEMPORALESS_CODE_VERSION"); value != "" {
+		return value
+	}
+	return "dev"
+}
+
+func isNilMessage(message proto.Message) bool {
+	if message == nil {
+		return true
+	}
+	value := reflect.ValueOf(message)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func normalizedWorkflowOptions(options *Options) (*Options, error) {
+	if options == nil {
+		return nil, fmt.Errorf("workflow options are required")
+	}
+	normalized := proto.Clone(options).(*temporalessv1.WorkflowOptions)
+	if normalized.GetCodeVersion() == "" {
+		normalized.CodeVersion = codeVersionFromEnv()
+	}
+	if err := protovalidate.Validate(normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}

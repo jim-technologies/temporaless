@@ -1,0 +1,18 @@
+schema-version = "1.11.0"
+
+[install]
+go.pkg-path = "go"
+python313.pkg-path = "python313"
+uv.pkg-path = "uv"
+libffi.pkg-path = "libffi"
+buf.pkg-path = "buf"
+gcc-unwrapped.pkg-path = "gcc-unwrapped"
+gcc-unwrapped.outputs = ["lib"]
+
+[vars]
+UV_PYTHON_DOWNLOADS = "never"
+
+[hook]
+on-activate = '''
+  export UV_PYTHON="$(command -v python3.13)"
+'''

@@ -1,0 +1,18 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: core/go/gen
+    opt: paths=source_relative
+  - remote: buf.build/connectrpc/go
+    out: core/go/gen
+    opt: paths=source_relative
+  - remote: buf.build/protocolbuffers/python
+    out: core/py/src
+    include_imports: true
+  - remote: buf.build/protocolbuffers/pyi
+    out: core/py/src
+    include_imports: true
+  - remote: buf.build/connectrpc/python
+    out: core/py/src
+inputs:
+  - directory: api

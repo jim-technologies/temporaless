@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporaless
+  namespace: temporaless
+  labels:
+    app.kubernetes.io/name: temporaless
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: temporaless
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: temporaless
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  # Send traffic only to ready pods (this is the kube-proxy default for
+  # ClusterIP, but make it explicit so it's not lost in customizations).
+  publishNotReadyAddresses: false
