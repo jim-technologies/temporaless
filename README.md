@@ -109,3 +109,7 @@ The storage service contract is generated from `temporaless.v1.RecordStoreServic
 **Stateful processes (none required):** the core runtime is a pure function of `(input, store_state)`. Inspector, janitor, timerscanner are fully stateless. The cron scheduler keeps last-fires in memory but exposes `Snapshot()`/`Restore()` for explicit migration, plus `LastFireFromRuns` for deriving state from existing workflow records — fully stateless when run_ids embed fire times.
 
 **Python is async-only.** Workflow bodies, activity bodies, and the runtime entry points (`run`, `execute_activity`, `wait_event`, `sleep`) are all `async def`. Sync callables are rejected at wrap time. The framework's I/O-bound workloads (LLM, HTTP, vendor APIs) are a natural fit for async; aligning with the Temporal Python SDK removes impedance. Go stays sync — goroutines + sync function signatures are idiomatic Go and there is no equivalent of `async/await`.
+
+## License
+
+Apache 2.0 — see [`LICENSE`](LICENSE) for the full text.
