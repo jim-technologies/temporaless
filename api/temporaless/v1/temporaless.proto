@@ -450,6 +450,19 @@ message ActivityFailure {
   string code = 1;
   // Human-readable description of the failure.
   string message = 2;
+  // Minimum wait the activity body recommends before the next attempt — derived
+  // from a vendor signal such as the HTTP `Retry-After` header, a Slack
+  // `Retry-After` field, or an OpenAI `x-ratelimit-reset` header. The retry
+  // planner uses `max(computed_interval, retry_after)` to compute the next
+  // backoff so vendor pacing wins over the configured exponential schedule.
+  //
+  // When combined with `RetryPolicy.durable_backoff_threshold`, a vendor 429
+  // with `Retry-After: 600` produces a durable timer with `fire_at = now + 10min`
+  // even if the configured initial_interval is much shorter — exactly the
+  // pattern LLM and stocks-vendor workflows need.
+  //
+  // Unset (zero) means "no vendor signal; use the computed interval as-is".
+  google.protobuf.Duration retry_after = 3;
 }
 
 // ActivityAttempt is one invocation of the activity body within a retry loop.

@@ -55,7 +55,12 @@ type RetryPolicy = temporalessv1.RetryPolicy
 type ActivityError struct {
 	Code    string
 	Message string
-	Cause   error
+	// RetryAfter, when > 0, overrides the retry policy's computed interval
+	// for the next attempt: the planner uses max(computed, RetryAfter). Set
+	// this from a vendor's HTTP `Retry-After` header, a Slack
+	// `Retry-After-In` field, or an OpenAI `x-ratelimit-reset` timestamp.
+	RetryAfter time.Duration
+	Cause      error
 }
 
 func (err *ActivityError) Error() string {
@@ -74,6 +79,14 @@ func (err *ActivityError) Unwrap() error {
 
 func NewActivityError(code string, message string, cause error) *ActivityError {
 	return &ActivityError{Code: code, Message: message, Cause: cause}
+}
+
+// NewRetryableActivityError attaches a vendor-supplied retry-after duration
+// so the retry planner waits at least that long before the next attempt.
+// Use this when the vendor returns a 429 with `Retry-After: N` or any
+// equivalent header.
+func NewRetryableActivityError(code, message string, retryAfter time.Duration, cause error) *ActivityError {
+	return &ActivityError{Code: code, Message: message, RetryAfter: retryAfter, Cause: cause}
 }
 
 type Workflow struct {
@@ -784,6 +797,14 @@ func runActivity[T proto.Message](
 			Failure:     failure,
 		})
 
+		// Vendor-supplied Retry-After overrides the computed interval when
+		// it's longer. The retry policy's exponential schedule still applies
+		// as a floor — so an aggressive policy doesn't undershoot a vendor's
+		// stated rate-limit window.
+		if ra := failure.GetRetryAfter().AsDuration(); ra > interval {
+			interval = ra
+		}
+
 		nonRetryable := plan.nonRetryable[failure.GetCode()]
 		if attemptIdx >= plan.maxAttempts || nonRetryable {
 			failedRecord := &temporalessv1.ActivityRecord{
@@ -1031,7 +1052,11 @@ func sleepCtx(ctx context.Context, duration time.Duration) error {
 func failureFromError(err error) *temporalessv1.ActivityFailure {
 	var typed *ActivityError
 	if errors.As(err, &typed) {
-		return &temporalessv1.ActivityFailure{Code: typed.Code, Message: typed.Message}
+		failure := &temporalessv1.ActivityFailure{Code: typed.Code, Message: typed.Message}
+		if typed.RetryAfter > 0 {
+			failure.RetryAfter = durationpb.New(typed.RetryAfter)
+		}
+		return failure
 	}
 	return &temporalessv1.ActivityFailure{Message: err.Error()}
 }

@@ -64,6 +64,7 @@ class ActivityError(RuntimeError):
         code: str,
         message: str,
         cause: BaseException | None = None,
+        retry_after: timedelta | None = None,
     ) -> None:
         super().__init__(
             f"activity error [{code}]: {message}" if code else f"activity error: {message}"
@@ -71,6 +72,11 @@ class ActivityError(RuntimeError):
         self.code = code
         self.message = message
         self.cause = cause
+        # When set (> 0), overrides the retry policy's computed interval for
+        # the next attempt: planner uses max(computed, retry_after). Set this
+        # from a vendor's HTTP ``Retry-After`` header, a Slack
+        # ``Retry-After-In`` field, or an OpenAI ``x-ratelimit-reset`` header.
+        self.retry_after = retry_after
 
 
 class WorkflowConflictError(RuntimeError):
@@ -394,6 +400,15 @@ class Workflow:
                     attempt_record.started_at.FromDatetime(started_at)
                     attempt_record.completed_at.FromDatetime(completed_at)
                     attempts.append(attempt_record)
+
+                    # Vendor-supplied Retry-After overrides the computed
+                    # interval when it's longer. The configured exponential
+                    # schedule still applies as a floor — so an aggressive
+                    # policy doesn't undershoot a vendor's stated window.
+                    if failure.HasField("retry_after"):
+                        retry_after = failure.retry_after.ToTimedelta()
+                        if retry_after > interval:
+                            interval = retry_after
 
                     non_retryable = failure.code in plan.non_retryable_codes
                     if attempt_idx >= plan.maximum_attempts or non_retryable:
@@ -1004,7 +1019,10 @@ def _next_interval(prev: timedelta, plan: _RetryPlan) -> timedelta:
 
 def _failure_from_exception(exc: BaseException) -> temporaless_pb2.ActivityFailure:
     if isinstance(exc, ActivityError):
-        return temporaless_pb2.ActivityFailure(code=exc.code, message=exc.message)
+        failure = temporaless_pb2.ActivityFailure(code=exc.code, message=exc.message)
+        if exc.retry_after is not None and exc.retry_after > timedelta(0):
+            failure.retry_after.FromTimedelta(exc.retry_after)
+        return failure
     return temporaless_pb2.ActivityFailure(message=str(exc))
 
 

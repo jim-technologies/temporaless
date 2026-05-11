@@ -187,12 +187,14 @@ class ClaimKey(_message.Message):
     def __init__(self, namespace: _Optional[str] = ..., workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., claim_id: _Optional[str] = ...) -> None: ...
 
 class ActivityFailure(_message.Message):
-    __slots__ = ("code", "message")
+    __slots__ = ("code", "message", "retry_after")
     CODE_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    RETRY_AFTER_FIELD_NUMBER: _ClassVar[int]
     code: str
     message: str
-    def __init__(self, code: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+    retry_after: _duration_pb2.Duration
+    def __init__(self, code: _Optional[str] = ..., message: _Optional[str] = ..., retry_after: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class ActivityAttempt(_message.Message):
     __slots__ = ("attempt", "started_at", "completed_at", "failure")

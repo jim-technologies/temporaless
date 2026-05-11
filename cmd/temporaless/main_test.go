@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -357,5 +358,122 @@ func TestCLIHelp(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "SUBCOMMANDS") {
 		t.Errorf("expected usage in stdout: %s", stdout.String())
+	}
+}
+
+func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
+	root, store := newTestRoot(t)
+	// Old IN_PROGRESS workflow (created 2h ago).
+	old := timestamppb.New(time.Now().UTC().Add(-2 * time.Hour))
+	oldKey := storage.WorkflowKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: "wf-old",
+		RunID:      "run-1",
+	}
+	if err := store.PutWorkflow(context.Background(), &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           oldKey.Proto(),
+		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
+		CodeVersion:   "test",
+		InputDigest:   "x",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+		CreatedAt:     old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh IN_PROGRESS (now).
+	seedWorkflow(t, store, "wf-fresh", "run-2", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS)
+	// Old COMPLETED — must NOT be reported (status filter is IN_PROGRESS-only).
+	completedKey := storage.WorkflowKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: "wf-done",
+		RunID:      "run-3",
+	}
+	if err := store.PutWorkflow(context.Background(), &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           completedKey.Proto(),
+		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
+		CodeVersion:   "test",
+		InputDigest:   "x",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     old,
+		CompletedAt:   old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"stale-workflows", "--older-than", "1h",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "wf-old/run-1") {
+		t.Errorf("expected wf-old in stale output: %s", out)
+	}
+	if strings.Contains(out, "wf-fresh/run-2") {
+		t.Errorf("fresh workflow should not be stale: %s", out)
+	}
+	if strings.Contains(out, "wf-done/run-3") {
+		t.Errorf("completed workflow should not appear in stale (filter is IN_PROGRESS only): %s", out)
+	}
+}
+
+func TestCLIStaleWorkflows_RequiresThreshold(t *testing.T) {
+	root, _ := newTestRoot(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"stale-workflows",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "older-than") {
+		t.Fatalf("expected error mentioning older-than, got %v", err)
+	}
+}
+
+func TestCLITail_EmitsNewRecordsAndExitsOnContextCancel(t *testing.T) {
+	root, store := newTestRoot(t)
+	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after enough time for one initial emit + a couple of polls.
+	time.AfterFunc(200*time.Millisecond, func() {
+		// Add a fresh record midway so tail picks it up.
+		seedWorkflow(t, store, "wf-b", "run-2", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	})
+	time.AfterFunc(600*time.Millisecond, cancel)
+
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"tail", "--poll-interval", "100ms",
+	}, &stdout, &stderr)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "wf-a/run-1") {
+		t.Errorf("expected wf-a (initial snapshot) in tail output: %s", out)
+	}
+	if !strings.Contains(out, "wf-b/run-2") {
+		t.Errorf("expected wf-b (added after start) in tail output: %s", out)
+	}
+}
+
+func TestCLITail_RejectsBadPollInterval(t *testing.T) {
+	root, _ := newTestRoot(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"tail", "--poll-interval", "0s",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "poll-interval") {
+		t.Fatalf("expected error mentioning poll-interval, got %v", err)
 	}
 }

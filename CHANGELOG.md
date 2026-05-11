@@ -10,6 +10,21 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Vendor-aware retries via `ActivityError.retry_after` /
+  `ActivityFailure.retry_after`.** Activity bodies can surface a vendor-supplied
+  minimum wait (HTTP `Retry-After`, OpenAI `x-ratelimit-reset`, etc.); the
+  retry planner uses `max(computed_interval, retry_after)` so vendor pacing
+  wins over the configured exponential schedule. Combined with the durable
+  backoff threshold, a long `Retry-After` value automatically becomes a
+  durable timer instead of an in-process sleep.
+- **CLI: `stale-workflows --older-than DURATION`** — list IN_PROGRESS
+  workflows whose `created_at` is older than the threshold. Wire into
+  alerting to catch stuck timer-scanners, missing event deliveries, or
+  claim leaks.
+- **CLI: `tail`** — stream new workflow records as they are written (poll
+  loop; `--poll-interval` configurable, default 2s). Operator surface for
+  babysitting a backfill or freshly-deployed pipeline. Honors `--json`,
+  `--status`, `--namespace`, `--workflow-id` filters.
 - **Durable retry backoffs** (`RetryPolicy.durable_backoff_threshold`).
   When the next retry interval crosses the configured threshold, the runtime
   persists the wait as a `TIMER_KIND_ACTIVITY_RETRY` timer + writes the

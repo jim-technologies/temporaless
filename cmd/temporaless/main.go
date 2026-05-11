@@ -12,13 +12,15 @@
 //
 // Subcommands:
 //
-//	list-workflows --status STATUS [--workflow-id ID]
-//	list-activities --workflow-id ID --run-id RID
-//	get-workflow    --workflow-id ID --run-id RID
-//	reset-workflow  --workflow-id ID --run-id RID
-//	reset-activity  --workflow-id ID --run-id RID --activity-id AID
-//	reset-event     --workflow-id ID --run-id RID --event-id EID
-//	sweep           --max-age DURATION
+//	list-workflows   --status STATUS [--workflow-id ID]
+//	list-activities  --workflow-id ID --run-id RID
+//	get-workflow     --workflow-id ID --run-id RID
+//	reset-workflow   --workflow-id ID --run-id RID
+//	reset-activity   --workflow-id ID --run-id RID --activity-id AID
+//	reset-event      --workflow-id ID --run-id RID --event-id EID
+//	sweep            --max-age DURATION
+//	stale-workflows  --older-than DURATION
+//	tail             [--poll-interval DURATION] [--status STATUS]
 package main
 
 import (
@@ -69,6 +71,8 @@ SUBCOMMANDS
   reset-activity   Delete an activity record so its body re-executes.
   reset-event      Delete a stored event record so wait_event re-raises pending.
   sweep            Delete COMPLETED runs older than --max-age.
+  stale-workflows  List IN_PROGRESS workflows older than --older-than.
+  tail             Stream new workflow records as they are written (poll loop).
 
 Run "temporaless <subcommand> --help" for subcommand-specific flags.
 `
@@ -139,6 +143,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return cmdResetEvent(ctx, store, subArgs, stdout)
 	case "sweep":
 		return cmdSweep(ctx, store, subArgs, stdout)
+	case "stale-workflows":
+		return cmdStaleWorkflows(ctx, store, global, subArgs, stdout)
+	case "tail":
+		return cmdTail(ctx, store, global, subArgs, stdout)
 	default:
 		fmt.Fprint(stderr, usage)
 		return fmt.Errorf("unknown subcommand %q", subcommand)
@@ -363,6 +371,129 @@ func cmdSweep(ctx context.Context, store storage.Store, args []string, stdout io
 	}
 	fmt.Fprintf(stdout, "deleted %d runs\n", deleted)
 	return nil
+}
+
+// stale-workflows ----------------------------------------------------------
+
+// cmdStaleWorkflows lists IN_PROGRESS workflows whose `created_at` is older
+// than the operator-supplied threshold. Wire this into alerting: a workflow
+// stuck IN_PROGRESS for hours past its expected duration usually means a
+// stuck timer-scanner, a missing event delivery, or an exhausted claim leak.
+func cmdStaleWorkflows(ctx context.Context, store storage.Store, g globalOpts, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("stale-workflows", flag.ContinueOnError)
+	var olderThan time.Duration
+	var namespace string
+	fs.DurationVar(&olderThan, "older-than", 0, "Threshold for considering an IN_PROGRESS workflow stale (required, e.g. 1h)")
+	fs.StringVar(&namespace, "namespace", "", "Filter by namespace (default: all)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if olderThan <= 0 {
+		return errors.New("--older-than must be > 0")
+	}
+	inFlight, err := inspector.ListInFlightWorkflows(ctx, store)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	var stale []*temporalessv1.WorkflowRecord
+	for _, r := range inFlight {
+		if namespace != "" && r.GetKey().GetNamespace() != namespace {
+			continue
+		}
+		if r.GetCreatedAt() == nil {
+			continue
+		}
+		if r.GetCreatedAt().AsTime().After(cutoff) {
+			continue
+		}
+		stale = append(stale, r)
+	}
+	if g.json {
+		return emitJSONList(stdout, stale)
+	}
+	now := time.Now().UTC()
+	for _, r := range stale {
+		key := storage.WorkflowKeyFromProto(r.GetKey())
+		age := now.Sub(r.GetCreatedAt().AsTime()).Truncate(time.Second)
+		fmt.Fprintf(stdout, "%s\t%s/%s\t%s\n", age, key.WorkflowID, key.RunID, r.GetWorkflowType())
+	}
+	return nil
+}
+
+// tail ---------------------------------------------------------------------
+
+// cmdTail polls the store for new workflow records and emits one line per
+// new (workflow_id, run_id) seen. Useful for babysitting a backfill or a
+// freshly-deployed pipeline. Status filter narrows the stream.
+//
+// The poll interval defaults to 2s. Caller exits the loop with Ctrl-C; ctx
+// cancellation also unwinds cleanly.
+func cmdTail(ctx context.Context, store storage.Store, g globalOpts, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
+	var pollInterval time.Duration
+	var statusFlag, namespace, workflowID string
+	fs.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "How often to poll the store")
+	fs.StringVar(&statusFlag, "status", "", "Filter: in-progress | completed | failed (default: all)")
+	fs.StringVar(&namespace, "namespace", "", "Filter by namespace (default: all)")
+	fs.StringVar(&workflowID, "workflow-id", "", "Filter by workflow_id (default: all)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if pollInterval <= 0 {
+		return errors.New("--poll-interval must be > 0")
+	}
+	status, err := parseWorkflowStatus(statusFlag)
+	if err != nil {
+		return err
+	}
+
+	seen := make(map[string]temporalessv1.WorkflowStatus)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	emit := func() error {
+		records, err := store.ListWorkflows(ctx, namespace, workflowID, status)
+		if err != nil {
+			return err
+		}
+		for _, r := range records {
+			key := storage.WorkflowKeyFromProto(r.GetKey())
+			composite := fmt.Sprintf("%s|%s|%s", key.Namespace, key.WorkflowID, key.RunID)
+			prevStatus, ok := seen[composite]
+			if ok && prevStatus == r.GetStatus() {
+				continue
+			}
+			seen[composite] = r.GetStatus()
+			if g.json {
+				if err := emitJSON(stdout, r); err != nil {
+					return err
+				}
+				continue
+			}
+			ts := time.Now().UTC().Format(time.RFC3339)
+			fmt.Fprintf(stdout, "%s\t%s\t%s/%s\t%s\n",
+				ts, r.GetStatus().String(),
+				key.WorkflowID, key.RunID,
+				r.GetWorkflowType(),
+			)
+		}
+		return nil
+	}
+
+	if err := emit(); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := emit(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // helpers ------------------------------------------------------------------
