@@ -220,6 +220,13 @@ const (
 	TimerKind_TIMER_KIND_UNSPECIFIED TimerKind = 0
 	// Plain durable sleep written by `workflow.Sleep`.
 	TimerKind_TIMER_KIND_SLEEP TimerKind = 1
+	// Paired with a RETRYING ActivityRecord: the runtime persisted a long retry
+	// backoff as a durable timer instead of sleeping in-process. When the timer
+	// is due, the workflow re-invokes and the activity's retry loop resumes
+	// from the next attempt. Timer ID convention is `activity-retry:{activity_id}`;
+	// the `activity-retry:` prefix is reserved by the runtime and rejected
+	// from user-supplied timer IDs in `workflow.Sleep`.
+	TimerKind_TIMER_KIND_ACTIVITY_RETRY TimerKind = 2
 )
 
 // Enum value maps for TimerKind.
@@ -227,10 +234,12 @@ var (
 	TimerKind_name = map[int32]string{
 		0: "TIMER_KIND_UNSPECIFIED",
 		1: "TIMER_KIND_SLEEP",
+		2: "TIMER_KIND_ACTIVITY_RETRY",
 	}
 	TimerKind_value = map[string]int32{
-		"TIMER_KIND_UNSPECIFIED": 0,
-		"TIMER_KIND_SLEEP":       1,
+		"TIMER_KIND_UNSPECIFIED":    0,
+		"TIMER_KIND_SLEEP":          1,
+		"TIMER_KIND_ACTIVITY_RETRY": 2,
 	}
 )
 
@@ -597,8 +606,20 @@ type RetryPolicy struct {
 	// Activity error codes (carried via `ActivityFailure.code`) that should
 	// skip remaining retries and surface the failure immediately.
 	NonRetryableErrorCodes []string `protobuf:"bytes,5,rep,name=non_retryable_error_codes,json=nonRetryableErrorCodes,proto3" json:"non_retryable_error_codes,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// When the next backoff interval is at least this long, persist the retry
+	// as a durable timer instead of sleeping in-process. The activity record is
+	// written as `ACTIVITY_STATUS_RETRYING` with `next_attempt_at` set, a paired
+	// `TIMER_KIND_ACTIVITY_RETRY` timer is scheduled at the same instant, and
+	// the runtime returns the typed pending error so the workflow stays
+	// IN_PROGRESS. The bundled timer scanner re-invokes the workflow after
+	// `fire_at` and the retry loop resumes from the next attempt.
+	//
+	// Zero (the default) keeps the legacy in-process behavior: every retry
+	// sleeps inside the activity. Set this to ~30s for LLM workflows whose
+	// rate-limit windows often exceed a serverless function's max duration.
+	DurableBackoffThreshold *durationpb.Duration `protobuf:"bytes,6,opt,name=durable_backoff_threshold,json=durableBackoffThreshold,proto3" json:"durable_backoff_threshold,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *RetryPolicy) Reset() {
@@ -662,6 +683,13 @@ func (x *RetryPolicy) GetMaximumAttempts() uint32 {
 func (x *RetryPolicy) GetNonRetryableErrorCodes() []string {
 	if x != nil {
 		return x.NonRetryableErrorCodes
+	}
+	return nil
+}
+
+func (x *RetryPolicy) GetDurableBackoffThreshold() *durationpb.Duration {
+	if x != nil {
+		return x.DurableBackoffThreshold
 	}
 	return nil
 }
@@ -1156,7 +1184,14 @@ type ActivityRecord struct {
 	Attempts []*ActivityAttempt `protobuf:"bytes,12,rep,name=attempts,proto3" json:"attempts,omitempty"`
 	// Application-supplied structured metadata (model, tokens, vendor, etc.)
 	// attached via `workflow.Annotate` from inside the activity body.
-	Annotations   map[string]string `protobuf:"bytes,13,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Annotations map[string]string `protobuf:"bytes,13,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Wall-clock instant at which the runtime should resume a durable retry.
+	// Only set when status is `ACTIVITY_STATUS_RETRYING` and the policy's
+	// `durable_backoff_threshold` was exceeded — the runtime paired this record
+	// with a `TIMER_KIND_ACTIVITY_RETRY` timer. When unset on a RETRYING record,
+	// the retry was in-process (legacy / threshold = 0) and replay resumes
+	// immediately if a backing scanner re-invokes the workflow.
+	NextAttemptAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=next_attempt_at,json=nextAttemptAt,proto3" json:"next_attempt_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1278,6 +1313,13 @@ func (x *ActivityRecord) GetAttempts() []*ActivityAttempt {
 func (x *ActivityRecord) GetAnnotations() map[string]string {
 	if x != nil {
 		return x.Annotations
+	}
+	return nil
+}
+
+func (x *ActivityRecord) GetNextAttemptAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextAttemptAt
 	}
 	return nil
 }
@@ -3759,13 +3801,14 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\vactivity_id\x18\x01 \x01(\tB\x86\x01\xbaH\x82\x01\xba\x01g\n" +
 	"'temporaless.id.activity_id.not_dot_path\x12\x1factivity_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x16\x10\x012\x12^[A-Za-z0-9._:-]+$R\n" +
 	"activityId\x12>\n" +
-	"\fretry_policy\x18\x02 \x01(\v2\x1b.temporaless.v1.RetryPolicyR\vretryPolicy\"\xb0\x02\n" +
+	"\fretry_policy\x18\x02 \x01(\v2\x1b.temporaless.v1.RetryPolicyR\vretryPolicy\"\x87\x03\n" +
 	"\vRetryPolicy\x12D\n" +
 	"\x10initial_interval\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x0finitialInterval\x12/\n" +
 	"\x13backoff_coefficient\x18\x02 \x01(\x01R\x12backoffCoefficient\x12D\n" +
 	"\x10maximum_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x0fmaximumInterval\x12)\n" +
 	"\x10maximum_attempts\x18\x04 \x01(\rR\x0fmaximumAttempts\x129\n" +
-	"\x19non_retryable_error_codes\x18\x05 \x03(\tR\x16nonRetryableErrorCodes\"\x91\x04\n" +
+	"\x19non_retryable_error_codes\x18\x05 \x03(\tR\x16nonRetryableErrorCodes\x12U\n" +
+	"\x19durable_backoff_threshold\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x17durableBackoffThreshold\"\x91\x04\n" +
 	"\vWorkflowKey\x12\xab\x01\n" +
 	"\tnamespace\x18\x01 \x01(\tB\x8c\x01\xbaH\x88\x01\xba\x01m\n" +
 	"/temporaless.workflow_key.namespace.not_dot_path\x12\x1dnamespace must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x16\x10\x012\x12^[A-Za-z0-9._:-]+$R\tnamespace\x12\xb2\x01\n" +
@@ -3823,7 +3866,7 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
 	"\fcompleted_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x129\n" +
-	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\x8d\x06\n" +
+	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\xd1\x06\n" +
 	"\x0eActivityRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12-\n" +
 	"\x03key\x18\x02 \x01(\v2\x1b.temporaless.v1.ActivityKeyR\x03key\x12#\n" +
@@ -3839,7 +3882,8 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12=\n" +
 	"\fcompleted_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x12;\n" +
 	"\battempts\x18\f \x03(\v2\x1f.temporaless.v1.ActivityAttemptR\battempts\x12Q\n" +
-	"\vannotations\x18\r \x03(\v2/.temporaless.v1.ActivityRecord.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\vannotations\x18\r \x03(\v2/.temporaless.v1.ActivityRecord.AnnotationsEntryR\vannotations\x12B\n" +
+	"\x0fnext_attempt_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\rnextAttemptAt\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd0\x05\n" +
@@ -4004,10 +4048,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x18TIMER_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16TIMER_STATUS_SCHEDULED\x10\x01\x12\x16\n" +
 	"\x12TIMER_STATUS_FIRED\x10\x02\x12\x19\n" +
-	"\x15TIMER_STATUS_CANCELED\x10\x03*=\n" +
+	"\x15TIMER_STATUS_CANCELED\x10\x03*\\\n" +
 	"\tTimerKind\x12\x1a\n" +
 	"\x16TIMER_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
-	"\x10TIMER_KIND_SLEEP\x10\x01*\xe7\x01\n" +
+	"\x10TIMER_KIND_SLEEP\x10\x01\x12\x1d\n" +
+	"\x19TIMER_KIND_ACTIVITY_RETRY\x10\x02*\xe7\x01\n" +
 	"\x13RecordSchemaVersion\x12%\n" +
 	"!RECORD_SCHEMA_VERSION_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eRECORD_SCHEMA_VERSION_ACTIVITY\x10\x01\x12\"\n" +
@@ -4140,129 +4185,131 @@ var file_temporaless_v1_temporaless_proto_depIdxs = []int32{
 	9,   // 0: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
 	67,  // 1: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
 	67,  // 2: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
-	68,  // 3: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
-	68,  // 4: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
-	15,  // 5: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
-	4,   // 6: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	11,  // 7: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
-	69,  // 8: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
-	0,   // 9: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
-	69,  // 10: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
-	15,  // 11: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	68,  // 12: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 13: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
-	16,  // 14: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
-	65,  // 15: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
-	4,   // 16: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	10,  // 17: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
-	69,  // 18: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
-	1,   // 19: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
-	69,  // 20: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
-	15,  // 21: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	68,  // 22: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 23: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
-	66,  // 24: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
-	4,   // 25: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	12,  // 26: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
-	3,   // 27: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
-	67,  // 28: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
-	2,   // 29: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
-	68,  // 30: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
-	68,  // 31: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 32: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
-	4,   // 33: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	13,  // 34: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
-	69,  // 35: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
-	68,  // 36: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
-	4,   // 37: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	14,  // 38: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
-	5,   // 39: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
-	68,  // 40: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
-	68,  // 41: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 42: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
-	10,  // 43: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	18,  // 44: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
-	18,  // 45: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
-	12,  // 46: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	19,  // 47: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
-	19,  // 48: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
-	11,  // 49: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	17,  // 50: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
-	17,  // 51: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
-	13,  // 52: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
-	20,  // 53: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
-	20,  // 54: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
-	1,   // 55: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
-	18,  // 56: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
-	10,  // 57: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
-	17,  // 58: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
-	10,  // 59: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
-	2,   // 60: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
-	19,  // 61: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
-	10,  // 62: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
-	20,  // 63: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
-	10,  // 64: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	11,  // 65: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	12,  // 66: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	13,  // 67: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
-	14,  // 68: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
-	21,  // 69: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
-	21,  // 70: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
-	6,   // 71: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
-	68,  // 72: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
-	67,  // 73: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
-	12,  // 74: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
-	19,  // 75: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
-	18,  // 76: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
-	68,  // 77: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	62,  // 78: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	58,  // 79: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
-	22,  // 80: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
-	24,  // 81: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
-	26,  // 82: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
-	28,  // 83: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
-	30,  // 84: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
-	32,  // 85: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
-	54,  // 86: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
-	56,  // 87: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
-	34,  // 88: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
-	36,  // 89: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
-	38,  // 90: temporaless.v1.RecordStoreService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
-	40,  // 91: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
-	42,  // 92: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
-	44,  // 93: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
-	46,  // 94: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
-	48,  // 95: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
-	50,  // 96: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
-	52,  // 97: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
-	60,  // 98: temporaless.v1.RecordStoreService.Sweep:input_type -> temporaless.v1.SweepRequest
-	63,  // 99: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
-	59,  // 100: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
-	23,  // 101: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
-	25,  // 102: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
-	27,  // 103: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
-	29,  // 104: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
-	31,  // 105: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
-	33,  // 106: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
-	55,  // 107: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
-	57,  // 108: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
-	35,  // 109: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
-	37,  // 110: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
-	39,  // 111: temporaless.v1.RecordStoreService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
-	41,  // 112: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
-	43,  // 113: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
-	45,  // 114: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
-	47,  // 115: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
-	49,  // 116: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
-	51,  // 117: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
-	53,  // 118: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
-	61,  // 119: temporaless.v1.RecordStoreService.Sweep:output_type -> temporaless.v1.SweepResponse
-	64,  // 120: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
-	100, // [100:121] is the sub-list for method output_type
-	79,  // [79:100] is the sub-list for method input_type
-	79,  // [79:79] is the sub-list for extension type_name
-	79,  // [79:79] is the sub-list for extension extendee
-	0,   // [0:79] is the sub-list for field type_name
+	67,  // 3: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
+	68,  // 4: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
+	68,  // 5: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
+	15,  // 6: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
+	4,   // 7: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	11,  // 8: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
+	69,  // 9: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
+	0,   // 10: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
+	69,  // 11: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
+	15,  // 12: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	68,  // 13: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
+	68,  // 14: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
+	16,  // 15: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
+	65,  // 16: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
+	68,  // 17: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
+	4,   // 18: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	10,  // 19: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
+	69,  // 20: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
+	1,   // 21: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
+	69,  // 22: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
+	15,  // 23: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	68,  // 24: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
+	68,  // 25: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
+	66,  // 26: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
+	4,   // 27: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	12,  // 28: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
+	3,   // 29: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
+	67,  // 30: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
+	2,   // 31: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
+	68,  // 32: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
+	68,  // 33: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
+	68,  // 34: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
+	4,   // 35: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	13,  // 36: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
+	69,  // 37: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
+	68,  // 38: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
+	4,   // 39: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	14,  // 40: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
+	5,   // 41: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
+	68,  // 42: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
+	68,  // 43: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
+	68,  // 44: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
+	10,  // 45: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	18,  // 46: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
+	18,  // 47: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
+	12,  // 48: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	19,  // 49: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
+	19,  // 50: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
+	11,  // 51: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	17,  // 52: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
+	17,  // 53: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
+	13,  // 54: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
+	20,  // 55: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
+	20,  // 56: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
+	1,   // 57: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
+	18,  // 58: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
+	10,  // 59: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
+	17,  // 60: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
+	10,  // 61: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
+	2,   // 62: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
+	19,  // 63: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
+	10,  // 64: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
+	20,  // 65: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
+	10,  // 66: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	11,  // 67: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	12,  // 68: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	13,  // 69: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
+	14,  // 70: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	21,  // 71: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
+	21,  // 72: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
+	6,   // 73: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
+	68,  // 74: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
+	67,  // 75: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
+	12,  // 76: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
+	19,  // 77: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
+	18,  // 78: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
+	68,  // 79: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	62,  // 80: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	58,  // 81: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
+	22,  // 82: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
+	24,  // 83: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
+	26,  // 84: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
+	28,  // 85: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
+	30,  // 86: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
+	32,  // 87: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
+	54,  // 88: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
+	56,  // 89: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
+	34,  // 90: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
+	36,  // 91: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
+	38,  // 92: temporaless.v1.RecordStoreService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
+	40,  // 93: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
+	42,  // 94: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
+	44,  // 95: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
+	46,  // 96: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
+	48,  // 97: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
+	50,  // 98: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
+	52,  // 99: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
+	60,  // 100: temporaless.v1.RecordStoreService.Sweep:input_type -> temporaless.v1.SweepRequest
+	63,  // 101: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
+	59,  // 102: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
+	23,  // 103: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
+	25,  // 104: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
+	27,  // 105: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
+	29,  // 106: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
+	31,  // 107: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
+	33,  // 108: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
+	55,  // 109: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
+	57,  // 110: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
+	35,  // 111: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
+	37,  // 112: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
+	39,  // 113: temporaless.v1.RecordStoreService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
+	41,  // 114: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
+	43,  // 115: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
+	45,  // 116: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
+	47,  // 117: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
+	49,  // 118: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
+	51,  // 119: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
+	53,  // 120: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
+	61,  // 121: temporaless.v1.RecordStoreService.Sweep:output_type -> temporaless.v1.SweepResponse
+	64,  // 122: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
+	102, // [102:123] is the sub-list for method output_type
+	81,  // [81:102] is the sub-list for method input_type
+	81,  // [81:81] is the sub-list for extension type_name
+	81,  // [81:81] is the sub-list for extension extendee
+	0,   // [0:81] is the sub-list for field type_name
 }
 
 func init() { file_temporaless_v1_temporaless_proto_init() }

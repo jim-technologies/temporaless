@@ -41,6 +41,18 @@ Options = temporaless_pb2.WorkflowOptions
 ActivityOptions = temporaless_pb2.ActivityOptions
 RetryPolicy = temporaless_pb2.RetryPolicy
 
+# ACTIVITY_RETRY_TIMER_ID_PREFIX marks timer records owned by the runtime's
+# durable retry path. User code passing this prefix to ``Workflow.sleep`` is
+# rejected so framework-managed retry timers don't collide with user timers.
+ACTIVITY_RETRY_TIMER_ID_PREFIX = "activity-retry:"
+
+
+def _activity_retry_timer_id(activity_id: str) -> str:
+    """Deterministic timer_id that pairs an ActivityRecord with its durable
+    retry timer. Stable per activity_id; later retries overwrite the record
+    with a new fire_at."""
+    return f"{ACTIVITY_RETRY_TIMER_ID_PREFIX}{activity_id}"
+
 
 class ActivityConflictError(RuntimeError):
     pass
@@ -282,6 +294,17 @@ class Workflow:
                 )
             if record.status == temporaless_pb2.ACTIVITY_STATUS_RETRYING:
                 _assert_activity_fingerprint(record, activity_type, self._code_version, digest)
+                # Durable retry resume: if the record carries next_attempt_at
+                # and the wake instant hasn't arrived yet, bail back to the
+                # workflow as pending. The paired TIMER_KIND_ACTIVITY_RETRY
+                # timer keeps the scanner waking the workflow until fire_at.
+                if record.HasField("next_attempt_at"):
+                    wake_at = record.next_attempt_at.ToDatetime().replace(tzinfo=UTC)
+                    if datetime.now(UTC) < wake_at:
+                        raise TimerPendingError(_activity_retry_timer_id(activity_id), wake_at)
+                    # Past the wake instant — mark the paired timer FIRED so
+                    # the scanner stops returning it while we run the resume.
+                    await self._mark_activity_retry_timer_fired(activity_id)
                 attempts = list(record.attempts)
                 # Restore prior annotations so per-attempt metadata survives
                 # cross-invocation resumes.
@@ -404,8 +427,28 @@ class Workflow:
                         annotations=activity_annotations.snapshot(),
                     )
                     retrying_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
-                    await self._store.put_activity(retrying_record)
 
+                    # Durable retry branch: when the next backoff interval
+                    # crosses the configured threshold, persist the wait as a
+                    # TIMER_KIND_ACTIVITY_RETRY timer and surface
+                    # TimerPendingError. The timer scanner re-invokes the
+                    # workflow after fire_at; run_activity then enters the
+                    # RETRYING-resume branch above and continues the loop.
+                    if plan.durable_threshold > timedelta(0) and interval >= plan.durable_threshold:
+                        next_attempt_at = datetime.now(UTC) + interval
+                        next_at_ts = Timestamp()
+                        next_at_ts.FromDatetime(next_attempt_at)
+                        retrying_record.next_attempt_at.CopyFrom(next_at_ts)
+                        await self._store.put_activity(retrying_record)
+                        await self._put_activity_retry_timer(activity_id, interval, next_attempt_at)
+                        # `from None` because the workflow itself isn't
+                        # failing — the durable retry is a normal pending
+                        # signal, not an exception caused by run_err.
+                        raise TimerPendingError(
+                            _activity_retry_timer_id(activity_id), next_attempt_at
+                        ) from None
+
+                    await self._store.put_activity(retrying_record)
                     await asyncio.sleep(interval.total_seconds())
                     interval = _next_interval(interval, plan)
                     continue
@@ -492,6 +535,11 @@ class Workflow:
         return self._store
 
     async def sleep(self, timer_id: str, duration: timedelta) -> None:
+        if timer_id.startswith(ACTIVITY_RETRY_TIMER_ID_PREFIX):
+            raise ValueError(
+                f"timer_id {timer_id!r} uses the framework-reserved "
+                f"{ACTIVITY_RETRY_TIMER_ID_PREFIX!r} prefix; choose another"
+            )
         timer_kind = SLEEP_TIMER_KIND
         digest = timer_digest(timer_kind, self._code_version, duration)
         key = TimerKey(
@@ -552,6 +600,58 @@ class Workflow:
         await self._store.put_timer(record)
         if status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
             raise TimerPendingError(timer_id, fire_at)
+
+    async def _put_activity_retry_timer(
+        self,
+        activity_id: str,
+        duration: timedelta,
+        fire_at: datetime,
+    ) -> None:
+        """Write (or overwrite) the TIMER_KIND_ACTIVITY_RETRY timer paired
+        with an activity's durable retry. Stable per activity_id so later
+        retries naturally overwrite earlier scheduled state."""
+        key = TimerKey(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            timer_id=_activity_retry_timer_id(activity_id),
+        )
+        timer_kind = temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY
+        digest = timer_digest(timer_kind, self._code_version, duration)
+        duration_message = Duration()
+        duration_message.FromTimedelta(duration)
+        fire_at_message = Timestamp()
+        fire_at_message.FromDatetime(fire_at)
+        created_at = Timestamp()
+        created_at.GetCurrentTime()
+        record = temporaless_pb2.TimerRecord(
+            schema_version=TIMER_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            timer_kind=timer_kind,
+            code_version=self._code_version,
+            input_digest=digest,
+            duration=duration_message,
+            status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
+            fire_at=fire_at_message,
+            created_at=created_at,
+        )
+        await self._store.put_timer(record)
+
+    async def _mark_activity_retry_timer_fired(self, activity_id: str) -> None:
+        """Transition the paired retry timer to FIRED so the timer scanner
+        stops returning it while the activity body executes the resumed
+        attempt. No-op when the timer is absent (legacy path) or already
+        FIRED."""
+        key = TimerKey(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            timer_id=_activity_retry_timer_id(activity_id),
+        )
+        record = await self._store.get_timer(key)
+        if record is None or record.status == temporaless_pb2.TIMER_STATUS_FIRED:
+            return
+        record.status = temporaless_pb2.TIMER_STATUS_FIRED
+        record.fired_at.GetCurrentTime()
+        await self._store.put_timer(record)
 
 
 @dataclass(frozen=True)
@@ -861,6 +961,7 @@ class _RetryPlan:
     initial_interval: timedelta
     backoff_coefficient: float
     maximum_interval: timedelta
+    durable_threshold: timedelta
     non_retryable_codes: frozenset[str]
 
 
@@ -871,6 +972,7 @@ def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
             initial_interval=timedelta(0),
             backoff_coefficient=1.0,
             maximum_interval=timedelta(0),
+            durable_threshold=timedelta(0),
             non_retryable_codes=frozenset(),
         )
     maximum_attempts = policy.maximum_attempts
@@ -880,11 +982,15 @@ def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
     if maximum_attempts > 1 and initial_interval <= timedelta(0):
         raise ValueError("retry policy initial_interval must be > 0 when maximum_attempts > 1")
     backoff_coefficient = policy.backoff_coefficient or 1.0
+    durable_threshold = policy.durable_backoff_threshold.ToTimedelta()
+    if durable_threshold < timedelta(0):
+        raise ValueError("retry policy durable_backoff_threshold must be >= 0")
     return _RetryPlan(
         maximum_attempts=maximum_attempts,
         initial_interval=initial_interval,
         backoff_coefficient=backoff_coefficient,
         maximum_interval=policy.maximum_interval.ToTimedelta(),
+        durable_threshold=durable_threshold,
         non_retryable_codes=frozenset(policy.non_retryable_error_codes),
     )
 

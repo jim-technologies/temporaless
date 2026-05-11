@@ -10,6 +10,22 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Durable retry backoffs** (`RetryPolicy.durable_backoff_threshold`).
+  When the next retry interval crosses the configured threshold, the runtime
+  persists the wait as a `TIMER_KIND_ACTIVITY_RETRY` timer + writes the
+  `ActivityRecord` with `next_attempt_at`, then surfaces `TimerPendingError`
+  so the workflow stays IN_PROGRESS. The bundled timer scanner re-invokes
+  the workflow after `fire_at` and the retry loop resumes from the next
+  attempt. Designed for LLM workflows whose rate-limit windows (30s–10min)
+  exceed serverless request timeouts. Zero (default) preserves the existing
+  in-process retry behavior. Resolves PRD D2.
+- **Outbox idempotency-key helper** (`adapters/go/outbox` /
+  `core/py/src/temporaless/outbox.py`). Derives a stable
+  `temporaless-{32-hex}` key from `(namespace, workflow_id, run_id, activity_id)`
+  that activity bodies pass to vendor APIs (HTTP `Idempotency-Key`, DB upsert
+  keys, S3 object names) so retries after a mid-flight failure dedupe
+  vendor-side instead of double-charging. Closes the side-effect-safety gap
+  documented in `docs/hard-cases.md`.
 - **Run-scoped replay cache** in both Go and Python. On replay, the runtime
   prefetches all activity, timer, and event records under the run in parallel
   (3 `List` calls) and serves subsequent get-by-key reads from memory. A

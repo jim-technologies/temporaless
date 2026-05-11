@@ -38,6 +38,7 @@ class TimerKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     TIMER_KIND_UNSPECIFIED: _ClassVar[TimerKind]
     TIMER_KIND_SLEEP: _ClassVar[TimerKind]
+    TIMER_KIND_ACTIVITY_RETRY: _ClassVar[TimerKind]
 
 class RecordSchemaVersion(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -75,6 +76,7 @@ TIMER_STATUS_FIRED: TimerStatus
 TIMER_STATUS_CANCELED: TimerStatus
 TIMER_KIND_UNSPECIFIED: TimerKind
 TIMER_KIND_SLEEP: TimerKind
+TIMER_KIND_ACTIVITY_RETRY: TimerKind
 RECORD_SCHEMA_VERSION_UNSPECIFIED: RecordSchemaVersion
 RECORD_SCHEMA_VERSION_ACTIVITY: RecordSchemaVersion
 RECORD_SCHEMA_VERSION_WORKFLOW: RecordSchemaVersion
@@ -111,18 +113,20 @@ class ActivityOptions(_message.Message):
     def __init__(self, activity_id: _Optional[str] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ...) -> None: ...
 
 class RetryPolicy(_message.Message):
-    __slots__ = ("initial_interval", "backoff_coefficient", "maximum_interval", "maximum_attempts", "non_retryable_error_codes")
+    __slots__ = ("initial_interval", "backoff_coefficient", "maximum_interval", "maximum_attempts", "non_retryable_error_codes", "durable_backoff_threshold")
     INITIAL_INTERVAL_FIELD_NUMBER: _ClassVar[int]
     BACKOFF_COEFFICIENT_FIELD_NUMBER: _ClassVar[int]
     MAXIMUM_INTERVAL_FIELD_NUMBER: _ClassVar[int]
     MAXIMUM_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     NON_RETRYABLE_ERROR_CODES_FIELD_NUMBER: _ClassVar[int]
+    DURABLE_BACKOFF_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
     initial_interval: _duration_pb2.Duration
     backoff_coefficient: float
     maximum_interval: _duration_pb2.Duration
     maximum_attempts: int
     non_retryable_error_codes: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, initial_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., backoff_coefficient: _Optional[float] = ..., maximum_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., maximum_attempts: _Optional[int] = ..., non_retryable_error_codes: _Optional[_Iterable[str]] = ...) -> None: ...
+    durable_backoff_threshold: _duration_pb2.Duration
+    def __init__(self, initial_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., backoff_coefficient: _Optional[float] = ..., maximum_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., maximum_attempts: _Optional[int] = ..., non_retryable_error_codes: _Optional[_Iterable[str]] = ..., durable_backoff_threshold: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class WorkflowKey(_message.Message):
     __slots__ = ("namespace", "workflow_id", "run_id")
@@ -203,7 +207,7 @@ class ActivityAttempt(_message.Message):
     def __init__(self, attempt: _Optional[int] = ..., started_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ...) -> None: ...
 
 class ActivityRecord(_message.Message):
-    __slots__ = ("schema_version", "key", "activity_type", "code_version", "input_digest", "input", "status", "result", "failure", "created_at", "completed_at", "attempts", "annotations")
+    __slots__ = ("schema_version", "key", "activity_type", "code_version", "input_digest", "input", "status", "result", "failure", "created_at", "completed_at", "attempts", "annotations", "next_attempt_at")
     class AnnotationsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -224,6 +228,7 @@ class ActivityRecord(_message.Message):
     COMPLETED_AT_FIELD_NUMBER: _ClassVar[int]
     ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     ANNOTATIONS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_ATTEMPT_AT_FIELD_NUMBER: _ClassVar[int]
     schema_version: RecordSchemaVersion
     key: ActivityKey
     activity_type: str
@@ -237,7 +242,8 @@ class ActivityRecord(_message.Message):
     completed_at: _timestamp_pb2.Timestamp
     attempts: _containers.RepeatedCompositeFieldContainer[ActivityAttempt]
     annotations: _containers.ScalarMap[str, str]
-    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ActivityKey, _Mapping]] = ..., activity_type: _Optional[str] = ..., code_version: _Optional[str] = ..., input_digest: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[ActivityStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., attempts: _Optional[_Iterable[_Union[ActivityAttempt, _Mapping]]] = ..., annotations: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    next_attempt_at: _timestamp_pb2.Timestamp
+    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ActivityKey, _Mapping]] = ..., activity_type: _Optional[str] = ..., code_version: _Optional[str] = ..., input_digest: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[ActivityStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., attempts: _Optional[_Iterable[_Union[ActivityAttempt, _Mapping]]] = ..., annotations: _Optional[_Mapping[str, str]] = ..., next_attempt_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class WorkflowRecord(_message.Message):
     __slots__ = ("schema_version", "key", "workflow_type", "code_version", "input_digest", "input", "status", "result", "failure", "created_at", "completed_at", "annotations")

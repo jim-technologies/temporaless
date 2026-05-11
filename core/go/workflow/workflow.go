@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,18 @@ var ErrWorkflowDependencyPending = errors.New("workflow dependency has not compl
 var ErrWorkflowDependencyFailed = errors.New("workflow dependency ended in a non-COMPLETED terminal state")
 
 const DefaultClaimLeaseDuration = 15 * time.Minute
+
+// ActivityRetryTimerIDPrefix marks timer records owned by the runtime's
+// durable retry path. User code passing this prefix to workflow.Sleep is
+// rejected so framework-managed retry timers don't collide with user timers.
+const ActivityRetryTimerIDPrefix = "activity-retry:"
+
+// activityRetryTimerID returns the deterministic timer_id used to pair an
+// ActivityRecord with its durable retry timer. Stable per activity_id; later
+// retries overwrite the record with a new fire_at.
+func activityRetryTimerID(activityID string) string {
+	return ActivityRetryTimerIDPrefix + activityID
+}
 
 type WorkflowFunc[Req proto.Message, Resp proto.Message] func(context.Context, Req) (Resp, error)
 type ActivityFunc[Req proto.Message, Resp proto.Message] func(context.Context, Req) (Resp, error)
@@ -476,6 +489,12 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		return fmt.Errorf("workflow context is required")
 	}
 
+	if strings.HasPrefix(timerID, ActivityRetryTimerIDPrefix) {
+		return fmt.Errorf(
+			"timer_id %q uses the framework-reserved %q prefix; choose another",
+			timerID, ActivityRetryTimerIDPrefix,
+		)
+	}
 	key := storage.TimerKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: workflow.workflowID,
@@ -609,6 +628,24 @@ func runActivity[T proto.Message](
 		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
 			if err := assertActivityFingerprint(record, activityType, workflow.codeVersion, digest); err != nil {
 				return zero, err
+			}
+			// Durable retry resume: if the record carries next_attempt_at and
+			// the wake instant hasn't arrived yet, bail back to the workflow
+			// as pending. The paired TIMER_KIND_ACTIVITY_RETRY timer keeps
+			// the scanner waking the workflow until fire_at.
+			if nextAt := record.GetNextAttemptAt(); nextAt != nil {
+				wakeAt := nextAt.AsTime()
+				if time.Now().UTC().Before(wakeAt) {
+					return zero, &TimerPendingError{
+						TimerID: activityRetryTimerID(activityID),
+						WakeAt:  wakeAt,
+					}
+				}
+				// We're past the wake instant — mark the paired timer FIRED
+				// so the scanner stops returning it while we run the resume.
+				if err := markActivityRetryTimerFired(ctx, workflow, activityID); err != nil {
+					return zero, err
+				}
 			}
 			attempts = record.GetAttempts()
 		default:
@@ -782,6 +819,27 @@ func runActivity[T proto.Message](
 			Attempts:      attempts,
 			Annotations:   activityAnnotations.snapshot(),
 		}
+
+		// Durable retry branch: when the next backoff interval crosses the
+		// configured threshold, persist the wait as a TIMER_KIND_ACTIVITY_RETRY
+		// timer and surface a typed pending error. The timer scanner re-invokes
+		// the workflow after fire_at; runActivity then enters the RETRYING-resume
+		// branch above and continues the loop.
+		if plan.durableThreshold > 0 && interval >= plan.durableThreshold {
+			nextAttemptAt := time.Now().UTC().Add(interval)
+			retryingRecord.NextAttemptAt = timestamppb.New(nextAttemptAt)
+			if err := workflow.store.PutActivity(ctx, retryingRecord); err != nil {
+				return zero, err
+			}
+			if err := putActivityRetryTimer(ctx, workflow, activityID, interval, nextAttemptAt); err != nil {
+				return zero, err
+			}
+			return zero, &TimerPendingError{
+				TimerID: activityRetryTimerID(activityID),
+				WakeAt:  nextAttemptAt,
+			}
+		}
+
 		if err := workflow.store.PutActivity(ctx, retryingRecord); err != nil {
 			return zero, err
 		}
@@ -856,6 +914,7 @@ type retryPlan struct {
 	initialInterval    time.Duration
 	backoffCoefficient float64
 	maximumInterval    time.Duration
+	durableThreshold   time.Duration
 	nonRetryable       map[string]bool
 }
 
@@ -868,6 +927,7 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 		initialInterval:    policy.GetInitialInterval().AsDuration(),
 		backoffCoefficient: policy.GetBackoffCoefficient(),
 		maximumInterval:    policy.GetMaximumInterval().AsDuration(),
+		durableThreshold:   policy.GetDurableBackoffThreshold().AsDuration(),
 	}
 	if plan.maxAttempts == 0 {
 		return retryPlan{}, fmt.Errorf("retry policy maximum_attempts must be > 0")
@@ -878,6 +938,9 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 	if plan.backoffCoefficient == 0 {
 		plan.backoffCoefficient = 1.0
 	}
+	if plan.durableThreshold < 0 {
+		return retryPlan{}, fmt.Errorf("retry policy durable_backoff_threshold must be >= 0")
+	}
 	if codes := policy.GetNonRetryableErrorCodes(); len(codes) > 0 {
 		plan.nonRetryable = make(map[string]bool, len(codes))
 		for _, code := range codes {
@@ -885,6 +948,62 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 		}
 	}
 	return plan, nil
+}
+
+// putActivityRetryTimer writes (or overwrites) the TIMER_KIND_ACTIVITY_RETRY
+// timer paired with an activity's durable retry. Stable per activity_id so
+// later retries naturally overwrite earlier scheduled state.
+func putActivityRetryTimer(
+	ctx context.Context,
+	workflow *Workflow,
+	activityID string,
+	duration time.Duration,
+	fireAt time.Time,
+) error {
+	key := storage.TimerKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		TimerID:    activityRetryTimerID(activityID),
+	}
+	digest, err := timerDigest(temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY, workflow.codeVersion, duration)
+	if err != nil {
+		return err
+	}
+	record := &temporalessv1.TimerRecord{
+		SchemaVersion: storage.TimerRecordSchemaVersion,
+		Key:           key.Proto(),
+		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
+		CodeVersion:   workflow.codeVersion,
+		InputDigest:   digest,
+		Duration:      durationpb.New(duration),
+		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
+		FireAt:        timestamppb.New(fireAt),
+		CreatedAt:     timestamppb.New(time.Now().UTC()),
+	}
+	return workflow.store.PutTimer(ctx, record)
+}
+
+// markActivityRetryTimerFired transitions the paired retry timer to FIRED so
+// the timer scanner stops returning it while the activity body is executing
+// the resumed attempt. No-op if the timer record is absent (legacy path).
+func markActivityRetryTimerFired(ctx context.Context, workflow *Workflow, activityID string) error {
+	key := storage.TimerKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		TimerID:    activityRetryTimerID(activityID),
+	}
+	record, found, err := workflow.store.GetTimer(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !found || record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_FIRED {
+		return nil
+	}
+	record.Status = temporalessv1.TimerStatus_TIMER_STATUS_FIRED
+	record.FiredAt = timestamppb.New(time.Now().UTC())
+	return workflow.store.PutTimer(ctx, record)
 }
 
 func nextInterval(prev time.Duration, plan retryPlan) time.Duration {

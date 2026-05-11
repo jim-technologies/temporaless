@@ -112,6 +112,18 @@ message RetryPolicy {
   // Activity error codes (carried via `ActivityFailure.code`) that should
   // skip remaining retries and surface the failure immediately.
   repeated string non_retryable_error_codes = 5;
+  // When the next backoff interval is at least this long, persist the retry
+  // as a durable timer instead of sleeping in-process. The activity record is
+  // written as `ACTIVITY_STATUS_RETRYING` with `next_attempt_at` set, a paired
+  // `TIMER_KIND_ACTIVITY_RETRY` timer is scheduled at the same instant, and
+  // the runtime returns the typed pending error so the workflow stays
+  // IN_PROGRESS. The bundled timer scanner re-invokes the workflow after
+  // `fire_at` and the retry loop resumes from the next attempt.
+  //
+  // Zero (the default) keeps the legacy in-process behavior: every retry
+  // sleeps inside the activity. Set this to ~30s for LLM workflows whose
+  // rate-limit windows often exceed a serverless function's max duration.
+  google.protobuf.Duration durable_backoff_threshold = 6;
 }
 
 // ActivityStatus tracks an activity's lifecycle in storage.
@@ -159,6 +171,13 @@ enum TimerKind {
   TIMER_KIND_UNSPECIFIED = 0;
   // Plain durable sleep written by `workflow.Sleep`.
   TIMER_KIND_SLEEP = 1;
+  // Paired with a RETRYING ActivityRecord: the runtime persisted a long retry
+  // backoff as a durable timer instead of sleeping in-process. When the timer
+  // is due, the workflow re-invokes and the activity's retry loop resumes
+  // from the next attempt. Timer ID convention is `activity-retry:{activity_id}`;
+  // the `activity-retry:` prefix is reserved by the runtime and rejected
+  // from user-supplied timer IDs in `workflow.Sleep`.
+  TIMER_KIND_ACTIVITY_RETRY = 2;
 }
 
 // RecordSchemaVersion identifies the record family. Each protobuf record sets
@@ -469,6 +488,13 @@ message ActivityRecord {
   // Application-supplied structured metadata (model, tokens, vendor, etc.)
   // attached via `workflow.Annotate` from inside the activity body.
   map<string, string> annotations = 13;
+  // Wall-clock instant at which the runtime should resume a durable retry.
+  // Only set when status is `ACTIVITY_STATUS_RETRYING` and the policy's
+  // `durable_backoff_threshold` was exceeded — the runtime paired this record
+  // with a `TIMER_KIND_ACTIVITY_RETRY` timer. When unset on a RETRYING record,
+  // the retry was in-process (legacy / threshold = 0) and replay resumes
+  // immediately if a backing scanner re-invokes the workflow.
+  google.protobuf.Timestamp next_attempt_at = 14;
 }
 
 // WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
