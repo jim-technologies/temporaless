@@ -17,6 +17,7 @@ from google.protobuf.message import Message
 from google.protobuf.timestamp_pb2 import Timestamp
 from protovalidate import validate
 
+from temporaless._cache import RunScopedCache
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
@@ -577,6 +578,14 @@ async def run(
     digest = execution_digest("workflow", workflow_type, options.code_version, input_message)
     key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
 
+    # Substitute the user-provided store with a run-scoped cache. The cache
+    # is write-through for the underlying store and serves get-by-key reads
+    # from memory after prefetch — turning N round-trips per replay into
+    # one list per record kind. Out-of-scope reads (e.g. cross-pipeline
+    # dependencies) pass straight through. See _cache.py for the contract.
+    cache = RunScopedCache(store, key)
+    store = cache  # type: ignore[assignment]
+
     record = await store.get_workflow(key)
     created_at: Timestamp | None = None
     if record is not None:
@@ -591,6 +600,9 @@ async def run(
             _assert_workflow_fingerprint(record, workflow_type, options.code_version, digest)
             created_at = Timestamp()
             created_at.CopyFrom(record.created_at)
+            # Replay: prefetch activities / timers / events in parallel so
+            # the body's subsequent get-by-key calls hit memory.
+            await cache.prefetch()
         else:
             raise WorkflowConflictError("stored workflow has unknown status")
 

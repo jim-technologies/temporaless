@@ -3,7 +3,9 @@
 // Temporaless is a storage-first, serverless workflow framework. Workflow runs,
 // activity invocations, durable timers, signals (events), and coordination
 // claims are all serialized as protobuf records at deterministic paths under
-// `temporaless/v1/namespaces/{namespace}/workflows/{workflow_id}/runs/{run_id}/`.
+// `temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind={kind}/...`
+// (strict Hive partitioning — every directory level is `key=value`, so Spark /
+// Trino / DuckDB / Athena auto-discover the partition columns).
 //
 // `RecordStoreService` is the cross-language storage contract. Any backend
 // (OpenDAL filesystem, S3, GCS, SQL, ...) implements the same RPC surface, so

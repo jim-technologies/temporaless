@@ -10,6 +10,24 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Run-scoped replay cache** in both Go and Python. On replay, the runtime
+  prefetches all activity, timer, and event records under the run in parallel
+  (3 `List` calls) and serves subsequent get-by-key reads from memory. A
+  workflow with N fan-out activities that previously issued N individual
+  `GetActivity` round-trips per replay now issues 0 — a strict win on
+  ConnectStore / S3 / GCS backends and a no-op on fresh runs (no prefetch
+  triggered). Negative-cache entries short-circuit get-by-key for records
+  that didn't exist at prefetch time. Out-of-scope reads (cross-pipeline
+  dependencies, inspector adapters) pass straight through.
+- **`temporaless` operator CLI** (`cmd/temporaless`) — thin wrapper over the
+  inspector / janitor adapters. Subcommands: `list-workflows`,
+  `list-activities`, `get-workflow`, `reset-workflow`, `reset-activity`,
+  `reset-event`, `sweep`. Supports text and `--json` (protojson) output.
+  Storage backend is selected via `--store-scheme` (`fs` by default; extend
+  by importing additional `opendal-go-services/*` schemes). This is a
+  transitional surface — once the protobuf service is migrated to
+  `invariantprotocol`, the CLI (and MCP) will be generated automatically and
+  this binary retires.
 - Cross-language parity for backfill + cross-pipeline dependencies:
   - Go: `adapters/go/backfill` (`Backfill[Resp](ctx, runIDs, Options, invoke)`) and `adapters/go/dependencies` (`WaitForWorkflow[Resp](ctx, store, key, newResult)`).
   - Typed errors `WorkflowDependencyPendingError` / `WorkflowDependencyFailedError` in core, mapped through `ErrorToConnectCode` to `Unavailable` / `Internal`.

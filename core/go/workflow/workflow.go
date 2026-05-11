@@ -257,6 +257,14 @@ func Run[Req proto.Message, Resp proto.Message](
 		RunID:      runOptions.GetRunId(),
 	}
 
+	// Substitute the user-provided store with a run-scoped cache. The cache is
+	// write-through for the underlying store and serves Get-by-key reads from
+	// memory after prefetch — turning N round-trips per replay into one List
+	// per record kind. Out-of-scope reads (e.g. cross-pipeline dependencies)
+	// pass straight through. See cache.go for the full contract.
+	cachedStore := newRunScopedCache(store, key)
+	store = cachedStore
+
 	record, found, err := store.GetWorkflow(ctx, key)
 	if err != nil {
 		return zero, err
@@ -271,6 +279,12 @@ func Run[Req proto.Message, Resp proto.Message](
 				return zero, err
 			}
 			createdAt = record.GetCreatedAt()
+			// Replay: prefetch activities, timers, events in parallel so the
+			// body's subsequent Get calls hit memory instead of issuing N
+			// individual round-trips against the underlying store.
+			if err := cachedStore.prefetch(ctx); err != nil {
+				return zero, err
+			}
 		default:
 			return zero, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
 		}
