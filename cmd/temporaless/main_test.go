@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -475,5 +476,116 @@ func TestCLITail_RejectsBadPollInterval(t *testing.T) {
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "poll-interval") {
 		t.Fatalf("expected error mentioning poll-interval, got %v", err)
+	}
+}
+
+func TestCLIExport_WorkflowKindEmitsJSONL(t *testing.T) {
+	root, store := newTestRoot(t)
+	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	seedWorkflow(t, store, "wf-b", "run-2", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"export", "--kind", "workflow",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 JSONL records, got %d: %q", len(lines), stdout.String())
+	}
+	// Each line must independently parse as JSON.
+	for _, line := range lines {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("invalid JSON line %q: %v", line, err)
+		}
+		if obj["codeVersion"] != "test" {
+			t.Fatalf("unexpected codeVersion: %v", obj["codeVersion"])
+		}
+	}
+}
+
+func TestCLIExport_ActivityKindRequiresIDs(t *testing.T) {
+	root, _ := newTestRoot(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"export", "--kind", "activity",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "workflow-id") {
+		t.Fatalf("expected error mentioning workflow-id, got %v", err)
+	}
+}
+
+func TestCLIExport_ActivityKindEmits(t *testing.T) {
+	root, store := newTestRoot(t)
+	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	seedActivity(t, store, "wf-a", "run-1", "act:1")
+	seedActivity(t, store, "wf-a", "run-1", "act:2")
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"export",
+		"--kind", "activity",
+		"--workflow-id", "wf-a",
+		"--run-id", "run-1",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 activity records, got %d: %q", len(lines), stdout.String())
+	}
+}
+
+func TestCLIExport_OutputFile(t *testing.T) {
+	root, store := newTestRoot(t)
+	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	tmp := t.TempDir()
+	outPath := tmp + "/export.jsonl"
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"export", "--kind", "workflow", "--output", outPath,
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected non-empty export file")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout should be empty when --output is set: %q", stdout.String())
+	}
+	// File contents must be valid JSONL.
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("invalid JSON in output file: %v", err)
+		}
+	}
+}
+
+func TestCLIExport_RejectsUnknownKind(t *testing.T) {
+	root, _ := newTestRoot(t)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"--store-scheme", "fs",
+		"--store-root", root,
+		"export", "--kind", "frobnicate",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "frobnicate") {
+		t.Fatalf("expected error mentioning frobnicate, got %v", err)
 	}
 }

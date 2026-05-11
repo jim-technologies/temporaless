@@ -70,6 +70,7 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 - [`docs/orchestrator-adapters.md`](docs/orchestrator-adapters.md) — Dagster / Prefect adapter notes
 - [`docs/dependencies.md`](docs/dependencies.md) — what lives where (Flox vs go.mod vs uv)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — Go and Python benchmark suites with cross-language baseline numbers
+- [`docs/analytics.md`](docs/analytics.md) — DuckDB / Trino / BigQuery queries against the Hive-partitioned bucket (storage-first audit story in practice)
 
 ## Development
 

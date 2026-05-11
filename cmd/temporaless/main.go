@@ -21,6 +21,7 @@
 //	sweep            --max-age DURATION
 //	stale-workflows  --older-than DURATION
 //	tail             [--poll-interval DURATION] [--status STATUS]
+//	export           --kind {workflow,activity,timer,event} [--output FILE]
 package main
 
 import (
@@ -73,6 +74,7 @@ SUBCOMMANDS
   sweep            Delete COMPLETED runs older than --max-age.
   stale-workflows  List IN_PROGRESS workflows older than --older-than.
   tail             Stream new workflow records as they are written (poll loop).
+  export           Bulk-decode records under a prefix to JSON Lines (audit / analytics).
 
 Run "temporaless <subcommand> --help" for subcommand-specific flags.
 `
@@ -147,6 +149,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return cmdStaleWorkflows(ctx, store, global, subArgs, stdout)
 	case "tail":
 		return cmdTail(ctx, store, global, subArgs, stdout)
+	case "export":
+		return cmdExport(ctx, store, subArgs, stdout)
 	default:
 		fmt.Fprint(stderr, usage)
 		return fmt.Errorf("unknown subcommand %q", subcommand)
@@ -493,6 +497,127 @@ func cmdTail(ctx context.Context, store storage.Store, g globalOpts, args []stri
 				return err
 			}
 		}
+	}
+}
+
+// export -------------------------------------------------------------------
+
+// cmdExport bulk-decodes records under a prefix and emits one decoded
+// protojson object per line. Useful for ingesting audit data into BigQuery /
+// DuckDB / dbt / Snowflake — operators don't need our decoder or runtime;
+// they just need `aws s3 cp` access to the bucket and `temporaless export`
+// to read the binpb.
+//
+// Output: stdout by default; --output FILE for redirection. One JSONL record
+// per stored record; each line is independently parseable.
+func cmdExport(ctx context.Context, store storage.Store, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	var kind, namespace, workflowID, runID, output string
+	fs.StringVar(&kind, "kind", "", "Record kind: workflow | activity | timer | event (required)")
+	fs.StringVar(&namespace, "namespace", "", "Filter by namespace (workflow only; default: all)")
+	fs.StringVar(&workflowID, "workflow-id", "", "Filter by workflow_id (required for activity/timer/event)")
+	fs.StringVar(&runID, "run-id", "", "Run ID (required for activity/timer/event)")
+	fs.StringVar(&output, "output", "", "Write JSON Lines to this file (default: stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if kind == "" {
+		return errors.New("--kind is required (workflow | activity | timer | event)")
+	}
+
+	w := stdout
+	if output != "" {
+		f, err := os.Create(output)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w = f
+	}
+
+	emit := func(message proto.Message) error {
+		data, err := protojson.Marshal(message)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(append(data, '\n'))
+		return err
+	}
+
+	switch kind {
+	case "workflow":
+		records, err := store.ListWorkflows(ctx, namespace, workflowID, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED)
+		if err != nil {
+			return err
+		}
+		for _, r := range records {
+			if err := emit(r); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stderr, "exported %d workflow records\n", len(records))
+		return nil
+	case "activity":
+		if workflowID == "" || runID == "" {
+			return errors.New("--workflow-id and --run-id are required when --kind=activity")
+		}
+		key := workflowKeyFor(namespace, workflowID, runID)
+		records, err := store.ListActivities(ctx, key)
+		if err != nil {
+			return err
+		}
+		for _, r := range records {
+			if err := emit(r); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stderr, "exported %d activity records\n", len(records))
+		return nil
+	case "timer":
+		if workflowID == "" || runID == "" {
+			return errors.New("--workflow-id and --run-id are required when --kind=timer")
+		}
+		key := workflowKeyFor(namespace, workflowID, runID)
+		records, err := store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
+		if err != nil {
+			return err
+		}
+		for _, r := range records {
+			if err := emit(r); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stderr, "exported %d timer records\n", len(records))
+		return nil
+	case "event":
+		if workflowID == "" || runID == "" {
+			return errors.New("--workflow-id and --run-id are required when --kind=event")
+		}
+		key := workflowKeyFor(namespace, workflowID, runID)
+		records, err := store.ListEvents(ctx, key)
+		if err != nil {
+			return err
+		}
+		for _, r := range records {
+			if err := emit(r); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stderr, "exported %d event records\n", len(records))
+		return nil
+	default:
+		return fmt.Errorf("unknown --kind %q (want: workflow | activity | timer | event)", kind)
+	}
+}
+
+func workflowKeyFor(namespace, workflowID, runID string) storage.WorkflowKey {
+	if namespace == "" {
+		namespace = storage.DefaultNamespace
+	}
+	return storage.WorkflowKey{
+		Namespace:  namespace,
+		WorkflowID: workflowID,
+		RunID:      runID,
 	}
 }
 

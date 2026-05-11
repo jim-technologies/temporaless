@@ -10,6 +10,17 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **`docs/analytics.md`** — DuckDB / Trino / BigQuery queries against the
+  Hive-partitioned bucket. Shows how to read records directly without our
+  service (Option 1) or via the `export` CLI (Option 2). Lean-in on the
+  storage-first audit differentiator: every other workflow framework
+  requires you to query *their* database / API to learn what happened;
+  with Temporaless your data warehouse owns the audit trail.
+- **CLI `export --kind {workflow,activity,timer,event}`** — bulk-decode
+  records to JSON Lines for ingestion into warehouses that don't speak
+  protobuf natively (BigQuery, Snowflake, Redshift). Transitional surface:
+  once `invariantprotocol` generates the CLI from the proto, this command
+  comes for free and the bundled binary retires.
 - **Vendor-aware retries via `ActivityError.retry_after` /
   `ActivityFailure.retry_after`.** Activity bodies can surface a vendor-supplied
   minimum wait (HTTP `Retry-After`, OpenAI `x-ratelimit-reset`, etc.); the
