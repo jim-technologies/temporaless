@@ -331,6 +331,67 @@ log.Printf("janitor swept %d completed runs older than 7 days", deleted)
 
 Run daily.
 
+### Operator-vs-handler replicas
+
+If you run periodic jobs in-process (instead of from your platform's
+scheduler), every replica polling the bucket is wasteful. Use the
+`background` helper to opt in per replica — typically one "operator"
+replica enables the loops; the rest are "handler" replicas with no
+periodic work.
+
+**Operator replica** (one process per pool, enables all background work):
+
+```go
+import "github.com/jim-technologies/temporaless/adapters/go/background"
+
+workers, _ := background.New(store, background.Config{
+    Cron:         &background.CronConfig{Scheduler: scheduler},
+    TimerScanner: &background.TimerScannerConfig{Dispatch: dispatchDueTimer},
+    Janitor:      &background.JanitorConfig{MaxAge: 7 * 24 * time.Hour},
+})
+if err := workers.Start(ctx); err != nil { /* ... */ }
+defer workers.Stop()
+// ... serve workflow RPCs ...
+```
+
+```python
+from temporaless.background import (
+    BackgroundWorkers, CronConfig, TimerScannerConfig, JanitorConfig,
+)
+
+workers = BackgroundWorkers(
+    store,
+    cron=CronConfig(scheduler=scheduler),
+    timer_scanner=TimerScannerConfig(dispatch=dispatch_due_timer),
+    janitor=JanitorConfig(max_age=timedelta(days=7)),
+)
+await workers.start()
+try:
+    await server.serve()
+finally:
+    await workers.stop()
+```
+
+**Handler replicas**: skip the helper entirely, or construct it with no
+config structs — `Start` becomes a no-op. They just serve workflow RPCs.
+
+Each loop is independently toggleable: a deployment might enable only
+the timer scanner on every replica (because durable sleeps are
+latency-sensitive) and keep cron + janitor on a single operator replica.
+
+**Why this is opt-in, not leader-elected.** Coordination dances add
+complexity the framework explicitly rejects. The simpler answer: deployers
+choose which replicas run periodic work. If you mis-configure and two
+replicas both run a loop, framework replay catches duplicate dispatches
+(workflow.Run is idempotent on `workflow_id + run_id`) and store sweeps
+are idempotent — so it's an efficiency loss, never a correctness one.
+
+**Skip the helper entirely** when your platform already provides
+scheduled invocations: Lambda + EventBridge, Cloud Run + Cloud Scheduler,
+Kubernetes CronJob, GitHub Actions schedule. The platform's
+one-fire-per-tick semantics is exactly what this helper provides
+in-process; don't pay for both.
+
 ## 4. Multi-process and multi-region
 
 ### Multi-process within one region

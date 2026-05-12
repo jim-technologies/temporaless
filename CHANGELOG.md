@@ -10,6 +10,17 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **`background` workers helper** (`adapters/go/background` /
+  `temporaless.background`): opt-in toggles for in-process cron / timer
+  scanner / janitor loops. Solves "every replica polling the bucket is
+  wasteful" — deployers configure background loops on one "operator"
+  replica; the rest are handler-only and skip the helper. Each loop is
+  independently toggleable; absence in `Config` means disabled.
+  Deliberately not leader-elected: the framework's replay-via-storage
+  catches duplicate dispatches as a no-op, so opt-in is purely efficiency.
+  Skip the helper entirely when the platform provides scheduled
+  invocations (EventBridge, Cloud Scheduler, Kubernetes CronJob, …).
+  `docs/deployment.md` gains a section walking through the pattern.
 - **Ergonomic activity helper**: `Workflow.activity()` (Python) and
   `workflow.Activity[Req, Resp](...)` (Go) collapse the most common
   callsite to roughly what a plain function call already requires —
