@@ -10,6 +10,23 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Ergonomic activity helper**: `Workflow.activity()` (Python) and
+  `workflow.Activity[Req, Resp](...)` (Go) collapse the most common
+  callsite to roughly what a plain function call already requires —
+  pass the function and its argument. Defaults applied unless overridden:
+  - `activity_id` ← inferred from the function's qualified name
+    (`func.__qualname__` in Python, `runtime.FuncForPC` in Go). Use
+    `WithActivityID(...)` / `activity_id=` to override when two callsites
+    share a function but should produce distinct records.
+  - `retry_policy` ← `DefaultRetryPolicy()` / `default_retry_policy()`
+    (3 attempts, 1s initial, 2× backoff, 30s max, 30s durable threshold) —
+    tuned for the framework's stated LLM / vendor / quant workloads.
+    Override via `WithRetryPolicy(...)` / `retry_policy=`.
+  - `result_type` (Python) inferred from the function's return annotation;
+    Go infers from the `Resp` generic parameter directly.
+  The existing `execute_activity` / `ExecuteActivity` APIs are unchanged
+  — the helper is opt-in. Cuts per-activity boilerplate roughly in half
+  in the examples.
 - **`docs/analytics.md`** — DuckDB / Trino / BigQuery queries against the
   Hive-partitioned bucket. Shows how to read records directly without our
   service (Option 1) or via the `export` CLI (Option 2). Lean-in on the

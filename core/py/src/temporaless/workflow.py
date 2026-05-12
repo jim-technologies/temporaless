@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import wraps
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from google.protobuf.any_pb2 import Any
 from google.protobuf.duration_pb2 import Duration
@@ -52,6 +52,80 @@ def _activity_retry_timer_id(activity_id: str) -> str:
     retry timer. Stable per activity_id; later retries overwrite the record
     with a new fire_at."""
     return f"{ACTIVITY_RETRY_TIMER_ID_PREFIX}{activity_id}"
+
+
+def default_retry_policy() -> RetryPolicy:
+    """Sensible default for :meth:`Workflow.activity` callers who don't pass
+    an explicit ``retry_policy``.
+
+    The shape (3 attempts, 1s initial, 2x backoff, 30s max, 30s durable
+    threshold) is tuned for the framework's stated workloads: LLM completions
+    (rate-limit windows of 30s–10min become durable timers automatically),
+    vendor APIs returning transient 5xx, and quant-pipeline activities
+    hitting short-lived market-data hiccups.
+
+    Returns a fresh proto on each call so callers can mutate without
+    sharing state.
+    """
+    policy = RetryPolicy(
+        maximum_attempts=3,
+        backoff_coefficient=2.0,
+    )
+    policy.initial_interval.FromTimedelta(timedelta(seconds=1))
+    policy.maximum_interval.FromTimedelta(timedelta(seconds=30))
+    policy.durable_backoff_threshold.FromTimedelta(timedelta(seconds=30))
+    return policy
+
+
+def _infer_activity_id(func: Callable[..., object]) -> str:
+    """Use ``func.__qualname__`` as the activity_id default. Stable for
+    module-level functions and class methods; varies for closures (rare in
+    workflow bodies)."""
+    import re
+
+    qualname = getattr(func, "__qualname__", None)
+    if not qualname:
+        raise ValueError(
+            "cannot infer activity_id: function has no __qualname__; pass activity_id= explicitly"
+        )
+    # Python's qualname inserts ``<locals>`` for nested functions; that's a
+    # marker, not part of any meaningful identity, and contains characters
+    # the framework's ID regex rejects.
+    qualname = qualname.replace("<locals>.", "")
+    if not re.match(r"^[A-Za-z0-9._:-]+$", qualname):
+        raise ValueError(
+            f"cannot infer activity_id from __qualname__ {qualname!r}: contains "
+            "characters disallowed in framework IDs (allowed: [A-Za-z0-9._:-]). "
+            "Pass activity_id= explicitly."
+        )
+    return qualname
+
+
+def _infer_result_type(func: Callable[..., object]) -> type:
+    """Pull the result type out of ``func``'s return annotation. Expects
+    ``async def fn(req) -> ResultMessage`` shape; the return annotation is
+    ``ResultMessage`` (NOT ``Awaitable[ResultMessage]`` thanks to PEP 3107
+    semantics for coroutine functions).
+    """
+    import typing
+
+    hints = typing.get_type_hints(func)
+    if "return" not in hints:
+        raise ValueError(
+            "cannot infer result_type: function has no return annotation; "
+            "pass result_type= explicitly"
+        )
+    return_type = hints["return"]
+    # If the user annotated `Awaitable[X]` explicitly, unwrap.
+    origin = typing.get_origin(return_type)
+    if origin is not None and origin in {
+        getattr(typing, "Awaitable", None),
+        getattr(typing, "Coroutine", None),
+    }:
+        args = typing.get_args(return_type)
+        if args:
+            return_type = args[-1]
+    return return_type
 
 
 class ActivityConflictError(RuntimeError):
@@ -521,6 +595,50 @@ class Workflow:
             adapter,
             options.retry_policy if options.HasField("retry_policy") else None,
         )
+
+    async def activity(
+        self,
+        func: Callable[[RequestT], Awaitable[ResultT]],
+        input_message: RequestT,
+        *,
+        activity_id: str | None = None,
+        retry_policy: RetryPolicy | None = None,
+        result_type: type[ResultT] | None = None,
+    ) -> ResultT:
+        """Ergonomic shortcut over :meth:`execute_activity`. Defaults reduce
+        the per-call boilerplate to the bare minimum a normal Python function
+        call already requires (the function and its argument).
+
+        Defaults applied unless overridden:
+
+        - ``activity_id`` ← ``func.__qualname__`` (e.g. ``"Service.fetch_quote"``).
+          Override when two activity callsites share the same function but
+          should have distinct records (e.g. ``"fetch:aapl"`` vs ``"fetch:msft"``).
+        - ``retry_policy`` ← :func:`default_retry_policy` (3 attempts, 1s
+          initial, 2x backoff, 30s max interval, 30s durable threshold) —
+          sensible for the framework's stated workloads (LLM / vendor /
+          quant). Pass ``RetryPolicy()`` explicitly for single-attempt.
+        - ``result_type`` ← inferred from ``func``'s return annotation
+          (``Awaitable[X]`` ⇒ ``X``). Required only when the annotation is
+          missing or not introspectable.
+
+        Caveat: auto-inferred ``activity_id`` is stable across runs only if
+        ``func.__qualname__`` is stable. Renaming the function invalidates
+        stored activity records (treated as a new activity_id). Use the
+        explicit ``activity_id`` override when refactor-stability matters
+        more than terseness.
+        """
+        if activity_id is None:
+            activity_id = _infer_activity_id(func)
+        if retry_policy is None:
+            retry_policy = default_retry_policy()
+        if result_type is None:
+            # _infer_result_type returns plain `type` (dynamic discovery via
+            # typing.get_type_hints); cast back to `type[ResultT]` so static
+            # checkers can see the parameterized result type.
+            result_type = cast("type[ResultT]", _infer_result_type(func))
+        options = ActivityOptions(activity_id=activity_id, retry_policy=retry_policy)
+        return await self.execute_activity(options, input_message, result_type, func)
 
     async def wait_event(
         self,
