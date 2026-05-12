@@ -12,10 +12,15 @@ import (
 )
 
 // ConcurrencyWorkflowID is the synthetic workflow_id under which concurrency
-// slot claims are stored. The runtime reserves this value; user-supplied
-// workflow IDs identical to it are technically allowed by the path regex but
-// will collide with framework state.
-const ConcurrencyWorkflowID = "__concurrency__"
+// slot claims are stored. Sourced from the proto-declared default on
+// `ReservedNames.concurrency_workflow_id` so the SDK and the proto contract
+// can't drift.
+var ConcurrencyWorkflowID = temporalessv1.Default_ReservedNames_ConcurrencyWorkflowId
+
+// concurrencySlotIDPrefix prefixes each slot's claim_id. Combined with the
+// slot index (`slot:0`, `slot:1`, ...) by the runtime. Same single-source-of-
+// truth pattern as ConcurrencyWorkflowID.
+var concurrencySlotIDPrefix = temporalessv1.Default_ReservedNames_ConcurrencySlotIdPrefix
 
 // ErrConcurrencyBusy is the sentinel for ConcurrencyBusyError-class errors.
 var ErrConcurrencyBusy = errors.New("concurrency cap is busy")
@@ -68,7 +73,7 @@ func acquireConcurrencySlot(
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		slotID := fmt.Sprintf("slot:%d", i)
+		slotID := fmt.Sprintf("%s%d", concurrencySlotIDPrefix, i)
 		slotKey := storage.ClaimKey{
 			Namespace:  namespace,
 			WorkflowID: ConcurrencyWorkflowID,

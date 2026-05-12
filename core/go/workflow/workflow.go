@@ -34,9 +34,11 @@ var ErrWorkflowDependencyFailed = errors.New("workflow dependency ended in a non
 const DefaultClaimLeaseDuration = 15 * time.Minute
 
 // ActivityRetryTimerIDPrefix marks timer records owned by the runtime's
-// durable retry path. User code passing this prefix to workflow.Sleep is
+// durable retry path. Sourced from the proto-declared default on
+// `ReservedNames.activity_retry_timer_id_prefix` so the SDK and the proto
+// contract can't drift. User code passing this prefix to workflow.Sleep is
 // rejected so framework-managed retry timers don't collide with user timers.
-const ActivityRetryTimerIDPrefix = "activity-retry:"
+var ActivityRetryTimerIDPrefix = temporalessv1.Default_ReservedNames_ActivityRetryTimerIdPrefix
 
 // activityRetryTimerID returns the deterministic timer_id used to pair an
 // ActivityRecord with its durable retry timer. Stable per activity_id; later

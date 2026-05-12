@@ -365,11 +365,16 @@ class OpenDALStore:
         return record
 
     async def get_claim(self, key: ClaimKey) -> temporaless_pb2.ClaimRecord | None:
-        path = key.path()
-        if not await self._operator.exists(path):
+        # Single read instead of exists-then-read: avoids a TOCTOU race when a
+        # concurrent acquire/release deletes the claim between the existence
+        # check and the read. Concurrency-key slot churn surfaces this race
+        # quickly (many workflows acquire/release the same slots in parallel).
+        try:
+            data = bytes(await self._operator.read(key.path()))
+        except opendal.exceptions.NotFound:
             return None
         record = temporaless_pb2.ClaimRecord()
-        record.ParseFromString(bytes(await self._operator.read(path)))
+        record.ParseFromString(data)
         return record
 
     async def put_activity(self, record: temporaless_pb2.ActivityRecord) -> None:

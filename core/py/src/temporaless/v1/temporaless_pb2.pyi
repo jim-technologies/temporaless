@@ -134,6 +134,16 @@ class RetryPolicy(_message.Message):
     durable_backoff_threshold: _duration_pb2.Duration
     def __init__(self, initial_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., backoff_coefficient: _Optional[float] = ..., maximum_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., maximum_attempts: _Optional[int] = ..., non_retryable_error_codes: _Optional[_Iterable[str]] = ..., durable_backoff_threshold: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
+class ReservedNames(_message.Message):
+    __slots__ = ("concurrency_workflow_id", "activity_retry_timer_id_prefix", "concurrency_slot_id_prefix")
+    CONCURRENCY_WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTIVITY_RETRY_TIMER_ID_PREFIX_FIELD_NUMBER: _ClassVar[int]
+    CONCURRENCY_SLOT_ID_PREFIX_FIELD_NUMBER: _ClassVar[int]
+    concurrency_workflow_id: str
+    activity_retry_timer_id_prefix: str
+    concurrency_slot_id_prefix: str
+    def __init__(self, concurrency_workflow_id: _Optional[str] = ..., activity_retry_timer_id_prefix: _Optional[str] = ..., concurrency_slot_id_prefix: _Optional[str] = ...) -> None: ...
+
 class WorkflowKey(_message.Message):
     __slots__ = ("namespace", "workflow_id", "run_id")
     NAMESPACE_FIELD_NUMBER: _ClassVar[int]

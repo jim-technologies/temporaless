@@ -10,7 +10,12 @@
 // `RecordStoreService` is the cross-language storage contract. Any backend
 // (OpenDAL filesystem, S3, GCS, SQL, ...) implements the same RPC surface, so
 // generated CLI / gRPC / HTTP / MCP wrappers all see the same operations.
-syntax = "proto3";
+//
+// Edition 2023: lets us declare field-level string defaults (used by
+// `ReservedNames` below) so framework-reserved literals like
+// "__concurrency__" and "activity-retry:" live ONCE — here — rather than
+// being duplicated in every SDK.
+edition = "2023";
 
 package temporaless.v1;
 
@@ -19,6 +24,12 @@ import "google/protobuf/any.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
+// File-level: keep proto3-style implicit field presence (scalars generate as
+// value types, not pointers). The ReservedNames message below opts back into
+// explicit presence on its specific fields so the `[default = "..."]`
+// declarations take effect (defaults only fire on fields with explicit
+// presence in editions).
+option features.field_presence = IMPLICIT;
 option go_package = "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1;temporalessv1";
 
 // WorkflowOptions identifies a single workflow run plus its replay context.
@@ -211,6 +222,46 @@ enum TimerKind {
   // the `activity-retry:` prefix is reserved by the runtime and rejected
   // from user-supplied timer IDs in `workflow.Sleep`.
   TIMER_KIND_ACTIVITY_RETRY = 2;
+}
+
+// ReservedNames is the canonical source of framework-reserved string
+// literals — workflow_ids, claim_id prefixes, timer_id prefixes — that both
+// SDKs use to namespace runtime state. The values live HERE (via Edition
+// 2023 field defaults) so that:
+//
+//   1. Every SDK reads them from the same place via generated code:
+//      Go:     (&pb.ReservedNames{}).GetConcurrencyWorkflowId()
+//      Python: pb.ReservedNames().concurrency_workflow_id
+//      Future invariantprotocol-generated CLI/MCP pick them up automatically.
+//
+//   2. Renaming or evolving any reserved string is a one-line proto change
+//      + regenerate; no parallel SDK constants can drift.
+//
+// Never instantiated as a wire-format message — read defaults from a fresh
+// zero-value instance.
+message ReservedNames {
+  // Synthetic workflow_id under which concurrency-key slot claims are
+  // stored. User-supplied workflow IDs identical to this value collide with
+  // framework state — document as reserved.
+  string concurrency_workflow_id = 1 [
+    features.field_presence = EXPLICIT,
+    default = "__concurrency__"
+  ];
+
+  // Prefix for timer records owned by the runtime's durable retry path. User
+  // code passing this prefix to `workflow.Sleep` is rejected at runtime so
+  // framework-managed retry timers don't collide with user timers.
+  string activity_retry_timer_id_prefix = 2 [
+    features.field_presence = EXPLICIT,
+    default = "activity-retry:"
+  ];
+
+  // Prefix for concurrency slot claim_ids. Combined with a slot index
+  // (`slot:0`, `slot:1`, ...) by the runtime.
+  string concurrency_slot_id_prefix = 3 [
+    features.field_presence = EXPLICIT,
+    default = "slot:"
+  ];
 }
 
 // RecordSchemaVersion identifies the record family. Each protobuf record sets

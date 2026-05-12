@@ -8,6 +8,36 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Changed
+
+- **Proto migrated from `syntax = "proto3"` to `edition = "2023"`.**
+  Enables string-typed field defaults via `[default = "..."]`. The file-level
+  `features.field_presence = IMPLICIT` keeps proto3-style scalar codegen
+  (value types, not pointers) so existing struct literals and `GetX()` calls
+  are unchanged. The new `ReservedNames` message uses explicit-presence
+  fields so the defaults actually fire.
+- **Framework-reserved string literals now live in proto.** The synthetic
+  `__concurrency__` workflow_id, the `activity-retry:` timer-id prefix, and
+  the `slot:` concurrency-slot claim_id prefix are declared as default
+  values on `temporaless.v1.ReservedNames`. Both SDKs read them from the
+  generated code at module load:
+  - Go: `temporalessv1.Default_ReservedNames_ConcurrencyWorkflowId` (and the
+    matching `_ActivityRetryTimerIdPrefix`, `_ConcurrencySlotIdPrefix`
+    package-level constants).
+  - Python: `temporaless_pb2.ReservedNames().concurrency_workflow_id`
+    (etc.) via a module-level `_RESERVED_NAMES` singleton.
+  Renaming any reserved string is now a one-line proto change plus
+  regenerate; no SDK constants can drift. When invariantprotocol generates
+  the CLI / MCP / HTTP wrappers, the reserved strings are visible to those
+  too — fully protobuf-driven.
+
+### Fixed
+
+- TOCTOU race in `OpenDALStore.get_claim` (Python): the exists-then-read
+  pattern occasionally raised `NotFound` when a concurrent
+  acquire/release deleted the claim mid-call. Replaced with a single
+  `read` that treats `NotFound` as "absent" — also one fewer round-trip.
+
 ### Added
 
 - **Concurrency keys** (`WorkflowOptions.concurrency_key` + `concurrency_limit`).

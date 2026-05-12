@@ -43,10 +43,17 @@ Options = temporaless_pb2.WorkflowOptions
 ActivityOptions = temporaless_pb2.ActivityOptions
 RetryPolicy = temporaless_pb2.RetryPolicy
 
-# ACTIVITY_RETRY_TIMER_ID_PREFIX marks timer records owned by the runtime's
-# durable retry path. User code passing this prefix to ``Workflow.sleep`` is
-# rejected so framework-managed retry timers don't collide with user timers.
-ACTIVITY_RETRY_TIMER_ID_PREFIX = "activity-retry:"
+# Framework-reserved string literals sourced from the proto-declared defaults
+# on ``temporaless.v1.ReservedNames``. Reading from a zero-value instance
+# (rather than declaring parallel constants here) guarantees the proto
+# contract is the single source of truth — renaming any reserved string is a
+# one-line proto change plus regenerate, no SDK constant drifts.
+_RESERVED_NAMES = temporaless_pb2.ReservedNames()
+
+# Marks timer records owned by the runtime's durable retry path. User code
+# passing this prefix to ``Workflow.sleep`` is rejected so framework-managed
+# retry timers don't collide with user timers.
+ACTIVITY_RETRY_TIMER_ID_PREFIX = _RESERVED_NAMES.activity_retry_timer_id_prefix
 
 
 def _activity_retry_timer_id(activity_id: str) -> str:
@@ -75,8 +82,9 @@ async def _acquire_concurrency_slot(
     storage backend arbitrates the create race via S3 If-None-Match / GCS
     ifGenerationMatch=0 / OpenDAL if_not_exists). No app-level locks.
     """
+    slot_id_prefix = _RESERVED_NAMES.concurrency_slot_id_prefix
     for i in range(limit):
-        slot_id = f"slot:{i}"
+        slot_id = f"{slot_id_prefix}{i}"
         slot_key = ClaimKey(
             namespace=namespace,
             workflow_id=CONCURRENCY_WORKFLOW_ID,
@@ -245,10 +253,11 @@ class ConcurrencyBusyError(RuntimeError):
         self.limit = limit
 
 
-# Synthetic workflow_id under which concurrency slot claims are stored. Users
-# may technically create workflows with this ID per the path regex, but they
-# will collide with framework state — document as reserved.
-CONCURRENCY_WORKFLOW_ID = "__concurrency__"
+# Synthetic workflow_id under which concurrency slot claims are stored.
+# Sourced from the proto-declared default on
+# ``ReservedNames.concurrency_workflow_id`` — see the _RESERVED_NAMES block
+# at the top of this module for the single-source-of-truth pattern.
+CONCURRENCY_WORKFLOW_ID = _RESERVED_NAMES.concurrency_workflow_id
 
 
 def _concurrency_owner_id(workflow_id: str, run_id: str) -> str:
