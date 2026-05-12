@@ -69,6 +69,39 @@ message WorkflowOptions {
       expression: "this == '' || (this != '.' && this != '..')"
     }
   ];
+  // Pre-emptive cluster-wide concurrency cap key. When non-empty, the runtime
+  // acquires one of `concurrency_limit` slot claims under this key before
+  // executing the workflow body; if all slots are taken, raises
+  // ConcurrencyBusyError (mapped to RESOURCE_EXHAUSTED at the gRPC boundary).
+  // The slot is held only during an in-flight invocation: durable timer
+  // pending / event pending / claim busy releases the slot so other workflows
+  // can run; the resumed invocation re-acquires on its next entry.
+  //
+  // Use this for vendor rate-limit pre-emption: every workflow sharing
+  // `concurrency_key="vendor:openai"` with `concurrency_limit=5` has at most
+  // 5 active invocations cluster-wide, regardless of how many worker replicas
+  // are dispatching. Pair with `RetryPolicy.durable_backoff_threshold` and
+  // `ActivityFailure.retry_after` for the full vendor-friendly story.
+  //
+  // Empty disables concurrency capping (the default). When set, must be
+  // path-safe and `concurrency_limit` must be > 0.
+  string concurrency_key = 5 [
+    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:-]+$"},
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_options.concurrency_key.not_dot_path"
+      message: "concurrency_key must not be . or .."
+      expression: "this == '' || (this != '.' && this != '..')"
+    }
+  ];
+  // Maximum number of concurrent in-flight workflow invocations sharing
+  // `concurrency_key`. Must be > 0 when `concurrency_key` is set; must be 0
+  // when `concurrency_key` is empty.
+  uint32 concurrency_limit = 6;
+  option (buf.validate.message).cel = {
+    id: "temporaless.workflow_options.concurrency_key_limit_paired"
+    message: "concurrency_key and concurrency_limit must both be set or both empty"
+    expression: "(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)"
+  };
 }
 
 // ActivityOptions controls how a single activity executes within a workflow.
@@ -197,6 +230,12 @@ enum ClaimResourceType {
   CLAIM_RESOURCE_TYPE_WORKFLOW = 1;
   CLAIM_RESOURCE_TYPE_ACTIVITY = 2;
   CLAIM_RESOURCE_TYPE_TIMER = 3;
+  // Cluster-wide concurrency-cap slot. The framework writes one claim record
+  // per slot index (0..concurrency_limit-1) under workflow_id=__concurrency__,
+  // run_id=<concurrency_key>. A workflow.Run holds one of these for the
+  // duration of an invocation; the slot is released on terminal status or
+  // when the workflow returns a pending error. See WorkflowOptions.concurrency_key.
+  CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY = 4;
 }
 
 // ClaimCapability declares what the configured claim store can do. Adapters
@@ -752,6 +791,16 @@ message TryCreateClaimResponse {
   bool created = 1;
 }
 
+// DeleteClaimRequest releases a held claim so the slot is available to other
+// workers. Idempotent: returns `deleted=false` when the claim wasn't present.
+message DeleteClaimRequest {
+  ClaimKey key = 1;
+}
+
+message DeleteClaimResponse {
+  bool deleted = 1;
+}
+
 message GetStoreCapabilitiesRequest {}
 
 message GetStoreCapabilitiesResponse {
@@ -838,6 +887,9 @@ service RecordStoreService {
   // when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
   // safe-to-resume.
   rpc TryCreateClaim(TryCreateClaimRequest) returns (TryCreateClaimResponse);
+  // Idempotently release a claim. Used by the runtime to release a concurrency
+  // slot on workflow terminal status; safe to call when the claim doesn't exist.
+  rpc DeleteClaim(DeleteClaimRequest) returns (DeleteClaimResponse);
 
   // Read a single signal/event record by key.
   rpc GetEvent(GetEventRequest) returns (GetEventResponse);

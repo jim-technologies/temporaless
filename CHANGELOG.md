@@ -10,6 +10,28 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Concurrency keys** (`WorkflowOptions.concurrency_key` + `concurrency_limit`).
+  Pre-emptive cluster-wide cap on in-flight `workflow.Run` invocations
+  sharing a key. The runtime acquires one of N slot claims before executing
+  the workflow body; all slots full → `ConcurrencyBusyError` (mapped to
+  RESOURCE_EXHAUSTED) and no IN_PROGRESS record is written. Slots are
+  released on terminal status, failure, and pending. Built for vendor
+  rate-limit pre-emption: every workflow sharing
+  `concurrency_key="vendor:openai"` with `concurrency_limit=5` has at most
+  5 active invocations cluster-wide, regardless of how many workers
+  dispatch. Pairs naturally with the existing `Retry-After` and
+  `durable_backoff_threshold` for the full vendor-friendly story.
+  - Proto: `WorkflowOptions.concurrency_key/concurrency_limit` with a
+    paired-CEL validation, `ClaimResourceType.CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY`
+    enum value, new `DeleteClaim` RPC on `RecordStoreService`.
+  - All shared types/options/enums live in proto — when invariantprotocol
+    generates the CLI / MCP / HTTP wrappers, the concurrency config rides
+    along automatically.
+  - Distributed-safe by design: acquire arbitrates via `TryCreateClaim`
+    (the storage backend's native atomic precondition — S3 `If-None-Match`,
+    GCS `ifGenerationMatch=0`, OpenDAL `if_not_exists`); no app-level locks.
+    Crash recovery via owner-id check: a re-invocation re-acquires its own
+    stale slot rather than consuming a second one.
 - **`background` workers helper** (`adapters/go/background` /
   `temporaless.background`): opt-in toggles for in-process cron / timer
   scanner / janitor loops. Solves "every replica polling the bucket is

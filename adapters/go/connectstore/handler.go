@@ -221,6 +221,22 @@ func (handler *Handler) TryCreateClaim(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+func (handler *Handler) DeleteClaim(ctx context.Context, req *connect.Request[temporalessv1.DeleteClaimRequest]) (*connect.Response[temporalessv1.DeleteClaimResponse], error) {
+	if handler.ClaimStore == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store is required"))
+	}
+
+	key := storage.ClaimKeyFromProto(req.Msg.GetKey())
+	deleted, err := handler.ClaimStore.DeleteClaim(ctx, key)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	return connect.NewResponse(&temporalessv1.DeleteClaimResponse{
+		Deleted: deleted,
+	}), nil
+}
+
 func (handler *Handler) Sweep(ctx context.Context, req *connect.Request[temporalessv1.SweepRequest]) (*connect.Response[temporalessv1.SweepResponse], error) {
 	deleted, err := handler.Store.Sweep(
 		ctx,

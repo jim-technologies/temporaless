@@ -62,6 +62,11 @@ type ClaimStore interface {
 	ClaimCapability(context.Context) (ClaimCapability, error)
 	GetClaim(context.Context, ClaimKey) (*temporalessv1.ClaimRecord, bool, error)
 	TryCreateClaim(context.Context, *temporalessv1.ClaimRecord) (bool, error)
+	// DeleteClaim idempotently releases a held claim. Returns true when the
+	// claim existed and was removed, false when it was already absent. Used by
+	// the runtime to release concurrency-key slots when a workflow reaches a
+	// terminal status or returns a pending error.
+	DeleteClaim(context.Context, ClaimKey) (bool, error)
 }
 
 type Store interface {

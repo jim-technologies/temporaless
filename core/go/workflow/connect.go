@@ -97,6 +97,10 @@ func ErrorToConnectCode(err error) (connect.Code, string, bool) {
 	if errors.As(err, &claimBusy) {
 		return connect.CodeAlreadyExists, claimBusy.Error(), true
 	}
+	var concurrencyBusy *ConcurrencyBusyError
+	if errors.As(err, &concurrencyBusy) {
+		return connect.CodeResourceExhausted, concurrencyBusy.Error(), true
+	}
 	if errors.Is(err, ErrWorkflowConflict) ||
 		errors.Is(err, ErrActivityConflict) ||
 		errors.Is(err, ErrTimerConflict) {

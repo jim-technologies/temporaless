@@ -45,6 +45,9 @@ class RecordStoreService(Protocol):
     async def try_create_claim(self, request: temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
+    async def delete_claim(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
     async def get_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
@@ -176,6 +179,16 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=svc.try_create_claim,
+                ),
+                "/temporaless.v1.RecordStoreService/DeleteClaim": Endpoint.unary(
+                    method=MethodInfo(
+                        name="DeleteClaim",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.delete_claim,
                 ),
                 "/temporaless.v1.RecordStoreService/GetEvent": Endpoint.unary(
                     method=MethodInfo(
@@ -491,6 +504,26 @@ class RecordStoreServiceClient(ConnectClient):
             timeout_ms=timeout_ms,
         )
 
+    async def delete_claim(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteClaim",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
     async def get_event(
         self,
         request: temporaless_dot_v1_dot_temporaless__pb2.GetEventRequest,
@@ -754,6 +787,8 @@ class RecordStoreServiceSync(Protocol):
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def try_create_claim(self, request: temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def delete_claim(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def get_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def put_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.PutEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.PutEventResponse:
@@ -873,6 +908,16 @@ class RecordStoreServiceWSGIApplication(ConnectWSGIApplication):
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=service.try_create_claim,
+                ),
+                "/temporaless.v1.RecordStoreService/DeleteClaim": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="DeleteClaim",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.delete_claim,
                 ),
                 "/temporaless.v1.RecordStoreService/GetEvent": EndpointSync.unary(
                     method=MethodInfo(
@@ -1182,6 +1227,26 @@ class RecordStoreServiceClientSync(ConnectClientSync):
                 service_name="temporaless.v1.RecordStoreService",
                 input=temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimRequest,
                 output=temporaless_dot_v1_dot_temporaless__pb2.TryCreateClaimResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def delete_claim(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteClaim",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.DeleteClaimResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

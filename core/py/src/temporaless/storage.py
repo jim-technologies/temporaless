@@ -287,6 +287,13 @@ class ClaimStore(Protocol):
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool: ...
 
+    async def delete_claim(self, key: ClaimKey) -> bool:
+        """Idempotently release a held claim. Returns True when the claim
+        existed and was removed, False when it was already absent. Used by
+        the runtime to release concurrency-key slots when a workflow reaches
+        a terminal status or returns a pending error."""
+        ...
+
 
 @dataclass(frozen=True)
 class DueTimer:
@@ -400,6 +407,12 @@ class OpenDALStore:
         ):
             return False
         return True
+
+    async def delete_claim(self, key: ClaimKey) -> bool:
+        """Lock-free idempotent delete. The underlying object store's Delete
+        is atomic on every backend (no fileblob race like create-only writes),
+        so cross-process distributed safety is the bucket's contract."""
+        return await _delete_if_exists(self._operator, key.path())
 
     async def list_workflows(
         self,

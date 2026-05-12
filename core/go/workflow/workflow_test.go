@@ -333,15 +333,10 @@ func TestRunRejectsMissingRequiredIDs(t *testing.T) {
 			name:    "run ID is required",
 			options: &Options{WorkflowId: "prices:ids", CodeVersion: "test-version"},
 		},
-		{
-			name: "claim owner is required when claims are configured",
-			options: &Options{
-				WorkflowId:  "prices:ids",
-				RunId:       "2026-05-02",
-				CodeVersion: "test-version",
-			},
-			claimStore: newTestClaimStore(t),
-		},
+		// Note: "claim_owner_id required when claim store is present" was
+		// removed when concurrency-keys landed — a claim store can now be
+		// present for concurrency-slot use without enabling activity claims.
+		// Activity claims are opt-in via claim_owner_id; absence skips them.
 	}
 
 	for _, test := range tests {

@@ -69,6 +69,10 @@ class RecordStoreClient(Protocol):
         self, request: temporaless_pb2.TryCreateClaimRequest
     ) -> temporaless_pb2.TryCreateClaimResponse: ...
 
+    async def delete_claim(
+        self, request: temporaless_pb2.DeleteClaimRequest
+    ) -> temporaless_pb2.DeleteClaimResponse: ...
+
     async def get_event(
         self, request: temporaless_pb2.GetEventRequest
     ) -> temporaless_pb2.GetEventResponse: ...
@@ -196,6 +200,12 @@ class ConnectStore:
             temporaless_pb2.TryCreateClaimRequest(record=record)
         )
         return response.created
+
+    async def delete_claim(self, key: ClaimKey) -> bool:
+        response = await self._client.delete_claim(
+            temporaless_pb2.DeleteClaimRequest(key=key.to_proto())
+        )
+        return response.deleted
 
     async def get_event(self, key: EventKey) -> temporaless_pb2.EventRecord | None:
         response = await self._client.get_event(temporaless_pb2.GetEventRequest(key=key.to_proto()))
@@ -388,6 +398,17 @@ class RecordStoreService:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
         return temporaless_pb2.TryCreateClaimResponse(
             created=await self._claim_store.try_create_claim(request.record)
+        )
+
+    async def delete_claim(
+        self,
+        request: temporaless_pb2.DeleteClaimRequest,
+        ctx: RequestContext,
+    ) -> temporaless_pb2.DeleteClaimResponse:
+        if self._claim_store is None:
+            raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
+        return temporaless_pb2.DeleteClaimResponse(
+            deleted=await self._claim_store.delete_claim(claim_key_from_proto(request.key))
         )
 
     async def get_event(

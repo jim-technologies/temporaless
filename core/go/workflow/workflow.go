@@ -263,8 +263,8 @@ func Run[Req proto.Message, Resp proto.Message](
 	if err != nil {
 		return zero, err
 	}
-	if claimStore != nil && runOptions.GetClaimOwnerId() == "" {
-		return zero, fmt.Errorf("claim owner is required when claim store is configured")
+	if runOptions.GetConcurrencyKey() != "" && claimStore == nil {
+		return zero, fmt.Errorf("claim store is required when concurrency_key is set")
 	}
 
 	resultTemplate := newResult()
@@ -314,6 +314,41 @@ func Run[Req proto.Message, Resp proto.Message](
 		default:
 			return zero, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
 		}
+	}
+
+	// Pre-emptive cluster-wide concurrency cap. Acquire BEFORE writing the
+	// IN_PROGRESS record so a "busy" condition leaves no observable side
+	// effect — the caller simply retries the same workflow.Run when capacity
+	// is available. Released via defer below so every exit path (success,
+	// failure, pending) frees the slot for other workflows.
+	concurrencyKey := runOptions.GetConcurrencyKey()
+	concurrencyLimit := runOptions.GetConcurrencyLimit()
+	var acquiredSlotID string
+	if concurrencyKey != "" && concurrencyLimit > 0 {
+		ownerID := concurrencyOwnerID(runOptions.GetWorkflowId(), runOptions.GetRunId())
+		slotID, err := acquireConcurrencySlot(
+			ctx, claimStore,
+			storage.DefaultNamespace, concurrencyKey,
+			concurrencyLimit, ownerID,
+			runOptions.GetCodeVersion(),
+			DefaultClaimLeaseDuration,
+		)
+		if err != nil {
+			return zero, err
+		}
+		if slotID == "" {
+			return zero, &ConcurrencyBusyError{Key: concurrencyKey, Limit: concurrencyLimit}
+		}
+		acquiredSlotID = slotID
+		defer func() {
+			// Use a fresh context for release so a cancelled parent ctx still
+			// frees the slot. Worst case: a slow release races with the
+			// lease — the existing claim's lease still expires and the slot
+			// eventually frees itself.
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer releaseCancel()
+			_ = releaseConcurrencySlot(releaseCtx, claimStore, storage.DefaultNamespace, concurrencyKey, acquiredSlotID)
+		}()
 	}
 
 	inputAny, err := anypb.New(input)
@@ -666,7 +701,10 @@ func runActivity[T proto.Message](
 		}
 	}
 
-	if workflow.claimStore != nil {
+	// Activity-level claims are opt-in via claim_owner_id. A claim store can
+	// be present for concurrency-key slots without enabling activity claims —
+	// keep the two orthogonal.
+	if workflow.claimStore != nil && workflow.claimOwner != "" {
 		claimKey := storage.ClaimKey{
 			Namespace:  storage.DefaultNamespace,
 			WorkflowID: workflow.workflowID,

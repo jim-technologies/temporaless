@@ -206,6 +206,16 @@ func (store *ClientStore) TryCreateClaim(ctx context.Context, record *temporales
 	return resp.Msg.GetCreated(), nil
 }
 
+func (store *ClientStore) DeleteClaim(ctx context.Context, key storage.ClaimKey) (bool, error) {
+	resp, err := store.client.DeleteClaim(ctx, connect.NewRequest(&temporalessv1.DeleteClaimRequest{
+		Key: key.Proto(),
+	}))
+	if err != nil {
+		return false, err
+	}
+	return resp.Msg.GetDeleted(), nil
+}
+
 func (store *ClientStore) Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error) {
 	resp, err := store.client.Sweep(ctx, connect.NewRequest(&temporalessv1.SweepRequest{
 		Namespace: namespace,

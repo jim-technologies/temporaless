@@ -106,3 +106,35 @@ func (store *Store) TryCreateClaim(ctx context.Context, record *temporalessv1.Cl
 	}
 	return true, nil
 }
+
+// DeleteClaim removes a held claim. Idempotent: returns false when the claim
+// was already absent. Lock-free: the underlying bucket.Delete is atomic on
+// every GoCDK driver (no fileblob race like TryCreateClaim's IfNotExist), so
+// the cross-process distributed safety guarantee comes from the bucket
+// directly.
+func (store *Store) DeleteClaim(ctx context.Context, key storage.ClaimKey) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if store.bucket == nil {
+		return false, fmt.Errorf("gocdk bucket is required")
+	}
+	path, err := key.Path()
+	if err != nil {
+		return false, err
+	}
+	exists, err := store.bucket.Exists(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if err := store.bucket.Delete(ctx, path); err != nil {
+		if gcerrors.Code(err) == gcerrors.NotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}

@@ -295,6 +295,10 @@ class RunScopedCache:
         inner = self._require_claim_store()
         return await inner.try_create_claim(record)
 
+    async def delete_claim(self, key: ClaimKey) -> bool:
+        inner = self._require_claim_store()
+        return await inner.delete_claim(key)
+
     def _require_claim_store(self) -> ClaimStore:
         if not isinstance(self._inner, ClaimStore):
             raise TypeError(

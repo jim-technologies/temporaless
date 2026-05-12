@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import hashlib
 import inspect
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from temporaless._cache import RunScopedCache
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
+    DEFAULT_NAMESPACE,
     SLEEP_TIMER_KIND,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
@@ -52,6 +54,78 @@ def _activity_retry_timer_id(activity_id: str) -> str:
     retry timer. Stable per activity_id; later retries overwrite the record
     with a new fire_at."""
     return f"{ACTIVITY_RETRY_TIMER_ID_PREFIX}{activity_id}"
+
+
+async def _acquire_concurrency_slot(
+    claim_store: ClaimStore,
+    namespace: str,
+    concurrency_key: str,
+    limit: int,
+    owner_id: str,
+    code_version: str,
+    lease_duration: timedelta,
+) -> str | None:
+    """Try slots 0..limit-1 in order; return the slot_id of the acquired slot
+    or None when all slots are taken by other owners.
+
+    A slot held by the same owner is treated as re-acquired (crash recovery),
+    so one workflow can't consume multiple slots across crash boundaries.
+
+    Distributed-safe: uses only :meth:`ClaimStore.try_create_claim` (the
+    storage backend arbitrates the create race via S3 If-None-Match / GCS
+    ifGenerationMatch=0 / OpenDAL if_not_exists). No app-level locks.
+    """
+    for i in range(limit):
+        slot_id = f"slot:{i}"
+        slot_key = ClaimKey(
+            namespace=namespace,
+            workflow_id=CONCURRENCY_WORKFLOW_ID,
+            run_id=concurrency_key,
+            claim_id=slot_id,
+        )
+        now = datetime.now(UTC)
+        created_at = Timestamp()
+        created_at.FromDatetime(now)
+        expires_at = Timestamp()
+        expires_at.FromDatetime(now + lease_duration)
+        claim = temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=slot_key.to_proto(),
+            owner_id=owner_id,
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
+            resource_id=concurrency_key,
+            code_version=code_version,
+            input_digest=slot_id,
+            lease_expires_at=expires_at,
+            created_at=created_at,
+            heartbeat_at=created_at,
+        )
+        if await claim_store.try_create_claim(claim):
+            return slot_id
+        # Slot taken — see whether it's our own stale claim from a prior
+        # invocation that crashed before releasing.
+        existing = await claim_store.get_claim(slot_key)
+        if existing is not None and existing.owner_id == owner_id:
+            return slot_id
+    return None
+
+
+async def _release_concurrency_slot(
+    claim_store: ClaimStore,
+    namespace: str,
+    concurrency_key: str,
+    slot_id: str,
+) -> None:
+    """Delete the named slot claim. Idempotent: a missing claim is not an
+    error. Always called in a finally block so every exit path (success,
+    failure, pending) releases the slot."""
+    slot_key = ClaimKey(
+        namespace=namespace,
+        workflow_id=CONCURRENCY_WORKFLOW_ID,
+        run_id=concurrency_key,
+        claim_id=slot_id,
+    )
+    await claim_store.delete_claim(slot_key)
 
 
 def default_retry_policy() -> RetryPolicy:
@@ -157,6 +231,33 @@ class WorkflowConflictError(RuntimeError):
     pass
 
 
+class ConcurrencyBusyError(RuntimeError):
+    """Raised when a workflow's ``concurrency_key`` slot pool is full.
+
+    The workflow body did NOT execute and no IN_PROGRESS record was written —
+    callers retry the same ``workflow.run`` when capacity is available. Maps
+    to gRPC code RESOURCE_EXHAUSTED via :func:`workflow_error_to_connect_code`.
+    """
+
+    def __init__(self, key: str, limit: int) -> None:
+        super().__init__(f"concurrency cap {key!r} at limit {limit}")
+        self.key = key
+        self.limit = limit
+
+
+# Synthetic workflow_id under which concurrency slot claims are stored. Users
+# may technically create workflows with this ID per the path regex, but they
+# will collide with framework state — document as reserved.
+CONCURRENCY_WORKFLOW_ID = "__concurrency__"
+
+
+def _concurrency_owner_id(workflow_id: str, run_id: str) -> str:
+    """Stable owner identity for the workflow holding the slot. Using
+    ``workflow_id:run_id`` lets a crashed invocation's next invocation
+    re-acquire its previously-held slot (idempotent recovery)."""
+    return f"{workflow_id}:{run_id}"
+
+
 class ClaimBusyError(RuntimeError):
     def __init__(
         self,
@@ -246,6 +347,8 @@ def workflow_error_to_connect_code(exc: BaseException) -> tuple[object, str] | N
         return (Code.UNAVAILABLE, str(exc))
     if isinstance(exc, ClaimBusyError):
         return (Code.ALREADY_EXISTS, str(exc))
+    if isinstance(exc, ConcurrencyBusyError):
+        return (Code.RESOURCE_EXHAUSTED, str(exc))
     if isinstance(exc, (WorkflowConflictError, ActivityConflictError, TimerConflictError)):
         return (Code.FAILED_PRECONDITION, str(exc))
     if isinstance(exc, (ActivityError, WorkflowDependencyFailedError)):
@@ -806,6 +909,8 @@ async def run(
     options = normalized_workflow_options(options)
     if options.claim_owner_id and not isinstance(store, ClaimStore):
         raise ValueError("claim store is required when claim owner is provided")
+    if options.concurrency_key and not isinstance(store, ClaimStore):
+        raise ValueError("claim store is required when concurrency_key is set")
     result_template = result_factory()
     workflow_type = message_pair_type("workflow", input_message, result_template)
     digest = execution_digest("workflow", workflow_type, options.code_version, input_message)
@@ -838,6 +943,28 @@ async def run(
             await cache.prefetch()
         else:
             raise WorkflowConflictError("stored workflow has unknown status")
+
+    # Pre-emptive cluster-wide concurrency cap. Acquire BEFORE writing the
+    # IN_PROGRESS record so a "busy" condition leaves no observable side
+    # effect — the caller simply retries the same workflow.run when capacity
+    # is available. Released in the finally block so every exit path
+    # (success, failure, pending) frees the slot.
+    acquired_slot_id: str | None = None
+    if options.concurrency_key and options.concurrency_limit > 0:
+        owner_id = _concurrency_owner_id(options.workflow_id, options.run_id)
+        # `store` is now the RunScopedCache, which forwards claim methods to
+        # the wrapped underlying claim store. cast for ty.
+        acquired_slot_id = await _acquire_concurrency_slot(
+            cast("ClaimStore", store),
+            DEFAULT_NAMESPACE,
+            options.concurrency_key,
+            options.concurrency_limit,
+            owner_id,
+            options.code_version,
+            DEFAULT_CLAIM_LEASE_DURATION,
+        )
+        if acquired_slot_id is None:
+            raise ConcurrencyBusyError(options.concurrency_key, options.concurrency_limit)
 
     input_any = Any()
     input_any.Pack(input_message)
@@ -915,6 +1042,25 @@ async def run(
     finally:
         _workflow_var.reset(workflow_token)
         _annotations_var.reset(annotations_token)
+        if acquired_slot_id is not None and options.concurrency_key:
+            # Use a shielded release so a cancelled parent task still frees
+            # the slot. Worst case: slow release races with lease expiry, the
+            # stored claim's lease eventually expires and the slot frees itself.
+            try:
+                await asyncio.shield(
+                    _release_concurrency_slot(
+                        cast("ClaimStore", store),
+                        DEFAULT_NAMESPACE,
+                        options.concurrency_key,
+                        acquired_slot_id,
+                    )
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "failed to release concurrency slot %s for %s",
+                    acquired_slot_id,
+                    options.concurrency_key,
+                )
 
 
 def wrap_workflow(

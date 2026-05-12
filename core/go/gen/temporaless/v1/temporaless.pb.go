@@ -338,6 +338,12 @@ const (
 	ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW    ClaimResourceType = 1
 	ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY    ClaimResourceType = 2
 	ClaimResourceType_CLAIM_RESOURCE_TYPE_TIMER       ClaimResourceType = 3
+	// Cluster-wide concurrency-cap slot. The framework writes one claim record
+	// per slot index (0..concurrency_limit-1) under workflow_id=__concurrency__,
+	// run_id=<concurrency_key>. A workflow.Run holds one of these for the
+	// duration of an invocation; the slot is released on terminal status or
+	// when the workflow returns a pending error. See WorkflowOptions.concurrency_key.
+	ClaimResourceType_CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY ClaimResourceType = 4
 )
 
 // Enum value maps for ClaimResourceType.
@@ -347,12 +353,14 @@ var (
 		1: "CLAIM_RESOURCE_TYPE_WORKFLOW",
 		2: "CLAIM_RESOURCE_TYPE_ACTIVITY",
 		3: "CLAIM_RESOURCE_TYPE_TIMER",
+		4: "CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY",
 	}
 	ClaimResourceType_value = map[string]int32{
-		"CLAIM_RESOURCE_TYPE_UNSPECIFIED": 0,
-		"CLAIM_RESOURCE_TYPE_WORKFLOW":    1,
-		"CLAIM_RESOURCE_TYPE_ACTIVITY":    2,
-		"CLAIM_RESOURCE_TYPE_TIMER":       3,
+		"CLAIM_RESOURCE_TYPE_UNSPECIFIED":     0,
+		"CLAIM_RESOURCE_TYPE_WORKFLOW":        1,
+		"CLAIM_RESOURCE_TYPE_ACTIVITY":        2,
+		"CLAIM_RESOURCE_TYPE_TIMER":           3,
+		"CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY": 4,
 	}
 )
 
@@ -464,9 +472,30 @@ type WorkflowOptions struct {
 	// configured; otherwise should be empty. Reusing the same owner across
 	// invocations is what allows resume of a stuck claim by the same logical
 	// worker.
-	ClaimOwnerId  string `protobuf:"bytes,4,opt,name=claim_owner_id,json=claimOwnerId,proto3" json:"claim_owner_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ClaimOwnerId string `protobuf:"bytes,4,opt,name=claim_owner_id,json=claimOwnerId,proto3" json:"claim_owner_id,omitempty"`
+	// Pre-emptive cluster-wide concurrency cap key. When non-empty, the runtime
+	// acquires one of `concurrency_limit` slot claims under this key before
+	// executing the workflow body; if all slots are taken, raises
+	// ConcurrencyBusyError (mapped to RESOURCE_EXHAUSTED at the gRPC boundary).
+	// The slot is held only during an in-flight invocation: durable timer
+	// pending / event pending / claim busy releases the slot so other workflows
+	// can run; the resumed invocation re-acquires on its next entry.
+	//
+	// Use this for vendor rate-limit pre-emption: every workflow sharing
+	// `concurrency_key="vendor:openai"` with `concurrency_limit=5` has at most
+	// 5 active invocations cluster-wide, regardless of how many worker replicas
+	// are dispatching. Pair with `RetryPolicy.durable_backoff_threshold` and
+	// `ActivityFailure.retry_after` for the full vendor-friendly story.
+	//
+	// Empty disables concurrency capping (the default). When set, must be
+	// path-safe and `concurrency_limit` must be > 0.
+	ConcurrencyKey string `protobuf:"bytes,5,opt,name=concurrency_key,json=concurrencyKey,proto3" json:"concurrency_key,omitempty"`
+	// Maximum number of concurrent in-flight workflow invocations sharing
+	// `concurrency_key`. Must be > 0 when `concurrency_key` is set; must be 0
+	// when `concurrency_key` is empty.
+	ConcurrencyLimit uint32 `protobuf:"varint,6,opt,name=concurrency_limit,json=concurrencyLimit,proto3" json:"concurrency_limit,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WorkflowOptions) Reset() {
@@ -525,6 +554,20 @@ func (x *WorkflowOptions) GetClaimOwnerId() string {
 		return x.ClaimOwnerId
 	}
 	return ""
+}
+
+func (x *WorkflowOptions) GetConcurrencyKey() string {
+	if x != nil {
+		return x.ConcurrencyKey
+	}
+	return ""
+}
+
+func (x *WorkflowOptions) GetConcurrencyLimit() uint32 {
+	if x != nil {
+		return x.ConcurrencyLimit
+	}
+	return 0
 }
 
 // ActivityOptions controls how a single activity executes within a workflow.
@@ -3442,6 +3485,96 @@ func (x *TryCreateClaimResponse) GetCreated() bool {
 	return false
 }
 
+// DeleteClaimRequest releases a held claim so the slot is available to other
+// workers. Idempotent: returns `deleted=false` when the claim wasn't present.
+type DeleteClaimRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           *ClaimKey              `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteClaimRequest) Reset() {
+	*x = DeleteClaimRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteClaimRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteClaimRequest) ProtoMessage() {}
+
+func (x *DeleteClaimRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteClaimRequest.ProtoReflect.Descriptor instead.
+func (*DeleteClaimRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *DeleteClaimRequest) GetKey() *ClaimKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+type DeleteClaimResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteClaimResponse) Reset() {
+	*x = DeleteClaimResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteClaimResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteClaimResponse) ProtoMessage() {}
+
+func (x *DeleteClaimResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteClaimResponse.ProtoReflect.Descriptor instead.
+func (*DeleteClaimResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *DeleteClaimResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
 type GetStoreCapabilitiesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3450,7 +3583,7 @@ type GetStoreCapabilitiesRequest struct {
 
 func (x *GetStoreCapabilitiesRequest) Reset() {
 	*x = GetStoreCapabilitiesRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3462,7 +3595,7 @@ func (x *GetStoreCapabilitiesRequest) String() string {
 func (*GetStoreCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetStoreCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3475,7 +3608,7 @@ func (x *GetStoreCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStoreCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetStoreCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{51}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{53}
 }
 
 type GetStoreCapabilitiesResponse struct {
@@ -3490,7 +3623,7 @@ type GetStoreCapabilitiesResponse struct {
 
 func (x *GetStoreCapabilitiesResponse) Reset() {
 	*x = GetStoreCapabilitiesResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3502,7 +3635,7 @@ func (x *GetStoreCapabilitiesResponse) String() string {
 func (*GetStoreCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetStoreCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3515,7 +3648,7 @@ func (x *GetStoreCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStoreCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetStoreCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{52}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *GetStoreCapabilitiesResponse) GetClaimCapability() ClaimCapability {
@@ -3544,7 +3677,7 @@ type SweepRequest struct {
 
 func (x *SweepRequest) Reset() {
 	*x = SweepRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3556,7 +3689,7 @@ func (x *SweepRequest) String() string {
 func (*SweepRequest) ProtoMessage() {}
 
 func (x *SweepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3569,7 +3702,7 @@ func (x *SweepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepRequest.ProtoReflect.Descriptor instead.
 func (*SweepRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{53}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *SweepRequest) GetNamespace() string {
@@ -3603,7 +3736,7 @@ type SweepResponse struct {
 
 func (x *SweepResponse) Reset() {
 	*x = SweepResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3615,7 +3748,7 @@ func (x *SweepResponse) String() string {
 func (*SweepResponse) ProtoMessage() {}
 
 func (x *SweepResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3628,7 +3761,7 @@ func (x *SweepResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepResponse.ProtoReflect.Descriptor instead.
 func (*SweepResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{54}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *SweepResponse) GetDeleted() uint32 {
@@ -3652,7 +3785,7 @@ type DueTimer struct {
 
 func (x *DueTimer) Reset() {
 	*x = DueTimer{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3664,7 +3797,7 @@ func (x *DueTimer) String() string {
 func (*DueTimer) ProtoMessage() {}
 
 func (x *DueTimer) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3677,7 +3810,7 @@ func (x *DueTimer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimer.ProtoReflect.Descriptor instead.
 func (*DueTimer) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{55}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *DueTimer) GetKey() *TimerKey {
@@ -3717,7 +3850,7 @@ type DueTimersRequest struct {
 
 func (x *DueTimersRequest) Reset() {
 	*x = DueTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3729,7 +3862,7 @@ func (x *DueTimersRequest) String() string {
 func (*DueTimersRequest) ProtoMessage() {}
 
 func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3742,7 +3875,7 @@ func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersRequest.ProtoReflect.Descriptor instead.
 func (*DueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{56}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *DueTimersRequest) GetNamespace() string {
@@ -3768,7 +3901,7 @@ type DueTimersResponse struct {
 
 func (x *DueTimersResponse) Reset() {
 	*x = DueTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3780,7 +3913,7 @@ func (x *DueTimersResponse) String() string {
 func (*DueTimersResponse) ProtoMessage() {}
 
 func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3793,7 +3926,7 @@ func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersResponse.ProtoReflect.Descriptor instead.
 func (*DueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{57}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *DueTimersResponse) GetDue() []*DueTimer {
@@ -3807,7 +3940,7 @@ var File_temporaless_v1_temporaless_proto protoreflect.FileDescriptor
 
 const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
-	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe8\x04\n" +
+	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\b\n" +
 	"\x0fWorkflowOptions\x12\xb6\x01\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x94\x01\xbaH\x90\x01\xba\x01u\n" +
 	"5temporaless.workflow_options.workflow_id.not_dot_path\x12\x1fworkflow_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x16\x10\x012\x12^[A-Za-z0-9._:-]+$R\n" +
@@ -3816,7 +3949,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"0temporaless.workflow_options.run_id.not_dot_path\x12\x1arun_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x16\x10\x012\x12^[A-Za-z0-9._:-]+$R\x05runId\x12!\n" +
 	"\fcode_version\x18\x03 \x01(\tR\vcodeVersion\x12\xd3\x01\n" +
 	"\x0eclaim_owner_id\x18\x04 \x01(\tB\xac\x01\xbaH\xa8\x01\xba\x01\x8b\x01\n" +
-	"8temporaless.workflow_options.claim_owner_id.not_dot_path\x12\"claim_owner_id must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x172\x15^$|^[A-Za-z0-9._:-]+$R\fclaimOwnerId\"\xfc\x01\n" +
+	"8temporaless.workflow_options.claim_owner_id.not_dot_path\x12\"claim_owner_id must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x172\x15^$|^[A-Za-z0-9._:-]+$R\fclaimOwnerId\x12\xd8\x01\n" +
+	"\x0fconcurrency_key\x18\x05 \x01(\tB\xae\x01\xbaH\xaa\x01\xba\x01\x8d\x01\n" +
+	"9temporaless.workflow_options.concurrency_key.not_dot_path\x12#concurrency_key must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x172\x15^$|^[A-Za-z0-9._:-]+$R\x0econcurrencyKey\x12+\n" +
+	"\x11concurrency_limit\x18\x06 \x01(\rR\x10concurrencyLimit:\x85\x02\xbaH\x81\x02\x1a\xfe\x01\n" +
+	"9temporaless.workflow_options.concurrency_key_limit_paired\x12Dconcurrency_key and concurrency_limit must both be set or both empty\x1a{(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)\"\xfc\x01\n" +
 	"\x0fActivityOptions\x12\xa8\x01\n" +
 	"\vactivity_id\x18\x01 \x01(\tB\x86\x01\xbaH\x82\x01\xba\x01g\n" +
 	"'temporaless.id.activity_id.not_dot_path\x12\x1factivity_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x16\x10\x012\x12^[A-Za-z0-9._:-]+$R\n" +
@@ -4037,7 +4174,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x15TryCreateClaimRequest\x123\n" +
 	"\x06record\x18\x01 \x01(\v2\x1b.temporaless.v1.ClaimRecordR\x06record\"2\n" +
 	"\x16TryCreateClaimResponse\x12\x18\n" +
-	"\acreated\x18\x01 \x01(\bR\acreated\"\x1d\n" +
+	"\acreated\x18\x01 \x01(\bR\acreated\"@\n" +
+	"\x12DeleteClaimRequest\x12*\n" +
+	"\x03key\x18\x01 \x01(\v2\x18.temporaless.v1.ClaimKeyR\x03key\"/\n" +
+	"\x13DeleteClaimResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x1d\n" +
 	"\x1bGetStoreCapabilitiesRequest\"j\n" +
 	"\x1cGetStoreCapabilitiesResponse\x12J\n" +
 	"\x10claim_capability\x18\x01 \x01(\x0e2\x1f.temporaless.v1.ClaimCapabilityR\x0fclaimCapability\"\x8e\x01\n" +
@@ -4081,17 +4222,18 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x1eRECORD_SCHEMA_VERSION_WORKFLOW\x10\x02\x12\x1f\n" +
 	"\x1bRECORD_SCHEMA_VERSION_TIMER\x10\x03\x12\x1f\n" +
 	"\x1bRECORD_SCHEMA_VERSION_CLAIM\x10\x04\x12\x1f\n" +
-	"\x1bRECORD_SCHEMA_VERSION_EVENT\x10\x05*\x9b\x01\n" +
+	"\x1bRECORD_SCHEMA_VERSION_EVENT\x10\x05*\xc4\x01\n" +
 	"\x11ClaimResourceType\x12#\n" +
 	"\x1fCLAIM_RESOURCE_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cCLAIM_RESOURCE_TYPE_WORKFLOW\x10\x01\x12 \n" +
 	"\x1cCLAIM_RESOURCE_TYPE_ACTIVITY\x10\x02\x12\x1d\n" +
-	"\x19CLAIM_RESOURCE_TYPE_TIMER\x10\x03*\x9d\x01\n" +
+	"\x19CLAIM_RESOURCE_TYPE_TIMER\x10\x03\x12'\n" +
+	"#CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY\x10\x04*\x9d\x01\n" +
 	"\x0fClaimCapability\x12 \n" +
 	"\x1cCLAIM_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCLAIM_CAPABILITY_NO_CLAIMS\x10\x01\x12'\n" +
 	"#CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS\x10\x02\x12\x1f\n" +
-	"\x1bCLAIM_CAPABILITY_CAS_CLAIMS\x10\x032\xc6\x0e\n" +
+	"\x1bCLAIM_CAPABILITY_CAS_CLAIMS\x10\x032\x9e\x0f\n" +
 	"\x12RecordStoreService\x12q\n" +
 	"\x14GetStoreCapabilities\x12+.temporaless.v1.GetStoreCapabilitiesRequest\x1a,.temporaless.v1.GetStoreCapabilitiesResponse\x12V\n" +
 	"\vGetWorkflow\x12\".temporaless.v1.GetWorkflowRequest\x1a#.temporaless.v1.GetWorkflowResponse\x12V\n" +
@@ -4101,7 +4243,8 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\vGetActivity\x12\".temporaless.v1.GetActivityRequest\x1a#.temporaless.v1.GetActivityResponse\x12V\n" +
 	"\vPutActivity\x12\".temporaless.v1.PutActivityRequest\x1a#.temporaless.v1.PutActivityResponse\x12M\n" +
 	"\bGetClaim\x12\x1f.temporaless.v1.GetClaimRequest\x1a .temporaless.v1.GetClaimResponse\x12_\n" +
-	"\x0eTryCreateClaim\x12%.temporaless.v1.TryCreateClaimRequest\x1a&.temporaless.v1.TryCreateClaimResponse\x12M\n" +
+	"\x0eTryCreateClaim\x12%.temporaless.v1.TryCreateClaimRequest\x1a&.temporaless.v1.TryCreateClaimResponse\x12V\n" +
+	"\vDeleteClaim\x12\".temporaless.v1.DeleteClaimRequest\x1a#.temporaless.v1.DeleteClaimResponse\x12M\n" +
 	"\bGetEvent\x12\x1f.temporaless.v1.GetEventRequest\x1a .temporaless.v1.GetEventResponse\x12M\n" +
 	"\bPutEvent\x12\x1f.temporaless.v1.PutEventRequest\x1a .temporaless.v1.PutEventResponse\x12\\\n" +
 	"\rListWorkflows\x12$.temporaless.v1.ListWorkflowsRequest\x1a%.temporaless.v1.ListWorkflowsResponse\x12_\n" +
@@ -4130,7 +4273,7 @@ func file_temporaless_v1_temporaless_proto_rawDescGZIP() []byte {
 }
 
 var file_temporaless_v1_temporaless_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
+var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
 var file_temporaless_v1_temporaless_proto_goTypes = []any{
 	(ActivityStatus)(0),                  // 0: temporaless.v1.ActivityStatus
 	(WorkflowStatus)(0),                  // 1: temporaless.v1.WorkflowStatus
@@ -4190,66 +4333,68 @@ var file_temporaless_v1_temporaless_proto_goTypes = []any{
 	(*GetClaimResponse)(nil),             // 55: temporaless.v1.GetClaimResponse
 	(*TryCreateClaimRequest)(nil),        // 56: temporaless.v1.TryCreateClaimRequest
 	(*TryCreateClaimResponse)(nil),       // 57: temporaless.v1.TryCreateClaimResponse
-	(*GetStoreCapabilitiesRequest)(nil),  // 58: temporaless.v1.GetStoreCapabilitiesRequest
-	(*GetStoreCapabilitiesResponse)(nil), // 59: temporaless.v1.GetStoreCapabilitiesResponse
-	(*SweepRequest)(nil),                 // 60: temporaless.v1.SweepRequest
-	(*SweepResponse)(nil),                // 61: temporaless.v1.SweepResponse
-	(*DueTimer)(nil),                     // 62: temporaless.v1.DueTimer
-	(*DueTimersRequest)(nil),             // 63: temporaless.v1.DueTimersRequest
-	(*DueTimersResponse)(nil),            // 64: temporaless.v1.DueTimersResponse
-	nil,                                  // 65: temporaless.v1.ActivityRecord.AnnotationsEntry
-	nil,                                  // 66: temporaless.v1.WorkflowRecord.AnnotationsEntry
-	(*durationpb.Duration)(nil),          // 67: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),        // 68: google.protobuf.Timestamp
-	(*anypb.Any)(nil),                    // 69: google.protobuf.Any
+	(*DeleteClaimRequest)(nil),           // 58: temporaless.v1.DeleteClaimRequest
+	(*DeleteClaimResponse)(nil),          // 59: temporaless.v1.DeleteClaimResponse
+	(*GetStoreCapabilitiesRequest)(nil),  // 60: temporaless.v1.GetStoreCapabilitiesRequest
+	(*GetStoreCapabilitiesResponse)(nil), // 61: temporaless.v1.GetStoreCapabilitiesResponse
+	(*SweepRequest)(nil),                 // 62: temporaless.v1.SweepRequest
+	(*SweepResponse)(nil),                // 63: temporaless.v1.SweepResponse
+	(*DueTimer)(nil),                     // 64: temporaless.v1.DueTimer
+	(*DueTimersRequest)(nil),             // 65: temporaless.v1.DueTimersRequest
+	(*DueTimersResponse)(nil),            // 66: temporaless.v1.DueTimersResponse
+	nil,                                  // 67: temporaless.v1.ActivityRecord.AnnotationsEntry
+	nil,                                  // 68: temporaless.v1.WorkflowRecord.AnnotationsEntry
+	(*durationpb.Duration)(nil),          // 69: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),        // 70: google.protobuf.Timestamp
+	(*anypb.Any)(nil),                    // 71: google.protobuf.Any
 }
 var file_temporaless_v1_temporaless_proto_depIdxs = []int32{
 	9,   // 0: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
-	67,  // 1: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	67,  // 2: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
-	67,  // 3: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
-	67,  // 4: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
-	68,  // 5: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
-	68,  // 6: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
+	69,  // 1: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	69,  // 2: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
+	69,  // 3: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
+	69,  // 4: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
+	70,  // 5: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
+	70,  // 6: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
 	15,  // 7: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
 	4,   // 8: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
 	11,  // 9: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
-	69,  // 10: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
+	71,  // 10: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
 	0,   // 11: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
-	69,  // 12: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
+	71,  // 12: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
 	15,  // 13: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	68,  // 14: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 15: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
+	70,  // 14: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
+	70,  // 15: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
 	16,  // 16: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
-	65,  // 17: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
-	68,  // 18: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
+	67,  // 17: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
+	70,  // 18: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
 	4,   // 19: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
 	10,  // 20: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
-	69,  // 21: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
+	71,  // 21: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
 	1,   // 22: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
-	69,  // 23: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
+	71,  // 23: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
 	15,  // 24: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	68,  // 25: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 26: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
-	66,  // 27: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
+	70,  // 25: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
+	70,  // 26: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
+	68,  // 27: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
 	4,   // 28: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
 	12,  // 29: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
 	3,   // 30: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
-	67,  // 31: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
+	69,  // 31: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
 	2,   // 32: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
-	68,  // 33: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
-	68,  // 34: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 35: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
+	70,  // 33: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
+	70,  // 34: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
+	70,  // 35: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
 	4,   // 36: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
 	13,  // 37: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
-	69,  // 38: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
-	68,  // 39: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
+	71,  // 38: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
+	70,  // 39: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
 	4,   // 40: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
 	14,  // 41: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
 	5,   // 42: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
-	68,  // 43: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
-	68,  // 44: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
-	68,  // 45: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
+	70,  // 43: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
+	70,  // 44: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
+	70,  // 45: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
 	10,  // 46: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
 	18,  // 47: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
 	18,  // 48: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
@@ -4278,61 +4423,64 @@ var file_temporaless_v1_temporaless_proto_depIdxs = []int32{
 	14,  // 71: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
 	21,  // 72: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
 	21,  // 73: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
-	6,   // 74: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
-	68,  // 75: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
-	67,  // 76: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
-	12,  // 77: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
-	19,  // 78: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
-	18,  // 79: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
-	68,  // 80: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	62,  // 81: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	58,  // 82: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
-	22,  // 83: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
-	24,  // 84: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
-	26,  // 85: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
-	28,  // 86: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
-	30,  // 87: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
-	32,  // 88: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
-	54,  // 89: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
-	56,  // 90: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
-	34,  // 91: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
-	36,  // 92: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
-	38,  // 93: temporaless.v1.RecordStoreService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
-	40,  // 94: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
-	42,  // 95: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
-	44,  // 96: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
-	46,  // 97: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
-	48,  // 98: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
-	50,  // 99: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
-	52,  // 100: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
-	60,  // 101: temporaless.v1.RecordStoreService.Sweep:input_type -> temporaless.v1.SweepRequest
-	63,  // 102: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
-	59,  // 103: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
-	23,  // 104: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
-	25,  // 105: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
-	27,  // 106: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
-	29,  // 107: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
-	31,  // 108: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
-	33,  // 109: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
-	55,  // 110: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
-	57,  // 111: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
-	35,  // 112: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
-	37,  // 113: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
-	39,  // 114: temporaless.v1.RecordStoreService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
-	41,  // 115: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
-	43,  // 116: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
-	45,  // 117: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
-	47,  // 118: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
-	49,  // 119: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
-	51,  // 120: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
-	53,  // 121: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
-	61,  // 122: temporaless.v1.RecordStoreService.Sweep:output_type -> temporaless.v1.SweepResponse
-	64,  // 123: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
-	103, // [103:124] is the sub-list for method output_type
-	82,  // [82:103] is the sub-list for method input_type
-	82,  // [82:82] is the sub-list for extension type_name
-	82,  // [82:82] is the sub-list for extension extendee
-	0,   // [0:82] is the sub-list for field type_name
+	14,  // 74: temporaless.v1.DeleteClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	6,   // 75: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
+	70,  // 76: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
+	69,  // 77: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
+	12,  // 78: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
+	19,  // 79: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
+	18,  // 80: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
+	70,  // 81: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	64,  // 82: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	60,  // 83: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
+	22,  // 84: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
+	24,  // 85: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
+	26,  // 86: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
+	28,  // 87: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
+	30,  // 88: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
+	32,  // 89: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
+	54,  // 90: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
+	56,  // 91: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
+	58,  // 92: temporaless.v1.RecordStoreService.DeleteClaim:input_type -> temporaless.v1.DeleteClaimRequest
+	34,  // 93: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
+	36,  // 94: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
+	38,  // 95: temporaless.v1.RecordStoreService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
+	40,  // 96: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
+	42,  // 97: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
+	44,  // 98: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
+	46,  // 99: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
+	48,  // 100: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
+	50,  // 101: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
+	52,  // 102: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
+	62,  // 103: temporaless.v1.RecordStoreService.Sweep:input_type -> temporaless.v1.SweepRequest
+	65,  // 104: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
+	61,  // 105: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
+	23,  // 106: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
+	25,  // 107: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
+	27,  // 108: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
+	29,  // 109: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
+	31,  // 110: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
+	33,  // 111: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
+	55,  // 112: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
+	57,  // 113: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
+	59,  // 114: temporaless.v1.RecordStoreService.DeleteClaim:output_type -> temporaless.v1.DeleteClaimResponse
+	35,  // 115: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
+	37,  // 116: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
+	39,  // 117: temporaless.v1.RecordStoreService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
+	41,  // 118: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
+	43,  // 119: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
+	45,  // 120: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
+	47,  // 121: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
+	49,  // 122: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
+	51,  // 123: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
+	53,  // 124: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
+	63,  // 125: temporaless.v1.RecordStoreService.Sweep:output_type -> temporaless.v1.SweepResponse
+	66,  // 126: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
+	105, // [105:127] is the sub-list for method output_type
+	83,  // [83:105] is the sub-list for method input_type
+	83,  // [83:83] is the sub-list for extension type_name
+	83,  // [83:83] is the sub-list for extension extendee
+	0,   // [0:83] is the sub-list for field type_name
 }
 
 func init() { file_temporaless_v1_temporaless_proto_init() }
@@ -4346,7 +4494,7 @@ func file_temporaless_v1_temporaless_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporaless_v1_temporaless_proto_rawDesc), len(file_temporaless_v1_temporaless_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   60,
+			NumMessages:   62,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

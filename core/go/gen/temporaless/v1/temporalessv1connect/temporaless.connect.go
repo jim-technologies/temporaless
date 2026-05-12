@@ -73,6 +73,9 @@ const (
 	// RecordStoreServiceTryCreateClaimProcedure is the fully-qualified name of the RecordStoreService's
 	// TryCreateClaim RPC.
 	RecordStoreServiceTryCreateClaimProcedure = "/temporaless.v1.RecordStoreService/TryCreateClaim"
+	// RecordStoreServiceDeleteClaimProcedure is the fully-qualified name of the RecordStoreService's
+	// DeleteClaim RPC.
+	RecordStoreServiceDeleteClaimProcedure = "/temporaless.v1.RecordStoreService/DeleteClaim"
 	// RecordStoreServiceGetEventProcedure is the fully-qualified name of the RecordStoreService's
 	// GetEvent RPC.
 	RecordStoreServiceGetEventProcedure = "/temporaless.v1.RecordStoreService/GetEvent"
@@ -133,6 +136,9 @@ type RecordStoreServiceClient interface {
 	// when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
 	// safe-to-resume.
 	TryCreateClaim(context.Context, *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error)
+	// Idempotently release a claim. Used by the runtime to release a concurrency
+	// slot on workflow terminal status; safe to call when the claim doesn't exist.
+	DeleteClaim(context.Context, *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error)
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
 	// Deliver a signal payload to a waiting workflow. External services
@@ -234,6 +240,12 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(recordStoreServiceMethods.ByName("TryCreateClaim")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteClaim: connect.NewClient[v1.DeleteClaimRequest, v1.DeleteClaimResponse](
+			httpClient,
+			baseURL+RecordStoreServiceDeleteClaimProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("DeleteClaim")),
+			connect.WithClientOptions(opts...),
+		),
 		getEvent: connect.NewClient[v1.GetEventRequest, v1.GetEventResponse](
 			httpClient,
 			baseURL+RecordStoreServiceGetEventProcedure,
@@ -320,6 +332,7 @@ type recordStoreServiceClient struct {
 	putActivity          *connect.Client[v1.PutActivityRequest, v1.PutActivityResponse]
 	getClaim             *connect.Client[v1.GetClaimRequest, v1.GetClaimResponse]
 	tryCreateClaim       *connect.Client[v1.TryCreateClaimRequest, v1.TryCreateClaimResponse]
+	deleteClaim          *connect.Client[v1.DeleteClaimRequest, v1.DeleteClaimResponse]
 	getEvent             *connect.Client[v1.GetEventRequest, v1.GetEventResponse]
 	putEvent             *connect.Client[v1.PutEventRequest, v1.PutEventResponse]
 	listWorkflows        *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
@@ -377,6 +390,11 @@ func (c *recordStoreServiceClient) GetClaim(ctx context.Context, req *connect.Re
 // TryCreateClaim calls temporaless.v1.RecordStoreService.TryCreateClaim.
 func (c *recordStoreServiceClient) TryCreateClaim(ctx context.Context, req *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error) {
 	return c.tryCreateClaim.CallUnary(ctx, req)
+}
+
+// DeleteClaim calls temporaless.v1.RecordStoreService.DeleteClaim.
+func (c *recordStoreServiceClient) DeleteClaim(ctx context.Context, req *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error) {
+	return c.deleteClaim.CallUnary(ctx, req)
 }
 
 // GetEvent calls temporaless.v1.RecordStoreService.GetEvent.
@@ -461,6 +479,9 @@ type RecordStoreServiceHandler interface {
 	// when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
 	// safe-to-resume.
 	TryCreateClaim(context.Context, *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error)
+	// Idempotently release a claim. Used by the runtime to release a concurrency
+	// slot on workflow terminal status; safe to call when the claim doesn't exist.
+	DeleteClaim(context.Context, *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error)
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
 	// Deliver a signal payload to a waiting workflow. External services
@@ -558,6 +579,12 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		connect.WithSchema(recordStoreServiceMethods.ByName("TryCreateClaim")),
 		connect.WithHandlerOptions(opts...),
 	)
+	recordStoreServiceDeleteClaimHandler := connect.NewUnaryHandler(
+		RecordStoreServiceDeleteClaimProcedure,
+		svc.DeleteClaim,
+		connect.WithSchema(recordStoreServiceMethods.ByName("DeleteClaim")),
+		connect.WithHandlerOptions(opts...),
+	)
 	recordStoreServiceGetEventHandler := connect.NewUnaryHandler(
 		RecordStoreServiceGetEventProcedure,
 		svc.GetEvent,
@@ -650,6 +677,8 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceGetClaimHandler.ServeHTTP(w, r)
 		case RecordStoreServiceTryCreateClaimProcedure:
 			recordStoreServiceTryCreateClaimHandler.ServeHTTP(w, r)
+		case RecordStoreServiceDeleteClaimProcedure:
+			recordStoreServiceDeleteClaimHandler.ServeHTTP(w, r)
 		case RecordStoreServiceGetEventProcedure:
 			recordStoreServiceGetEventHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutEventProcedure:
@@ -717,6 +746,10 @@ func (UnimplementedRecordStoreServiceHandler) GetClaim(context.Context, *connect
 
 func (UnimplementedRecordStoreServiceHandler) TryCreateClaim(context.Context, *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.TryCreateClaim is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) DeleteClaim(context.Context, *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DeleteClaim is not implemented"))
 }
 
 func (UnimplementedRecordStoreServiceHandler) GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error) {

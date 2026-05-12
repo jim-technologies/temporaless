@@ -55,6 +55,7 @@ class ClaimResourceType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CLAIM_RESOURCE_TYPE_WORKFLOW: _ClassVar[ClaimResourceType]
     CLAIM_RESOURCE_TYPE_ACTIVITY: _ClassVar[ClaimResourceType]
     CLAIM_RESOURCE_TYPE_TIMER: _ClassVar[ClaimResourceType]
+    CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY: _ClassVar[ClaimResourceType]
 
 class ClaimCapability(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -87,22 +88,27 @@ CLAIM_RESOURCE_TYPE_UNSPECIFIED: ClaimResourceType
 CLAIM_RESOURCE_TYPE_WORKFLOW: ClaimResourceType
 CLAIM_RESOURCE_TYPE_ACTIVITY: ClaimResourceType
 CLAIM_RESOURCE_TYPE_TIMER: ClaimResourceType
+CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY: ClaimResourceType
 CLAIM_CAPABILITY_UNSPECIFIED: ClaimCapability
 CLAIM_CAPABILITY_NO_CLAIMS: ClaimCapability
 CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS: ClaimCapability
 CLAIM_CAPABILITY_CAS_CLAIMS: ClaimCapability
 
 class WorkflowOptions(_message.Message):
-    __slots__ = ("workflow_id", "run_id", "code_version", "claim_owner_id")
+    __slots__ = ("workflow_id", "run_id", "code_version", "claim_owner_id", "concurrency_key", "concurrency_limit")
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     CLAIM_OWNER_ID_FIELD_NUMBER: _ClassVar[int]
+    CONCURRENCY_KEY_FIELD_NUMBER: _ClassVar[int]
+    CONCURRENCY_LIMIT_FIELD_NUMBER: _ClassVar[int]
     workflow_id: str
     run_id: str
     code_version: str
     claim_owner_id: str
-    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., code_version: _Optional[str] = ..., claim_owner_id: _Optional[str] = ...) -> None: ...
+    concurrency_key: str
+    concurrency_limit: int
+    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., code_version: _Optional[str] = ..., claim_owner_id: _Optional[str] = ..., concurrency_key: _Optional[str] = ..., concurrency_limit: _Optional[int] = ...) -> None: ...
 
 class ActivityOptions(_message.Message):
     __slots__ = ("activity_id", "retry_policy")
@@ -565,6 +571,18 @@ class TryCreateClaimResponse(_message.Message):
     CREATED_FIELD_NUMBER: _ClassVar[int]
     created: bool
     def __init__(self, created: _Optional[bool] = ...) -> None: ...
+
+class DeleteClaimRequest(_message.Message):
+    __slots__ = ("key",)
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    key: ClaimKey
+    def __init__(self, key: _Optional[_Union[ClaimKey, _Mapping]] = ...) -> None: ...
+
+class DeleteClaimResponse(_message.Message):
+    __slots__ = ("deleted",)
+    DELETED_FIELD_NUMBER: _ClassVar[int]
+    deleted: bool
+    def __init__(self, deleted: _Optional[bool] = ...) -> None: ...
 
 class GetStoreCapabilitiesRequest(_message.Message):
     __slots__ = ()
