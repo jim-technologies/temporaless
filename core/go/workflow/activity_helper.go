@@ -87,7 +87,7 @@ func Activity[Req proto.Message, Resp proto.Message](
 		o(&cfg)
 	}
 	if cfg.activityID == "" {
-		id, err := inferActivityID(fn)
+		id, err := InferActivityID(fn)
 		if err != nil {
 			return zero, err
 		}
@@ -109,7 +109,7 @@ func Activity[Req proto.Message, Resp proto.Message](
 
 var activityIDRegex = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 
-// inferActivityID extracts a path-safe identifier from a function reference.
+// InferActivityID extracts a path-safe identifier from a function reference.
 // Strategy:
 //
 //  1. Get the fully-qualified Go function name via runtime.FuncForPC.
@@ -118,15 +118,15 @@ var activityIDRegex = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 //     `pkg.(*Type).Method`; the parens aren't in the framework's ID regex.
 //  4. Validate against the framework's ID regex; reject closures whose
 //     generated names contain characters we can't represent in storage paths.
-func inferActivityID(fn any) (string, error) {
+func InferActivityID(fn any) (string, error) {
 	rv := reflect.ValueOf(fn)
 	if rv.Kind() != reflect.Func {
-		return "", fmt.Errorf("inferActivityID: argument is not a function")
+		return "", fmt.Errorf("InferActivityID: argument is not a function")
 	}
 	pc := rv.Pointer()
 	rf := runtime.FuncForPC(pc)
 	if rf == nil {
-		return "", fmt.Errorf("inferActivityID: no runtime function for PC")
+		return "", fmt.Errorf("InferActivityID: no runtime function for PC")
 	}
 	name := rf.Name()
 	if idx := strings.LastIndex(name, "/"); idx >= 0 {

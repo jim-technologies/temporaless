@@ -35,8 +35,8 @@ func TestActivityInfersIDFromFunctionName(t *testing.T) {
 		t.Fatalf("result = %d, want 14", result.GetValue())
 	}
 
-	// Stored record's activity_id must equal what inferActivityID derived.
-	inferredID, err := inferActivityID(doubleInt32)
+	// Stored record's activity_id must equal what InferActivityID derived.
+	inferredID, err := InferActivityID(doubleInt32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestActivityWithExplicitID(t *testing.T) {
 	}
 
 	// Inferred-id record must NOT exist.
-	inferred, _ := inferActivityID(doubleInt32)
+	inferred, _ := InferActivityID(doubleInt32)
 	if inferred != "" {
 		_, found, _ := store.GetActivity(ctx, storage.ActivityKey{
 			Namespace:  storage.DefaultNamespace,
@@ -172,7 +172,7 @@ func TestDefaultRetryPolicyReturnsFreshInstance(t *testing.T) {
 func TestInferActivityIDSanitizesPathSegments(t *testing.T) {
 	// Reuse doubleInt32 — full name is "github.com/.../workflow.doubleInt32".
 	// Inference must drop the path prefix and leave a path-safe id.
-	id, err := inferActivityID(doubleInt32)
+	id, err := InferActivityID(doubleInt32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestInferActivityIDSanitizesPathSegments(t *testing.T) {
 }
 
 func TestInferActivityIDRejectsNonFunction(t *testing.T) {
-	_, err := inferActivityID(42)
+	_, err := InferActivityID(42)
 	if err == nil || !errors.Is(err, err) {
 		t.Fatal("expected error for non-function argument")
 	}
