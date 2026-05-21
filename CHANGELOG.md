@@ -10,6 +10,26 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **Rust workflow runtime** — `workflow::run()`, `workflow::execute_activity()`,
+  ergonomic `workflow::activity()` helper, `current()` accessor (via
+  `tokio::task_local!`), `annotate()` durable metadata. Implements the
+  same three replay branches Go/Python do (COMPLETED short-circuit, FAILED
+  replay, IN_PROGRESS resume, fresh execution). In-process retries with
+  exponential backoff + `ActivityError::with_retry_after(...)` honoring
+  vendor pacing. Same SHA-256 input-fingerprint algorithm — workflows
+  authored in any SDK produce identical record bytes.
+  - Not yet in Rust: claims, concurrency keys, durable timer backoffs,
+    `Sleep`/`WaitEvent`, ConnectRPC handler integration. Track per-feature
+    parity in `docs/sdks.md`.
+- **`docs/sdks.md`** — single-page cross-SDK compatibility audit.
+  Surface-by-surface comparison (construct store, workflow body, activity
+  dispatch) showing identical-where-possible / idiomatic-where-needed.
+  Capability matrix: what each SDK ships today vs the runway.
+- **Cross-language interop tests** (`core/rs/temporaless/tests/interop.rs`)
+  proving wire-format identity: hand-construct records the way Python's
+  runtime would, write via the Rust `OpenDALStore`, read back, assert
+  every field round-trips including nested `Any` payloads, retry history,
+  and annotations. Also verifies Rust writes to the canonical Hive path.
 - **Rust SDK (storage layer)** at `core/rs/temporaless/`. Native `opendal`
   crate, prost-generated proto types, full read/write of every record kind
   (workflow, activity, timer, event, claim) at the same Hive-partitioned

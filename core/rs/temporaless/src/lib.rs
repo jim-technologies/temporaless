@@ -1,3 +1,9 @@
+// The public `RunError` enum carries a handful of variants that include
+// boxed errors from upstream crates; clippy considers the resulting Result
+// "large" (~128B). The error type IS the public surface — reshaping it just
+// to satisfy the lint would worsen ergonomics for callers. Allow it.
+#![allow(clippy::result_large_err)]
+
 //! Temporaless — Rust SDK (storage layer).
 //!
 //! # Scope (intentional)
@@ -30,6 +36,7 @@
 //!   `temporalessv1` / `temporaless_pb2` namespaces.
 
 pub mod storage;
+pub mod workflow;
 
 #[allow(clippy::all)]
 #[allow(missing_docs)]
@@ -41,4 +48,8 @@ pub mod v1 {
 
 pub use storage::{
     ActivityKey, ClaimKey, EventKey, OpenDALStore, Store, StoreError, TimerKey, WorkflowKey,
+};
+pub use workflow::{
+    activity, annotate, current, default_retry_policy, execute_activity, run, ActivityError,
+    ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions,
 };
