@@ -39,6 +39,10 @@ build/
 *.tar.gz
 *.whl
 
+# Rust build / lock artifacts. We do commit Cargo.lock for application
+# crates per Cargo guidance, but the target dir is local-only.
+target/
+
 # Flox runtime state — only the manifest (`.flox/env`) and lock should be tracked
 .flox/cache/
 .flox/run/

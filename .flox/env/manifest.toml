@@ -8,6 +8,12 @@ libffi.pkg-path = "libffi"
 buf.pkg-path = "buf"
 gcc-unwrapped.pkg-path = "gcc-unwrapped"
 gcc-unwrapped.outputs = ["lib"]
+# Rust SDK (core/rs/). rustc + cargo only — third-party crates live in
+# core/rs/temporaless/Cargo.toml, same thin-manifest rationale as Go/Python.
+rustc.pkg-path = "rustc"
+cargo.pkg-path = "cargo"
+clippy.pkg-path = "clippy"
+rustfmt.pkg-path = "rustfmt"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"

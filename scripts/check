@@ -6,6 +6,7 @@ buf format -w api
 buf generate
 go test ./...
 go vet ./...
+( cd core/rs/temporaless && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test )
 uv sync --project core/py
 uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py
 uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py

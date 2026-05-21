@@ -1,0 +1,61 @@
+[package]
+name = "temporaless"
+version = "0.1.0"
+edition = "2021"
+description = "Storage-first, serverless workflow framework — Rust storage layer."
+license = "Apache-2.0"
+repository = "https://github.com/jim-technologies/temporaless"
+publish = false
+# benches/storage.rs is wired explicitly as a [[bin]] so we get `cargo run`
+# semantics (no nightly bencher, no criterion overhead) and the output
+# format matches Go/Python. Disable the cargo-auto-detected [[bench]] form
+# for the same file.
+autobenches = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# OpenDAL is native Rust — the Go/Python bindings wrap this. Async API for
+# parity with the Python SDK's AsyncOperator.
+opendal = { version = "0.50", default-features = false, features = ["services-fs"] }
+
+# Protobuf runtime. `prost` is the Rust-native protobuf library; `prost-types`
+# carries the well-known types (Duration, Timestamp, Any).
+prost = "0.13"
+prost-types = "0.13"
+
+# Async runtime. The framework's I/O is async-first.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "sync"] }
+
+# SHA-256 for the workflow / activity input fingerprint. Same hashing
+# convention as Go (crypto/sha256) and Python (hashlib.sha256).
+sha2 = "0.10"
+hex = "0.4"
+
+# Time / chrono for timestamps.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Errors.
+thiserror = "1"
+
+[build-dependencies]
+# build.rs uses prost-build with the pure-Rust protox parser so no system
+# protoc is required. Editions support is needed because the canonical proto
+# is edition 2023.
+prost-build = "0.13"
+protox = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "fs", "sync"] }
+
+[[bin]]
+name = "bench-storage"
+path = "benches/storage.rs"
+
+# Profile tuned for the workload: most calls are I/O-bound; we still want
+# the protobuf encode/decode tight, so prefer thin-LTO release.
+[profile.release]
+lto = "thin"
+codegen-units = 1

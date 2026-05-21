@@ -8,6 +8,39 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Added
+
+- **Rust SDK (storage layer)** at `core/rs/temporaless/`. Native `opendal`
+  crate, prost-generated proto types, full read/write of every record kind
+  (workflow, activity, timer, event, claim) at the same Hive-partitioned
+  paths and protobuf wire format the Go/Python SDKs use. Workflows
+  authored in Python or Go are fully readable from Rust and vice versa.
+  - **Scope is storage-only for now.** No workflow.Run, no claims runtime,
+    no cron/timer/janitor adapters, no ConnectStore client. Those layers
+    will come as the Rust SDK matures; the storage layer is the
+    prerequisite that lets Rust-native tooling (analytics, MCP servers,
+    future runtime) interoperate.
+  - **Cross-language storage benchmark.** `scripts/bench-rs` mirrors the
+    Go/Python benchmark output format (`BenchmarkName N ns/op`). On the
+    `fs` backend, Rust runs `PutGetWorkflow` and `PutGetActivity` at
+    ~270k ns/op — roughly **1.9× faster than Go** (~510k ns/op) and **59×
+    faster than Python** (~16M ns/op). The Rust SDK uses the native
+    `opendal` crate directly; Go/Python go through FFI bindings, which
+    explains the gap. See `docs/benchmarks.md` for the full table.
+  - **Edition 2023 downgrade in build.rs.** `prost-build` + `protox` don't
+    yet parse edition 2023 (as of mid-2026), so the Rust build script
+    preprocesses the canonical proto into a proto3-equivalent for Rust
+    codegen only — same wire bytes, same field numbers, same RPCs. The
+    `ReservedNames` defaults are emitted as Rust constants in
+    `$OUT_DIR/reserved_names.rs`, so the canonical proto remains the
+    single source of truth.
+- **Rust toolchain in Flox manifest.** `rustc`, `cargo`, `rustfmt`,
+  `clippy` added alongside the existing Go / Python / `uv` / `buf`
+  packages — same thin-manifest rationale.
+- **`scripts/check` runs Rust tests + `cargo fmt --check` + `cargo
+  clippy -D warnings`** alongside the existing Go/Python checks. All
+  three SDKs land in one gate.
+
 ### Changed
 
 - **Proto migrated from `syntax = "proto3"` to `edition = "2023"`.**

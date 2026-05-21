@@ -1,6 +1,6 @@
 # Temporaless
 
-A storage-first, language-agnostic, serverless workflow framework for Go and Python.
+A storage-first, language-agnostic, serverless workflow framework for Go, Python, and Rust (storage layer).
 
 The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage. When workflow code reaches a stored boundary, the runtime first looks for a matching record. If the input fingerprint matches, the stored result is reused. If not, the boundary is executed and stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
 
@@ -14,6 +14,7 @@ The core idea: every workflow boundary (start, activity, durable timer, signal, 
 ```text
 api/                  protobuf API definitions only
 core/{go,py}/         Runtime + generated protobuf + OpenDAL store + ConnectRPC service
+core/rs/              Rust SDK — storage layer only (native opendal crate); runtime layers TBD
 adapters/{go,py}/     Adapters: claims, schedulers, inspectors, retention, Temporal compat
 examples/{go,py}/     Runnable demos: fetch-prices, llm-completion, production-server, quant-service, stocks-pipeline, twitter-webhook
 docs/                 Architecture and design notes
