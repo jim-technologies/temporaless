@@ -10,6 +10,27 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Changed (breaking)
 
+- **Rust `workflow_type` / `activity_type` now use the proto descriptor
+  full name.** Replaces `std::any::type_name::<T>()` (which produced
+  Rust-shaped strings like `prost_types::wrappers::StringValue`) with
+  `prost::Name::full_name()` (the canonical proto name
+  `google.protobuf.StringValue`, matching Go's
+  `proto.Message.ProtoReflect().Descriptor().FullName()` and Python's
+  `message.DESCRIPTOR.full_name`). With the digest gone, `workflow_type`
+  is now the cross-language shape gate — so Rust must agree with the other
+  SDKs on what that string looks like, otherwise a Python-authored record
+  cannot be replayed from Rust.
+  - Generic bounds widened: `workflow::run`, `execute_activity`, and the
+    `activity()` helper now require `Req: Message + Name` and
+    `Resp: Message + Name`. Generated types from `prost-build` with
+    `enable_type_names()` (which the framework's `build.rs` now sets)
+    satisfy this automatically. Hand-rolled prost messages in tests /
+    examples need a one-line `impl Name`.
+  - New test: `tests/interop.rs::rust_replays_python_authored_workflow_record`
+    pre-seeds a `WorkflowRecord` with `workflow_type =
+    "workflow:google.protobuf.StringValue->..."` (the canonical
+    Python/Go form) and asserts the Rust runtime replays it without
+    `WorkflowConflict`.
 - **`input_digest` removed.** The SHA-256 fingerprint over deterministic
   input bytes is gone from every record kind (`WorkflowRecord`,
   `ActivityRecord`, `TimerRecord`, `ClaimRecord`) and from every SDK.

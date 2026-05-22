@@ -57,7 +57,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open_files([proto_out_file.strip_prefix(&proto_out_root)?.to_path_buf()])?
         .file_descriptor_set();
 
-    prost_build::Config::new().compile_fds(descriptor_set)?;
+    // `enable_type_names()` emits `impl prost::Name for ...` for every generated
+    // message, exposing the proto descriptor's full name (e.g.
+    // `temporaless.v1.WorkflowRecord`, `google.protobuf.StringValue`) so the
+    // workflow runtime can label workflows and activities the same way Go and
+    // Python do. Without this, `std::any::type_name` would produce Rust-shaped
+    // strings (`prost_types::wrappers::StringValue`) that don't match the
+    // descriptor full names other SDKs use — breaking cross-language replay.
+    prost_build::Config::new()
+        .enable_type_names()
+        .compile_fds(descriptor_set)?;
 
     Ok(())
 }

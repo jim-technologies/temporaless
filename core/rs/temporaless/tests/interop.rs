@@ -10,13 +10,15 @@
 //! would be heavier and is left for a future iteration; the wire-format
 //! invariant is what these tests are about.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use opendal::{services::Fs, Operator};
-use prost::Message;
+use prost::{Message, Name};
 use tempfile::TempDir;
 use temporaless::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, WorkflowKey};
 use temporaless::v1;
+use temporaless::workflow::{run, Workflow, WorkflowOptions};
 
 fn new_store() -> (TempDir, OpenDALStore) {
     let tmp = TempDir::new().unwrap();
@@ -195,6 +197,59 @@ async fn rust_writes_canonical_hive_path() {
     );
 }
 
+/// Pre-seed a workflow record using the canonical `workflow_type` string
+/// Go and Python emit (`workflow:google.protobuf.StringValue->...`), then
+/// run `workflow::run()` and assert it replays the stored result without
+/// `WorkflowConflict`. This is the core cross-language replay guarantee:
+/// records written by any SDK must be replayable from any other.
+///
+/// Pre-fingerprint-removal, this test would have failed at the digest
+/// assertion (Rust's `std::any::type_name` produced a different string
+/// than the proto descriptor full name Go/Python use). Post-fix it passes
+/// because (1) the digest is gone and (2) Rust's `message_pair_type`
+/// uses `prost::Name::full_name()` — the same descriptor string.
+#[tokio::test]
+async fn rust_replays_python_authored_workflow_record() {
+    let tmp = TempDir::new().unwrap();
+    let builder = Fs::default().root(tmp.path().to_str().unwrap());
+    let op = Operator::new(builder).unwrap().finish();
+    let store = Arc::new(OpenDALStore::new(op));
+
+    let key = WorkflowKey::new("prices:aapl", "2026-05-04T09:30:00Z");
+    let now = proto_timestamp(SystemTime::now());
+    let seeded = v1::WorkflowRecord {
+        schema_version: v1::RecordSchemaVersion::Workflow as i32,
+        key: Some(key.to_proto()),
+        // Exactly the string Python's `message_pair_type` produces.
+        workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
+        code_version: "v1".into(),
+        input: Some(prost_types::Any {
+            type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
+            value: encode_string_value("AAPL"),
+        }),
+        status: v1::WorkflowStatus::Completed as i32,
+        result: Some(prost_types::Any {
+            type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
+            value: encode_string_value("normalized:AAPL"),
+        }),
+        failure: None,
+        created_at: Some(now),
+        completed_at: Some(now),
+        annotations: Default::default(),
+    };
+    store.put_workflow(&seeded).await.unwrap();
+
+    let options =
+        WorkflowOptions::new("prices:aapl", "2026-05-04T09:30:00Z").with_code_version("v1");
+    let body = |_w: Workflow, _input: TestStringValue| async move {
+        panic!("body must not run — stored COMPLETED record should replay")
+    };
+    let result: TestStringValue = run(store, options, ts("AAPL"), body)
+        .await
+        .expect("replay should succeed");
+    assert_eq!(result.value, "normalized:AAPL");
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — minimal StringValue encoding so we don't need a separate proto
 // dep for the test.
@@ -251,3 +306,24 @@ fn walk(root: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
 // Use Message + prost types so the dependencies are linked into the test.
 #[allow(dead_code)]
 fn _ensure_message_trait_in_scope<M: Message>() {}
+
+/// Local mirror of `google.protobuf.StringValue` — same wire layout, same
+/// descriptor full name. Used by the cross-language replay test to invoke
+/// `workflow::run()` with a Req type whose `Name::full_name()` matches the
+/// `workflow_type` string Python/Go records carry.
+#[derive(Clone, PartialEq, Message)]
+struct TestStringValue {
+    #[prost(string, tag = "1")]
+    value: String,
+}
+
+impl Name for TestStringValue {
+    const NAME: &'static str = "StringValue";
+    const PACKAGE: &'static str = "google.protobuf";
+}
+
+fn ts(value: &str) -> TestStringValue {
+    TestStringValue {
+        value: value.into(),
+    }
+}

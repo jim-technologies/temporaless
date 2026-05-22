@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use opendal::{services::Fs, Operator};
-use prost::Message;
+use prost::{Message, Name};
 use tempfile::TempDir;
 use temporaless::storage::OpenDALStore;
 use temporaless::workflow::{
@@ -23,14 +23,19 @@ fn new_store() -> (TempDir, Arc<OpenDALStore>) {
 }
 
 // A trivial workflow body: identity over a wrapper StringValue-equivalent.
-// We use prost-generated `StringValue` from prost-types? No — that's not a
-// public proto. Use a hand-typed message via a tiny test-only proto type.
-//
-// To stay self-contained, define a minimal Prost message inline.
+// Hand-rolled to mirror `google.protobuf.StringValue` byte-for-byte (same
+// field number, same type) so the records this test produces are wire-
+// compatible with what Go and Python write — and `Name::full_name()`
+// returns the same `google.protobuf.StringValue` string those SDKs do.
 #[derive(Clone, PartialEq, Message)]
 struct StringValue {
     #[prost(string, tag = "1")]
     value: String,
+}
+
+impl Name for StringValue {
+    const NAME: &'static str = "StringValue";
+    const PACKAGE: &'static str = "google.protobuf";
 }
 
 fn s(value: &str) -> StringValue {

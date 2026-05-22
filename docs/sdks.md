@@ -29,18 +29,33 @@ for activities. The user-supplied IDs are the de-duplication key; the
 runtime does NOT fingerprint input bytes. If you want a distinct
 execution, choose a distinct id.
 
+`workflow_type` and `activity_type` are formed from the protobuf
+descriptor's full name (`google.protobuf.StringValue`,
+`temporaless.v1.WorkflowRecord`, etc.) — the exact string Go's
+`proto.Message.ProtoReflect().Descriptor().FullName()`, Python's
+`message.DESCRIPTOR.full_name`, and Rust's `prost::Name::full_name()`
+all produce. Rust message types must implement `prost::Name`; the
+framework's `build.rs` enables this for generated types via
+`prost-build`'s `enable_type_names()`. For Rust-only hand-rolled
+test/example types, `impl Name { const NAME = "..."; const PACKAGE = "...";
+}` is one line.
+
 This means:
 
 - A workflow that runs in Python and writes its `WorkflowRecord` can be
-  read by Rust or Go without re-encoding.
+  read AND replayed by Rust or Go without re-encoding — same `workflow_type`
+  string, same `code_version`, same id ⇒ the runtime returns the stored
+  result on the receiving side.
 - A workflow that runs partially in Python, crashes, and is resumed by a
   Go worker re-reading the same bucket completes cleanly — same ids, same
   shape, same replay.
 - Inspector tooling written in any SDK works against any bucket.
 
-The cross-language storage test in `core/rs/temporaless/tests/interop.rs`
-constructs records the same way Python does and asserts byte-for-byte
-round-trip in Rust.
+The cross-language replay test
+(`rust_replays_python_authored_workflow_record` in
+`core/rs/temporaless/tests/interop.rs`) pre-seeds a `WorkflowRecord` with
+the canonical Python-style `workflow_type` and asserts the Rust runtime
+replays it without `WorkflowConflict`.
 
 ## Surface comparison
 

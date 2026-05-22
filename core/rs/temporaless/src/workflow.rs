@@ -23,7 +23,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use prost::Message;
+use prost::{Message, Name};
 use thiserror::Error;
 
 use crate::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, StoreError, WorkflowKey};
@@ -248,8 +248,8 @@ pub async fn run<Req, Resp, F, Fut>(
     execute: F,
 ) -> Result<Resp, RunError>
 where
-    Req: Message + Default,
-    Resp: Message + Default,
+    Req: Message + Name + Default,
+    Resp: Message + Name + Default,
     F: FnOnce(Workflow, Req) -> Fut,
     Fut: Future<Output = Result<Resp, RunError>>,
 {
@@ -395,8 +395,8 @@ pub async fn execute_activity<Req, Resp, F, Fut>(
     execute: F,
 ) -> Result<Resp, RunError>
 where
-    Req: Message + Default + Clone,
-    Resp: Message + Default,
+    Req: Message + Name + Default + Clone,
+    Resp: Message + Name + Default,
     F: Fn(Req) -> Fut,
     Fut: Future<Output = Result<Resp, ActivityError>>,
 {
@@ -601,8 +601,8 @@ where
 /// directly when you need explicit control.
 pub async fn activity<Req, Resp, F, Fut>(input: Req, execute: F) -> Result<Resp, RunError>
 where
-    Req: Message + Default + Clone,
-    Resp: Message + Default,
+    Req: Message + Name + Default + Clone,
+    Resp: Message + Name + Default,
     F: Fn(Req) -> Fut,
     Fut: Future<Output = Result<Resp, ActivityError>>,
 {
@@ -644,16 +644,13 @@ fn infer_activity_id<F>() -> String {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn message_pair_type<Req: Message, Resp: Message>(kind: &str) -> String {
-    // prost doesn't expose descriptor.full_name(), so we use type_name as
-    // a stable string. Cross-language replay requires callers in other
-    // SDKs to use the same convention (or to set workflow_type explicitly
-    // via a future API).
-    format!(
-        "{kind}:{}->{}",
-        std::any::type_name::<Req>(),
-        std::any::type_name::<Resp>()
-    )
+fn message_pair_type<Req: Name, Resp: Name>(kind: &str) -> String {
+    // `prost::Name::full_name()` returns the proto descriptor full name
+    // (`google.protobuf.StringValue`, `temporaless.v1.WorkflowRecord`, etc.) —
+    // the same string Go's `proto.Message.ProtoReflect().Descriptor().FullName()`
+    // and Python's `message.DESCRIPTOR.full_name` produce. Records written
+    // from any SDK are therefore replayable from any other.
+    format!("{kind}:{}->{}", Req::full_name(), Resp::full_name())
 }
 
 /// Guard against shape changes that would make the stored record
