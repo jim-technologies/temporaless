@@ -146,7 +146,6 @@ func newClaimRecord(key storage.ClaimKey, ownerID string) *temporalessv1.ClaimRe
 		ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 		ResourceId:     "fetch:price",
 		CodeVersion:    "test",
-		InputDigest:    "sha256:test",
 		LeaseExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
 		CreatedAt:      now,
 		HeartbeatAt:    now,

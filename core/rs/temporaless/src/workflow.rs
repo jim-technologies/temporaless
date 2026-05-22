@@ -24,7 +24,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use prost::Message;
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, StoreError, WorkflowKey};
@@ -236,11 +235,12 @@ pub fn annotate(key: impl Into<String>, value: impl Into<String>) {
 /// 4. **No record** → write IN_PROGRESS, run the body, write the terminal
 ///    record (COMPLETED or FAILED).
 ///
-/// The fingerprint is `(workflow_type, code_version, input_digest)`. If
-/// the stored fingerprint disagrees with the current call, replay fails
-/// with `RunError::WorkflowConflict` rather than silently returning stale
-/// data — the convention is "rotate `code_version` when the body changes
-/// in a way that should invalidate stored results."
+/// On replay the runtime checks `(workflow_type, code_version)`. The
+/// `workflow_id` itself is the de-duplication key: same id replays the
+/// stored result regardless of input bytes — the caller chose the id and
+/// owns its semantics. A shape change (request/response message types) or
+/// a bumped `code_version` triggers `RunError::WorkflowConflict` so a
+/// caller can't accidentally replay against incompatible code.
 pub async fn run<Req, Resp, F, Fut>(
     store: Arc<OpenDALStore>,
     options: WorkflowOptions,
@@ -255,27 +255,16 @@ where
 {
     let key = WorkflowKey::new(&options.workflow_id, &options.run_id);
     let workflow_type = message_pair_type::<Req, Resp>("workflow");
-    let input_digest = execution_digest("workflow", &workflow_type, &options.code_version, &input)?;
 
     // Replay branches.
     let existing = store.get_workflow(&key).await?;
     let created_at = match existing {
         Some(record) if record.status == v1::WorkflowStatus::Completed as i32 => {
-            assert_fingerprint(
-                &record,
-                &workflow_type,
-                &options.code_version,
-                &input_digest,
-            )?;
+            assert_workflow_identity(&record, &workflow_type, &options.code_version)?;
             return decode_workflow_result::<Resp>(&record);
         }
         Some(record) if record.status == v1::WorkflowStatus::Failed as i32 => {
-            assert_fingerprint(
-                &record,
-                &workflow_type,
-                &options.code_version,
-                &input_digest,
-            )?;
+            assert_workflow_identity(&record, &workflow_type, &options.code_version)?;
             return Err(RunError::Activity(ActivityError::new(
                 record
                     .failure
@@ -290,7 +279,7 @@ where
             )));
         }
         Some(ref record) if record.status == v1::WorkflowStatus::InProgress as i32 => {
-            assert_fingerprint(record, &workflow_type, &options.code_version, &input_digest)?;
+            assert_workflow_identity(record, &workflow_type, &options.code_version)?;
             record.created_at
         }
         Some(record) => {
@@ -311,7 +300,6 @@ where
             key: Some(key.to_proto()),
             workflow_type: workflow_type.clone(),
             code_version: options.code_version.clone(),
-            input_digest: input_digest.clone(),
             input: Some(input_any.clone()),
             status: v1::WorkflowStatus::InProgress as i32,
             result: None,
@@ -349,7 +337,6 @@ where
                 key: Some(key.to_proto()),
                 workflow_type,
                 code_version: options.code_version,
-                input_digest,
                 input: Some(input_any),
                 status: v1::WorkflowStatus::Completed as i32,
                 result: Some(result_any),
@@ -380,7 +367,6 @@ where
                 key: Some(key.to_proto()),
                 workflow_type,
                 code_version: options.code_version,
-                input_digest,
                 input: Some(input_any),
                 status: v1::WorkflowStatus::Failed as i32,
                 result: None,
@@ -416,7 +402,6 @@ where
 {
     let workflow = current();
     let activity_type = message_pair_type::<Req, Resp>("activity");
-    let digest = execution_digest("activity", &activity_type, &workflow.code_version, &input)?;
     let key = ActivityKey::new(
         &workflow.workflow_id,
         &workflow.run_id,
@@ -429,21 +414,11 @@ where
         match v1::ActivityStatus::try_from(record.status).unwrap_or(v1::ActivityStatus::Unspecified)
         {
             v1::ActivityStatus::Completed => {
-                assert_activity_fingerprint(
-                    record,
-                    &activity_type,
-                    &workflow.code_version,
-                    &digest,
-                )?;
+                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
                 return decode_activity_result::<Resp>(record);
             }
             v1::ActivityStatus::Failed => {
-                assert_activity_fingerprint(
-                    record,
-                    &activity_type,
-                    &workflow.code_version,
-                    &digest,
-                )?;
+                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
                 let failure = record.failure.clone().unwrap_or_default();
                 return Err(RunError::Activity(ActivityError::new(
                     failure.code,
@@ -451,12 +426,7 @@ where
                 )));
             }
             v1::ActivityStatus::Retrying => {
-                assert_activity_fingerprint(
-                    record,
-                    &activity_type,
-                    &workflow.code_version,
-                    &digest,
-                )?;
+                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
                 // Resume from len(attempts) + 1.
             }
             _ => {
@@ -527,7 +497,6 @@ where
                     key: Some(key.to_proto()),
                     activity_type,
                     code_version: workflow.code_version.clone(),
-                    input_digest: digest,
                     input: Some(input_any),
                     status: v1::ActivityStatus::Completed as i32,
                     result: Some(result_any),
@@ -572,7 +541,6 @@ where
                         key: Some(key.to_proto()),
                         activity_type,
                         code_version: workflow.code_version.clone(),
-                        input_digest: digest,
                         input: Some(input_any),
                         status: v1::ActivityStatus::Failed as i32,
                         result: None,
@@ -599,7 +567,6 @@ where
                     key: Some(key.to_proto()),
                     activity_type: activity_type.clone(),
                     code_version: workflow.code_version.clone(),
-                    input_digest: digest.clone(),
                     input: Some(input_any.clone()),
                     status: v1::ActivityStatus::Retrying as i32,
                     result: None,
@@ -689,33 +656,15 @@ fn message_pair_type<Req: Message, Resp: Message>(kind: &str) -> String {
     )
 }
 
-/// Hex SHA-256 over `(kind, execution_type, code_version, input_descriptor,
-/// input_bytes)`. Same algorithm Go and Python use.
-fn execution_digest<M: Message>(
-    kind: &str,
-    execution_type: &str,
-    code_version: &str,
-    input: &M,
-) -> Result<String, RunError> {
-    let bytes = input.encode_to_vec();
-    let mut hasher = Sha256::new();
-    hasher.update(format!("temporaless.{kind}.v1").as_bytes());
-    hasher.update([0u8]);
-    hasher.update(execution_type.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(code_version.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(std::any::type_name::<M>().as_bytes());
-    hasher.update([0u8]);
-    hasher.update(&bytes);
-    Ok(hex::encode(hasher.finalize()))
-}
-
-fn assert_fingerprint(
+/// Guard against shape changes that would make the stored record
+/// incompatible with the current code path: a swapped request/response
+/// message type (which changes `workflow_type`) or a bumped `code_version`.
+/// The `workflow_id` itself is the de-duplication key; same id + same shape
+/// + same code_version replays the stored result regardless of input bytes.
+fn assert_workflow_identity(
     record: &v1::WorkflowRecord,
     workflow_type: &str,
     code_version: &str,
-    input_digest: &str,
 ) -> Result<(), RunError> {
     if record.workflow_type != workflow_type {
         return Err(RunError::WorkflowConflict(format!(
@@ -729,19 +678,14 @@ fn assert_fingerprint(
             record.code_version, code_version
         )));
     }
-    if record.input_digest != input_digest {
-        return Err(RunError::WorkflowConflict(
-            "input digest changed (either pass the original request, delete the workflow record to re-execute, or bump code_version if this change is intentional)".into(),
-        ));
-    }
     Ok(())
 }
 
-fn assert_activity_fingerprint(
+/// See [`assert_workflow_identity`] for the de-duplication contract.
+fn assert_activity_identity(
     record: &v1::ActivityRecord,
     activity_type: &str,
     code_version: &str,
-    input_digest: &str,
 ) -> Result<(), RunError> {
     if record.activity_type != activity_type {
         return Err(RunError::ActivityConflict(format!(
@@ -754,11 +698,6 @@ fn assert_activity_fingerprint(
             "code version changed from {:?} to {:?}",
             record.code_version, code_version
         )));
-    }
-    if record.input_digest != input_digest {
-        return Err(RunError::ActivityConflict(
-            "input digest changed (either pass the original request, delete the activity record to re-execute, or bump code_version if this change is intentional)".into(),
-        ));
     }
     Ok(())
 }

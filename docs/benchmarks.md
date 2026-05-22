@@ -19,7 +19,7 @@ flox activate -- scripts/bench-rs    # Rust:   cargo build --release && ./target
 | `BenchmarkListWorkflowsScan/workflows={10,100,500}` | Walk the workflow tree at three scales. |
 | `BenchmarkListWorkflowsScopedByID/{unscoped,scoped_by_workflow_id}` | List all 500 runs vs. one schedule's 10 runs. |
 | `BenchmarkWorkflowRunFreshExecution` | Fresh `workflow.Run` with one activity from a clean store. |
-| `BenchmarkWorkflowRunReplay` | Replay a completed workflow (fingerprint match → return stored result). |
+| `BenchmarkWorkflowRunReplay` | Replay a completed workflow (id match → return stored result). |
 | `BenchmarkRetryLoopInProcess` | Three-attempt retry loop with 1ms backoff. |
 
 All benchmarks run against OpenDAL `fs` with a per-benchmark temp directory.

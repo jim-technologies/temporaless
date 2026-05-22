@@ -28,7 +28,6 @@ async def test_connect_store_uses_record_store_service(tmp_path) -> None:
             key=key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="test-version",
-            input_digest="digest",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         )
     )
@@ -112,7 +111,6 @@ async def test_connect_store_sweep_round_trip(tmp_path) -> None:
                 key=WorkflowKey(workflow_id="prices:sweep", run_id=run_id).to_proto(),
                 workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
                 code_version="v1",
-                input_digest="digest",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
                 completed_at=completed_at,
             )
@@ -154,7 +152,6 @@ async def test_connect_store_due_timers_round_trip(tmp_path) -> None:
             key=wf_key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="v1",
-            input_digest="digest",
             status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
         )
     )
@@ -164,7 +161,6 @@ async def test_connect_store_due_timers_round_trip(tmp_path) -> None:
             key=timer_key.to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
             code_version="v1",
-            input_digest="digest",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at,
         )
@@ -190,7 +186,6 @@ async def test_connect_store_list_and_delete_round_trip(tmp_path) -> None:
                 key=key.to_proto(),
                 workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
                 code_version="test-version",
-                input_digest="digest",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             )
         )

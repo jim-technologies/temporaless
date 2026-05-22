@@ -568,15 +568,20 @@ message ActivityAttempt {
 // ActivityRecord captures everything the runtime needs to replay or resume an
 // activity. Stored at `activities/{activity_id}.binpb` under the workflow run.
 message ActivityRecord {
+  // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
+  // supplied IDs are the contract; replay reuses by id, not by input bytes.
+  reserved 5;
+
   RecordSchemaVersion schema_version = 1;
   ActivityKey key = 2;
-  // Derived from the request and response message types — used for replay
-  // fingerprinting alongside `code_version` and `input_digest`.
+  // Derived from the request and response message types. Useful for analytics;
+  // checked against the stored value on replay so a code change that swaps
+  // input/output types fails loudly rather than returning a stale result.
   string activity_type = 3;
+  // Caller-supplied build identity. Replay compares stored vs current and
+  // rejects mismatch so a bumped code_version triggers re-execution (with
+  // a fresh activity_id or run_id) rather than silently replaying stale data.
   string code_version = 4;
-  // Hex-encoded SHA-256 over the deterministic protobuf input bytes plus the
-  // execution kind, type, and code version. Mismatch on replay is a hard error.
-  string input_digest = 5;
   google.protobuf.Any input = 6;
   ActivityStatus status = 7;
   // Set when status is COMPLETED.
@@ -603,11 +608,14 @@ message ActivityRecord {
 // WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
 // under the workflow run.
 message WorkflowRecord {
+  // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
+  // supplied IDs are the contract; replay reuses by id, not by input bytes.
+  reserved 5;
+
   RecordSchemaVersion schema_version = 1;
   WorkflowKey key = 2;
   string workflow_type = 3;
   string code_version = 4;
-  string input_digest = 5;
   google.protobuf.Any input = 6;
   WorkflowStatus status = 7;
   // Set when status is COMPLETED.
@@ -625,11 +633,14 @@ message WorkflowRecord {
 
 // TimerRecord backs `workflow.Sleep`. Stored at `timers/{timer_id}.binpb`.
 message TimerRecord {
+  // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
+  // supplied IDs are the contract; replay reuses by id, not by input bytes.
+  reserved 5;
+
   RecordSchemaVersion schema_version = 1;
   TimerKey key = 2;
   TimerKind timer_kind = 3;
   string code_version = 4;
-  string input_digest = 5;
   // Original duration the workflow body asked to sleep for.
   google.protobuf.Duration duration = 6;
   TimerStatus status = 7;
@@ -657,6 +668,10 @@ message EventRecord {
 // at `claims/{claim_id}.binpb`. Write semantics depend on the backend's
 // `ClaimCapability`.
 message ClaimRecord {
+  // Field 7 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
+  // supplied IDs are the contract; replay reuses by id, not by input bytes.
+  reserved 7;
+
   RecordSchemaVersion schema_version = 1;
   ClaimKey key = 2;
   // Caller-supplied identity. The runtime checks this on resume to confirm
@@ -666,7 +681,6 @@ message ClaimRecord {
   // Domain ID of the resource being claimed (activity_id, timer_id, etc.).
   string resource_id = 5;
   string code_version = 6;
-  string input_digest = 7;
   google.protobuf.Timestamp lease_expires_at = 8;
   google.protobuf.Timestamp created_at = 9;
   // Updated by CAS-capable adapters to extend the lease. Create-only adapters

@@ -30,7 +30,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Same auth interceptor surface.** Your `WorkflowService` is just another ConnectRPC service — same interceptor list as ConnectStore.
 - [ ] **`workflow_id` and `run_id` are caller-provided.** The framework rejects empty / ambiguous IDs. Document your conventions: typically `{pipeline}:{symbol_or_partition}` for `workflow_id`; `{date}` or `{fire_time_iso}` for `run_id`.
 - [ ] **`code_version` bumped on every breaking workflow body change.** Otherwise existing run records replay against new code → `WorkflowConflictError`. Convention: tie to git short-SHA or semver.
-- [ ] **Activity bodies idempotent.** They run once per `(workflow_id, run_id, activity_id, input_digest)` on the happy path; on retry they may run again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system gives you at-most-once-per-claim windows but cannot extend across vendor boundaries.
+- [ ] **Activity bodies idempotent.** They run once per `(workflow_id, run_id, activity_id)` on the happy path; on retry they may run again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system gives you at-most-once-per-claim windows but cannot extend across vendor boundaries.
 
 ## Operator processes
 

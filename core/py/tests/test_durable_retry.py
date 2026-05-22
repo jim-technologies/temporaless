@@ -35,7 +35,6 @@ from temporaless.workflow import (
     TimerPendingError,
     Workflow,
     _activity_retry_timer_id,
-    activity_digest,
 )
 
 
@@ -143,11 +142,6 @@ async def test_replay_before_fire_at_returns_pending(store):
     """A re-invocation that lands BEFORE next_attempt_at must not run the
     activity body — it raises TimerPendingError again."""
     wf = _workflow(store)
-    digest = activity_digest(
-        "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-        "test",
-        StringValue(value="x"),
-    )
     future = datetime.now(UTC) + timedelta(minutes=10)
     next_at = Timestamp()
     next_at.FromDatetime(future)
@@ -164,7 +158,6 @@ async def test_replay_before_fire_at_returns_pending(store):
             key=key.to_proto(),
             activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="test",
-            input_digest=digest,
             status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
             next_attempt_at=next_at,
             created_at=created_at,
@@ -205,11 +198,6 @@ async def test_replay_after_fire_at_resumes(store):
     activity completes, attempt history is preserved, paired timer becomes
     FIRED."""
     wf = _workflow(store)
-    digest = activity_digest(
-        "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-        "test",
-        StringValue(value="x"),
-    )
     past = datetime.now(UTC) - timedelta(minutes=1)
     next_at = Timestamp()
     next_at.FromDatetime(past)
@@ -226,7 +214,6 @@ async def test_replay_after_fire_at_resumes(store):
             key=activity_key.to_proto(),
             activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="test",
-            input_digest=digest,
             status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
             next_attempt_at=next_at,
             created_at=created_at,
@@ -250,7 +237,6 @@ async def test_replay_after_fire_at_resumes(store):
             key=timer_key.to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
             code_version="test",
-            input_digest="ignored",
             duration=duration_ts,
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_ts,

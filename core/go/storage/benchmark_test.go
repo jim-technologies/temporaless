@@ -32,7 +32,6 @@ func BenchmarkPutGetWorkflow(b *testing.B) {
 		}.Proto(),
 		WorkflowType: "test:type",
 		CodeVersion:  "v1",
-		InputDigest:  "digest",
 		Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		Result:       resultAny,
 	}
@@ -66,7 +65,6 @@ func BenchmarkPutGetActivity(b *testing.B) {
 		}.Proto(),
 		ActivityType: "test:activity",
 		CodeVersion:  "v1",
-		InputDigest:  "digest",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		Result:       resultAny,
 	}
@@ -100,7 +98,6 @@ func BenchmarkListWorkflowsScan(b *testing.B) {
 					}.Proto(),
 					WorkflowType: "test:type",
 					CodeVersion:  "v1",
-					InputDigest:  "digest",
 					Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 				}); err != nil {
 					b.Fatal(err)
@@ -140,7 +137,6 @@ func BenchmarkListWorkflowsScopedByID(b *testing.B) {
 				}.Proto(),
 				WorkflowType: "test:type",
 				CodeVersion:  "v1",
-				InputDigest:  "digest",
 				Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 			}); err != nil {
 				b.Fatal(err)

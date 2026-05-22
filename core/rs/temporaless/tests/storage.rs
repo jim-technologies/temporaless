@@ -31,7 +31,6 @@ fn mk_workflow_record(
         key: Some(key),
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
         code_version: "test".into(),
-        input_digest: "abc".into(),
         input: None,
         status: status as i32,
         result: None,
@@ -58,7 +57,7 @@ async fn workflow_roundtrip() {
 
     let got = store.get_workflow(&key).await.unwrap().expect("present");
     assert_eq!(got.workflow_type, record.workflow_type);
-    assert_eq!(got.input_digest, "abc");
+    assert_eq!(got.code_version, record.code_version);
     assert_eq!(got.status, v1::WorkflowStatus::Completed as i32);
 }
 
@@ -125,7 +124,6 @@ async fn activity_roundtrip() {
         key: Some(ActivityKey::new("wf-a", "r1", "act:1").to_proto()),
         activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue".into(),
         code_version: "test".into(),
-        input_digest: "deadbeef".into(),
         input: None,
         status: v1::ActivityStatus::Completed as i32,
         result: None,
@@ -143,7 +141,7 @@ async fn activity_roundtrip() {
         .await
         .unwrap()
         .expect("present");
-    assert_eq!(got.input_digest, "deadbeef");
+    assert_eq!(got.activity_type, record.activity_type);
     assert_eq!(got.status, v1::ActivityStatus::Completed as i32);
 }
 
@@ -158,7 +156,6 @@ async fn list_activities_returns_all_under_run() {
                 activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue"
                     .into(),
                 code_version: "test".into(),
-                input_digest: "x".into(),
                 input: None,
                 status: v1::ActivityStatus::Completed as i32,
                 result: None,
@@ -236,7 +233,6 @@ async fn due_timers_returns_only_scheduled_under_in_progress() {
             key: Some(TimerKey::new("wf-a", "r1", "t1").to_proto()),
             timer_kind: v1::TimerKind::Sleep as i32,
             code_version: "test".into(),
-            input_digest: "x".into(),
             duration: None,
             status: v1::TimerStatus::Scheduled as i32,
             fire_at: Some(past),
@@ -262,7 +258,6 @@ async fn claim_create_only_semantics() {
         resource_type: v1::ClaimResourceType::Activity as i32,
         resource_id: "act:1".into(),
         code_version: "test".into(),
-        input_digest: "x".into(),
         lease_expires_at: Some(proto_timestamp(SystemTime::now() + Duration::from_secs(60))),
         created_at: Some(now_ts()),
         heartbeat_at: Some(now_ts()),

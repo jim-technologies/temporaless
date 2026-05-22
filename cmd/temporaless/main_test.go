@@ -48,7 +48,6 @@ func seedWorkflow(t *testing.T, store *storage.OpenDALStore, workflowID, runID s
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "deadbeef",
 		Status:        status,
 		CreatedAt:     now,
 	}
@@ -74,7 +73,6 @@ func seedActivity(t *testing.T, store *storage.OpenDALStore, workflowID, runID, 
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "abc",
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		CreatedAt:     now,
 		CompletedAt:   now,
@@ -193,8 +191,8 @@ func TestCLIGetWorkflow(t *testing.T) {
 	if !strings.Contains(out, "status=WORKFLOW_STATUS_COMPLETED") {
 		t.Errorf("expected status line in output: %s", out)
 	}
-	if !strings.Contains(out, "input_digest=deadbeef") {
-		t.Errorf("expected input_digest line in output: %s", out)
+	if !strings.Contains(out, "code_version=") {
+		t.Errorf("expected code_version line in output: %s", out)
 	}
 }
 
@@ -284,7 +282,6 @@ func TestCLISweep(t *testing.T) {
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "x",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -376,7 +373,6 @@ func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
 		Key:           oldKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "x",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		CreatedAt:     old,
 	}); err != nil {
@@ -395,7 +391,6 @@ func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
 		Key:           completedKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "x",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,

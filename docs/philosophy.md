@@ -23,7 +23,7 @@ There is no engine to run, no control plane to operate. Every workflow boundary 
 Consequences:
 
 - **Pods are interchangeable.** What you deploy is a Store backend (S3 / GCS / Azure Blob) and stateless processes calling `workflow.run`.
-- **Multi-process is free.** `workflow.run` is idempotent on `(workflow_id, run_id, code_version, input_digest)`. Two workers racing produce the same result.
+- **Multi-process is free.** `workflow.run` is idempotent on `(workflow_id, run_id, code_version)`. Two workers racing produce the same result.
 - **Disaster recovery is the storage backup.** Records are the state.
 
 ## 3. Cross-cutting concerns ride on standard ConnectRPC interceptors

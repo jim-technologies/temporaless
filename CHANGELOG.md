@@ -8,6 +8,35 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`input_digest` removed.** The SHA-256 fingerprint over deterministic
+  input bytes is gone from every record kind (`WorkflowRecord`,
+  `ActivityRecord`, `TimerRecord`, `ClaimRecord`) and from every SDK.
+  Field numbers 5 (workflow/activity/timer) and 7 (claim) are now
+  `reserved`. The de-duplication contract is the caller-supplied id:
+  same `workflow_id+run_id` (workflow) or `activity_id` under the run
+  (activity) replays the stored result regardless of new input bytes.
+  Replay still rejects shape changes (request/response type changed →
+  stored `workflow_type`/`activity_type` mismatches) and `code_version`
+  changes — those are the explicit invalidation levers.
+  - Motivation: the digest punished correct usage. With user-supplied
+    ids, `workflow.run("prices:aapl", "2026-05-04T09:30:00Z", req)` was
+    already the dedup key; the digest just added cross-language fragility
+    (Rust's `std::any::type_name` vs Go/Python's proto descriptor name
+    produced different bytes for the same wire input) and locked
+    integrators into recomputing the hash to author records out-of-band.
+  - Migration: nothing required for new records. Existing records keep
+    their stored bytes — the field is unknown on decode and silently
+    dropped. Code that previously relied on `ErrActivityConflict` /
+    `ActivityConflictError` to detect "same id, different input" now
+    sees the stored result returned; pick a distinct id if you want
+    distinct executions.
+  - Old `activity_digest` / `timer_digest` / `execution_digest` helpers
+    and `_assert_*_fingerprint` functions are removed from the public
+    Python surface. Tests and tooling that imported them need to drop
+    the import; the new identity guards are internal.
+
 ### Added
 
 - **Rust workflow runtime** — `workflow::run()`, `workflow::execute_activity()`,
@@ -16,8 +45,8 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
   same three replay branches Go/Python do (COMPLETED short-circuit, FAILED
   replay, IN_PROGRESS resume, fresh execution). In-process retries with
   exponential backoff + `ActivityError::with_retry_after(...)` honoring
-  vendor pacing. Same SHA-256 input-fingerprint algorithm — workflows
-  authored in any SDK produce identical record bytes.
+  vendor pacing. Workflows authored in any SDK produce identical record
+  bytes (same protobuf wire format, same Hive paths).
   - Not yet in Rust: claims, concurrency keys, durable timer backoffs,
     `Sleep`/`WaitEvent`, ConnectRPC handler integration. Track per-feature
     parity in `docs/sdks.md`.

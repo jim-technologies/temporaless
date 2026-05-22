@@ -25,7 +25,6 @@ func TestOpenDALStoreRoundTrip(t *testing.T) {
 					Key:           key.Proto(),
 					WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 					CodeVersion:   "test-version",
-					InputDigest:   "digest",
 					Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 					Result:        result,
 				}
@@ -48,7 +47,6 @@ func TestOpenDALStoreRoundTrip(t *testing.T) {
 					Key:           key.Proto(),
 					ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 					CodeVersion:   "test-version",
-					InputDigest:   "digest",
 					Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 					Result:        result,
 				}
@@ -71,7 +69,6 @@ func TestOpenDALStoreRoundTrip(t *testing.T) {
 					Key:           key.Proto(),
 					TimerKind:     SleepTimerKind,
 					CodeVersion:   "test-version",
-					InputDigest:   "digest",
 					Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 				}
 				if err := store.PutTimer(ctx, record); err != nil {

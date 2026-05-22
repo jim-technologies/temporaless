@@ -1322,13 +1322,14 @@ type ActivityRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
 	Key           *ActivityKey           `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
-	// Derived from the request and response message types — used for replay
-	// fingerprinting alongside `code_version` and `input_digest`.
+	// Derived from the request and response message types. Useful for analytics;
+	// checked against the stored value on replay so a code change that swaps
+	// input/output types fails loudly rather than returning a stale result.
 	ActivityType string `protobuf:"bytes,3,opt,name=activity_type,json=activityType" json:"activity_type,omitempty"`
-	CodeVersion  string `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	// Hex-encoded SHA-256 over the deterministic protobuf input bytes plus the
-	// execution kind, type, and code version. Mismatch on replay is a hard error.
-	InputDigest string         `protobuf:"bytes,5,opt,name=input_digest,json=inputDigest" json:"input_digest,omitempty"`
+	// Caller-supplied build identity. Replay compares stored vs current and
+	// rejects mismatch so a bumped code_version triggers re-execution (with
+	// a fresh activity_id or run_id) rather than silently replaying stale data.
+	CodeVersion string         `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
 	Input       *anypb.Any     `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
 	Status      ActivityStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
@@ -1412,13 +1413,6 @@ func (x *ActivityRecord) GetCodeVersion() string {
 	return ""
 }
 
-func (x *ActivityRecord) GetInputDigest() string {
-	if x != nil {
-		return x.InputDigest
-	}
-	return ""
-}
-
 func (x *ActivityRecord) GetInput() *anypb.Any {
 	if x != nil {
 		return x.Input
@@ -1490,7 +1484,6 @@ type WorkflowRecord struct {
 	Key           *WorkflowKey           `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	WorkflowType  string                 `protobuf:"bytes,3,opt,name=workflow_type,json=workflowType" json:"workflow_type,omitempty"`
 	CodeVersion   string                 `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	InputDigest   string                 `protobuf:"bytes,5,opt,name=input_digest,json=inputDigest" json:"input_digest,omitempty"`
 	Input         *anypb.Any             `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
 	Status        WorkflowStatus         `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
@@ -1566,13 +1559,6 @@ func (x *WorkflowRecord) GetCodeVersion() string {
 	return ""
 }
 
-func (x *WorkflowRecord) GetInputDigest() string {
-	if x != nil {
-		return x.InputDigest
-	}
-	return ""
-}
-
 func (x *WorkflowRecord) GetInput() *anypb.Any {
 	if x != nil {
 		return x.Input
@@ -1629,7 +1615,6 @@ type TimerRecord struct {
 	Key           *TimerKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	TimerKind     TimerKind              `protobuf:"varint,3,opt,name=timer_kind,json=timerKind,enum=temporaless.v1.TimerKind" json:"timer_kind,omitempty"`
 	CodeVersion   string                 `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	InputDigest   string                 `protobuf:"bytes,5,opt,name=input_digest,json=inputDigest" json:"input_digest,omitempty"`
 	// Original duration the workflow body asked to sleep for.
 	Duration *durationpb.Duration `protobuf:"bytes,6,opt,name=duration" json:"duration,omitempty"`
 	Status   TimerStatus          `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.TimerStatus" json:"status,omitempty"`
@@ -1697,13 +1682,6 @@ func (x *TimerRecord) GetTimerKind() TimerKind {
 func (x *TimerRecord) GetCodeVersion() string {
 	if x != nil {
 		return x.CodeVersion
-	}
-	return ""
-}
-
-func (x *TimerRecord) GetInputDigest() string {
-	if x != nil {
-		return x.InputDigest
 	}
 	return ""
 }
@@ -1830,7 +1808,6 @@ type ClaimRecord struct {
 	// Domain ID of the resource being claimed (activity_id, timer_id, etc.).
 	ResourceId     string                 `protobuf:"bytes,5,opt,name=resource_id,json=resourceId" json:"resource_id,omitempty"`
 	CodeVersion    string                 `protobuf:"bytes,6,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	InputDigest    string                 `protobuf:"bytes,7,opt,name=input_digest,json=inputDigest" json:"input_digest,omitempty"`
 	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=lease_expires_at,json=leaseExpiresAt" json:"lease_expires_at,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
 	// Updated by CAS-capable adapters to extend the lease. Create-only adapters
@@ -1908,13 +1885,6 @@ func (x *ClaimRecord) GetResourceId() string {
 func (x *ClaimRecord) GetCodeVersion() string {
 	if x != nil {
 		return x.CodeVersion
-	}
-	return ""
-}
-
-func (x *ClaimRecord) GetInputDigest() string {
-	if x != nil {
-		return x.InputDigest
 	}
 	return ""
 }
@@ -4124,13 +4094,12 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
 	"\fcompleted_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x129\n" +
-	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\xd1\x06\n" +
+	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\xb4\x06\n" +
 	"\x0eActivityRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12-\n" +
 	"\x03key\x18\x02 \x01(\v2\x1b.temporaless.v1.ActivityKeyR\x03key\x12#\n" +
 	"\ractivity_type\x18\x03 \x01(\tR\factivityType\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12!\n" +
-	"\finput_digest\x18\x05 \x01(\tR\vinputDigest\x12*\n" +
+	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12*\n" +
 	"\x05input\x18\x06 \x01(\v2\x14.google.protobuf.AnyR\x05input\x126\n" +
 	"\x06status\x18\a \x01(\x0e2\x1e.temporaless.v1.ActivityStatusR\x06status\x12,\n" +
 	"\x06result\x18\b \x01(\v2\x14.google.protobuf.AnyR\x06result\x129\n" +
@@ -4144,13 +4113,12 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0fnext_attempt_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\rnextAttemptAt\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd0\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"\xb3\x05\n" +
 	"\x0eWorkflowRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12-\n" +
 	"\x03key\x18\x02 \x01(\v2\x1b.temporaless.v1.WorkflowKeyR\x03key\x12#\n" +
 	"\rworkflow_type\x18\x03 \x01(\tR\fworkflowType\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12!\n" +
-	"\finput_digest\x18\x05 \x01(\tR\vinputDigest\x12*\n" +
+	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12*\n" +
 	"\x05input\x18\x06 \x01(\v2\x14.google.protobuf.AnyR\x05input\x126\n" +
 	"\x06status\x18\a \x01(\x0e2\x1e.temporaless.v1.WorkflowStatusR\x06status\x12,\n" +
 	"\x06result\x18\b \x01(\v2\x14.google.protobuf.AnyR\x06result\x129\n" +
@@ -4162,27 +4130,26 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\vannotations\x18\f \x03(\v2/.temporaless.v1.WorkflowRecord.AnnotationsEntryR\vannotations\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x98\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"\xfb\x03\n" +
 	"\vTimerRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.TimerKeyR\x03key\x128\n" +
 	"\n" +
 	"timer_kind\x18\x03 \x01(\x0e2\x19.temporaless.v1.TimerKindR\ttimerKind\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12!\n" +
-	"\finput_digest\x18\x05 \x01(\tR\vinputDigest\x125\n" +
+	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x125\n" +
 	"\bduration\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\bduration\x123\n" +
 	"\x06status\x18\a \x01(\x0e2\x1b.temporaless.v1.TimerStatusR\x06status\x123\n" +
 	"\afire_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x06fireAt\x129\n" +
 	"\n" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x125\n" +
 	"\bfired_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\afiredAt\"\xf2\x01\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\afiredAtJ\x04\b\x05\x10\x06\"\xf2\x01\n" +
 	"\vEventRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.EventKeyR\x03key\x12.\n" +
 	"\apayload\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\apayload\x12;\n" +
 	"\vreceived_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"receivedAt\"\x8f\x04\n" +
+	"receivedAt\"\xf2\x03\n" +
 	"\vClaimRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.ClaimKeyR\x03key\x12\x19\n" +
@@ -4190,13 +4157,12 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\rresource_type\x18\x04 \x01(\x0e2!.temporaless.v1.ClaimResourceTypeR\fresourceType\x12\x1f\n" +
 	"\vresource_id\x18\x05 \x01(\tR\n" +
 	"resourceId\x12!\n" +
-	"\fcode_version\x18\x06 \x01(\tR\vcodeVersion\x12!\n" +
-	"\finput_digest\x18\a \x01(\tR\vinputDigest\x12D\n" +
+	"\fcode_version\x18\x06 \x01(\tR\vcodeVersion\x12D\n" +
 	"\x10lease_expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt\x129\n" +
 	"\n" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12=\n" +
 	"\fheartbeat_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAt\"C\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAtJ\x04\b\a\x10\b\"C\n" +
 	"\x12GetWorkflowRequest\x12-\n" +
 	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyR\x03key\"c\n" +
 	"\x13GetWorkflowResponse\x12\x14\n" +

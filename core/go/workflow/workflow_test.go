@@ -22,6 +22,11 @@ import (
 )
 
 func TestRunActivity(t *testing.T) {
+	// User-supplied activity_id is the de-duplication contract. Same id
+	// replays the stored result regardless of the input bytes — the caller
+	// chose the id and is responsible for picking distinct ids when they
+	// want distinct executions. activity_type and code_version still must
+	// match to guard against shape changes.
 	tests := []struct {
 		name       string
 		firstInput string
@@ -30,16 +35,16 @@ func TestRunActivity(t *testing.T) {
 		wantErr    error
 	}{
 		{
-			name:       "replays completed result",
+			name:       "replays completed result on identical input",
 			firstInput: "AAPL",
 			nextInput:  "AAPL",
 			want:       "stored:AAPL",
 		},
 		{
-			name:       "rejects same activity ID with different input",
+			name:       "replays stored result even when input bytes differ",
 			firstInput: "AAPL",
 			nextInput:  "MSFT",
-			wantErr:    ErrActivityConflict,
+			want:       "stored:AAPL",
 		},
 	}
 
@@ -145,7 +150,6 @@ func TestRunActivityWithClaims(t *testing.T) {
 				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 				ResourceId:     "fetch:symbol",
 				CodeVersion:    "test-version",
-				InputDigest:    "other-digest",
 				LeaseExpiresAt: timestamppb.New(test.claimExpiresAt),
 				CreatedAt:      timestamppb.Now(),
 				HeartbeatAt:    timestamppb.Now(),
@@ -544,10 +548,10 @@ func TestRunWorkflow(t *testing.T) {
 			want:       "workflow:normalized:AAPL",
 		},
 		{
-			name:       "rejects same run with different workflow input",
+			name:       "replays stored result even when input bytes differ",
 			firstInput: "AAPL",
 			nextInput:  "MSFT",
-			wantErr:    ErrWorkflowConflict,
+			want:       "workflow:normalized:AAPL",
 		},
 	}
 

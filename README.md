@@ -2,7 +2,7 @@
 
 A storage-first, language-agnostic, serverless workflow framework for Go, Python, and Rust (storage layer).
 
-The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage. When workflow code reaches a stored boundary, the runtime first looks for a matching record. If the input fingerprint matches, the stored result is reused. If not, the boundary is executed and stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
+The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. When workflow code reaches a stored boundary, the runtime first looks for a matching record. If one exists, the stored result is reused. If not, the boundary is executed and stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
 
 > Not a Temporal replacement. A narrower framework for data workflows where activities are mostly fetch / normalize / persist and storage can be the durable coordination point.
 

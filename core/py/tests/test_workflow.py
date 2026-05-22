@@ -33,7 +33,6 @@ from temporaless.workflow import (
     Workflow,
     WorkflowConflictError,
     WorkflowWrapOptions,
-    activity_digest,
     annotate,
     run,
     wrap_activity,
@@ -46,11 +45,14 @@ def store(tmp_path):
     return OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
 
 
+# User-supplied activity_id is the de-duplication contract. Same id replays
+# the stored result regardless of input bytes — the caller chose the id and
+# is responsible for picking distinct ids when they want distinct executions.
 @pytest.mark.parametrize(
     ("first_input", "next_input", "want", "want_error"),
     [
         ("AAPL", "AAPL", "stored:AAPL", None),
-        ("AAPL", "MSFT", None, ActivityConflictError),
+        ("AAPL", "MSFT", "stored:AAPL", None),
     ],
 )
 async def test_activity_replay(
@@ -131,7 +133,6 @@ async def test_activity_claim_busy_and_expired(
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
         resource_id="fetch:symbol",
         code_version="test",
-        input_digest="other-digest",
         lease_expires_at=expires_at,
         created_at=created_at,
         heartbeat_at=created_at,
@@ -174,7 +175,7 @@ async def test_claim_store_declares_capability(store: OpenDALStore) -> None:
     ("first_input", "next_input", "want", "want_error"),
     [
         ("AAPL", "AAPL", "workflow:normalized:AAPL", None),
-        ("AAPL", "MSFT", None, WorkflowConflictError),
+        ("AAPL", "MSFT", "workflow:normalized:AAPL", None),
     ],
 )
 async def test_workflow_replay(
@@ -872,7 +873,6 @@ async def test_annotations_persist_across_retry_resume(store: OpenDALStore) -> N
     activity_id = "fetch:annotated-resume"
     activity_type = "activity:google.protobuf.StringValue->google.protobuf.StringValue"
     request = StringValue(value="AAPL")
-    digest_value = activity_digest(activity_type, "test", request)
 
     # Seed a RETRYING record with annotations from a "previous" invocation.
     seeded_attempt = temporaless_pb2.ActivityAttempt(
@@ -892,7 +892,6 @@ async def test_annotations_persist_across_retry_resume(store: OpenDALStore) -> N
         ).to_proto(),
         activity_type=activity_type,
         code_version="test",
-        input_digest=digest_value,
         input=input_any,
         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
         attempts=[seeded_attempt],
@@ -944,7 +943,6 @@ async def test_activity_resumes_retry_from_seeded_retrying_record(store: OpenDAL
     activity_id = "fetch:resume"
     activity_type = "activity:google.protobuf.StringValue->google.protobuf.StringValue"
     request = StringValue(value="AAPL")
-    digest_value = activity_digest(activity_type, "test", request)
 
     seeded_attempt = temporaless_pb2.ActivityAttempt(
         attempt=1,
@@ -964,7 +962,6 @@ async def test_activity_resumes_retry_from_seeded_retrying_record(store: OpenDAL
         ).to_proto(),
         activity_type=activity_type,
         code_version="test",
-        input_digest=digest_value,
         input=input_any,
         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
         attempts=[seeded_attempt],
@@ -1088,7 +1085,6 @@ async def test_try_create_claim_is_atomic_create_only(store: OpenDALStore) -> No
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
         resource_id="fetch:symbol",
         code_version="test",
-        input_digest="digest",
         lease_expires_at=expires_at,
         created_at=created_at,
         heartbeat_at=created_at,

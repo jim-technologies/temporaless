@@ -28,11 +28,6 @@ prost-types = "0.13"
 # Async runtime. The framework's I/O is async-first.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "sync"] }
 
-# SHA-256 for the workflow / activity input fingerprint. Same hashing
-# convention as Go (crypto/sha256) and Python (hashlib.sha256).
-sha2 = "0.10"
-hex = "0.4"
-
 # Time / chrono for timestamps.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 

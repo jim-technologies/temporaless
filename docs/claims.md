@@ -9,8 +9,7 @@ Claims are an optimization for reducing duplicate work. They are not the source 
 Correctness must come from:
 
 - stable workflow, activity, and timer IDs
-- protobuf input digests
-- stored completed records
+- stored completed records keyed by those IDs
 - idempotent external side effects
 
 Claims reduce the chance that two serverless invocations perform the same missing work at the same time. If claims are unavailable, Temporaless should still work, but activities that cause external side effects must use domain idempotency keys.
@@ -49,7 +48,6 @@ Recommended fields:
 - `resource_type`: `workflow`, `activity`, or `timer`
 - `resource_id`: workflow ID, activity ID, or timer ID
 - `code_version`
-- `input_digest`
 - `lease_expires_at`
 - `created_at`
 - `heartbeat_at`

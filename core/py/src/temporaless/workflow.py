@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import hashlib
 import inspect
 import logging
 import os
@@ -103,7 +102,6 @@ async def _acquire_concurrency_slot(
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
             resource_id=concurrency_key,
             code_version=code_version,
-            input_digest=slot_id,
             lease_expires_at=expires_at,
             created_at=created_at,
             heartbeat_at=created_at,
@@ -466,7 +464,6 @@ class Workflow:
             raise ValueError("activity type is required")
         plan = _plan_retries(retry_policy)
 
-        digest = activity_digest(activity_type, self._code_version, input_message)
         key = ActivityKey(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
@@ -481,11 +478,9 @@ class Workflow:
                 temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                 temporaless_pb2.ACTIVITY_STATUS_FAILED,
             ):
-                return _replay_record(
-                    record, activity_type, self._code_version, digest, result_factory
-                )
+                return _replay_record(record, activity_type, self._code_version, result_factory)
             if record.status == temporaless_pb2.ACTIVITY_STATUS_RETRYING:
-                _assert_activity_fingerprint(record, activity_type, self._code_version, digest)
+                _assert_activity_identity(record, activity_type, self._code_version)
                 # Durable retry resume: if the record carries next_attempt_at
                 # and the wake instant hasn't arrived yet, bail back to the
                 # workflow as pending. The paired TIMER_KIND_ACTIVITY_RETRY
@@ -523,7 +518,6 @@ class Workflow:
                 resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
                 resource_id=activity_id,
                 code_version=self._code_version,
-                input_digest=digest,
                 lease_expires_at=expires_at,
                 created_at=created_at,
                 heartbeat_at=created_at,
@@ -537,7 +531,6 @@ class Workflow:
                         fresh,
                         activity_type,
                         self._code_version,
-                        digest,
                         result_factory,
                     )
 
@@ -603,7 +596,6 @@ class Workflow:
                             key=key.to_proto(),
                             activity_type=activity_type,
                             code_version=self._code_version,
-                            input_digest=digest,
                             input=input_any,
                             status=temporaless_pb2.ACTIVITY_STATUS_FAILED,
                             failure=failure,
@@ -620,7 +612,6 @@ class Workflow:
                         key=key.to_proto(),
                         activity_type=activity_type,
                         code_version=self._code_version,
-                        input_digest=digest,
                         input=input_any,
                         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
                         failure=failure,
@@ -667,7 +658,6 @@ class Workflow:
                     key=key.to_proto(),
                     activity_type=activity_type,
                     code_version=self._code_version,
-                    input_digest=digest,
                     input=input_any,
                     status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                     result=result_any,
@@ -786,7 +776,6 @@ class Workflow:
                 f"{ACTIVITY_RETRY_TIMER_ID_PREFIX!r} prefix; choose another"
             )
         timer_kind = SLEEP_TIMER_KIND
-        digest = timer_digest(timer_kind, self._code_version, duration)
         key = TimerKey(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
@@ -804,8 +793,11 @@ class Workflow:
                 raise TimerConflictError(
                     f"code version changed from {record.code_version!r} to {self._code_version!r}"
                 )
-            if record.input_digest != digest:
-                raise TimerConflictError("timer duration changed")
+            stored_duration = record.duration.ToTimedelta()
+            if stored_duration != duration:
+                raise TimerConflictError(
+                    f"timer duration changed from {stored_duration} to {duration}"
+                )
             if record.status == temporaless_pb2.TIMER_STATUS_FIRED:
                 return
             if record.status == temporaless_pb2.TIMER_STATUS_CANCELED:
@@ -834,7 +826,6 @@ class Workflow:
             key=key.to_proto(),
             timer_kind=timer_kind,
             code_version=self._code_version,
-            input_digest=digest,
             duration=duration_message,
             status=status,
             fire_at=fire_at_message,
@@ -861,7 +852,6 @@ class Workflow:
             timer_id=_activity_retry_timer_id(activity_id),
         )
         timer_kind = temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY
-        digest = timer_digest(timer_kind, self._code_version, duration)
         duration_message = Duration()
         duration_message.FromTimedelta(duration)
         fire_at_message = Timestamp()
@@ -873,7 +863,6 @@ class Workflow:
             key=key.to_proto(),
             timer_kind=timer_kind,
             code_version=self._code_version,
-            input_digest=digest,
             duration=duration_message,
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_message,
@@ -922,7 +911,6 @@ async def run(
         raise ValueError("claim store is required when concurrency_key is set")
     result_template = result_factory()
     workflow_type = message_pair_type("workflow", input_message, result_template)
-    digest = execution_digest("workflow", workflow_type, options.code_version, input_message)
     key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
 
     # Substitute the user-provided store with a run-scoped cache. The cache
@@ -941,10 +929,10 @@ async def run(
             temporaless_pb2.WORKFLOW_STATUS_FAILED,
         ):
             return _replay_workflow_record(
-                record, workflow_type, options.code_version, digest, result_factory
+                record, workflow_type, options.code_version, result_factory
             )
         if record.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS:
-            _assert_workflow_fingerprint(record, workflow_type, options.code_version, digest)
+            _assert_workflow_identity(record, workflow_type, options.code_version)
             created_at = Timestamp()
             created_at.CopyFrom(record.created_at)
             # Replay: prefetch activities / timers / events in parallel so
@@ -986,7 +974,6 @@ async def run(
             key=key.to_proto(),
             workflow_type=workflow_type,
             code_version=options.code_version,
-            input_digest=digest,
             input=input_any,
             status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
             created_at=created_at,
@@ -1018,7 +1005,6 @@ async def run(
                 key=key.to_proto(),
                 workflow_type=workflow_type,
                 code_version=options.code_version,
-                input_digest=digest,
                 input=input_any,
                 status=temporaless_pb2.WORKFLOW_STATUS_FAILED,
                 failure=_failure_from_exception(exc),
@@ -1038,7 +1024,6 @@ async def run(
             key=key.to_proto(),
             workflow_type=workflow_type,
             code_version=options.code_version,
-            input_digest=digest,
             input=input_any,
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             result=result_any,
@@ -1158,54 +1143,23 @@ def normalized_workflow_options(options: Options) -> Options:
     return normalized
 
 
-def activity_digest(activity_type: str, code_version: str, input_message: Message) -> str:
-    return execution_digest("activity", activity_type, code_version, input_message)
-
-
-def timer_digest(
-    timer_kind: temporaless_pb2.TimerKind,
-    code_version: str,
-    duration: timedelta,
-) -> str:
-    duration_message = Duration()
-    duration_message.FromTimedelta(duration)
-    return execution_digest(
-        "timer",
-        temporaless_pb2.TimerKind.Name(timer_kind),
-        code_version,
-        duration_message,
-    )
-
-
-def execution_digest(
-    kind: str,
-    execution_type: str,
-    code_version: str,
-    input_message: Message,
-) -> str:
-    digest = hashlib.sha256()
-    digest.update(f"temporaless.{kind}.v1".encode())
-    digest.update(b"\x00")
-    digest.update(execution_type.encode())
-    digest.update(b"\x00")
-    digest.update(code_version.encode())
-    digest.update(b"\x00")
-    digest.update(input_message.DESCRIPTOR.full_name.encode())
-    digest.update(b"\x00")
-    digest.update(input_message.SerializeToString(deterministic=True))
-    return digest.hexdigest()
-
-
 def message_pair_type(kind: str, input_message: Message, output_message: Message) -> str:
     return f"{kind}:{input_message.DESCRIPTOR.full_name}->{output_message.DESCRIPTOR.full_name}"
 
 
-def _assert_activity_fingerprint(
+def _assert_activity_identity(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
     code_version: str,
-    input_digest: str,
 ) -> None:
+    """Guard against shape changes that would make the stored record
+    incompatible with the current code path: a swapped request/response
+    message type (which changes ``activity_type``) or a bumped
+    ``code_version``. The ``activity_id`` itself is the de-duplication key;
+    same id + same shape + same code_version is treated as the same logical
+    activity regardless of the input bytes — the caller chose the id and
+    owns its semantics.
+    """
     if record.activity_type != activity_type:
         raise ActivityConflictError(
             f"activity type changed from {record.activity_type!r} to {activity_type!r}"
@@ -1214,22 +1168,15 @@ def _assert_activity_fingerprint(
         raise ActivityConflictError(
             f"code version changed from {record.code_version!r} to {code_version!r}"
         )
-    if record.input_digest != input_digest:
-        raise ActivityConflictError(
-            "input digest changed (the activity's request differs from the stored attempt; "
-            "either pass the original request, delete the activity record to re-execute, "
-            "or bump code_version if this change is intentional)"
-        )
 
 
 def _replay_record(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
     code_version: str,
-    input_digest: str,
     result_factory: Callable[[], ResultT],
 ) -> ResultT:
-    _assert_activity_fingerprint(record, activity_type, code_version, input_digest)
+    _assert_activity_identity(record, activity_type, code_version)
 
     if record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED:
         result = result_factory()
@@ -1303,10 +1250,9 @@ def _replay_workflow_record(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
     code_version: str,
-    input_digest: str,
     result_factory: Callable[[], ResultT],
 ) -> ResultT:
-    _assert_workflow_fingerprint(record, workflow_type, code_version, input_digest)
+    _assert_workflow_identity(record, workflow_type, code_version)
     if record.status == temporaless_pb2.WORKFLOW_STATUS_COMPLETED:
         result = result_factory()
         if not record.result.Unpack(result):
@@ -1319,12 +1265,12 @@ def _replay_workflow_record(
     raise WorkflowConflictError("stored workflow has unknown status")
 
 
-def _assert_workflow_fingerprint(
+def _assert_workflow_identity(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
     code_version: str,
-    input_digest: str,
 ) -> None:
+    """See :func:`_assert_activity_identity` for the de-duplication contract."""
     if record.workflow_type != workflow_type:
         raise WorkflowConflictError(
             f"workflow type changed from {record.workflow_type!r} to {workflow_type!r}"
@@ -1332,12 +1278,6 @@ def _assert_workflow_fingerprint(
     if record.code_version != code_version:
         raise WorkflowConflictError(
             f"code version changed from {record.code_version!r} to {code_version!r}"
-        )
-    if record.input_digest != input_digest:
-        raise WorkflowConflictError(
-            "input digest changed (the workflow's request differs from the stored run; "
-            "either pass the original request, delete the workflow record to re-execute, "
-            "or bump code_version if this change is intentional)"
         )
 
 

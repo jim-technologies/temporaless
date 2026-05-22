@@ -42,12 +42,11 @@ An activity execution is identified by:
 
 When workflow code starts or reaches an activity:
 
-1. Build a fingerprint from execution type, code version, and deterministic protobuf input bytes.
-2. Read the workflow or activity record from storage.
-3. If a completed record exists and the fingerprint matches, unmarshal and return the stored protobuf result.
-4. If a failed record exists and the fingerprint matches, replay the stored failure rather than re-executing.
-5. If no record exists, write an `IN_PROGRESS` workflow record and execute. Activities follow the retry policy on `ActivityOptions` and persist completion or terminal failure with the full attempt log.
-6. If a record exists with a different fingerprint, fail loudly instead of returning stale data.
+1. Read the workflow or activity record from storage, keyed by the caller-supplied id (`workflow_id+run_id` for workflows; `activity_id` under the run for activities).
+2. If a completed record exists and the stored `workflow_type` / `activity_type` and `code_version` still match the current call, unmarshal and return the stored protobuf result.
+3. If a failed record exists and the same identity checks pass, replay the stored failure rather than re-executing.
+4. If no record exists, write an `IN_PROGRESS` workflow record and execute. Activities follow the retry policy on `ActivityOptions` and persist completion or terminal failure with the full attempt log.
+5. If a record exists with a different `workflow_type` / `activity_type` (i.e. the request/response message types swapped) or a bumped `code_version`, fail loudly instead of returning stale data — bumping `code_version` is the explicit way to invalidate stored records.
 
 Workflow records can be observed mid-flight: an `IN_PROGRESS` record is written before the body runs and stays through `TimerPendingError`/`ClaimBusyError`/`EventPendingError` returns. On any other error, the runtime updates the record to `FAILED` and replays that failure on subsequent invocations.
 
@@ -55,7 +54,7 @@ Activities and workflows can attach durable structured metadata via `workflow.An
 
 External services deliver signals by writing `EventRecord` payloads at `events/{event_id}.binpb`. Workflow code calls `WaitEvent` (Go) or `Workflow.wait_event` (Python) and gets either the typed payload or an `EventPendingError` that the caller treats just like a timer pending — re-invoke later. This stays storage-first and requires no signal server.
 
-The activity ID is the primary workflow authoring responsibility. It must be stable and meaningful. A reused activity ID with different input is treated as a bug.
+The activity ID is the primary workflow authoring responsibility. It must be stable and meaningful. Reusing the same activity ID intentionally replays the stored result regardless of the new input bytes — pick a distinct id when you want a distinct execution.
 
 Temporaless does not generate workflow IDs, run IDs, activity IDs, timer IDs, or claim owner IDs. The application owns those IDs and must pass them explicitly. Path-facing IDs are validated with Protovalidate rules declared in `temporaless.v1`.
 
@@ -111,8 +110,8 @@ The core should stay small enough that every function has a clear reason to exis
 
 All stored workflow state is protobuf binary. This gives us:
 
-- stable schemas across Go and Python
-- deterministic serialization for fingerprints
+- stable schemas across Go, Python, and Rust
+- deterministic serialization (records compare and replicate by bytes)
 - schema evolution with Buf linting and a checked-in breaking-change policy
 - native ConnectRPC request and response models
 
@@ -139,6 +138,6 @@ The first version can work directly with storage without a server. ConnectRPC is
 
 ## Versioning Convention
 
-The activity fingerprint includes `code_version`. Production deployments should set `TEMPORALESS_CODE_VERSION` to a git SHA, release tag, or immutable build ID.
+Records carry `code_version` and the runtime rejects replay when it changes — that's the explicit invalidation lever for any change incompatible with stored records. Production deployments should set `TEMPORALESS_CODE_VERSION` to a git SHA, release tag, or immutable build ID.
 
 The default value is `dev`, which is useful locally but intentionally unsafe as a long-term production convention.

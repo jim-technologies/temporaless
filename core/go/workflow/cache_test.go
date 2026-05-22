@@ -311,7 +311,6 @@ func TestWriteThroughAndReadback(t *testing.T) {
 		}.Proto(),
 		ActivityType: "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:  "test",
-		InputDigest:  "deadbeef",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		CreatedAt:    timestamppb.Now(),
 		CompletedAt:  timestamppb.Now(),
@@ -330,8 +329,8 @@ func TestWriteThroughAndReadback(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("err=%v found=%v", err, found)
 	}
-	if got.GetInputDigest() != "deadbeef" {
-		t.Fatalf("digest = %q", got.GetInputDigest())
+	if got.GetActivityType() != record.GetActivityType() {
+		t.Fatalf("activity_type = %q", got.GetActivityType())
 	}
 	if counter.getActivity.Load() != 0 {
 		t.Fatalf("expected 0 GetActivity passthroughs, got %d", counter.getActivity.Load())
@@ -350,8 +349,8 @@ func TestWriteThroughAndReadback(t *testing.T) {
 	if err != nil || !innerFound {
 		t.Fatalf("inner: err=%v found=%v", err, innerFound)
 	}
-	if innerGot.GetInputDigest() != "deadbeef" {
-		t.Fatalf("inner digest = %q", innerGot.GetInputDigest())
+	if innerGot.GetActivityType() != record.GetActivityType() {
+		t.Fatalf("inner activity_type = %q", innerGot.GetActivityType())
 	}
 }
 
@@ -382,7 +381,6 @@ func TestOutOfScopeReadPassesThrough(t *testing.T) {
 		Key:           otherKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test",
-		InputDigest:   "abc",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		CreatedAt:     timestamppb.Now(),
 	}
@@ -462,7 +460,6 @@ func TestDeleteInvalidatesCache(t *testing.T) {
 		}.Proto(),
 		ActivityType: "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:  "test",
-		InputDigest:  "abc",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		CreatedAt:    timestamppb.Now(),
 		CompletedAt:  timestamppb.Now(),
@@ -569,7 +566,6 @@ func TestCacheConcurrentGet(t *testing.T) {
 			}.Proto(),
 			ActivityType: "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 			CodeVersion:  "test",
-			InputDigest:  "d",
 			Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 			CreatedAt:    timestamppb.Now(),
 			CompletedAt:  timestamppb.Now(),

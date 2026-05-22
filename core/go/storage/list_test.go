@@ -34,7 +34,6 @@ func putWorkflow(t *testing.T, store *storage.OpenDALStore, namespace, workflowI
 		}.Proto(),
 		WorkflowType: "test:type",
 		CodeVersion:  "v1",
-		InputDigest:  "digest",
 		Status:       status,
 	}); err != nil {
 		t.Fatal(err)
@@ -172,7 +171,6 @@ func putActivity(t *testing.T, store *storage.OpenDALStore, wf storage.WorkflowK
 		}.Proto(),
 		ActivityType: "test:activity",
 		CodeVersion:  "v1",
-		InputDigest:  "digest",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		Result:       resultAny,
 	}); err != nil {
@@ -218,7 +216,6 @@ func putTimer(t *testing.T, store *storage.OpenDALStore, wf storage.WorkflowKey,
 		}.Proto(),
 		TimerKind:   storage.SleepTimerKind,
 		CodeVersion: "v1",
-		InputDigest: "digest",
 		Status:      status,
 	}); err != nil {
 		t.Fatal(err)

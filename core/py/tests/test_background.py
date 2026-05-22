@@ -93,7 +93,6 @@ async def test_timer_scanner_loop_dispatches(store):
         key=WorkflowKey(workflow_id="wf", run_id="r").to_proto(),
         workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
         code_version="test",
-        input_digest="x",
         status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
         created_at=now,
     )
@@ -104,7 +103,6 @@ async def test_timer_scanner_loop_dispatches(store):
             key=TimerKey(workflow_id="wf", run_id="r", timer_id=tid).to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
             code_version="test",
-            input_digest="d",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=past,
             created_at=now,
@@ -141,7 +139,6 @@ async def test_janitor_loop_runs(store):
         key=WorkflowKey(workflow_id="wf", run_id="old").to_proto(),
         workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
         code_version="test",
-        input_digest="x",
         status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         created_at=old,
         completed_at=old,

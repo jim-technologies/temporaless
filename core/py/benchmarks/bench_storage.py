@@ -46,7 +46,6 @@ async def bench_put_get_workflow(b: Bench) -> None:
             key=WorkflowKey(workflow_id="bench:wf", run_id="run").to_proto(),
             workflow_type="test:type",
             code_version="v1",
-            input_digest="digest",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             result=_result_any("benchmark-result"),
         )
@@ -67,7 +66,6 @@ async def bench_put_get_activity(b: Bench) -> None:
             key=ActivityKey(workflow_id="bench:wf", run_id="run", activity_id="fetch").to_proto(),
             activity_type="test:activity",
             code_version="v1",
-            input_digest="digest",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
             result=_result_any("benchmark-result"),
         )
@@ -88,7 +86,6 @@ async def _populated_workflows_store(count: int) -> tuple[OpenDALStore, str]:
             key=WorkflowKey(workflow_id="bench:wf", run_id=f"run-{i:05d}").to_proto(),
             workflow_type="test:type",
             code_version="v1",
-            input_digest="digest",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         )
         await store.put_workflow(record)
@@ -123,7 +120,6 @@ async def _populated_scoped_store(
                 key=WorkflowKey(workflow_id=f"schedule-{s:03d}", run_id=f"run-{r:05d}").to_proto(),
                 workflow_type="test:type",
                 code_version="v1",
-                input_digest="digest",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             )
             await store.put_workflow(record)
@@ -172,7 +168,6 @@ def _fanout_record(idx: int) -> temporaless_pb2.WorkflowRecord:
         key=WorkflowKey(workflow_id="bench:fanout", run_id=f"run-{idx:05d}").to_proto(),
         workflow_type="test:type",
         code_version="v1",
-        input_digest="digest",
         status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         result=_result_any("benchmark-result"),
     )

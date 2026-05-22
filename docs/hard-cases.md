@@ -37,9 +37,9 @@ The convention is:
 
 ## Activity ID Reuse
 
-If the same activity ID is reused with different input, Temporaless fails with a fingerprint mismatch.
+The activity_id is the de-duplication key. Reusing the same activity_id replays the stored result — including when the new input bytes differ. This is deliberate: the caller chose the id and owns its meaning. If you want the activity body to run again with different input, pick a different activity_id.
 
-This is deliberate. Silently returning an old price pull, social scrape, or normalized dataset would be worse than failing the workflow.
+If the shape changes — request or response message types swapped — the stored `activity_type` no longer matches and the runtime raises `ErrActivityConflict` / `ActivityConflictError` so you can't silently replay against incompatible code. Bumping `code_version` is the explicit lever for "treat all old records as stale."
 
 ## Code Changes
 

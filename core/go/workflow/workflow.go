@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -275,10 +273,6 @@ func Run[Req proto.Message, Resp proto.Message](
 	}
 
 	workflowType := messagePairType("workflow", input, resultTemplate)
-	digest, err := executionDigest("workflow", workflowType, runOptions.GetCodeVersion(), input)
-	if err != nil {
-		return zero, err
-	}
 	key := storage.WorkflowKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: runOptions.GetWorkflowId(),
@@ -301,9 +295,9 @@ func Run[Req proto.Message, Resp proto.Message](
 	if found {
 		switch record.GetStatus() {
 		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
-			return replayWorkflowRecord(record, workflowType, runOptions.GetCodeVersion(), digest, newResult)
+			return replayWorkflowRecord(record, workflowType, runOptions.GetCodeVersion(), newResult)
 		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS:
-			if err := assertWorkflowFingerprint(record, workflowType, runOptions.GetCodeVersion(), digest); err != nil {
+			if err := assertWorkflowIdentity(record, workflowType, runOptions.GetCodeVersion()); err != nil {
 				return zero, err
 			}
 			createdAt = record.GetCreatedAt()
@@ -365,7 +359,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			Key:           key.Proto(),
 			WorkflowType:  workflowType,
 			CodeVersion:   runOptions.GetCodeVersion(),
-			InputDigest:   digest,
 			Input:         inputAny,
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 			CreatedAt:     createdAt,
@@ -398,7 +391,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			Key:           key.Proto(),
 			WorkflowType:  workflowType,
 			CodeVersion:   runOptions.GetCodeVersion(),
-			InputDigest:   digest,
 			Input:         inputAny,
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED,
 			Failure:       failure,
@@ -424,7 +416,6 @@ func Run[Req proto.Message, Resp proto.Message](
 		Key:           key.Proto(),
 		WorkflowType:  workflowType,
 		CodeVersion:   runOptions.GetCodeVersion(),
-		InputDigest:   digest,
 		Input:         inputAny,
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		Result:        resultAny,
@@ -555,10 +546,6 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		return err
 	}
 	timerKind := storage.SleepTimerKind
-	digest, err := timerDigest(timerKind, workflow.codeVersion, duration)
-	if err != nil {
-		return err
-	}
 
 	now := time.Now().UTC()
 	record, found, err := workflow.store.GetTimer(ctx, key)
@@ -572,8 +559,8 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		if record.GetCodeVersion() != workflow.codeVersion {
 			return fmt.Errorf("%w: code version changed from %q to %q", ErrTimerConflict, record.GetCodeVersion(), workflow.codeVersion)
 		}
-		if record.GetInputDigest() != digest {
-			return fmt.Errorf("%w: timer duration changed", ErrTimerConflict)
+		if record.GetDuration().AsDuration() != duration {
+			return fmt.Errorf("%w: timer duration changed from %s to %s", ErrTimerConflict, record.GetDuration().AsDuration(), duration)
 		}
 		if record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_FIRED {
 			return nil
@@ -602,7 +589,6 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		Key:           key.Proto(),
 		TimerKind:     timerKind,
 		CodeVersion:   workflow.codeVersion,
-		InputDigest:   digest,
 		Duration:      durationpb.New(duration),
 		Status:        status,
 		FireAt:        timestamppb.New(fireAt),
@@ -653,10 +639,6 @@ func runActivity[T proto.Message](
 		return zero, err
 	}
 
-	digest, err := activityDigest(activityType, workflow.codeVersion, input)
-	if err != nil {
-		return zero, err
-	}
 	key := storage.ActivityKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: workflow.workflowID,
@@ -674,9 +656,9 @@ func runActivity[T proto.Message](
 		switch record.GetStatus() {
 		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 			temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED:
-			return replayRecord(record, activityType, workflow.codeVersion, digest, newResult)
+			return replayRecord(record, activityType, workflow.codeVersion, newResult)
 		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
-			if err := assertActivityFingerprint(record, activityType, workflow.codeVersion, digest); err != nil {
+			if err := assertActivityIdentity(record, activityType, workflow.codeVersion); err != nil {
 				return zero, err
 			}
 			// Durable retry resume: if the record carries next_attempt_at and
@@ -721,7 +703,6 @@ func runActivity[T proto.Message](
 			ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 			ResourceId:     activityID,
 			CodeVersion:    workflow.codeVersion,
-			InputDigest:    digest,
 			LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
 			CreatedAt:      timestamppb.New(now),
 			HeartbeatAt:    timestamppb.New(now),
@@ -736,7 +717,7 @@ func runActivity[T proto.Message](
 				return zero, err
 			}
 			if found && record.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING {
-				return replayRecord(record, activityType, workflow.codeVersion, digest, newResult)
+				return replayRecord(record, activityType, workflow.codeVersion, newResult)
 			}
 
 			existing, found, err := workflow.claimStore.GetClaim(ctx, claimKey)
@@ -814,7 +795,6 @@ func runActivity[T proto.Message](
 				Key:           key.Proto(),
 				ActivityType:  activityType,
 				CodeVersion:   workflow.codeVersion,
-				InputDigest:   digest,
 				Input:         inputAny,
 				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 				Result:        resultAny,
@@ -852,7 +832,6 @@ func runActivity[T proto.Message](
 				Key:           key.Proto(),
 				ActivityType:  activityType,
 				CodeVersion:   workflow.codeVersion,
-				InputDigest:   digest,
 				Input:         inputAny,
 				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED,
 				Failure:       failure,
@@ -872,7 +851,6 @@ func runActivity[T proto.Message](
 			Key:           key.Proto(),
 			ActivityType:  activityType,
 			CodeVersion:   workflow.codeVersion,
-			InputDigest:   digest,
 			Input:         inputAny,
 			Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 			Failure:       failure,
@@ -914,25 +892,23 @@ func runActivity[T proto.Message](
 	return zero, fmt.Errorf("activity %q exhausted retry plan", activityID)
 }
 
-func assertActivityFingerprint(
+// assertActivityIdentity guards against shape changes that would make the
+// stored record incompatible with the current code path: a swapped
+// request/response message type (which changes activity_type) or a bumped
+// code_version. The activity_id itself is the de-duplication key; same id +
+// same shape + same code_version is treated as the same logical activity
+// regardless of the input bytes — the caller chose the id and owns its
+// semantics.
+func assertActivityIdentity(
 	record *temporalessv1.ActivityRecord,
 	activityType string,
 	codeVersion string,
-	inputDigest string,
 ) error {
 	if record.GetActivityType() != activityType {
 		return fmt.Errorf("%w: activity type changed from %q to %q", ErrActivityConflict, record.GetActivityType(), activityType)
 	}
 	if record.GetCodeVersion() != codeVersion {
 		return fmt.Errorf("%w: code version changed from %q to %q", ErrActivityConflict, record.GetCodeVersion(), codeVersion)
-	}
-	if record.GetInputDigest() != inputDigest {
-		return fmt.Errorf(
-			"%w: input digest changed (the activity's request differs from the stored attempt; "+
-				"either pass the original request, delete the activity record to re-execute, "+
-				"or bump code_version if this change is intentional)",
-			ErrActivityConflict,
-		)
 	}
 	return nil
 }
@@ -941,11 +917,10 @@ func replayRecord[T proto.Message](
 	record *temporalessv1.ActivityRecord,
 	activityType string,
 	codeVersion string,
-	inputDigest string,
 	newResult func() T,
 ) (T, error) {
 	var zero T
-	if err := assertActivityFingerprint(record, activityType, codeVersion, inputDigest); err != nil {
+	if err := assertActivityIdentity(record, activityType, codeVersion); err != nil {
 		return zero, err
 	}
 
@@ -1027,16 +1002,11 @@ func putActivityRetryTimer(
 		RunID:      workflow.runID,
 		TimerID:    activityRetryTimerID(activityID),
 	}
-	digest, err := timerDigest(temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY, workflow.codeVersion, duration)
-	if err != nil {
-		return err
-	}
 	record := &temporalessv1.TimerRecord{
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           key.Proto(),
 		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
 		CodeVersion:   workflow.codeVersion,
-		InputDigest:   digest,
 		Duration:      durationpb.New(duration),
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(fireAt),
@@ -1101,23 +1071,14 @@ func failureFromError(err error) *temporalessv1.ActivityFailure {
 	return &temporalessv1.ActivityFailure{Message: err.Error()}
 }
 
-func activityDigest(activityType string, codeVersion string, input proto.Message) (string, error) {
-	return executionDigest("activity", activityType, codeVersion, input)
-}
-
-func timerDigest(timerKind temporalessv1.TimerKind, codeVersion string, duration time.Duration) (string, error) {
-	return executionDigest("timer", timerKind.String(), codeVersion, durationpb.New(duration))
-}
-
 func replayWorkflowRecord[T proto.Message](
 	record *temporalessv1.WorkflowRecord,
 	workflowType string,
 	codeVersion string,
-	inputDigest string,
 	newResult func() T,
 ) (T, error) {
 	var zero T
-	if err := assertWorkflowFingerprint(record, workflowType, codeVersion, inputDigest); err != nil {
+	if err := assertWorkflowIdentity(record, workflowType, codeVersion); err != nil {
 		return zero, err
 	}
 	switch record.GetStatus() {
@@ -1141,11 +1102,12 @@ func replayWorkflowRecord[T proto.Message](
 	}
 }
 
-func assertWorkflowFingerprint(
+// assertWorkflowIdentity guards against shape changes. See
+// assertActivityIdentity for the de-duplication contract.
+func assertWorkflowIdentity(
 	record *temporalessv1.WorkflowRecord,
 	workflowType string,
 	codeVersion string,
-	inputDigest string,
 ) error {
 	if record.GetWorkflowType() != workflowType {
 		return fmt.Errorf("%w: workflow type changed from %q to %q", ErrWorkflowConflict, record.GetWorkflowType(), workflowType)
@@ -1153,34 +1115,7 @@ func assertWorkflowFingerprint(
 	if record.GetCodeVersion() != codeVersion {
 		return fmt.Errorf("%w: code version changed from %q to %q", ErrWorkflowConflict, record.GetCodeVersion(), codeVersion)
 	}
-	if record.GetInputDigest() != inputDigest {
-		return fmt.Errorf(
-			"%w: input digest changed (the workflow's request differs from the stored run; "+
-				"either pass the original request, delete the workflow record to re-execute, "+
-				"or bump code_version if this change is intentional)",
-			ErrWorkflowConflict,
-		)
-	}
 	return nil
-}
-
-func executionDigest(kind string, executionType string, codeVersion string, input proto.Message) (string, error) {
-	inputBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(input)
-	if err != nil {
-		return "", err
-	}
-
-	hash := sha256.New()
-	hash.Write([]byte("temporaless." + kind + ".v1"))
-	hash.Write([]byte{0})
-	hash.Write([]byte(executionType))
-	hash.Write([]byte{0})
-	hash.Write([]byte(codeVersion))
-	hash.Write([]byte{0})
-	hash.Write([]byte(input.ProtoReflect().Descriptor().FullName()))
-	hash.Write([]byte{0})
-	hash.Write(inputBytes)
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func messagePairType(kind string, input proto.Message, output proto.Message) string {

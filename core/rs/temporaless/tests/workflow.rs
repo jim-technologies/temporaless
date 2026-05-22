@@ -93,24 +93,46 @@ async fn run_replays_completed_workflow_without_re_executing_body() {
 }
 
 #[tokio::test]
-async fn run_rejects_input_digest_change_on_replay() {
+async fn run_replays_stored_result_even_when_input_bytes_differ() {
+    // User-supplied workflow_id + run_id is the de-duplication contract.
+    // Replaying the same key with a different input must NOT re-execute and
+    // must NOT error — the stored result wins. Callers wanting a distinct
+    // execution choose a distinct run_id.
     let (_tmp, store) = new_store();
     let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
-    let body = |_w: Workflow, input: StringValue| async move {
-        Ok::<StringValue, RunError>(s(&format!("ok:{}", input.value)))
-    };
-    run(store.clone(), options.clone(), s("AAPL"), body)
-        .await
-        .unwrap();
-
-    let body2 = |_w: Workflow, input: StringValue| async move {
-        Ok::<StringValue, RunError>(s(&format!("ok:{}", input.value)))
-    };
-    let err = run(store, options, s("MSFT"), body2).await.err().unwrap();
-    match err {
-        RunError::WorkflowConflict(msg) => assert!(msg.contains("input digest")),
-        other => panic!("unexpected error: {other:?}"),
+    let executions = Arc::new(AtomicUsize::new(0));
+    {
+        let executions = executions.clone();
+        let body = move |_w: Workflow, input: StringValue| {
+            let executions = executions.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok::<StringValue, RunError>(s(&format!("ok:{}", input.value)))
+            }
+        };
+        let r1: StringValue = run(store.clone(), options.clone(), s("AAPL"), body)
+            .await
+            .unwrap();
+        assert_eq!(r1.value, "ok:AAPL");
     }
+
+    let body2 = {
+        let executions = executions.clone();
+        move |_w: Workflow, input: StringValue| {
+            let executions = executions.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok::<StringValue, RunError>(s(&format!("ok:{}", input.value)))
+            }
+        }
+    };
+    let r2: StringValue = run(store, options, s("MSFT"), body2).await.unwrap();
+    assert_eq!(r2.value, "ok:AAPL", "stored result must be replayed");
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        1,
+        "second invocation must not re-execute the body"
+    );
 }
 
 #[tokio::test]

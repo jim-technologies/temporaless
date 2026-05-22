@@ -31,7 +31,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						Key:           key.Proto(),
 						WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 						CodeVersion:   "test-version",
-						InputDigest:   "digest",
 						Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 						Result:        result,
 					},
@@ -58,7 +57,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						Key:           key.Proto(),
 						ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 						CodeVersion:   "test-version",
-						InputDigest:   "digest",
 						Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 						Result:        result,
 					},
@@ -85,7 +83,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						Key:           key.Proto(),
 						TimerKind:     storage.SleepTimerKind,
 						CodeVersion:   "test-version",
-						InputDigest:   "digest",
 						Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 					},
 				}))
@@ -151,7 +148,6 @@ func TestClientStoreUsesRecordStoreService(t *testing.T) {
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   "test-version",
-		InputDigest:   "digest",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	})
 	if err != nil {
@@ -187,7 +183,6 @@ func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
 			Key:           key.Proto(),
 			WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
 			CodeVersion:   "test-version",
-			InputDigest:   "digest",
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		}); err != nil {
 			t.Fatal(err)
@@ -258,7 +253,6 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		Key:           timerKey.Proto(),
 		TimerKind:     storage.SleepTimerKind,
 		CodeVersion:   "v1",
-		InputDigest:   "digest",
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 	}); err != nil {
 		t.Fatal(err)
@@ -320,7 +314,6 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 		ResourceId:    "claim-1",
 		CodeVersion:   "v1",
-		InputDigest:   "digest",
 	})
 	if err != nil || !created {
 		t.Fatalf("TryCreateClaim first: created=%v err=%v", created, err)

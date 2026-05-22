@@ -118,7 +118,7 @@ What happens on first call:
 2. The workflow body executes. Each `execute_activity` either replays a stored result or runs the activity and writes an `ActivityRecord{status: COMPLETED, result: ...}`.
 3. `run` updates the workflow record to `COMPLETED` with the result.
 
-Re-invoking the same `(workflow_id, run_id, code_version, input_digest)` short-circuits everything: the stored result is returned without re-executing the body or any activity.
+Re-invoking the same `(workflow_id, run_id, code_version)` short-circuits everything: the stored result is returned without re-executing the body or any activity. The user-supplied ids are the contract — pick distinct ids when you want distinct executions.
 
 ## 5. Retry transient failures
 

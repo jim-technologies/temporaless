@@ -178,14 +178,7 @@ func TestDurableRetry_ReplayBeforeFireAtReturnsPending(t *testing.T) {
 		codeVersion: "test",
 	}
 	// Seed a RETRYING record with next_attempt_at in the future. Activity
-	// type + digest must match what runActivity will compute below.
-	digest, err := activityDigest(
-		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
-		wf.codeVersion, wrapperspb.String("x"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// type + code_version must match what runActivity will compute below.
 	future := time.Now().UTC().Add(10 * time.Minute)
 	key := storage.ActivityKey{
 		Namespace:  storage.DefaultNamespace,
@@ -198,7 +191,6 @@ func TestDurableRetry_ReplayBeforeFireAtReturnsPending(t *testing.T) {
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   wf.codeVersion,
-		InputDigest:   digest,
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 		NextAttemptAt: timestamppb.New(future),
 		CreatedAt:     timestamppb.Now(),
@@ -210,7 +202,7 @@ func TestDurableRetry_ReplayBeforeFireAtReturnsPending(t *testing.T) {
 	}
 
 	executions := 0
-	_, err = runActivity(
+	_, err := runActivity(
 		ctx, wf,
 		"act:wait",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
@@ -245,13 +237,6 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 		codeVersion: "test",
 	}
 
-	digest, err := activityDigest(
-		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
-		wf.codeVersion, wrapperspb.String("x"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	key := storage.ActivityKey{
 		Namespace:  storage.DefaultNamespace,
@@ -264,7 +249,6 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		CodeVersion:   wf.codeVersion,
-		InputDigest:   digest,
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 		NextAttemptAt: timestamppb.New(past),
 		CreatedAt:     timestamppb.Now(),
@@ -286,7 +270,6 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 		Key:           timerKey.Proto(),
 		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
 		CodeVersion:   wf.codeVersion,
-		InputDigest:   "ignored",
 		Duration:      durationpb.New(time.Minute),
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(past),

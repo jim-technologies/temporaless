@@ -189,7 +189,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store: ConnectStore
                 key=WorkflowKey(workflow_id="remote:sweep", run_id=run_id).to_proto(),
                 workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
                 code_version="v1",
-                input_digest="d",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
                 completed_at=completed_at,
             )
@@ -213,7 +212,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store: ConnectStore
             key=wf_key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="v1",
-            input_digest="d",
             status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
         )
     )
@@ -223,7 +221,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store: ConnectStore
             key=timer_key.to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
             code_version="v1",
-            input_digest="d",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at,
         )

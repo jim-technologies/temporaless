@@ -44,7 +44,6 @@ async fn python_authored_workflow_record_decodes_correctly() {
         key: Some(key.to_proto()),
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
         code_version: "v0.3.7".into(),
-        input_digest: "abc123deadbeefabc123deadbeefabc1".into(),
         input: Some(prost_types::Any {
             type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
             value: encode_string_value("AAPL"),
@@ -64,7 +63,6 @@ async fn python_authored_workflow_record_decodes_correctly() {
     let read_back = store.get_workflow(&key).await.unwrap().expect("present");
     assert_eq!(read_back.workflow_type, record.workflow_type);
     assert_eq!(read_back.code_version, "v0.3.7");
-    assert_eq!(read_back.input_digest, "abc123deadbeefabc123deadbeefabc1");
     assert_eq!(read_back.status, v1::WorkflowStatus::Completed as i32);
     assert_eq!(
         read_back.annotations.get("source").map(String::as_str),
@@ -124,7 +122,6 @@ async fn python_authored_activity_record_with_retry_history() {
         key: Some(key.to_proto()),
         activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue".into(),
         code_version: "v0.3.7".into(),
-        input_digest: "fingerprint-xyz".into(),
         input: Some(prost_types::Any {
             type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
             value: encode_string_value("AAPL"),
@@ -177,7 +174,6 @@ async fn rust_writes_canonical_hive_path() {
         key: Some(key.to_proto()),
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
         code_version: "v1".into(),
-        input_digest: "x".into(),
         input: None,
         status: v1::WorkflowStatus::Completed as i32,
         result: None,

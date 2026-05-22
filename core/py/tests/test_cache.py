@@ -224,7 +224,6 @@ async def test_write_through_and_readback(inner_store, counter):
         ).to_proto(),
         activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
         code_version="test",
-        input_digest="deadbeef",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     record.created_at.GetCurrentTime()
@@ -235,7 +234,7 @@ async def test_write_through_and_readback(inner_store, counter):
         ActivityKey(workflow_id=scope.workflow_id, run_id=scope.run_id, activity_id="a")
     )
     assert got is not None
-    assert got.input_digest == "deadbeef"
+    assert got.activity_type == record.activity_type
     assert counter.get_activity_calls == 0, "cached read should not hit inner store"
     assert counter.put_activity_calls == 1
 
@@ -244,7 +243,7 @@ async def test_write_through_and_readback(inner_store, counter):
         ActivityKey(workflow_id=scope.workflow_id, run_id=scope.run_id, activity_id="a")
     )
     assert inner_got is not None
-    assert inner_got.input_digest == "deadbeef"
+    assert inner_got.activity_type == record.activity_type
 
 
 async def test_out_of_scope_read_passes_through(inner_store, counter):
@@ -260,7 +259,6 @@ async def test_out_of_scope_read_passes_through(inner_store, counter):
         key=other_key.to_proto(),
         workflow_type="workflow:google.protobuf.Int32Value->google.protobuf.Int32Value",
         code_version="test",
-        input_digest="abc",
         status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
     )
     other_record.created_at.GetCurrentTime()
@@ -305,7 +303,6 @@ async def test_delete_invalidates_cache(inner_store, counter):
         ).to_proto(),
         activity_type="activity:google.protobuf.Int32Value->google.protobuf.Int32Value",
         code_version="test",
-        input_digest="abc",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     record.created_at.GetCurrentTime()
@@ -359,7 +356,6 @@ async def test_cache_concurrent_get(inner_store, counter):
             ).to_proto(),
             activity_type="activity:google.protobuf.Int32Value->google.protobuf.Int32Value",
             code_version="test",
-            input_digest="d",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
         )
         record.created_at.GetCurrentTime()

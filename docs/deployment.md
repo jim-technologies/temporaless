@@ -215,7 +215,7 @@ class PriceService:
         )
 ```
 
-Any client speaking gRPC / ConnectRPC / gRPC-Web can now trigger the workflow. Replay short-circuits via stored records, so duplicate calls with the same `workflow_id + run_id + input_digest` are free. The "any server can trigger a workflow" model is literal — the framework only provides decoration.
+Any client speaking gRPC / ConnectRPC / gRPC-Web can now trigger the workflow. Replay short-circuits via stored records, so duplicate calls with the same `workflow_id + run_id` are free. The "any server can trigger a workflow" model is literal — the framework only provides decoration.
 
 `@wrap_workflow_method` also auto-maps framework typed errors to `ConnectError` (`TimerPendingError`/`EventPendingError` → `UNAVAILABLE`, `ClaimBusyError` → `ALREADY_EXISTS`, conflicts → `FAILED_PRECONDITION`, `ActivityError` → `INTERNAL`). The original exception is attached via `__cause__`, so `except ConnectError as e: e.__cause__` recovers the underlying type. Unknown exceptions propagate unchanged so application errors keep their full traceback.
 
@@ -400,11 +400,11 @@ Default: claims serialize activities, replays serialize results. Multiple workfl
 
 ### Multi-region active/active
 
-The Store must replicate across regions. S3 cross-region replication, GCS multi-region buckets, etc. Eventual consistency is acceptable: workflows are deterministic by `workflow_id + run_id + code_version + input_digest`, so two regions writing the same record converge.
+The Store must replicate across regions. S3 cross-region replication, GCS multi-region buckets, etc. Eventual consistency is acceptable: workflows are keyed by `workflow_id + run_id`, so two regions writing the same record converge.
 
 Conflict points:
 - **Claim creation**: native `If-None-Match` / generation matches are atomic per-region but not cross-region. For active/active claims, partition workflows by region (route `workflow_id` prefix → home region) and let CRR catch up the records.
-- **Workflow records during execution**: last-writer-wins is fine because the records are equivalent for the same fingerprint.
+- **Workflow records during execution**: last-writer-wins is fine because the records are keyed by the same id.
 
 ### Cold standby
 

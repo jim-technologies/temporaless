@@ -270,7 +270,6 @@ func cmdGetWorkflow(ctx context.Context, store storage.Store, g globalOpts, args
 	fmt.Fprintf(stdout, "status=%s\n", record.GetStatus().String())
 	fmt.Fprintf(stdout, "workflow_type=%s\n", record.GetWorkflowType())
 	fmt.Fprintf(stdout, "code_version=%s\n", record.GetCodeVersion())
-	fmt.Fprintf(stdout, "input_digest=%s\n", record.GetInputDigest())
 	if record.GetCreatedAt() != nil {
 		fmt.Fprintf(stdout, "created_at=%s\n", record.GetCreatedAt().AsTime().Format(time.RFC3339Nano))
 	}

@@ -105,7 +105,7 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 **Symptom:** A workflow that used to replay cleanly now re-executes its activity on every invocation. Vendor calls multiply; idempotency feels broken.
 
-**Cause:** `code_version` on the workflow `Options` changed. Activities replay on `(workflow_id, run_id, code_version, input_digest)`; bumping `code_version` invalidates all stored records as a deliberate design choice.
+**Cause:** `code_version` on the workflow `Options` changed. Activities replay on `(workflow_id, run_id, activity_id, code_version)`; bumping `code_version` invalidates all stored records as a deliberate design choice.
 
 **Fix:**
 

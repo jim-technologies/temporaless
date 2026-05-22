@@ -22,30 +22,25 @@ temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/event_id=
 temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=claim/claim_id={cid}/record.binpb
 ```
 
-The fingerprint convention is also identical:
-
-```
-sha256(
-  "temporaless." + kind + ".v1" + \0 +
-  execution_type + \0 +
-  code_version + \0 +
-  message.DESCRIPTOR.full_name + \0 +
-  deterministic_serialize(input)
-)
-```
+The replay contract is identical across SDKs: a stored record is reused
+when `(workflow_id, run_id, code_version, workflow_type)` matches —
+likewise `(workflow_id, run_id, activity_id, code_version, activity_type)`
+for activities. The user-supplied IDs are the de-duplication key; the
+runtime does NOT fingerprint input bytes. If you want a distinct
+execution, choose a distinct id.
 
 This means:
 
 - A workflow that runs in Python and writes its `WorkflowRecord` can be
   read by Rust or Go without re-encoding.
 - A workflow that runs partially in Python, crashes, and is resumed by a
-  Go worker re-reading the same bucket completes cleanly (same fingerprint
-  → same replay).
+  Go worker re-reading the same bucket completes cleanly — same ids, same
+  shape, same replay.
 - Inspector tooling written in any SDK works against any bucket.
 
 The cross-language storage test in `core/rs/temporaless/tests/interop.rs`
-constructs records using the same digest function as Python and asserts
-they decode correctly in Rust.
+constructs records the same way Python does and asserts byte-for-byte
+round-trip in Rust.
 
 ## Surface comparison
 
@@ -124,6 +119,35 @@ layers above (claims, durable timers, retries-as-timers, concurrency keys,
 ConnectRPC, the operator adapters) need their own iterations. Read the
 storage records from Rust today; run a Rust-authored workflow against
 those records as the rest of the SDK lands.
+
+## Adapter audit
+
+All adapters either ship for both Go and Python today or are tracked as
+runway. Nothing is on the kill list — every adapter has a clear, narrow
+reason to exist (storage RPC, claim coordination, scheduling primitive,
+compatibility target, operations helper).
+
+| Adapter | Purpose | Go | Python | Rust |
+|---|---|:-:|:-:|:-:|
+| `connectstore` | `RecordStoreService` over ConnectRPC; client wraps service back as a `Store` | ✓ | ✓ | — |
+| `gocdkclaims` (Go) / `OpenDALStore.try_create_claim` (Py) | Create-only claims via blob `IfNotExist` (S3/GCS native atomicity) | ✓ | ✓ | — |
+| `temporalcompat` | Run Temporaless-shaped handlers on the real Temporal SDK | ✓ | ✓ | — |
+| `prefectcompat` | Run Temporaless-shaped handlers as Prefect 3 flows/tasks | — | ✓ | — |
+| `timerscanner` | Find due durable timers belonging to in-flight workflows | ✓ | ✓ | — |
+| `cronscheduler` | In-process cron with stateless seeding from existing runs | ✓ | ✓ | — |
+| `inspector` | List in-flight/failed workflows, reset records for re-execution | ✓ | ✓ | — |
+| `janitor` | Sweep COMPLETED runs older than max-age | ✓ | ✓ | — |
+| `backfill` | Run a workflow over many run_ids with bounded concurrency + report | ✓ | ✓ | — |
+| `dependencies` | Cross-pipeline durable wait — `WaitForWorkflow(...)` | ✓ | ✓ | — |
+| `outbox` | Stable idempotency key per `(workflow_id, run_id, activity_id)` | ✓ | ✓ | — |
+| `background` | Opt-in cron + scanner + janitor in-process per replica | ✓ | ✓ | — |
+
+Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
+`janitor`, `backfill`, `dependencies`, `outbox`, `background`) live inside
+`core/py/src/temporaless/` rather than `adapters/py/` because they have
+no third-party deps; `prefectcompat` and `temporalcompat` need their own
+heavyweight deps so they ship as separate uv projects under
+`adapters/py/`.
 
 ## Choosing a language
 

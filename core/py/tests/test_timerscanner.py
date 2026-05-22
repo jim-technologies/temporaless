@@ -102,7 +102,6 @@ async def test_due_timers_skips_timer_under_completed_workflow(
             key=workflow_key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
             code_version="test",
-            input_digest="d",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             completed_at=completed_at,
         )
@@ -118,7 +117,6 @@ async def test_due_timers_skips_timer_under_completed_workflow(
             ).to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
             code_version="test",
-            input_digest="d",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at,
         )

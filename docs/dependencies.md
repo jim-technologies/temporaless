@@ -20,7 +20,7 @@ Go dependencies live in `go.mod`:
 - `github.com/apache/opendal/bindings/go`: default storage implementation.
 - `github.com/apache/opendal-go-services`: OpenDAL service schemes used by tests and examples.
 - `gocloud.dev`: narrow Go claim adapter that uses blob conditional writes for create-if-absent leases.
-- `google.golang.org/protobuf`: protobuf marshaling, deterministic fingerprints, and generated code runtime.
+- `google.golang.org/protobuf`: protobuf marshaling and generated code runtime.
 - `buf.build/go/protovalidate`: validation for protobuf-declared options and IDs.
 - `connectrpc.com/connect`: generated ConnectRPC Go stubs.
 - `go.temporal.io/sdk`: strict Temporal compatibility adapter only. It is not a core runtime dependency conceptually, and the core must not import Temporal SDK packages.
