@@ -27,6 +27,19 @@ var _ storage.ClaimStore = (*Store)(nil)
 //
 // For multi-process or distributed atomicity, rely on the driver's native
 // preconditions: S3 If-None-Match, GCS ifGenerationMatch=0, etc.
+//
+// # fileblob backend — pass MetadataDontWrite
+//
+// When wrapping `gocloud.dev/blob/fileblob` (dev/test backend), open the
+// bucket with `&fileblob.Options{Metadata: fileblob.MetadataDontWrite}`.
+// fileblob's default mode writes a JSON metadata sidecar (`<path>.attrs`)
+// via `os.Create` BEFORE the IfNotExist precondition is checked — meaning
+// every losing writer briefly truncates an existing sidecar to zero bytes,
+// and a racing GetClaim that reads during that window gets `io.EOF` out of
+// the JSON decoder. Claim records carry no GoCDK metadata, so the sidecar
+// is pure overhead; MetadataDontWrite skips it and the entire failure mode
+// disappears. Native cloud drivers (S3, GCS) use real preconditions and
+// don't have this race.
 type Store struct {
 	bucket *blob.Bucket
 	mu     sync.Mutex

@@ -125,7 +125,15 @@ func TestStoreGetClaim(t *testing.T) {
 func newFileBucket(t *testing.T) *blob.Bucket {
 	t.Helper()
 
-	bucket, err := fileblob.OpenBucket(t.TempDir(), nil)
+	// MetadataDontWrite suppresses fileblob's `.attrs` JSON sidecar — that
+	// sidecar's write is not gated by IfNotExist, so a racing GetClaim mid-
+	// write reads a truncated file and gets io.EOF from the JSON decoder.
+	// Claim records don't carry GoCDK metadata, so dropping the sidecar is
+	// free. Production deployments use real cloud drivers with native
+	// preconditions and don't hit this path.
+	bucket, err := fileblob.OpenBucket(t.TempDir(), &fileblob.Options{
+		Metadata: fileblob.MetadataDontWrite,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

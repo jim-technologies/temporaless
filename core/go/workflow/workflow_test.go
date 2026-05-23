@@ -1472,7 +1472,15 @@ func newTestStore(t *testing.T) *storage.OpenDALStore {
 func newTestClaimStore(t *testing.T) *gocdkclaims.Store {
 	t.Helper()
 
-	bucket, err := fileblob.OpenBucket(t.TempDir(), nil)
+	// MetadataDontWrite suppresses fileblob's `.attrs` JSON sidecar. With the
+	// sidecar enabled, every WriteAll truncates `<path>.attrs` with os.Create
+	// BEFORE the IfNotExist precondition is checked — a racing GetClaim
+	// reading that same sidecar lands mid-truncate and gets io.EOF out of
+	// the JSON decoder. We don't store any GoCDK metadata on claim records,
+	// so dropping the sidecar costs nothing and closes the race.
+	bucket, err := fileblob.OpenBucket(t.TempDir(), &fileblob.Options{
+		Metadata: fileblob.MetadataDontWrite,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

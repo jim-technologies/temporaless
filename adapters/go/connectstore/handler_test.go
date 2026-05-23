@@ -334,7 +334,11 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 
 func newClaimsBackend(t *testing.T) storage.ClaimStore {
 	t.Helper()
-	bucket, err := fileblob.OpenBucket(t.TempDir(), nil)
+	// MetadataDontWrite — see comment in gocdkclaims/store_test.go for why
+	// the sidecar would otherwise cause io.EOF on racing reads.
+	bucket, err := fileblob.OpenBucket(t.TempDir(), &fileblob.Options{
+		Metadata: fileblob.MetadataDontWrite,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

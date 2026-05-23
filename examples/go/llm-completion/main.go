@@ -59,7 +59,16 @@ func main() {
 
 	// Concurrency-key slots use claim records; the gocdkclaims adapter
 	// provides storage-arbitrated create-if-absent via gocloud.dev/blob.
-	claimsBucket, err := fileblob.OpenBucket(root, nil)
+	//
+	// MetadataDontWrite avoids fileblob's `.attrs` JSON sidecar — a separate
+	// per-record file that gets truncated-then-written, with the truncation
+	// NOT gated by IfNotExist. A racing GetClaim that lands during the
+	// sidecar's brief empty window reads `io.EOF` out of the JSON decoder.
+	// Production deployments use S3/GCS drivers with native preconditions
+	// and don't go through this path.
+	claimsBucket, err := fileblob.OpenBucket(root, &fileblob.Options{
+		Metadata: fileblob.MetadataDontWrite,
+	})
 	if err != nil {
 		panic(err)
 	}
