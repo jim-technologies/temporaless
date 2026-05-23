@@ -18,7 +18,7 @@ Trigger surface and framework surface are the **same surface**. Anything that sp
 
 ## 2. Storage is the source of truth
 
-There is no engine to run, no control plane to operate. Every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage. On replay, the runtime reads stored records by fingerprint; on miss, it executes and writes.
+There is no engine to run, no control plane to operate. Every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. On replay, the runtime looks up the record by that id; on miss, it executes and writes.
 
 Consequences:
 

@@ -53,7 +53,7 @@ func BenchmarkWorkflowRunFreshExecution(b *testing.B) {
 }
 
 // BenchmarkWorkflowRunReplay measures the cost of replaying a completed
-// workflow — Get from store, fingerprint check, return result. This is what
+// workflow — Get from store, identity check, return result. This is what
 // happens on every duplicate invocation.
 func BenchmarkWorkflowRunReplay(b *testing.B) {
 	store := newBenchStore(b)

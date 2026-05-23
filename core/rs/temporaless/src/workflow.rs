@@ -1,8 +1,9 @@
 //! Workflow + activity runtime for the Rust SDK.
 //!
 //! Mirrors the Go (`core/go/workflow`) and Python (`core/py/src/temporaless/
-//! workflow.py`) runtimes — same fingerprint convention, same replay
-//! semantics, same record shapes. A workflow authored in Python and
+//! workflow.py`) runtimes — same replay semantics, same record shapes,
+//! same proto-descriptor-derived `workflow_type` / `activity_type` strings
+//! (via `prost::Name::full_name()`). A workflow authored in Python and
 //! replayed in Rust returns the same stored result; a workflow authored
 //! in Rust and inspected from Python sees the same record layout.
 //!
@@ -150,8 +151,9 @@ impl ActivityError {
 }
 
 /// Top-level error type for the runtime. Surfaces storage errors,
-/// fingerprint conflicts (a sign of bad code_version hygiene), and
-/// terminal activity failures.
+/// identity conflicts (workflow_type / activity_type / code_version
+/// changes incompatible with a stored record), and terminal activity
+/// failures.
 #[derive(Debug, Error)]
 pub enum RunError {
     #[error("storage: {0}")]
@@ -230,8 +232,9 @@ pub fn annotate(key: impl Into<String>, value: impl Into<String>) {
 /// 1. **COMPLETED record found** → decode the stored result and return it.
 ///    The body does NOT run.
 /// 2. **FAILED record found** → return the stored failure.
-/// 3. **IN_PROGRESS record found** → verify the fingerprint, then re-run
-///    the body. Activities short-circuit on their own stored records.
+/// 3. **IN_PROGRESS record found** → verify identity (workflow_type +
+///    code_version), then re-run the body. Activities short-circuit on
+///    their own stored records.
 /// 4. **No record** → write IN_PROGRESS, run the body, write the terminal
 ///    record (COMPLETED or FAILED).
 ///

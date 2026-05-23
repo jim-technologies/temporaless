@@ -9,9 +9,10 @@ The classic ETL DAG pattern:
 Translated to Temporaless: the whole DAG is **one workflow body** composed
 with normal Python `await` and `if`/`else`. Each box is an activity. There
 is no DAG declaration language — Python control flow IS the DAG. Replay is
-fingerprint-based: re-running the same `(workflow_id, run_id)` skips every
-step that already completed and resumes where it left off, which is what
-Airflow's "clear-and-rerun" semantics feel like.
+id-based: re-running the same `(workflow_id, run_id)` skips every step
+that already completed (stored records keyed by activity_id) and resumes
+where it left off, which is what Airflow's "clear-and-rerun" semantics
+feel like.
 
 What this example demonstrates that maps to data-pipelining frameworks:
 

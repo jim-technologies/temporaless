@@ -339,7 +339,8 @@ def workflow_error_to_connect_code(exc: BaseException) -> tuple[object, str] | N
       (caller should retry later — workflow stays IN_PROGRESS).
     - ``ClaimBusyError`` → ``ALREADY_EXISTS`` (another worker holds the claim).
     - ``WorkflowConflictError``, ``ActivityConflictError``, ``TimerConflictError``
-      → ``FAILED_PRECONDITION`` (stored fingerprint disagrees with input).
+      → ``FAILED_PRECONDITION`` (stored record's workflow_type / activity_type
+      / timer kind / code_version is incompatible with the current call).
     - ``ActivityError``, ``WorkflowDependencyFailedError`` → ``INTERNAL`` (the
       upstream pipeline produced a terminal failure that this workflow can't
       recover from).

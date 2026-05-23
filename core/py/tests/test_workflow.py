@@ -1145,8 +1145,8 @@ async def test_wrap_workflow_method_decorates_grpc_handler(store: OpenDALStore) 
     assert first.value == "vendor:AAPL"
     assert service.vendor_calls == 1
 
-    # Second invocation with the same fingerprint: replay short-circuits.
-    # No vendor calls, but the result matches.
+    # Second invocation with the same workflow_id/run_id: replay short-
+    # circuits. No vendor calls, but the result matches.
     second = await service.fetch_prices(StringValue(value="AAPL"))
     assert second.value == "vendor:AAPL"
     assert service.vendor_calls == 1

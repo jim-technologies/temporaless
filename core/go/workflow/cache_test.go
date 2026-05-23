@@ -491,7 +491,7 @@ func TestDeleteInvalidatesCache(t *testing.T) {
 
 // TestSemanticEquivalenceAgainstRawStore replays the same workflow against a
 // raw store and against the cache, asserting both produce the same result
-// (same fingerprint, same activity executions). This guards against the cache
+// and the same number of activity executions. This guards against the cache
 // drifting from the underlying-store contract.
 func TestSemanticEquivalenceAgainstRawStore(t *testing.T) {
 	ctx := context.Background()
