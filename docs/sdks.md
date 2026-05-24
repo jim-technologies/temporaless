@@ -156,6 +156,7 @@ compatibility target, operations helper).
 | `dependencies` | Cross-pipeline durable wait — `WaitForWorkflow(...)` | ✓ | ✓ | — |
 | `outbox` | Stable idempotency key per `(workflow_id, run_id, activity_id)` | ✓ | ✓ | — |
 | `background` | Opt-in cron + scanner + janitor in-process per replica | ✓ | ✓ | — |
+| `dispatch` | Fire-and-forget pool for gRPC-shaped handlers — `DoAsync(method, req)` + graceful drain on shutdown (15s default). In-process only, not durable. | ✓ | ✓ | ✓ |
 
 Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
 `janitor`, `backfill`, `dependencies`, `outbox`, `background`) live inside

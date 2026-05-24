@@ -35,6 +35,7 @@
 //! - Generated proto types live under [`v1`] and mirror the Go/Python
 //!   `temporalessv1` / `temporaless_pb2` namespaces.
 
+pub mod dispatch;
 pub mod storage;
 pub mod workflow;
 

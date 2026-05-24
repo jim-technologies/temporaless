@@ -8,6 +8,28 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Added
+
+- **`dispatch` adapter — fire-and-forget pool for gRPC-shaped handlers**,
+  in all three SDKs (`adapters/go/dispatch/`,
+  `core/py/src/temporaless/dispatch.py`,
+  `core/rs/temporaless/src/dispatch.rs`). Identical shape: `register(method,
+  handler)` wires a typed handler under its gRPC fully-qualified method
+  name, `do_async(method, req)` spawns it as a goroutine / asyncio task /
+  tokio task and returns immediately, `shutdown()` stops accepting new
+  submissions and drains in-flight work for up to `drain_timeout`
+  (default 15s — matches common SIGTERM grace windows) before cancelling.
+  Always waits for every spawned task to actually return; orphaning a
+  handler mid-vendor-call is the failure mode we're avoiding.
+  - In-process only; not durable across crashes. Use `workflow.run` when
+    you need at-least-once delivery — `dispatch` is at-most-once +
+    best-effort for side effects whose result the caller doesn't need to
+    wait on (webhook notifications, telemetry pushes, fan-out where the
+    caller wants its own request to return quickly).
+  - Handler errors flow through `OnError` (default: WARN log). Panicking
+    handlers are recovered in Go (`recover()`) and surfaced via the same
+    path so a single bad call can't take the process down.
+
 ### Changed (breaking)
 
 - **Rust `workflow_type` / `activity_type` now use the proto descriptor

@@ -35,8 +35,9 @@ docs/                 Architecture and design notes
 | [`adapters/go/janitor`](adapters/go/janitor) | Sweep COMPLETED runs older than a max-age threshold |
 | [`adapters/go/backfill`](adapters/go/backfill) | Run a workflow over many run_ids with bounded concurrency + per-run status (Dagster/Prefect/Airflow-style backfill) |
 | [`adapters/go/dependencies`](adapters/go/dependencies) | Cross-pipeline durable wait — `WaitForWorkflow(store, key, newResult)` returns upstream's result or a typed pending/failed error |
+| [`adapters/go/dispatch`](adapters/go/dispatch) | Fire-and-forget goroutine pool for gRPC-shaped handlers — `DoAsync(method, req)` + `Shutdown(ctx)` that drains in-flight goroutines (default 15s) before cancelling. In-process only; pair with workflows when you need durability. |
 
-Python equivalents for the operations adapters live in `core/py/src/temporaless/{timerscanner,cronscheduler,inspector,janitor,backfill,dependencies}.py` (no separate uv project — they have no third-party deps). `backfill` runs a workflow over many run_ids with bounded concurrency; `dependencies.wait_for_workflow` is the cross-pipeline durable wait primitive.
+Python equivalents for the operations adapters live in `core/py/src/temporaless/{timerscanner,cronscheduler,inspector,janitor,backfill,dependencies,dispatch}.py` (no separate uv project — they have no third-party deps). `backfill` runs a workflow over many run_ids with bounded concurrency; `dependencies.wait_for_workflow` is the cross-pipeline durable wait primitive; `dispatch.Dispatcher` is the fire-and-forget asyncio-task pool that mirrors `adapters/go/dispatch`. Rust users get the same shape via `temporaless::dispatch`.
 
 ## Examples
 
