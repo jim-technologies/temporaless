@@ -15,13 +15,34 @@ from temporaless.dispatch import (
     DEFAULT_DRAIN_TIMEOUT,
     Dispatcher,
     DispatcherShuttingDownError,
+    Queue,
     TypeMismatchError,
     UnknownMethodError,
 )
+from temporaless.v1 import temporaless_pb2
 
 
-def _disp(**kw) -> Dispatcher:
-    return Dispatcher(**kw)
+def _opts(
+    *, drain_timeout: timedelta | None = None, max_inflight: int = 0
+) -> temporaless_pb2.DispatchOptions:
+    proto = temporaless_pb2.DispatchOptions(max_inflight=max_inflight)
+    if drain_timeout is not None:
+        proto.drain_timeout.FromTimedelta(drain_timeout)
+    return proto
+
+
+def _disp(
+    *,
+    drain_timeout: timedelta | None = None,
+    max_inflight: int = 0,
+    on_error=None,
+    queue: Queue | None = None,
+) -> Dispatcher:
+    return Dispatcher(
+        options=_opts(drain_timeout=drain_timeout, max_inflight=max_inflight),
+        on_error=on_error,
+        queue=queue,
+    )
 
 
 async def test_do_async_runs_handler_in_background():
@@ -38,7 +59,7 @@ async def test_do_async_runs_handler_in_background():
         return StringValue(value="ok")
 
     disp.register("/x/Slow", StringValue, slow)
-    disp.do_async("/x/Slow", StringValue(value="hi"))
+    await disp.do_async("/x/Slow", StringValue(value="hi"))
 
     # do_async returned without awaiting the handler — body hasn't run yet.
     await asyncio.sleep(0)  # one event-loop tick
@@ -58,7 +79,7 @@ async def test_do_async_rejects_unknown_method():
 
     disp.register("/x/Known", StringValue, h)
     with pytest.raises(UnknownMethodError):
-        disp.do_async("/x/Missing", StringValue(value="hi"))
+        await disp.do_async("/x/Missing", StringValue(value="hi"))
     await disp.shutdown()
 
 
@@ -70,7 +91,7 @@ async def test_do_async_rejects_type_mismatch():
 
     disp.register("/x/Strict", StringValue, h)
     with pytest.raises(TypeMismatchError):
-        disp.do_async("/x/Strict", Int32Value(value=7))
+        await disp.do_async("/x/Strict", Int32Value(value=7))
     await disp.shutdown()
 
 
@@ -83,7 +104,7 @@ async def test_do_async_rejects_after_shutdown():
     disp.register("/x/Want", StringValue, h)
     await disp.shutdown()
     with pytest.raises(DispatcherShuttingDownError):
-        disp.do_async("/x/Want", StringValue(value="hi"))
+        await disp.do_async("/x/Want", StringValue(value="hi"))
 
 
 async def test_register_rejects_sync_handler():
@@ -110,7 +131,7 @@ async def test_shutdown_drains_running_tasks():
         return StringValue(value="done")
 
     disp.register("/x/Work", StringValue, work)
-    disp.do_async("/x/Work", StringValue(value="hi"))
+    await disp.do_async("/x/Work", StringValue(value="hi"))
 
     await disp.shutdown()
     assert completed.is_set(), "shutdown returned before handler completed"
@@ -134,7 +155,7 @@ async def test_shutdown_cancels_after_drain_timeout():
             handler_returned.set()
 
     disp.register("/x/Long", StringValue, long)
-    disp.do_async("/x/Long", StringValue(value="hi"))
+    await disp.do_async("/x/Long", StringValue(value="hi"))
 
     await disp.shutdown()
     assert handler_returned.is_set(), "shutdown returned but handler hadn't returned"
@@ -153,7 +174,7 @@ async def test_handler_errors_flow_through_on_error():
         raise RuntimeError("kaboom")
 
     disp.register("/x/Boom", StringValue, boom)
-    disp.do_async("/x/Boom", StringValue(value="hi"))
+    await disp.do_async("/x/Boom", StringValue(value="hi"))
     await disp.shutdown()
 
     assert len(seen) == 1
@@ -176,4 +197,175 @@ async def test_shutdown_is_idempotent():
 
 async def test_default_drain_timeout_is_15s():
     """Documented default; covered so a refactor doesn't silently change it."""
-    assert DEFAULT_DRAIN_TIMEOUT == timedelta(seconds=15)
+    assert timedelta(seconds=15) == DEFAULT_DRAIN_TIMEOUT
+
+
+async def test_max_inflight_caps_concurrent_handlers():
+    """With max_inflight=N, no more than N handlers run at the same time."""
+    cap = 3
+    disp = _disp(max_inflight=cap)
+
+    inflight = 0
+    max_observed = 0
+    release = asyncio.Event()
+    lock = asyncio.Lock()
+
+    async def bounded(_: StringValue) -> StringValue:
+        nonlocal inflight, max_observed
+        async with lock:
+            inflight += 1
+            max_observed = max(max_observed, inflight)
+        await release.wait()
+        async with lock:
+            inflight -= 1
+        return StringValue(value="ok")
+
+    disp.register("/x/Bounded", StringValue, bounded)
+
+    # Submit 10; first 3 enter the handler, the rest await semaphore.
+    total = 10
+    submitters = [
+        asyncio.create_task(disp.do_async("/x/Bounded", StringValue(value=f"{i}")))
+        for i in range(total)
+    ]
+    # Let the first batch reach the handler body.
+    await asyncio.sleep(0.05)
+    assert inflight == cap, f"inflight={inflight}, want {cap} (rest should be blocked)"
+
+    release.set()
+    await asyncio.gather(*submitters)
+    await disp.shutdown()
+    assert max_observed <= cap, f"max concurrent inflight={max_observed}, want <= {cap}"
+
+
+async def test_max_inflight_unblocks_on_shutdown():
+    """A submitter awaiting a permit raises DispatcherShuttingDownError
+    when shutdown begins, instead of waiting for a permit that never comes."""
+    disp = _disp(max_inflight=1, drain_timeout=timedelta(milliseconds=100))
+
+    hold = asyncio.Event()
+
+    async def hog(_: StringValue) -> StringValue:
+        await hold.wait()
+        return StringValue(value="ok")
+
+    disp.register("/x/Hog", StringValue, hog)
+    await disp.do_async("/x/Hog", StringValue(value="first"))
+
+    # Second submission awaits the permit.
+    second = asyncio.create_task(disp.do_async("/x/Hog", StringValue(value="second")))
+    await asyncio.sleep(0.05)  # ensure it's blocked
+
+    # Begin shutdown in parallel, then release the holder so drain completes.
+    async def shutdown_then_release() -> None:
+        await disp.shutdown()
+
+    shutdown_task = asyncio.create_task(shutdown_then_release())
+    await asyncio.sleep(0.01)
+    hold.set()
+
+    with pytest.raises(DispatcherShuttingDownError):
+        await second
+    await shutdown_task
+
+
+async def test_invoke_runs_registered_handler_from_bytes():
+    """External-queue consumer path: bytes → method lookup → handler."""
+    disp = _disp()
+    got = asyncio.Queue()
+
+    async def echo(req: StringValue) -> StringValue:
+        await got.put(req.value)
+        return StringValue(value="ack:" + req.value)
+
+    disp.register("/x/Echo", StringValue, echo)
+    payload = StringValue(value="hello").SerializeToString(deterministic=True)
+    await disp.invoke("/x/Echo", payload)
+    assert await got.get() == "hello"
+    await disp.shutdown()
+
+
+async def test_invoke_unknown_method():
+    disp = _disp()
+    with pytest.raises(UnknownMethodError):
+        await disp.invoke("/x/Missing", b"")
+    await disp.shutdown()
+
+
+async def test_custom_queue_receives_submission():
+    """A user-supplied Queue captures (method, payload) and bypasses the
+    in-process task pool entirely — the Kafka/Rabbit adapter contract."""
+    captured: list[tuple[str, bytes]] = []
+
+    class CapturingQueue(Queue):
+        async def submit(self, method: str, payload: bytes) -> None:
+            captured.append((method, payload))
+
+        async def close(self) -> None:
+            return None
+
+    disp = _disp(queue=CapturingQueue())
+
+    async def handler(req: StringValue) -> StringValue:  # noqa: ARG001
+        pytest.fail("handler should NOT run when a custom queue is configured")
+
+    disp.register("/x/Submit", StringValue, handler)
+    await disp.do_async("/x/Submit", StringValue(value="payload"))
+    await disp.shutdown()
+
+    assert len(captured) == 1
+    method, payload = captured[0]
+    assert method == "/x/Submit"
+    # Round-trip the payload to prove the producer+consumer share a
+    # wire format (proto.SerializeToString deterministic).
+    rt = StringValue()
+    rt.ParseFromString(payload)
+    assert rt.value == "payload"
+
+
+async def test_options_default_when_none():
+    """Constructing Dispatcher with no options applies defaults."""
+    disp = Dispatcher()  # no options, no queue, no on_error
+    assert disp._drain_timeout == DEFAULT_DRAIN_TIMEOUT  # noqa: SLF001
+    assert disp._sem is None  # noqa: SLF001 - unbounded by default
+    await disp.shutdown()
+
+
+async def test_options_from_proto_round_trip():
+    """The proto-declared options are picked up unchanged at construction."""
+    proto = temporaless_pb2.DispatchOptions(max_inflight=42)
+    proto.drain_timeout.FromTimedelta(timedelta(seconds=7))
+    disp = Dispatcher(options=proto)
+    assert disp._drain_timeout == timedelta(seconds=7)  # noqa: SLF001
+    assert disp._sem._value == 42  # noqa: SLF001 - asyncio.Semaphore internal
+    await disp.shutdown()
+
+
+async def test_unbounded_by_default():
+    """max_inflight=0 (the default) means no cap."""
+    disp = _disp()  # max_inflight unset
+
+    inflight = 0
+    release = asyncio.Event()
+    lock = asyncio.Lock()
+
+    async def burst(_: StringValue) -> StringValue:
+        nonlocal inflight
+        async with lock:
+            inflight += 1
+        await release.wait()
+        return StringValue(value="ok")
+
+    disp.register("/x/Burst", StringValue, burst)
+    total = 50
+    await asyncio.gather(
+        *(disp.do_async("/x/Burst", StringValue(value=f"{i}")) for i in range(total))
+    )
+    # Yield to let all tasks reach the handler body.
+    for _ in range(10):
+        if inflight == total:
+            break
+        await asyncio.sleep(0.01)
+    assert inflight == total, f"inflight={inflight}, want {total} (unbounded should run all)"
+    release.set()
+    await disp.shutdown()

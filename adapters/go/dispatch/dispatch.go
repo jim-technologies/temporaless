@@ -49,10 +49,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -76,23 +78,43 @@ var ErrUnknownMethod = errors.New("no handler registered for method")
 // name typos that happen to collide.
 var ErrTypeMismatch = errors.New("request type does not match registered handler")
 
-// Options configures a `Dispatcher`.
+// Options configures a `Dispatcher`. The serializable knobs
+// (`DrainTimeout`, `MaxInflight`) live in the proto-declared
+// `temporalessv1.DispatchOptions` so a single config file / env var /
+// CLI flag drives them identically across Go, Python, and Rust. Runtime
+// hooks that can't be expressed as data (`OnError`, `Queue`) stay
+// language-local here.
 type Options struct {
-	// DrainTimeout is how long `Shutdown` waits for in-flight handlers to
-	// finish before cancelling their context. Zero falls back to
-	// `DefaultDrainTimeout`.
-	DrainTimeout time.Duration
+	// Proto carries the serializable config. When nil, defaults apply
+	// (`DefaultDrainTimeout`, `MaxInflight=0`).
+	Proto *temporalessv1.DispatchOptions
+
+	// Queue is the producer-side backend. Default: in-process goroutine
+	// pool. Advanced users plug in a Kafka / RabbitMQ / SQS / NATS adapter
+	// that implements the `Queue` interface; submissions then land on
+	// that queue and are consumed by a worker process (see the
+	// `Invoke` helper). The queue is opaque from the dispatcher's
+	// perspective — it only sees `Submit(ctx, method, payload []byte)`.
+	Queue Queue
 
 	// OnError is invoked when a handler returns a non-nil error. Default:
 	// log at WARN via `slog.Default()`. Override to integrate with your
-	// telemetry pipeline.
+	// telemetry pipeline. Used only by the in-process queue path; external
+	// queue adapters surface their own errors via the queue's native ack /
+	// nack semantics.
 	OnError func(method string, err error)
 }
 
-// Dispatcher is a goroutine pool keyed by gRPC-style method names.
+// Dispatcher is a goroutine pool keyed by gRPC-style method names. Submissions
+// route through `Queue` (default: in-process). Drain semantics apply only to
+// the in-process queue — external queue adapters own their own delivery and
+// retry semantics.
 type Dispatcher struct {
 	drainTimeout time.Duration
 	onError      func(method string, err error)
+
+	// queue is the producer backend. Defaults to inProcessQueue.
+	queue Queue
 
 	mu       sync.RWMutex
 	handlers map[string]handlerEntry
@@ -107,22 +129,44 @@ type Dispatcher struct {
 
 	wg sync.WaitGroup
 
+	// sem is the bounded-concurrency token bucket. Nil when MaxInflight
+	// is 0 (unbounded). Capacity == MaxInflight; a send takes a slot, a
+	// receive returns one. Buffered channel is the canonical Go semaphore.
+	sem chan struct{}
+
+	// shutdownCh closes when Shutdown begins. DoAsync watches this in its
+	// semaphore-wait select so a SIGTERM unblocks waiters immediately
+	// instead of letting them sit until ctx times out.
+	shutdownCh chan struct{}
+
 	// closed flips to 1 at the start of `Shutdown`; new `DoAsync` calls are
 	// rejected from then on.
 	closed atomic.Bool
 }
 
 type handlerEntry struct {
-	reqGoType  any // *Req (a typed nil) — used purely as the type token for assertion error messages
-	invoke     func(ctx context.Context, req proto.Message) error
+	// reqType is a zero-value of the registered Req. Used for the
+	// producer-side type check and as a template for the consumer-side
+	// `proto.Unmarshal` (via the `newReq` factory).
+	reqType proto.Message
+	// newReq constructs a fresh, zero-valued Req for unmarshaling on the
+	// consumer side. Captured at register time via generics so we don't
+	// need runtime reflection.
+	newReq func() proto.Message
+	// invoke type-asserts the message back to Req and runs the typed
+	// handler. Carries any type-mismatch error from the assert as well as
+	// the handler's own error.
+	invoke func(ctx context.Context, req proto.Message) error
 }
 
-// New constructs a `Dispatcher`. Pass a zero-value `Options{}` for defaults.
+// New constructs a `Dispatcher`. Pass a zero-value `Options{}` for the
+// in-process queue with framework defaults.
 func New(opts Options) *Dispatcher {
-	drain := opts.DrainTimeout
+	drain := opts.Proto.GetDrainTimeout().AsDuration()
 	if drain <= 0 {
 		drain = DefaultDrainTimeout
 	}
+	maxInflight := int(opts.Proto.GetMaxInflight())
 	onErr := opts.OnError
 	if onErr == nil {
 		onErr = func(method string, err error) {
@@ -131,13 +175,23 @@ func New(opts Options) *Dispatcher {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Dispatcher{
+	d := &Dispatcher{
 		drainTimeout:   drain,
 		onError:        onErr,
 		handlers:       make(map[string]handlerEntry),
 		inflightCtx:    ctx,
 		inflightCancel: cancel,
+		shutdownCh:     make(chan struct{}),
 	}
+	if maxInflight > 0 {
+		d.sem = make(chan struct{}, maxInflight)
+	}
+	if opts.Queue != nil {
+		d.queue = opts.Queue
+	} else {
+		d.queue = &inProcessQueue{d: d}
+	}
+	return d
 }
 
 // Register wires up a typed handler under the given method name. `method`
@@ -161,9 +215,15 @@ func Register[Req proto.Message, Resp proto.Message](
 	if handle == nil {
 		panic("dispatch.Register: handler is required")
 	}
-	var zero Req
+	// Construct one zero-value Req to capture (a) the type for the
+	// producer-side ErrTypeMismatch check, and (b) the descriptor we'll
+	// use to allocate fresh Reqs on the consumer side via reflection on
+	// `*req.ProtoReflect().Descriptor()`. Reflection-once-at-register is
+	// fine; the hot path uses the captured factory.
+	zero := newProtoMessage[Req]()
 	entry := handlerEntry{
-		reqGoType: zero,
+		reqType: zero,
+		newReq:  func() proto.Message { return newProtoMessage[Req]() },
 		invoke: func(ctx context.Context, req proto.Message) error {
 			typed, ok := req.(Req)
 			if !ok {
@@ -179,18 +239,21 @@ func Register[Req proto.Message, Resp proto.Message](
 	d.mu.Unlock()
 }
 
-// DoAsync looks up the handler for `method`, type-asserts `req` to the
-// handler's request type, and runs it in a new goroutine. Returns
-// immediately. Returns an error ONLY for the pre-dispatch failures
-// (`ErrShuttingDown`, `ErrUnknownMethod`, `ErrTypeMismatch`) — handler
-// errors flow through `Options.OnError`.
+// DoAsync routes a submission through the configured `Queue` (default:
+// in-process goroutine pool). The caller's `ctx` governs any
+// submission-side wait (filling the slot semaphore on the in-process
+// queue; the wait on an external queue's send buffer / network ack).
 //
-// The `ctx` argument is used only for the registry lookup and the type
-// check; the running goroutine sees a fresh long-lived context that is
-// cancelled only when `Shutdown` exceeds its drain window. This is
-// deliberate — a request-scoped context being cancelled (because the HTTP
-// handler that called `DoAsync` returned) must not kill the side-effect
-// goroutine.
+// Returns an error for the pre-dispatch failures (`ErrShuttingDown`,
+// `ErrUnknownMethod`, `ErrTypeMismatch`, `ctx.Err()`); handler errors
+// from the in-process path flow through `Options.OnError`. External
+// queue adapters surface delivery failures through `Queue.Submit`'s
+// error return and runtime failures through their own ack/nack semantics
+// at the consumer side.
+//
+// The marshaled payload is `proto.Marshal(req)` with deterministic
+// ordering — the same bytes any worker process (or another SDK) will
+// pull off the queue and feed back into the registered handler.
 func (d *Dispatcher) DoAsync(ctx context.Context, method string, req proto.Message) error {
 	if d == nil {
 		return fmt.Errorf("dispatch.DoAsync: dispatcher is nil")
@@ -212,34 +275,70 @@ func (d *Dispatcher) DoAsync(ctx context.Context, method string, req proto.Messa
 	if req == nil {
 		return fmt.Errorf("dispatch.DoAsync: req is required for method %q", method)
 	}
-	// Pre-check the request type so callers find out at the call site, not
-	// from an OnError log line later. The invoke closure repeats the assert
-	// for safety; the second check is essentially free.
-	if _, ok := req.(proto.Message); !ok {
-		return fmt.Errorf("%w: %q (got %T)", ErrTypeMismatch, method, req)
+	// Pre-check the request type at the producer site so a typo is caught
+	// before the bytes hit the queue. The handler-side invoke repeats the
+	// check after unmarshal for the external-queue path where the
+	// producer and consumer are different processes.
+	expectedType := entry.reqType
+	if expectedType != nil && !typeMatches(req, expectedType) {
+		return fmt.Errorf("%w: %q expects %T, got %T", ErrTypeMismatch, method, expectedType, req)
 	}
 
-	// Acquire the wg slot BEFORE launching the goroutine so a Shutdown
-	// racing with DoAsync sees the count and waits. The atomic check above
-	// is the fast path; the recheck inside the lock would be needed for
-	// strict correctness, but Shutdown also waits on the wg, so a goroutine
-	// started in the small window between `closed.Load()` and `wg.Add(1)`
-	// will still be awaited.
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		// Recover so a panicking handler doesn't take the whole process
-		// down. Surface as an error through OnError so operators see it.
-		defer func() {
-			if r := recover(); r != nil {
-				d.onError(method, fmt.Errorf("handler panicked: %v", r))
-			}
-		}()
-		if err := entry.invoke(d.inflightCtx, req); err != nil {
-			d.onError(method, err)
-		}
-	}()
-	return nil
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("dispatch.DoAsync: marshal req for %q: %w", method, err)
+	}
+	return d.queue.Submit(ctx, method, payload)
+}
+
+// invokeLocal runs the registered handler for `method` against the given
+// marshaled payload. Used by the in-process queue and exposed via
+// `Invoke` for consumers built on top of external queues.
+func (d *Dispatcher) invokeLocal(method string, payload []byte) error {
+	d.mu.RLock()
+	entry, ok := d.handlers[method]
+	d.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownMethod, method)
+	}
+	req := entry.newReq()
+	if err := proto.Unmarshal(payload, req); err != nil {
+		return fmt.Errorf("dispatch.Invoke: unmarshal payload for %q: %w", method, err)
+	}
+	return entry.invoke(d.inflightCtx, req)
+}
+
+// Invoke decodes `payload` as the request type registered for `method`
+// and runs the registered handler with the given context. Intended for
+// queue-backed consumers: pull a message off Kafka / Rabbit / NATS /
+// SQS, hand its method-name + payload to `Invoke`, and use the returned
+// error to drive ack / nack.
+//
+// Unlike `DoAsync`, `Invoke` runs the handler synchronously on the
+// caller's goroutine and uses the caller's `ctx`. The producer-side
+// concurrency cap and drain semantics don't apply here; bound your
+// consumer's concurrency at the queue's prefetch / consumer-pool layer
+// instead.
+func (d *Dispatcher) Invoke(ctx context.Context, method string, payload []byte) error {
+	d.mu.RLock()
+	entry, ok := d.handlers[method]
+	d.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownMethod, method)
+	}
+	req := entry.newReq()
+	if err := proto.Unmarshal(payload, req); err != nil {
+		return fmt.Errorf("dispatch.Invoke: unmarshal payload for %q: %w", method, err)
+	}
+	return entry.invoke(ctx, req)
+}
+
+// typeMatches reports whether `got` has the same concrete proto.Message
+// type as `expected`. We compare full names because reflection-based
+// type compare across the proto interface is awkward.
+func typeMatches(got, expected proto.Message) bool {
+	return got.ProtoReflect().Descriptor().FullName() ==
+		expected.ProtoReflect().Descriptor().FullName()
 }
 
 // Shutdown stops accepting new submissions, waits up to `DrainTimeout` for
@@ -258,7 +357,13 @@ func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
 		return nil
 	}
 	// Mark closed FIRST so new DoAsync calls bail before adding to wg.
-	d.closed.Store(true)
+	if !d.closed.Swap(true) {
+		// First shutdown — wake any callers parked on the MaxInflight
+		// semaphore so they return ErrShuttingDown instead of timing out
+		// against their own ctx. Closing the channel is idempotent-safe
+		// only because of the Swap guard.
+		close(d.shutdownCh)
+	}
 
 	// Phase 1: best-effort drain. Wait for either the wg to clear or the
 	// drain timeout to elapse.
@@ -278,6 +383,106 @@ func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
 		return nil
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Queue — the producer-side adapter point for external message buses.
+// ---------------------------------------------------------------------------
+
+// Queue is the producer interface external message buses plug into.
+// A Queue receives a method name + the proto-marshaled request payload;
+// what it does with them is up to the implementation: write to a Kafka
+// topic, publish to a RabbitMQ exchange, SQS SendMessage, NATS publish,
+// Redis Streams XADD, etc.
+//
+// The consumer side is the implementation's concern too — the framework
+// only standardizes the producer interface and the wire format (method
+// name + deterministic proto bytes). Consumers built on this should pull
+// messages off their queue and feed (method, payload) into
+// `Dispatcher.Invoke` to look up the registered handler and run it
+// synchronously on the consumer goroutine; the queue's native ack/nack
+// drives delivery semantics.
+//
+// In-process: the default implementation spawns a goroutine and runs
+// the handler immediately, applying `MaxInflight` / `DrainTimeout`. See
+// `New` for how to swap in an external queue.
+type Queue interface {
+	// Submit pushes a message describing (method, payload) onto the
+	// queue. Returns once the message is durably handed off (queue's
+	// native ack of the producer's send, or for the in-process queue,
+	// once the goroutine has been launched).
+	Submit(ctx context.Context, method string, payload []byte) error
+	// Close releases any resources held by the queue. Called by
+	// `Dispatcher.Shutdown` after the drain. In-process queues use this
+	// to drain spawned goroutines; external queues should flush any
+	// pending sends and close producer connections.
+	Close(ctx context.Context) error
+}
+
+// inProcessQueue is the default `Queue` — runs handlers on goroutines
+// owned by the dispatcher. Drains via the dispatcher's wg.
+type inProcessQueue struct {
+	d *Dispatcher
+}
+
+func (q *inProcessQueue) Submit(ctx context.Context, method string, payload []byte) error {
+	d := q.d
+	if d.closed.Load() {
+		return ErrShuttingDown
+	}
+	// Acquire a slot if MaxInflight is set. Three escape hatches.
+	if d.sem != nil {
+		var ctxDone <-chan struct{}
+		if ctx != nil {
+			ctxDone = ctx.Done()
+		}
+		select {
+		case d.sem <- struct{}{}:
+		case <-ctxDone:
+			return ctx.Err()
+		case <-d.shutdownCh:
+			return ErrShuttingDown
+		}
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		if d.sem != nil {
+			defer func() { <-d.sem }()
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				d.onError(method, fmt.Errorf("handler panicked: %v", r))
+			}
+		}()
+		if err := d.invokeLocal(method, payload); err != nil {
+			d.onError(method, err)
+		}
+	}()
+	return nil
+}
+
+func (q *inProcessQueue) Close(context.Context) error {
+	// The dispatcher's Shutdown owns the wg-drain; nothing extra to do
+	// for the in-process backend.
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// newProtoMessage constructs a fresh, zero-valued Req via reflection on
+// the type parameter. Works for any concrete `*MyMessage` that
+// implements `proto.Message`. Called at register time (once per method)
+// and at consumer-side unmarshal (once per delivered message); no hot
+// path overhead beyond a single reflect.New.
+func newProtoMessage[Req proto.Message]() Req {
+	var zero Req
+	// proto.Message is always a pointer type for generated types;
+	// reflect.New on the element gives us a fresh *MyMessage.
+	t := reflect.TypeOf(zero).Elem()
+	return reflect.New(t).Interface().(Req)
 }
 
 // waitDrain blocks until either the wait group clears, the optional

@@ -34,6 +34,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Errors.
 thiserror = "1"
 
+# Async trait support for the Queue trait (until trait fns become stable
+# for trait objects). Tiny crate, no transitive deps.
+async-trait = "0.1"
+
 [build-dependencies]
 # build.rs uses prost-build with the pure-Rust protox parser so no system
 # protoc is required. Editions support is needed because the canonical proto

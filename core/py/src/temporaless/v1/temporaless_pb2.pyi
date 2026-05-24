@@ -118,6 +118,14 @@ class ActivityOptions(_message.Message):
     retry_policy: RetryPolicy
     def __init__(self, activity_id: _Optional[str] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ...) -> None: ...
 
+class DispatchOptions(_message.Message):
+    __slots__ = ("drain_timeout", "max_inflight")
+    DRAIN_TIMEOUT_FIELD_NUMBER: _ClassVar[int]
+    MAX_INFLIGHT_FIELD_NUMBER: _ClassVar[int]
+    drain_timeout: _duration_pb2.Duration
+    max_inflight: int
+    def __init__(self, drain_timeout: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_inflight: _Optional[int] = ...) -> None: ...
+
 class RetryPolicy(_message.Message):
     __slots__ = ("initial_interval", "backoff_coefficient", "maximum_interval", "maximum_attempts", "non_retryable_error_codes", "durable_backoff_threshold")
     INITIAL_INTERVAL_FIELD_NUMBER: _ClassVar[int]

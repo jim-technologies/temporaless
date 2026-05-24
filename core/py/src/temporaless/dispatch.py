@@ -35,11 +35,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from google.protobuf.message import Message
+
+from temporaless.v1 import temporaless_pb2
 
 RequestT = TypeVar("RequestT", bound=Message)
 ResponseT = TypeVar("ResponseT", bound=Message)
@@ -81,6 +84,38 @@ class _HandlerEntry:
         self.invoke = invoke
 
 
+class Queue(ABC):
+    """Producer-side adapter point for external message buses.
+
+    A :class:`Queue` receives a method name + the proto-marshaled request
+    payload; what it does with them is up to the implementation: write to
+    Kafka, publish to RabbitMQ / NATS, SQS SendMessage, Redis Streams
+    XADD, etc.
+
+    The consumer side is the implementation's concern. Consumers pull
+    messages off their queue and feed ``(method, payload)`` into
+    :meth:`Dispatcher.invoke` to look up the registered handler and run
+    it; the queue's native ack / nack drives delivery semantics.
+
+    In-process (the default): the handler runs on an :class:`asyncio.Task`
+    spawned by the dispatcher, with :class:`Dispatcher`'s ``max_inflight``
+    / ``drain_timeout`` applied. See :class:`Dispatcher` for swap-in.
+    """
+
+    @abstractmethod
+    async def submit(self, method: str, payload: bytes) -> None:
+        """Push (method, payload) onto the backing queue."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Release any resources held by the queue.
+
+        Called by :meth:`Dispatcher.shutdown` after the drain. In-process
+        queues use this to drain spawned tasks; external queues should
+        flush any pending sends and close producer connections.
+        """
+
+
 class Dispatcher:
     """Bounded fire-and-forget asyncio task pool.
 
@@ -100,16 +135,49 @@ class Dispatcher:
     def __init__(
         self,
         *,
-        drain_timeout: timedelta = DEFAULT_DRAIN_TIMEOUT,
+        options: temporaless_pb2.DispatchOptions | None = None,
+        queue: Queue | None = None,
         on_error: Callable[[str, BaseException], None] | None = None,
     ) -> None:
+        """Create a Dispatcher.
+
+        ``options`` carries the serializable config (``drain_timeout``,
+        ``max_inflight``) as a :class:`~temporaless.v1.temporaless_pb2.DispatchOptions`
+        proto so a single config file / env var / CLI flag drives the
+        same knobs across Go, Python, and Rust. When ``None``, defaults
+        apply (15s drain, unbounded concurrency).
+
+        ``queue`` plugs in an external message bus (Kafka, RabbitMQ,
+        NATS, SQS, ...). Default: in-process asyncio-task pool. When a
+        custom queue is supplied, ``do_async`` submits to it instead of
+        spawning locally; the consumer side calls :meth:`invoke` to run
+        the registered handler.
+
+        ``on_error`` receives any handler exception that the in-process
+        queue surfaces. External queues report their own failures via
+        the queue's native ack / nack semantics; ``on_error`` is unused
+        in that path.
+        """
+        proto = options or temporaless_pb2.DispatchOptions()
+        drain_timeout = proto.drain_timeout.ToTimedelta()
         if drain_timeout.total_seconds() <= 0:
             drain_timeout = DEFAULT_DRAIN_TIMEOUT
+        max_inflight = int(proto.max_inflight)
         self._drain_timeout = drain_timeout
         self._on_error = on_error or _default_on_error
         self._handlers: dict[str, _HandlerEntry] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._closed = False
+        self._shutdown_event = asyncio.Event()
+        # When max_inflight > 0, the in-process queue awaits this semaphore
+        # before scheduling. When 0, the semaphore is None and the queue
+        # never blocks on the slot dimension.
+        self._sem: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_inflight) if max_inflight > 0 else None
+        )
+        # Default queue is in-process; bound after self is otherwise
+        # initialised so InProcessQueue can capture a reference to us.
+        self._queue: Queue = queue if queue is not None else _InProcessQueue(self)
 
     def register(
         self,
@@ -143,18 +211,26 @@ class Dispatcher:
         async def _invoke(req: Message) -> None:
             # `request_type` is captured; the type-check at do_async time
             # already validated, so the cast is safe.
-            await handle(req)  # type: ignore[arg-type]
+            await handle(cast("RequestT", req))
 
         self._handlers[method] = _HandlerEntry(request_type=request_type, invoke=_invoke)
 
-    def do_async(self, method: str, req: Message) -> None:
-        """Schedule ``method``'s handler with ``req`` as an asyncio task.
+    async def do_async(self, method: str, req: Message) -> None:
+        """Route ``method``'s handler through the configured :class:`Queue`.
 
-        Returns immediately after the task is scheduled (the body runs on
-        the next event-loop tick). Raises before scheduling if the method
-        is unregistered, the request type doesn't match the registered
-        handler, or the dispatcher is shutting down -- handler errors flow
-        through ``on_error``.
+        The producer-side type check runs synchronously; mismatched types
+        raise :class:`TypeMismatchError` BEFORE the bytes are marshaled
+        or queued -- catching a typo before it durably hits an external
+        bus and gets dead-lettered later.
+
+        For the in-process queue: schedules an :class:`asyncio.Task`,
+        awaiting a permit when ``max_inflight`` is set (raises
+        :class:`DispatcherShuttingDownError` if shutdown wins the race).
+
+        For an external queue: serializes ``req`` with deterministic
+        protobuf encoding and hands ``(method, payload)`` to
+        :meth:`Queue.submit`. The queue's send-side errors propagate
+        unchanged.
 
         Must be called from within a running event loop.
         """
@@ -173,25 +249,61 @@ class Dispatcher:
                 f"got {type(req).__name__}"
             )
 
+        payload = req.SerializeToString(deterministic=True)
+        await self._queue.submit(method, payload)
+
+    async def invoke(self, method: str, payload: bytes) -> None:
+        """Decode ``payload`` as the request type registered for ``method``
+        and run the registered handler on the caller's task.
+
+        Intended for queue-backed consumers: pull a message off Kafka /
+        Rabbit / NATS / SQS, hand its method-name + payload here, use
+        the raised exception (or its absence) to drive ack / nack.
+
+        Unlike :meth:`do_async`, ``invoke`` runs the handler
+        synchronously on the caller's task and respects the caller's
+        own asyncio cancellation. The producer-side concurrency cap
+        and drain semantics don't apply here -- bound your consumer's
+        concurrency at the queue's prefetch / consumer-pool layer
+        instead.
+        """
+        entry = self._handlers.get(method)
+        if entry is None:
+            raise UnknownMethodError(f"no handler registered for method {method!r}")
+        req = entry.request_type()
+        req.ParseFromString(payload)
+        await entry.invoke(req)
+
+    # Internal hook called by :class:`_InProcessQueue.submit` after it has
+    # acquired any concurrency permit. Spawns the handler as an asyncio
+    # task and returns; the caller (the in-process queue) returns once
+    # the task is scheduled.
+    def _spawn_local(self, method: str, payload: bytes) -> None:
+        entry = self._handlers[method]
+        req = entry.request_type()
+        req.ParseFromString(payload)
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._run(method, entry, req), name=f"dispatch:{method}")
         self._tasks.add(task)
-        # Drop the strong reference once the task finishes so the set
-        # doesn't pin completed tasks forever. The reference is held only
-        # for the lifetime of the running task; shutdown's snapshot picks
-        # up everything that's still in-flight.
         task.add_done_callback(self._tasks.discard)
 
     async def _run(self, method: str, entry: _HandlerEntry, req: Message) -> None:
         try:
-            await entry.invoke(req)
-        except asyncio.CancelledError:
-            # Re-raise so the task reports as cancelled, but ALSO surface
-            # via on_error so operators see the abandoned work in logs.
-            self._on_error(method, asyncio.CancelledError())
-            raise
-        except BaseException as err:  # noqa: BLE001 - surfacing user errors
-            self._on_error(method, err)
+            try:
+                await entry.invoke(req)
+            except asyncio.CancelledError:
+                # Re-raise so the task reports as cancelled, but ALSO surface
+                # via on_error so operators see the abandoned work in logs.
+                self._on_error(method, asyncio.CancelledError())
+                raise
+            except BaseException as err:  # noqa: BLE001 - surfacing user errors
+                self._on_error(method, err)
+        finally:
+            # Release the slot regardless of how the handler exited
+            # (success / error / cancellation). Mirrors the deferred
+            # release in the Go SDK.
+            if self._sem is not None:
+                self._sem.release()
 
     async def shutdown(self) -> None:
         """Stop accepting new submissions; drain in-flight tasks.
@@ -207,6 +319,10 @@ class Dispatcher:
         state and returns once any remaining tasks finish.
         """
         self._closed = True
+        # Wake any callers blocked on the MaxInflight semaphore so they
+        # raise DispatcherShuttingDownError instead of waiting on permits
+        # that will never come.
+        self._shutdown_event.set()
         if not self._tasks:
             return
 
@@ -219,7 +335,7 @@ class Dispatcher:
                 timeout=self._drain_timeout.total_seconds(),
             )
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
         # Drain window expired -- signal cancellation so cooperative
@@ -243,3 +359,47 @@ def _default_on_error(method: str, err: BaseException) -> None:
         err,
         exc_info=err,
     )
+
+
+class _InProcessQueue(Queue):
+    """Default :class:`Queue` -- runs handlers on asyncio tasks owned by
+    the dispatcher. Drains via the dispatcher's task set during shutdown.
+    """
+
+    def __init__(self, dispatcher: Dispatcher) -> None:
+        self._dispatcher = dispatcher
+
+    async def submit(self, method: str, payload: bytes) -> None:
+        d = self._dispatcher
+        if d._closed:  # noqa: SLF001 - intra-module collaboration
+            raise DispatcherShuttingDownError(
+                "dispatcher is shutting down; new submissions are rejected"
+            )
+        # Bounded-concurrency path: race the semaphore acquire against
+        # the shutdown signal so a SIGTERM-during-burst wakes parked
+        # submitters with DispatcherShuttingDownError.
+        if d._sem is not None:  # noqa: SLF001
+            acquire = asyncio.create_task(d._sem.acquire())  # noqa: SLF001
+            shutdown_wait = asyncio.create_task(d._shutdown_event.wait())  # noqa: SLF001
+            done, pending = await asyncio.wait(
+                {acquire, shutdown_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if shutdown_wait in done:
+                # Surrender any racy permit we may have actually picked up
+                # so a follow-on shutdown doesn't see a phantom inflight.
+                if acquire in done and not acquire.cancelled():
+                    d._sem.release()  # noqa: SLF001
+                raise DispatcherShuttingDownError(
+                    "dispatcher is shutting down; new submissions are rejected"
+                )
+            acquire.result()
+
+        d._spawn_local(method, payload)  # noqa: SLF001
+
+    async def close(self) -> None:
+        # The dispatcher's shutdown owns the task drain; nothing extra
+        # for the in-process backend.
+        return None

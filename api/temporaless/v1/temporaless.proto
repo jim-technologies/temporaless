@@ -136,6 +136,29 @@ message ActivityOptions {
   RetryPolicy retry_policy = 2;
 }
 
+// DispatchOptions configures an in-process fire-and-forget dispatcher (the
+// `dispatch` adapter in each SDK). Native runtime knobs that can't be
+// expressed as data — the `OnError` hook, the pluggable `Queue` adapter for
+// Kafka/Rabbit/etc. — stay language-local on the dispatcher constructor;
+// only the serializable config lives here so it can be loaded from a
+// config file / env / CLI flag uniformly across Go, Python, and Rust.
+message DispatchOptions {
+  // How long `Shutdown` waits for in-flight handlers to drain before
+  // cancelling them. Unset / zero falls back to the SDK default of 15s
+  // (matches common SIGTERM grace periods — Kubernetes preStop /
+  // terminationGracePeriodSeconds).
+  google.protobuf.Duration drain_timeout = 1;
+  // Cap on concurrent handlers. When > 0, `DoAsync` blocks until a slot
+  // frees up — natural backpressure for bursty callers. Zero (the
+  // default) leaves the pool unbounded: one task per `DoAsync` call, no
+  // submission-side blocking.
+  //
+  // Typical starting points: 2× CPU cores for compute-bound handlers,
+  // 100–1000 for I/O-bound handlers depending on per-call latency and
+  // downstream rate limits.
+  uint32 max_inflight = 2;
+}
+
 // RetryPolicy controls in-process retry behavior for a single activity.
 //
 // Failures matched by `non_retryable_error_codes` short-circuit the loop and

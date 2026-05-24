@@ -10,6 +10,34 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ### Added
 
+- **`dispatch` bounded concurrency (`MaxInflight`) + pluggable `Queue`**.
+  Two related additions to the pool that landed in the previous entry:
+  - **Bounded concurrency**: new `max_inflight` knob on the proto
+    `DispatchOptions`. When > 0, `DoAsync` blocks until a slot frees up
+    — natural producer-side backpressure for bursty callers, respecting
+    caller ctx / asyncio cancel / tokio shutdown notification. Zero
+    (default) is unbounded — current behavior preserved.
+  - **Proto-driven options**: `DrainTimeout` and `MaxInflight` moved into
+    `temporaless.v1.DispatchOptions` so a single config file / env / CLI
+    flag drives them identically across Go, Python, and Rust. Runtime
+    hooks (`OnError`, `Queue`) stay language-local on the constructor.
+    Small breaking change to the brand-new dispatcher Options struct in
+    all three SDKs — no external users to migrate yet.
+  - **`Queue` interface**: new producer-only abstraction `Submit(method,
+    payload []byte)` + `Close()`. Default is in-process (current
+    goroutine-pool behavior). External users implement `Queue` against
+    Kafka / RabbitMQ / NATS / SQS / Redis Streams / etc.; the dispatcher
+    proto-marshals the request deterministically and hands `(method,
+    payload)` to the queue. Consumer-side helper `Dispatcher.Invoke(ctx,
+    method, payload)` looks up the registered handler, decodes the
+    bytes, and runs it — so the user's worker loop is just "pull from
+    queue, call Invoke, ack on Ok / nack on Err". Producer-side type
+    check catches mismatched request types BEFORE the bytes hit the
+    queue, so a typo doesn't get durably enqueued and then dead-lettered
+    later.
+  - In Python and Rust, `do_async` is now `async` (it was sync) because
+    the semaphore wait needs `await`. Go's signature is unchanged.
+
 - **`dispatch` adapter — fire-and-forget pool for gRPC-shaped handlers**,
   in all three SDKs (`adapters/go/dispatch/`,
   `core/py/src/temporaless/dispatch.py`,
