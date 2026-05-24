@@ -281,16 +281,11 @@ func Register[Req proto.Message, Resp proto.Message](
 // ordering — the same bytes any worker process (or another SDK) will
 // pull off the queue and feed back into the registered handler.
 func (d *Dispatcher) DoAsync(ctx context.Context, method string, req proto.Message) error {
-	if d == nil {
-		return fmt.Errorf("dispatch.DoAsync: dispatcher is nil")
-	}
 	if d.closed.Load() {
 		return ErrShuttingDown
 	}
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	d.mu.RLock()
 	entry, ok := d.handlers[method]
@@ -369,9 +364,6 @@ func typeMatches(got, expected proto.Message) bool {
 // Calling `Shutdown` twice is safe; the second call observes the already-
 // cancelled state and returns immediately.
 func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
-	if d == nil {
-		return nil
-	}
 	// Phase A — signal: mark closed, wake any parked submitters. Done
 	// WITHOUT submitMu so parked submitters can wake and release their
 	// RLock before we try to take the write Lock as a barrier.
@@ -398,10 +390,7 @@ func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
 	// shutdownCtx. We never abandon goroutines — orphaning a handler
 	// mid-vendor-call is worse than waiting a few extra seconds.
 	if !d.waitDrain(shutdownCtx, 0) {
-		if shutdownCtx != nil {
-			return shutdownCtx.Err()
-		}
-		return nil
+		return shutdownCtx.Err()
 	}
 	return nil
 }
@@ -464,13 +453,9 @@ func (q *inProcessQueue) Submit(ctx context.Context, method string, payload []by
 	// shutdown branch wakes parked submits without forcing them to wait
 	// for their own ctx to expire.
 	if d.sem != nil {
-		var ctxDone <-chan struct{}
-		if ctx != nil {
-			ctxDone = ctx.Done()
-		}
 		select {
 		case d.sem <- struct{}{}:
-		case <-ctxDone:
+		case <-ctx.Done():
 			return ctx.Err()
 		case <-d.shutdownCh:
 			return ErrShuttingDown
@@ -534,17 +519,12 @@ func (d *Dispatcher) waitDrain(shutdownCtx context.Context, timeout time.Duratio
 		timerC = t.C
 	}
 
-	var ctxDone <-chan struct{}
-	if shutdownCtx != nil {
-		ctxDone = shutdownCtx.Done()
-	}
-
 	select {
 	case <-done:
 		return true
 	case <-timerC:
 		return false
-	case <-ctxDone:
+	case <-shutdownCtx.Done():
 		return false
 	}
 }

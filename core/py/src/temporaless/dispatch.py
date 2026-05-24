@@ -259,6 +259,39 @@ class Dispatcher:
         payload = req.SerializeToString(deterministic=True)
         await self._queue.submit(method, payload)
 
+    async def _submit_in_process(self, method: str, payload: bytes) -> None:
+        """In-process submission path used by the default :class:`Queue`.
+
+        Lives on :class:`Dispatcher` so the queue stays a thin shim with
+        no private-state reach-arounds. Awaits a concurrency permit when
+        ``max_inflight`` is set, racing the acquire against the shutdown
+        signal so a SIGTERM-during-burst wakes parked submitters with
+        :class:`DispatcherShuttingDownError`.
+        """
+        if self._closed:
+            raise DispatcherShuttingDownError(
+                "dispatcher is shutting down; new submissions are rejected"
+            )
+        if self._sem is not None:
+            acquire = asyncio.create_task(self._sem.acquire())
+            shutdown_wait = asyncio.create_task(self._shutdown_event.wait())
+            done, pending = await asyncio.wait(
+                {acquire, shutdown_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if shutdown_wait in done:
+                # Surrender any racy permit we may have actually picked up
+                # so a follow-on shutdown doesn't see a phantom inflight.
+                if acquire in done and not acquire.cancelled():
+                    self._sem.release()
+                raise DispatcherShuttingDownError(
+                    "dispatcher is shutting down; new submissions are rejected"
+                )
+            acquire.result()
+        self._spawn_local(method, payload)
+
     async def invoke(self, method: str, payload: bytes) -> None:
         """Decode ``payload`` as the request type registered for ``method``
         and run the registered handler on the caller's task.
@@ -369,44 +402,18 @@ def _default_on_error(method: str, err: BaseException) -> None:
 
 
 class _InProcessQueue(Queue):
-    """Default :class:`Queue` -- runs handlers on asyncio tasks owned by
-    the dispatcher. Drains via the dispatcher's task set during shutdown.
+    """Default :class:`Queue` -- thin shim that delegates to
+    :meth:`Dispatcher._submit_in_process`. All shared state lives on the
+    dispatcher; this exists only so the in-process path satisfies the
+    same :class:`Queue` interface external adapters implement.
     """
 
     def __init__(self, dispatcher: Dispatcher) -> None:
         self._dispatcher = dispatcher
 
     async def submit(self, method: str, payload: bytes) -> None:
-        d = self._dispatcher
-        if d._closed:  # noqa: SLF001 - intra-module collaboration
-            raise DispatcherShuttingDownError(
-                "dispatcher is shutting down; new submissions are rejected"
-            )
-        # Bounded-concurrency path: race the semaphore acquire against
-        # the shutdown signal so a SIGTERM-during-burst wakes parked
-        # submitters with DispatcherShuttingDownError.
-        if d._sem is not None:  # noqa: SLF001
-            acquire = asyncio.create_task(d._sem.acquire())  # noqa: SLF001
-            shutdown_wait = asyncio.create_task(d._shutdown_event.wait())  # noqa: SLF001
-            done, pending = await asyncio.wait(
-                {acquire, shutdown_wait},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if shutdown_wait in done:
-                # Surrender any racy permit we may have actually picked up
-                # so a follow-on shutdown doesn't see a phantom inflight.
-                if acquire in done and not acquire.cancelled():
-                    d._sem.release()  # noqa: SLF001
-                raise DispatcherShuttingDownError(
-                    "dispatcher is shutting down; new submissions are rejected"
-                )
-            acquire.result()
-
-        d._spawn_local(method, payload)  # noqa: SLF001
+        await self._dispatcher._submit_in_process(method, payload)  # noqa: SLF001
 
     async def close(self) -> None:
-        # The dispatcher's shutdown owns the task drain; nothing extra
-        # for the in-process backend.
+        # Dispatcher.shutdown owns the in-process task drain.
         return None
