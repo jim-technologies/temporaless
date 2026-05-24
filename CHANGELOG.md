@@ -8,6 +8,54 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-24
+
+The framework remains **pre-1.0**. This release bakes a per-submission
+task tracker into `dispatch` so consumers stop having to roll their own
+(as ghdrive did). Go-only for now; **Python and Rust parity is a
+follow-up release**.
+
+### Added
+
+- **`Dispatcher.Status(taskID)` (Go)**. Returns a `*TaskInfo` describing
+  the current lifecycle state of one `DoAsync` submission: PENDING →
+  RUNNING → DONE (with handler response wrapped in `google.protobuf.Any`)
+  or FAILED (with error message). Unknown / TTL-evicted ids return
+  `(nil, false)` so callers can distinguish "no such task" from a
+  terminal state.
+- **`TaskStatus` enum + `TaskInfo` message** in `temporaless.v1` proto.
+  Cross-language wire shape; Python and Rust SDKs will mirror in the
+  next release.
+- **`DispatchOptions.task_ttl`** (`google.protobuf.Duration`). How long
+  completed task records stay queryable before the GC sweep evicts
+  them. Default 1 hour. In-flight (PENDING/RUNNING) records never
+  evict — only terminal ones age out. Tracking itself is always on:
+  the framework is opinionated about this, the cost is one map entry
+  per submission.
+
+### Changed (breaking)
+
+- **`Dispatcher.DoAsync` signature (Go)**. Returns `(taskID string, err
+  error)` instead of `error`. Callers that don't want the id just
+  underscore it: `_, err := disp.DoAsync(...)`. The task_id is the
+  primary key for `Status()` polling.
+- **`Options.OnError` signature (Go)**. Now `func(method, taskID
+  string, err error)`. The default slog handler logs the task_id
+  alongside the method so failed handlers are grep-able by id.
+- **`Queue.Submit` signature (Go)**. Now `Submit(ctx, method, taskID,
+  payload []byte) error`. External queue adapters should propagate
+  the task_id alongside the payload (message header / attribute) so
+  consumers can correlate.
+
+### Internal
+
+- Tracker is a `sync.RWMutex`-guarded map with a GC goroutine sweeping
+  at `taskTTL / 2`. Shutdown stops the GC last (after handler drain)
+  so terminal-state writes during drain land in the map before it
+  closes.
+- New tests: `TestStatusTracksLifecycle`, `TestStatusFailedSurfacesError`,
+  `TestStatusUnknownIDReturnsFalse`. All under `-race`.
+
 ## [0.1.0] — 2026-05-24
 
 First tagged release. The framework is **pre-1.0** — wire-format changes

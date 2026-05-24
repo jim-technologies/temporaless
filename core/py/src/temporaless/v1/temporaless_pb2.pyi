@@ -13,6 +13,14 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class TaskStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TASK_STATUS_UNSPECIFIED: _ClassVar[TaskStatus]
+    TASK_STATUS_PENDING: _ClassVar[TaskStatus]
+    TASK_STATUS_RUNNING: _ClassVar[TaskStatus]
+    TASK_STATUS_DONE: _ClassVar[TaskStatus]
+    TASK_STATUS_FAILED: _ClassVar[TaskStatus]
+
 class ActivityStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     ACTIVITY_STATUS_UNSPECIFIED: _ClassVar[ActivityStatus]
@@ -63,6 +71,11 @@ class ClaimCapability(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CLAIM_CAPABILITY_NO_CLAIMS: _ClassVar[ClaimCapability]
     CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS: _ClassVar[ClaimCapability]
     CLAIM_CAPABILITY_CAS_CLAIMS: _ClassVar[ClaimCapability]
+TASK_STATUS_UNSPECIFIED: TaskStatus
+TASK_STATUS_PENDING: TaskStatus
+TASK_STATUS_RUNNING: TaskStatus
+TASK_STATUS_DONE: TaskStatus
+TASK_STATUS_FAILED: TaskStatus
 ACTIVITY_STATUS_UNSPECIFIED: ActivityStatus
 ACTIVITY_STATUS_COMPLETED: ActivityStatus
 ACTIVITY_STATUS_FAILED: ActivityStatus
@@ -119,12 +132,32 @@ class ActivityOptions(_message.Message):
     def __init__(self, activity_id: _Optional[str] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ...) -> None: ...
 
 class DispatchOptions(_message.Message):
-    __slots__ = ("drain_timeout", "max_inflight")
+    __slots__ = ("drain_timeout", "max_inflight", "task_ttl")
     DRAIN_TIMEOUT_FIELD_NUMBER: _ClassVar[int]
     MAX_INFLIGHT_FIELD_NUMBER: _ClassVar[int]
+    TASK_TTL_FIELD_NUMBER: _ClassVar[int]
     drain_timeout: _duration_pb2.Duration
     max_inflight: int
-    def __init__(self, drain_timeout: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_inflight: _Optional[int] = ...) -> None: ...
+    task_ttl: _duration_pb2.Duration
+    def __init__(self, drain_timeout: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_inflight: _Optional[int] = ..., task_ttl: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
+class TaskInfo(_message.Message):
+    __slots__ = ("task_id", "method", "status", "response", "error", "submitted_at", "completed_at")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    METHOD_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    SUBMITTED_AT_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    method: str
+    status: TaskStatus
+    response: _any_pb2.Any
+    error: str
+    submitted_at: _timestamp_pb2.Timestamp
+    completed_at: _timestamp_pb2.Timestamp
+    def __init__(self, task_id: _Optional[str] = ..., method: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., response: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., error: _Optional[str] = ..., submitted_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class RetryPolicy(_message.Message):
     __slots__ = ("initial_interval", "backoff_coefficient", "maximum_interval", "maximum_attempts", "non_retryable_error_codes", "durable_backoff_threshold")

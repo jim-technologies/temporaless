@@ -157,6 +157,49 @@ message DispatchOptions {
   // 100–1000 for I/O-bound handlers depending on per-call latency and
   // downstream rate limits.
   uint32 max_inflight = 2;
+  // How long completed (DONE/FAILED) task records stay queryable via
+  // `Status(taskID)` before the GC sweep evicts them. Zero falls back
+  // to the SDK default of 1 hour. In-flight (PENDING/RUNNING) records
+  // never evict — only terminal ones age out. To disable tracking
+  // entirely is intentionally not exposed: it's the framework's
+  // opinionated default, the cost is one map entry per submission.
+  google.protobuf.Duration task_ttl = 3;
+}
+
+// TaskStatus mirrors the lifecycle of one `DoAsync` submission.
+// UNSPECIFIED is the zero value and is what `Status(taskID)` returns
+// for unknown / TTL-evicted ids — distinguish "no such task" from a
+// real terminal state.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  // Queued on the dispatcher; not yet picked up by a worker goroutine.
+  TASK_STATUS_PENDING = 1;
+  // A worker is actively running the handler.
+  TASK_STATUS_RUNNING = 2;
+  // The handler returned (resp, nil); `TaskInfo.response` is populated.
+  TASK_STATUS_DONE = 3;
+  // The handler returned a non-nil error; `TaskInfo.error` is populated.
+  TASK_STATUS_FAILED = 4;
+}
+
+// TaskInfo is the per-submission lifecycle record the dispatcher tracks
+// in memory and exposes via `Dispatcher.Status(taskID)`. Successful
+// handler responses are wrapped in `google.protobuf.Any` so callers can
+// unpack into the original concrete type without the dispatcher needing
+// to know it.
+message TaskInfo {
+  string task_id = 1;
+  string method = 2;
+  TaskStatus status = 3;
+  // Populated when status == TASK_STATUS_DONE. Carries the handler's
+  // typed Resp marshaled into Any (use `any.UnmarshalTo(&YourResp{})`).
+  google.protobuf.Any response = 4;
+  // Populated when status == TASK_STATUS_FAILED.
+  string error = 5;
+  google.protobuf.Timestamp submitted_at = 6;
+  // Set when status transitions to DONE or FAILED. Used as the TTL
+  // anchor for eviction.
+  google.protobuf.Timestamp completed_at = 7;
 }
 
 // RetryPolicy controls in-process retry behavior for a single activity.

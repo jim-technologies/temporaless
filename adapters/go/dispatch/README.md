@@ -35,8 +35,17 @@ disp := dispatch.New(dispatch.Options{
 dispatch.Register(disp, "/payments.Charges/Charge", server.Charge)
 dispatch.Register(disp, "/payments.Charges/Refund", server.Refund)
 
-// Fire-and-forget — returns immediately:
-_ = disp.DoAsync(ctx, "/payments.Charges/Charge", &ChargeRequest{Amount: 100})
+// DoAsync returns the per-submission task_id immediately:
+taskID, err := disp.DoAsync(ctx, "/payments.Charges/Charge", &ChargeRequest{Amount: 100})
+
+// Poll for completion. Status walks PENDING → RUNNING → DONE/FAILED.
+// On DONE, info.Response carries the handler's typed response wrapped
+// in google.protobuf.Any:
+info, ok := disp.Status(taskID)
+if ok && info.Status == temporalessv1.TaskStatus_TASK_STATUS_DONE {
+    out := &ChargeResponse{}
+    _ = info.Response.UnmarshalTo(out)
+}
 
 // SIGTERM handler:
 shutdownCtx, cancel := context.WithTimeout(context.Background(), 30 * time.Second)
@@ -45,10 +54,42 @@ _ = disp.Shutdown(shutdownCtx)
 ```
 
 Handler errors flow through `Options.OnError` (default: WARN-level
-`slog.Default()`). Override to route into your telemetry pipeline.
+`slog.Default()` with method + task_id). The same error is also recorded
+on the TaskInfo (`info.Error`), so polling clients see it.
 
 Panicking handlers are recovered and surfaced through the same path so a
 single bad call can't crash the process.
+
+## Task tracking (`Status`)
+
+Every `DoAsync` submission gets a ULID task_id and an in-memory
+`TaskInfo` record. The record walks PENDING → RUNNING → DONE or FAILED;
+completed records stay queryable until `Proto.TaskTtl` (default 1 hour)
+elapses, then evict. In-flight records never evict — losing one
+mid-flight is the worst possible failure mode for an observability tool,
+so the framework refuses to do it.
+
+Tracking is always on. The cost is one map entry per submission; the
+opinion is that "I want to know if my background work succeeded" is
+table stakes for every consumer worth shipping. If you truly want
+fire-and-forget with no record (webhook notifications etc.), just
+ignore the returned task_id; the TTL sweep takes care of the rest.
+
+```go
+taskID, err := disp.DoAsync(ctx, "/billing/Charge", req)
+// ... time passes ...
+info, ok := disp.Status(taskID)
+if !ok { /* unknown id — never existed, or TTL evicted */ }
+switch info.Status {
+case TASK_STATUS_PENDING, TASK_STATUS_RUNNING:
+    // keep polling
+case TASK_STATUS_DONE:
+    resp := &ChargeResponse{}
+    info.Response.UnmarshalTo(resp)
+case TASK_STATUS_FAILED:
+    log.Warn("charge failed", "task_id", info.TaskId, "err", info.Error)
+}
+```
 
 ## Backpressure (`MaxInflight`)
 
@@ -71,14 +112,17 @@ Pass `Options.Queue` with any type that implements the `Queue` interface:
 
 ```go
 type Queue interface {
-    Submit(ctx context.Context, method string, payload []byte) error
+    Submit(ctx context.Context, method, taskID string, payload []byte) error
     Close(ctx context.Context) error
 }
 ```
 
 The dispatcher proto-marshals the request to deterministic bytes and
-hands `(method, payload)` to your queue. Your consumer process pulls
-messages off the bus and calls `dispatcher.Invoke(ctx, method, payload)`
+hands `(method, taskID, payload)` to your queue. The task_id is the
+ULID the producer side returned to its caller; external queue
+implementations should propagate it (message header, attribute, custom
+field) so consumers can correlate. Your consumer process pulls messages
+off the bus and calls `dispatcher.Invoke(ctx, method, payload)`
 — which looks up the registered handler, unmarshals the bytes back into
 the typed `Req`, and runs the handler synchronously on the consumer
 goroutine. Use the returned error to drive your queue's ack / nack.

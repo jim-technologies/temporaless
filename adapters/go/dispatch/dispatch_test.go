@@ -47,7 +47,7 @@ func TestDoAsyncRunsHandlerInGoroutine(t *testing.T) {
 	})
 
 	start := time.Now()
-	if err := d.DoAsync(context.Background(), "/x/Slow", wrapperspb.String("hi")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Slow", wrapperspb.String("hi")); err != nil {
 		t.Fatal(err)
 	}
 	elapsed := time.Since(start)
@@ -71,23 +71,23 @@ func TestDoAsyncErrors(t *testing.T) {
 		return wrapperspb.String("ok"), nil
 	})
 
-	if err := d.DoAsync(context.Background(), "/x/Missing", wrapperspb.String("hi")); !errors.Is(err, ErrUnknownMethod) {
+	if _, err := d.DoAsync(context.Background(), "/x/Missing", wrapperspb.String("hi")); !errors.Is(err, ErrUnknownMethod) {
 		t.Errorf("missing method: err=%v want %v", err, ErrUnknownMethod)
 	}
 
 	// Type mismatch — handler expects StringValue, give it Int32Value.
 	// The producer-side check now catches this synchronously; the caller
 	// sees ErrTypeMismatch at the call site instead of via OnError.
-	if err := d.DoAsync(context.Background(), "/x/Want", wrapperspb.Int32(7)); !errors.Is(err, ErrTypeMismatch) {
+	if _, err := d.DoAsync(context.Background(), "/x/Want", wrapperspb.Int32(7)); !errors.Is(err, ErrTypeMismatch) {
 		t.Errorf("type mismatch: err=%v want %v", err, ErrTypeMismatch)
 	}
 
-	if err := d.DoAsync(context.Background(), "/x/Want", nil); err == nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Want", nil); err == nil {
 		t.Error("nil req: expected error")
 	}
 
 	_ = d.Shutdown(context.Background())
-	if err := d.DoAsync(context.Background(), "/x/Want", wrapperspb.String("hi")); !errors.Is(err, ErrShuttingDown) {
+	if _, err := d.DoAsync(context.Background(), "/x/Want", wrapperspb.String("hi")); !errors.Is(err, ErrShuttingDown) {
 		t.Errorf("after shutdown: err=%v want %v", err, ErrShuttingDown)
 	}
 }
@@ -105,7 +105,7 @@ func TestTypeMismatchCaughtAtSubmit(t *testing.T) {
 		return req, nil
 	})
 
-	err := d.DoAsync(context.Background(), "/x/Strict", wrapperspb.Int32(7))
+	_, err := d.DoAsync(context.Background(), "/x/Strict", wrapperspb.Int32(7))
 	if !errors.Is(err, ErrTypeMismatch) {
 		t.Errorf("err = %v, want ErrTypeMismatch", err)
 	}
@@ -130,7 +130,7 @@ func TestShutdownDrainsRunningGoroutines(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	})
-	if err := d.DoAsync(context.Background(), "/x/Work", wrapperspb.String("hi")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Work", wrapperspb.String("hi")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestShutdownCancelsContextAfterDrainTimeout(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	})
-	if err := d.DoAsync(context.Background(), "/x/Long", wrapperspb.String("hi")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Long", wrapperspb.String("hi")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestShutdownReturnsCtxErrIfShutdownCtxCancels(t *testing.T) {
 		<-handlerCanReturn
 		return wrapperspb.String("eventually"), nil
 	})
-	if err := d.DoAsync(context.Background(), "/x/Stuck", wrapperspb.String("hi")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Stuck", wrapperspb.String("hi")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,7 +231,7 @@ func TestPanickingHandlerSurfacesViaOnError(t *testing.T) {
 		sync.Mutex
 		err error
 	}
-	d := New(Options{OnError: func(method string, err error) {
+	d := New(Options{OnError: func(method, taskID string, err error) {
 		seen.Lock()
 		defer seen.Unlock()
 		seen.err = err
@@ -240,7 +240,7 @@ func TestPanickingHandlerSurfacesViaOnError(t *testing.T) {
 		panic("kaboom")
 	})
 
-	if err := d.DoAsync(context.Background(), "/x/Boom", wrapperspb.String("hi")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Boom", wrapperspb.String("hi")); err != nil {
 		t.Fatal(err)
 	}
 	_ = d.Shutdown(context.Background())
@@ -283,7 +283,7 @@ func TestMaxInflightCapsConcurrentHandlers(t *testing.T) {
 	submitted := make(chan struct{}, total)
 	for i := 0; i < total; i++ {
 		go func() {
-			_ = d.DoAsync(context.Background(), "/x/Bounded", wrapperspb.String("hi"))
+			_, _ = d.DoAsync(context.Background(), "/x/Bounded", wrapperspb.String("hi"))
 			submitted <- struct{}{}
 		}()
 	}
@@ -322,7 +322,7 @@ func TestMaxInflightBlocksUntilCtxCancels(t *testing.T) {
 	})
 
 	// Fill the one slot.
-	if err := d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("first")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("first")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,7 +330,8 @@ func TestMaxInflightBlocksUntilCtxCancels(t *testing.T) {
 	secondCtx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.DoAsync(secondCtx, "/x/Hog", wrapperspb.String("second"))
+		_, err := d.DoAsync(secondCtx, "/x/Hog", wrapperspb.String("second"))
+		errCh <- err
 	}()
 
 	time.Sleep(50 * time.Millisecond) // ensure the goroutine reached the select
@@ -357,13 +358,14 @@ func TestMaxInflightUnblocksOnShutdown(t *testing.T) {
 		<-hold
 		return wrapperspb.String("ok"), nil
 	})
-	if err := d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("first")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("first")); err != nil {
 		t.Fatal(err)
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("second"))
+		_, err := d.DoAsync(context.Background(), "/x/Hog", wrapperspb.String("second"))
+		errCh <- err
 	}()
 	time.Sleep(50 * time.Millisecond) // ensure blocked
 
@@ -399,7 +401,7 @@ func TestUnboundedByDefault(t *testing.T) {
 
 	const total = 50
 	for i := 0; i < total; i++ {
-		if err := d.DoAsync(context.Background(), "/x/Burst", wrapperspb.String("hi")); err != nil {
+		if _, err := d.DoAsync(context.Background(), "/x/Burst", wrapperspb.String("hi")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -470,7 +472,8 @@ func TestCustomQueueReceivesSubmission(t *testing.T) {
 		method  string
 		payload []byte
 	}{}
-	q := queueFunc(func(ctx context.Context, method string, payload []byte) error {
+	q := queueFunc(func(ctx context.Context, method, taskID string, payload []byte) error {
+		_ = taskID
 		captured.Lock()
 		defer captured.Unlock()
 		captured.method = method
@@ -485,7 +488,7 @@ func TestCustomQueueReceivesSubmission(t *testing.T) {
 		return req, nil
 	})
 
-	if err := d.DoAsync(context.Background(), "/x/Submit", wrapperspb.String("payload")); err != nil {
+	if _, err := d.DoAsync(context.Background(), "/x/Submit", wrapperspb.String("payload")); err != nil {
 		t.Fatal(err)
 	}
 	captured.Lock()
@@ -509,12 +512,110 @@ func TestCustomQueueReceivesSubmission(t *testing.T) {
 
 // queueFunc adapts a function value to the Queue interface — tiny helper
 // so tests can register inline queues without defining a type.
-type queueFunc func(ctx context.Context, method string, payload []byte) error
+type queueFunc func(ctx context.Context, method, taskID string, payload []byte) error
 
-func (q queueFunc) Submit(ctx context.Context, method string, payload []byte) error {
-	return q(ctx, method, payload)
+func (q queueFunc) Submit(ctx context.Context, method, taskID string, payload []byte) error {
+	return q(ctx, method, taskID, payload)
 }
 func (q queueFunc) Close(context.Context) error { return nil }
+
+// TestStatusTracksLifecycle — DoAsync returns a task_id; Status walks
+// PENDING → RUNNING → DONE and surfaces the handler's response wrapped
+// in Any.
+func TestStatusTracksLifecycle(t *testing.T) {
+	d := New(Options{})
+	defer func() { _ = d.Shutdown(context.Background()) }()
+
+	release := make(chan struct{})
+	Register(d, "/x/Tracked", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		<-release
+		return wrapperspb.String("echo:" + req.GetValue()), nil
+	})
+
+	taskID, err := d.DoAsync(context.Background(), "/x/Tracked", wrapperspb.String("hi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskID == "" {
+		t.Fatal("DoAsync returned empty task_id")
+	}
+
+	// Initially PENDING or RUNNING (race between submit return and the
+	// goroutine reaching markRunning).
+	info, ok := d.Status(taskID)
+	if !ok {
+		t.Fatal("Status returned not-found for fresh task")
+	}
+	if s := info.GetStatus(); s != temporalessv1.TaskStatus_TASK_STATUS_PENDING && s != temporalessv1.TaskStatus_TASK_STATUS_RUNNING {
+		t.Errorf("initial status = %v, want PENDING or RUNNING", s)
+	}
+
+	close(release)
+
+	// Poll for DONE.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info, _ = d.Status(taskID)
+		if info.GetStatus() == temporalessv1.TaskStatus_TASK_STATUS_DONE {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if info.GetStatus() != temporalessv1.TaskStatus_TASK_STATUS_DONE {
+		t.Fatalf("status never reached DONE: %v", info.GetStatus())
+	}
+	if info.Response == nil {
+		t.Fatal("DONE without a response payload")
+	}
+	out := &wrapperspb.StringValue{}
+	if err := info.Response.UnmarshalTo(out); err != nil {
+		t.Fatalf("response unmarshal: %v", err)
+	}
+	if out.GetValue() != "echo:hi" {
+		t.Errorf("response = %q, want echo:hi", out.GetValue())
+	}
+}
+
+// TestStatusFailedSurfacesError — a handler returning an error flips
+// the task to FAILED with the error message recorded.
+func TestStatusFailedSurfacesError(t *testing.T) {
+	d := New(Options{OnError: func(method, taskID string, err error) {}})
+	defer func() { _ = d.Shutdown(context.Background()) }()
+
+	Register(d, "/x/Broken", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return nil, errors.New("kaboom")
+	})
+	taskID, err := d.DoAsync(context.Background(), "/x/Broken", wrapperspb.String("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var info *temporalessv1.TaskInfo
+	for time.Now().Before(deadline) {
+		info, _ = d.Status(taskID)
+		if info.GetStatus() == temporalessv1.TaskStatus_TASK_STATUS_FAILED {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if info.GetStatus() != temporalessv1.TaskStatus_TASK_STATUS_FAILED {
+		t.Fatalf("status = %v, want FAILED", info.GetStatus())
+	}
+	if info.Error != "kaboom" {
+		t.Errorf("error = %q, want kaboom", info.Error)
+	}
+}
+
+// TestStatusUnknownIDReturnsFalse — Status reports (nil, false) for
+// task_ids the tracker doesn't know about.
+func TestStatusUnknownIDReturnsFalse(t *testing.T) {
+	d := New(Options{})
+	defer func() { _ = d.Shutdown(context.Background()) }()
+	info, ok := d.Status("01HXNOTAREALULID")
+	if ok || info != nil {
+		t.Errorf("Status(unknown) = (%v, %v), want (nil, false)", info, ok)
+	}
+}
 
 // TestConcurrentSubmissionsAndShutdown stresses the dispatch+drain path
 // under N concurrent submissions racing with a Shutdown.
@@ -536,7 +637,7 @@ func TestConcurrentSubmissionsAndShutdown(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Mix of accepted-before-shutdown and rejected-during-shutdown.
-			_ = d.DoAsync(context.Background(), "/x/Quick", wrapperspb.String(string(rune(1+(i%10)))))
+			_, _ = d.DoAsync(context.Background(), "/x/Quick", wrapperspb.String(string(rune(1+(i%10)))))
 		}()
 	}
 	wg.Wait()
