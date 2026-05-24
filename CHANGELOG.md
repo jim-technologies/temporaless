@@ -8,6 +8,12 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-05-24
+
+First tagged release. The framework is **pre-1.0** — wire-format changes
+will continue to be called out clearly when they happen, and there's no
+backwards-compatibility commitment until v1.0.0.
+
 ### Added
 
 - **`dispatch` bounded concurrency (`MaxInflight`) + pluggable `Queue`**.

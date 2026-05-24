@@ -1,22 +1,31 @@
-//! Bounded fire-and-forget tokio-task pool for gRPC-shaped handlers.
+//! Fire-and-forget dispatcher for gRPC-shaped handlers.
 //!
 //! Complements [`crate::workflow::run`] (synchronous + durable) with an
-//! asynchronous, in-process path for side effects whose result the caller
-//! doesn't need to wait on — webhook notifications, telemetry pushes,
+//! asynchronous path for side effects whose result the caller doesn't
+//! need to wait on — webhook notifications, telemetry pushes,
 //! best-effort vendor pings, fan-out where the caller wants its own
 //! request to return quickly.
 //!
+//! Two backends, selected via [`Queue`]:
+//!
+//! - **Default in-process**: each [`Dispatcher::do_async`] spawns a tokio
+//!   task on the current runtime, with managed graceful shutdown and an
+//!   optional `max_inflight` cap. Not durable across crashes — if the
+//!   process dies before the handler finishes, the work is lost.
+//! - **External queue** (Kafka, RabbitMQ, NATS, SQS, Redis Streams, ...):
+//!   implement [`Queue`] once; the dispatcher proto-marshals each
+//!   request deterministically and hands `(method, payload)` to the
+//!   queue. Consumers pull bytes off the bus and call
+//!   [`Dispatcher::invoke`] to run the registered handler. Durability
+//!   comes from the queue's native ack / nack semantics.
+//!
 //! Mirrors `adapters/go/dispatch` and `temporaless.dispatch` (Python):
-//! same `register` / `do_async` / `shutdown` shape, same 15-second default
-//! drain, same "always wait for every spawned task" guarantee.
+//! same `register` / `do_async` / `invoke` / `shutdown` shape, same
+//! 15-second default drain, same "always wait for every spawned task"
+//! guarantee.
 //!
-//! # Semantics (intentional)
-//!
-//! In-process only. A handler invocation lives inside a tokio task spawned
-//! on the current runtime. If the process dies before the handler
-//! finishes, the work is lost. This is the deliberate tradeoff vs.
-//! [`crate::workflow::run`] — when you need durability across crashes,
-//! write a workflow instead; this module is for at-most-once + best-effort.
+//! Use [`crate::workflow::run`] when you need at-least-once delivery
+//! across crashes; this module is for at-most-once + best-effort.
 //!
 //! # Graceful shutdown
 //!
@@ -88,7 +97,7 @@ use async_trait::async_trait;
 use prost::Message;
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 
 use crate::v1;
 
@@ -427,6 +436,15 @@ impl Dispatcher {
         let any_req: AnyBox = Box::new(req);
 
         let mut tasks = self.tasks.lock().await;
+        // Re-check `closed` under the tasks lock. Without this, a
+        // submission that passed the initial `closed` check could spawn
+        // a task AFTER shutdown's drain loop has emptied the JoinSet
+        // and returned — orphaning the work. The lock is the barrier:
+        // shutdown holds it for the entire drain, so any submitter that
+        // takes it next observes the finalised `closed=true`.
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(DispatchError::ShuttingDown);
+        }
         tasks.spawn(async move {
             // Hold the permit for the lifetime of the task. Dropped on
             // task exit (success / error / abort) so the slot is always
@@ -559,8 +577,3 @@ fn default_on_error() -> OnErrorHook {
         eprintln!("dispatch: handler {method:?} returned error: {err}");
     })
 }
-
-// The `JoinHandle` type alias is kept exported in case downstream wants to
-// rebuild the same shape with finer-grained control.
-#[allow(dead_code)]
-type DispatchedHandle = JoinHandle<HandlerOutcome>;

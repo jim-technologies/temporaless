@@ -1,34 +1,31 @@
-"""Bounded fire-and-forget asyncio task pool for gRPC-shaped handlers.
+"""Fire-and-forget dispatcher for gRPC-shaped handlers.
 
 Complements :func:`temporaless.workflow.run` (synchronous + durable) with
-an asynchronous, in-process path for side effects whose result the caller
-doesn't need to wait on -- webhook notifications, telemetry pushes,
-best-effort vendor pings, fan-out where the caller wants its own request
-to return quickly.
+an asynchronous path for side effects whose result the caller doesn't
+need to wait on -- webhook notifications, telemetry pushes, best-effort
+vendor pings, fan-out where the caller wants its own request to return
+quickly.
 
-Mirrors ``adapters/go/dispatch`` exactly:
+Two backends, selected via :class:`Queue`:
 
-- :class:`Dispatcher` -- the pool. Construct once; ``register``,
-  ``do_async``, ``shutdown``.
-- :meth:`Dispatcher.register` -- wire a handler under its gRPC
-  fully-qualified method name (``"/package.Service/Method"``) so the
-  same identity used at the wire layer routes here too.
-- :meth:`Dispatcher.do_async` -- look up the handler and schedule it as
-  an :class:`asyncio.Task`. Returns immediately.
-- :meth:`Dispatcher.shutdown` -- stop accepting new submissions, wait up
-  to ``drain_timeout`` (default 15s) for in-flight tasks to finish, then
-  cancel the per-handler scope. Always awaits every task -- orphaning a
-  handler mid-vendor-call is worse than waiting a few extra seconds for
-  it to notice cancellation.
+- Default in-process: each :meth:`Dispatcher.do_async` spawns an
+  :class:`asyncio.Task`, with managed graceful shutdown and an optional
+  ``max_inflight`` cap. Not durable across crashes -- if the process
+  dies before the handler finishes, the work is lost.
+- External queue (Kafka, RabbitMQ, NATS, SQS, Redis Streams, ...):
+  implement :class:`Queue` once; the dispatcher proto-marshals each
+  request deterministically and hands ``(method, payload bytes)`` to
+  the queue. Consumers pull bytes off the bus and call
+  :meth:`Dispatcher.invoke` to run the registered handler. Durability
+  comes from the queue's native ack / nack semantics.
 
-# Scope (intentional)
+The surface mirrors ``adapters/go/dispatch`` and
+``temporaless::dispatch`` (Rust): same ``register`` /
+``do_async`` / ``invoke`` / ``shutdown`` shape, same 15-second default
+drain, same "always wait for every spawned task" guarantee.
 
-In-process only. A handler invocation lives inside an asyncio task of
-the event loop that called ``do_async``. If that process dies before the
-handler finishes, the work is lost. This is the deliberate tradeoff vs.
-:func:`temporaless.workflow.run` -- when you need durability across
-crashes, write a workflow instead; this module is for things where
-at-most-once + best-effort is the right semantics.
+Use :func:`temporaless.workflow.run` when you need at-least-once
+delivery across crashes; this module is for at-most-once + best-effort.
 """
 
 from __future__ import annotations
@@ -117,19 +114,29 @@ class Queue(ABC):
 
 
 class Dispatcher:
-    """Bounded fire-and-forget asyncio task pool.
+    """Fire-and-forget dispatcher.
 
     Usage::
 
-        disp = Dispatcher(drain_timeout=timedelta(seconds=15))
+        from google.protobuf.duration_pb2 import Duration
+        from temporaless.v1 import temporaless_pb2
+
+        opts = temporaless_pb2.DispatchOptions(max_inflight=100)
+        opts.drain_timeout.FromTimedelta(timedelta(seconds=15))
+        disp = Dispatcher(options=opts)
+
         disp.register(
             "/payments.Charges/Charge",
             ChargeRequest,
             server.charge,
         )
-        disp.do_async("/payments.Charges/Charge", ChargeRequest(amount=100))
-        # ... process keeps running, handler executes in the background ...
-        await disp.shutdown()  # SIGTERM handler
+
+        # In-process default: schedules an asyncio.Task and returns once
+        # any concurrency permit has been acquired.
+        await disp.do_async("/payments.Charges/Charge", ChargeRequest(amount=100))
+
+        # SIGTERM handler:
+        await disp.shutdown()
     """
 
     def __init__(

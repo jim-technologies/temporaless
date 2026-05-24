@@ -1,47 +1,64 @@
-// Package dispatch is a bounded fire-and-forget goroutine pool for gRPC-shaped
-// handlers. It complements `workflow.Run` (which is synchronous and durable)
-// with an asynchronous, in-process path for side effects whose result the
-// caller doesn't need to wait on — webhook notifications, telemetry pushes,
-// best-effort vendor pings, fan-out fanouts where the caller wants its own
-// request to return quickly.
+// Package dispatch is a fire-and-forget dispatcher for gRPC-shaped handlers.
+// It complements `workflow.Run` (which is synchronous and durable) with an
+// asynchronous path for side effects whose result the caller doesn't need to
+// wait on — webhook notifications, telemetry pushes, best-effort vendor
+// pings, fan-out where the caller wants its own request to return quickly.
 //
-// # Semantics (intentional)
+// # Two backends
 //
-// In-process only. A handler invocation lives inside a goroutine of the
-// process that called `DoAsync`. If that process dies before the handler
-// finishes, the work is lost. This is the deliberate tradeoff vs.
-// `workflow.Run` — when you need durability across crashes, write a workflow
-// instead; this package is for things where at-most-once + best-effort is
-// the right semantics.
+// Submissions go through a `Queue`. The default is in-process: each call
+// spawns a goroutine, with managed graceful shutdown and optional concurrency
+// caps. Advanced users plug in `Kafka` / `RabbitMQ` / `NATS` / `SQS` / etc.
+// by implementing the `Queue` interface — the dispatcher proto-marshals the
+// request and hands `(method, payload []byte)` to the queue; consumers pull
+// the bytes back off and call `Dispatcher.Invoke` to run the registered
+// handler.
 //
-// What you DO get: a managed graceful shutdown. `Shutdown(ctx)` stops
-// accepting new submissions, waits up to `DrainTimeout` (default 15s, set
-// via `Options.DrainTimeout`) for in-flight goroutines to finish, then
-// cancels the per-handler context so handlers can observe `ctx.Err()` and
-// bail. `Shutdown` blocks until every goroutine has returned, even past the
-// drain timeout — losing a handler entirely is worse than waiting a few
-// extra seconds for it to notice cancellation.
+// # Durability semantics
 //
-// # Registration shape
+// In-process: not durable. If the process dies before the handler finishes,
+// the work is lost. This is the deliberate tradeoff vs. `workflow.Run` —
+// when you need durability across crashes, write a workflow instead. This
+// path is for at-most-once + best-effort.
 //
-// Handlers are registered by method name and invoked by method name —
-// matching gRPC's "/package.Service/Method" form so a single line wires up
-// the same handler the gRPC server already uses:
+// External queue: durability comes from your queue. The framework only
+// guarantees the producer hands the bytes off; the queue + consumer drive
+// at-least-once via their native ack / nack.
 //
-//	disp := dispatch.New(dispatch.Options{DrainTimeout: 15 * time.Second})
+// # Graceful shutdown (in-process)
+//
+// `Shutdown(ctx)` stops accepting new submissions, waits up to `DrainTimeout`
+// (default 15s, set via `Options.Proto.DrainTimeout`) for in-flight
+// goroutines to finish, then cancels the per-handler context so handlers
+// observe `ctx.Err()` and bail. `Shutdown` blocks until every goroutine has
+// returned, even past the drain timeout — losing a handler entirely is worse
+// than waiting a few extra seconds for it to notice cancellation.
+//
+// # Registration
+//
+// Handlers are registered by gRPC fully-qualified method name
+// ("/package.Service/Method") so the same identity the gRPC server uses
+// routes here too:
+//
+//	disp := dispatch.New(dispatch.Options{
+//	    Proto: &temporalessv1.DispatchOptions{
+//	        DrainTimeout: durationpb.New(15 * time.Second),
+//	        MaxInflight:  100, // optional cap; DoAsync blocks above the cap
+//	    },
+//	})
 //	dispatch.Register(disp, "/payments.Charges/Charge", server.Charge)
 //	dispatch.Register(disp, "/payments.Charges/Refund", server.Refund)
 //
-//	// Fire-and-forget — returns immediately:
+//	// Fire-and-forget. Returns immediately when MaxInflight == 0;
+//	// blocks for a slot when bounded.
 //	_ = disp.DoAsync(ctx, "/payments.Charges/Charge", &ChargeRequest{Amount: 100})
 //
-//	// At process shutdown (e.g. SIGTERM handler):
-//	ctx, cancel := context.WithTimeout(context.Background(), 30 * time.Second)
+//	// SIGTERM handler:
+//	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 //	defer cancel()
-//	_ = disp.Shutdown(ctx)
+//	_ = disp.Shutdown(shutdownCtx)
 //
-// Handler errors have nowhere to return (the caller already moved on). They
-// flow through `Options.OnError`, which defaults to logging via `slog`.
+// Handler errors flow through `Options.OnError` (default: WARN via `slog`).
 package dispatch
 
 import (
@@ -142,6 +159,15 @@ type Dispatcher struct {
 	// closed flips to 1 at the start of `Shutdown`; new `DoAsync` calls are
 	// rejected from then on.
 	closed atomic.Bool
+
+	// submitMu serializes the "is the dispatcher closed?" check with
+	// `wg.Add(1)` so that no Add can land after Shutdown has begun calling
+	// `wg.Wait()`. Submit takes RLock for the full submission (multiple
+	// concurrent submits are fine); Shutdown takes the write Lock as a
+	// barrier AFTER signalling close+shutdownCh and BEFORE wg.Wait().
+	// Without this, the WaitGroup hits an Add-during-Wait data race that
+	// shows up under `go test -race -count=N`.
+	submitMu sync.RWMutex
 }
 
 type handlerEntry struct {
@@ -216,10 +242,10 @@ func Register[Req proto.Message, Resp proto.Message](
 		panic("dispatch.Register: handler is required")
 	}
 	// Construct one zero-value Req to capture (a) the type for the
-	// producer-side ErrTypeMismatch check, and (b) the descriptor we'll
-	// use to allocate fresh Reqs on the consumer side via reflection on
-	// `*req.ProtoReflect().Descriptor()`. Reflection-once-at-register is
-	// fine; the hot path uses the captured factory.
+	// producer-side ErrTypeMismatch check, and (b) a closure factory
+	// for fresh zero-valued Reqs on the consumer side (where bytes off
+	// the queue need to decode into a fresh message). One reflect.New
+	// at register time; the hot path closes over the typed result.
 	zero := newProtoMessage[Req]()
 	entry := handlerEntry{
 		reqType: zero,
@@ -291,23 +317,6 @@ func (d *Dispatcher) DoAsync(ctx context.Context, method string, req proto.Messa
 	return d.queue.Submit(ctx, method, payload)
 }
 
-// invokeLocal runs the registered handler for `method` against the given
-// marshaled payload. Used by the in-process queue and exposed via
-// `Invoke` for consumers built on top of external queues.
-func (d *Dispatcher) invokeLocal(method string, payload []byte) error {
-	d.mu.RLock()
-	entry, ok := d.handlers[method]
-	d.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("%w: %q", ErrUnknownMethod, method)
-	}
-	req := entry.newReq()
-	if err := proto.Unmarshal(payload, req); err != nil {
-		return fmt.Errorf("dispatch.Invoke: unmarshal payload for %q: %w", method, err)
-	}
-	return entry.invoke(d.inflightCtx, req)
-}
-
 // Invoke decodes `payload` as the request type registered for `method`
 // and runs the registered handler with the given context. Intended for
 // queue-backed consumers: pull a message off Kafka / Rabbit / NATS /
@@ -320,6 +329,13 @@ func (d *Dispatcher) invokeLocal(method string, payload []byte) error {
 // consumer's concurrency at the queue's prefetch / consumer-pool layer
 // instead.
 func (d *Dispatcher) Invoke(ctx context.Context, method string, payload []byte) error {
+	return d.runHandler(ctx, method, payload)
+}
+
+// runHandler is the shared lookup + decode + invoke path. Used by the
+// in-process queue (with the long-lived `inflightCtx`) and by `Invoke`
+// (with the consumer's `ctx`).
+func (d *Dispatcher) runHandler(ctx context.Context, method string, payload []byte) error {
 	d.mu.RLock()
 	entry, ok := d.handlers[method]
 	d.mu.RUnlock()
@@ -328,7 +344,7 @@ func (d *Dispatcher) Invoke(ctx context.Context, method string, payload []byte) 
 	}
 	req := entry.newReq()
 	if err := proto.Unmarshal(payload, req); err != nil {
-		return fmt.Errorf("dispatch.Invoke: unmarshal payload for %q: %w", method, err)
+		return fmt.Errorf("dispatch: unmarshal payload for %q: %w", method, err)
 	}
 	return entry.invoke(ctx, req)
 }
@@ -356,14 +372,19 @@ func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
 	if d == nil {
 		return nil
 	}
-	// Mark closed FIRST so new DoAsync calls bail before adding to wg.
+	// Phase A — signal: mark closed, wake any parked submitters. Done
+	// WITHOUT submitMu so parked submitters can wake and release their
+	// RLock before we try to take the write Lock as a barrier.
 	if !d.closed.Swap(true) {
-		// First shutdown — wake any callers parked on the MaxInflight
-		// semaphore so they return ErrShuttingDown instead of timing out
-		// against their own ctx. Closing the channel is idempotent-safe
-		// only because of the Swap guard.
 		close(d.shutdownCh)
 	}
+	// Phase B — barrier: take the write Lock once, then drop it. This
+	// blocks until every concurrent submit that started before our
+	// `closed.Swap(true)` has finished its `wg.Add(1)` (or bailed out).
+	// After we return, no further `wg.Add(1)` can happen, so the
+	// subsequent `wg.Wait()` inside waitDrain is race-free.
+	d.submitMu.Lock()
+	d.submitMu.Unlock() //nolint:staticcheck // intentional barrier-only lock
 
 	// Phase 1: best-effort drain. Wait for either the wg to clear or the
 	// drain timeout to elapse.
@@ -427,10 +448,21 @@ type inProcessQueue struct {
 
 func (q *inProcessQueue) Submit(ctx context.Context, method string, payload []byte) error {
 	d := q.d
+
+	// The submitMu RLock acts as the happens-before barrier between
+	// `wg.Add(1)` and the `wg.Wait()` in Shutdown. Held for the entire
+	// submission — including the optional semaphore wait — so any submit
+	// that's parked on the slot signal is part of the "in-flight" set
+	// Shutdown waits to clear before flipping `closed` for good.
+	d.submitMu.RLock()
+	defer d.submitMu.RUnlock()
+
 	if d.closed.Load() {
 		return ErrShuttingDown
 	}
-	// Acquire a slot if MaxInflight is set. Three escape hatches.
+	// Acquire a slot if MaxInflight is set. Three escape hatches; the
+	// shutdown branch wakes parked submits without forcing them to wait
+	// for their own ctx to expire.
 	if d.sem != nil {
 		var ctxDone <-chan struct{}
 		if ctx != nil {
@@ -455,7 +487,7 @@ func (q *inProcessQueue) Submit(ctx context.Context, method string, payload []by
 				d.onError(method, fmt.Errorf("handler panicked: %v", r))
 			}
 		}()
-		if err := d.invokeLocal(method, payload); err != nil {
+		if err := d.runHandler(d.inflightCtx, method, payload); err != nil {
 			d.onError(method, err)
 		}
 	}()
