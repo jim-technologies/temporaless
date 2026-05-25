@@ -20,7 +20,7 @@ fn drain_opts(d: Duration) -> v1::DispatchOptions {
             seconds: d.as_secs() as i64,
             nanos: d.subsec_nanos() as i32,
         }),
-        max_inflight: 0,
+        ..v1::DispatchOptions::default()
     }
 }
 
@@ -31,6 +31,7 @@ fn opts_with(d: Duration, max_inflight: u32) -> v1::DispatchOptions {
             nanos: d.subsec_nanos() as i32,
         }),
         max_inflight,
+        ..v1::DispatchOptions::default()
     }
 }
 
