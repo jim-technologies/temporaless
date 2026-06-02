@@ -18,19 +18,19 @@ import (
 type countingStore struct {
 	inner storage.Store
 
-	getActivity   atomic.Int64
-	listActivity  atomic.Int64
-	putActivity   atomic.Int64
-	getWorkflow   atomic.Int64
-	listWorkflow  atomic.Int64
-	putWorkflow   atomic.Int64
-	getTimer      atomic.Int64
-	listTimer     atomic.Int64
-	putTimer      atomic.Int64
-	getEvent      atomic.Int64
-	listEvent     atomic.Int64
-	putEvent      atomic.Int64
-	deleteCalls   atomic.Int64
+	getActivity  atomic.Int64
+	listActivity atomic.Int64
+	putActivity  atomic.Int64
+	getWorkflow  atomic.Int64
+	listWorkflow atomic.Int64
+	putWorkflow  atomic.Int64
+	getTimer     atomic.Int64
+	listTimer    atomic.Int64
+	putTimer     atomic.Int64
+	getEvent     atomic.Int64
+	listEvent    atomic.Int64
+	putEvent     atomic.Int64
+	deleteCalls  atomic.Int64
 }
 
 func newCountingStore(inner storage.Store) *countingStore {
@@ -606,4 +606,3 @@ func TestCacheConcurrentGet(t *testing.T) {
 		t.Fatalf("expected 0 GetActivity passthroughs after prefetch, got %d", got)
 	}
 }
-

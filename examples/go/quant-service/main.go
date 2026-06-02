@@ -13,9 +13,12 @@
 // To deploy this over real gRPC/ConnectRPC:
 //
 //  1. Define quant_signals.proto with your service and message types.
+//
 //  2. buf generate to produce the QuantServiceHandler interface and types.
+//
 //  3. Replace wrapperspb.StringValue below with your generated FetchRequest /
 //     FetchResponse types.
+//
 //  4. Mount the service on any net/http or connectrpc mux:
 //
 //     mux := http.NewServeMux()

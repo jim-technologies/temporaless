@@ -45,3 +45,18 @@ jobs:
           cache: true
       - run: go build ./...
       - run: go vet ./...
+
+  go-check:
+    # Go-only gate (gofmt-check + vet + golangci-lint + race tests) via the
+    # top-level Makefile. golangci-lint comes from the pinned Flox env, so this
+    # job activates Flox. The full-gate job above is the cross-language
+    # superset; this one isolates Go failures.
+    name: go-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Flox
+        uses: flox/install-flox-action@v2
+      - name: make check
+        run: flox activate -- make check

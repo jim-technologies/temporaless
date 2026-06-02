@@ -1,0 +1,17 @@
+# Per-deploy Nomad vars. Copy to vars.hcl (gitignored) and pass with
+#   nomad job run -var-file=vars.hcl deploy/temporaless.nomad.hcl
+# Defaults in temporaless.nomad.hcl work for the fs backend on medallion-0;
+# override here for a different image, node, or token.
+
+# Build + push from the repo Dockerfile, then pin the tag here.
+image = "ghcr.io/jim-technologies/temporaless:latest"
+
+# Bump to the git SHA on each deploy so a mutable :latest tag still
+# rolling-restarts.
+version = "dev"
+
+# Bearer token the ConnectStore auth interceptor requires. KEEP SECRET.
+auth_token = "change-me"
+
+# Node that owns the temporaless_data host volume (fs backend only).
+node_pool_constraint = "medallion-0"

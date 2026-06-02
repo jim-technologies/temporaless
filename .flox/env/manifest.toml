@@ -6,6 +6,9 @@ python313.pkg-path = "python313"
 uv.pkg-path = "uv"
 libffi.pkg-path = "libffi"
 buf.pkg-path = "buf"
+# Go linter. It is a CLI, not an importable module, so it cannot live in
+# go.mod — same thin-manifest rationale as clippy/rustfmt below for Rust.
+golangci-lint.pkg-path = "golangci-lint"
 gcc-unwrapped.pkg-path = "gcc-unwrapped"
 gcc-unwrapped.outputs = ["lib"]
 # Rust SDK (core/rs/). rustc + cargo only — third-party crates live in

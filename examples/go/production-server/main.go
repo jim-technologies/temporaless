@@ -48,13 +48,6 @@ type ctxKey int
 
 const correlationIDKey ctxKey = 1
 
-func correlationIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(correlationIDKey).(string); ok {
-		return v
-	}
-	return "-"
-}
-
 // bearerTokenAuth is a unary connect.Interceptor that rejects unauthenticated
 // requests + logs per-RPC outcomes with a correlation ID. Implements
 // connect.Interceptor by being a function value that wraps UnaryFunc — the

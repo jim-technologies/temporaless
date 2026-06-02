@@ -38,7 +38,7 @@ func TestTickFiresEverySchedulePastDue(t *testing.T) {
 		{
 			name:     "weekday-only schedule does not fire on weekends",
 			schedule: cronscheduler.Schedule{ID: "weekday-open", Expression: "30 9 * * 1-5"},
-			seedAt:   time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC), // Saturday
+			seedAt:   time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC),  // Saturday
 			tickAt:   time.Date(2026, 5, 4, 9, 35, 0, 0, time.UTC), // Monday after 9:30
 			wantHits: []time.Time{time.Date(2026, 5, 4, 9, 30, 0, 0, time.UTC)},
 		},

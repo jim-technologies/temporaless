@@ -33,7 +33,7 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("free port: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	return listener.Addr().(*net.TCPAddr).Port
 }
 

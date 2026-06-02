@@ -82,11 +82,11 @@ func acquireConcurrencySlot(
 		}
 		now := time.Now().UTC()
 		claim := &temporalessv1.ClaimRecord{
-			SchemaVersion: storage.ClaimRecordSchemaVersion,
-			Key:           slotKey.Proto(),
-			OwnerId:       ownerID,
-			ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
-			ResourceId:    concurrencyKey,
+			SchemaVersion:  storage.ClaimRecordSchemaVersion,
+			Key:            slotKey.Proto(),
+			OwnerId:        ownerID,
+			ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
+			ResourceId:     concurrencyKey,
 			CodeVersion:    codeVersion,
 			LeaseExpiresAt: timestamppb.New(now.Add(leaseDuration)),
 			CreatedAt:      timestamppb.New(now),

@@ -21,6 +21,9 @@
       "go": {
         "pkg-path": "go"
       },
+      "golangci-lint": {
+        "pkg-path": "golangci-lint"
+      },
       "libffi": {
         "pkg-path": "libffi"
       },
@@ -61,8 +64,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:27.002353Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.68.4",
@@ -91,8 +94,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:17.208323Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.68.4",
@@ -121,8 +124,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:32.162781Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.68.4",
@@ -151,8 +154,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:09:57.003240Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.68.4",
@@ -181,8 +184,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:27.031698Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -211,8 +214,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:17.248815Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -241,8 +244,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:32.188268Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -271,8 +274,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:09:57.048412Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -301,8 +304,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:27.230454Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -331,8 +334,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:17.483069Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -362,8 +365,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:32.379341Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -392,8 +395,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:09:57.311137Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -423,8 +426,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:28.015807Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "15.2.0",
@@ -457,13 +460,14 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:18.719186Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "15.2.0",
       "outputs_to_install": [
         "man",
+        "out",
         "out",
         "out"
       ],
@@ -494,8 +498,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:33.148236Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "15.2.0",
@@ -528,13 +532,14 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:09:58.595586Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "15.2.0",
       "outputs_to_install": [
         "man",
+        "out",
         "out",
         "out"
       ],
@@ -565,12 +570,13 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:28.261827Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.26.2",
       "outputs_to_install": [
+        "out",
         "out",
         "out"
       ],
@@ -596,8 +602,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:19.553339Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.26.2",
@@ -627,8 +633,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:33.388512Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.26.2",
@@ -657,8 +663,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:09:59.457853Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.26.2",
@@ -667,6 +673,126 @@
       ],
       "outputs": {
         "out": "/nix/store/dimnagks1qsp7180yw74z0npp7z2ihs3-go-1.26.2"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "golangci-lint",
+      "broken": false,
+      "derivation": "/nix/store/c1df61lfkn83qzyz4qx0igwkxhnvnbrf-golangci-lint-2.11.4.drv",
+      "description": "Fast linters Runner for Go",
+      "install_id": "golangci-lint",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "name": "golangci-lint-2.11.4",
+      "pname": "golangci-lint",
+      "rev": "1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "rev_count": 987561,
+      "rev_date": "2026-04-27T05:36:01Z",
+      "scrape_date": "2026-04-29T19:52:28.324998Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.11.4",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/iifi3gd1nsyqnniaagadm78ddsf360ys-golangci-lint-2.11.4"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "golangci-lint",
+      "broken": false,
+      "derivation": "/nix/store/rlds0hdfm4hiwf5g6yw1smf5j8fmdmja-golangci-lint-2.11.4.drv",
+      "description": "Fast linters Runner for Go",
+      "install_id": "golangci-lint",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "name": "golangci-lint-2.11.4",
+      "pname": "golangci-lint",
+      "rev": "1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "rev_count": 987561,
+      "rev_date": "2026-04-27T05:36:01Z",
+      "scrape_date": "2026-04-29T20:42:19.649097Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.11.4",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/lnn623f95lg94bkvpk39z32q8xwbrxym-golangci-lint-2.11.4"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "golangci-lint",
+      "broken": false,
+      "derivation": "/nix/store/ir55jxcqmsniw1v75irc06z1s70p4v1k-golangci-lint-2.11.4.drv",
+      "description": "Fast linters Runner for Go",
+      "install_id": "golangci-lint",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "name": "golangci-lint-2.11.4",
+      "pname": "golangci-lint",
+      "rev": "1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "rev_count": 987561,
+      "rev_date": "2026-04-27T05:36:01Z",
+      "scrape_date": "2026-04-29T21:54:33.449336Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.11.4",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/gzdiczgwmf9bgmzkj86jniw0kiq62rn8-golangci-lint-2.11.4"
+      },
+      "system": "x86_64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "golangci-lint",
+      "broken": false,
+      "derivation": "/nix/store/qj752rwv6n99wqza5kc11x6k3a2qg076-golangci-lint-2.11.4.drv",
+      "description": "Fast linters Runner for Go",
+      "install_id": "golangci-lint",
+      "license": "GPL-3.0-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "name": "golangci-lint-2.11.4",
+      "pname": "golangci-lint",
+      "rev": "1c3fe55ad329cbcb28471bb30f05c9827f724c76",
+      "rev_count": 987561,
+      "rev_date": "2026-04-27T05:36:01Z",
+      "scrape_date": "2026-04-29T23:09:59.561587Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "2.11.4",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/r49b6973mb9kyn1q102yhcmzcbgmpvh0-golangci-lint-2.11.4"
       },
       "system": "x86_64-linux",
       "group": "toplevel",
@@ -687,8 +813,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:52:45.890125Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "40",
@@ -722,13 +848,14 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:42:41.586220Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "3.5.2",
       "outputs_to_install": [
         "man",
+        "out",
         "out",
         "out",
         "out",
@@ -759,8 +886,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:54:50.848425Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "40",
@@ -794,13 +921,14 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:10:22.928422Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "3.5.2",
       "outputs_to_install": [
         "man",
+        "out",
         "out",
         "out",
         "out",
@@ -833,8 +961,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:53:08.520786Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "python3-3.13.12",
@@ -864,12 +992,13 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:43:15.482492Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "python3-3.13.12",
       "outputs_to_install": [
+        "out",
         "out",
         "out",
         "out",
@@ -898,8 +1027,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:55:14.023142Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "python3-3.13.12",
@@ -929,12 +1058,13 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:11:00.256530Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "python3-3.13.12",
       "outputs_to_install": [
+        "out",
         "out",
         "out",
         "out",
@@ -965,8 +1095,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:54:01.177755Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -998,8 +1128,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:44:18.412023Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1031,8 +1161,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:56:06.209549Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1064,8 +1194,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:12:07.199902Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1097,8 +1227,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:54:01.203321Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1127,8 +1257,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:44:18.442947Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1157,8 +1287,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:56:06.233886Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1187,8 +1317,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:12:07.233444Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "1.94.1",
@@ -1217,8 +1347,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T19:55:01.671756Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "0.11.7",
@@ -1247,8 +1377,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T20:45:33.082174Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "0.11.7",
@@ -1277,8 +1407,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T21:57:06.024810Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "0.11.7",
@@ -1307,8 +1437,8 @@
       "rev_date": "2026-04-27T05:36:01Z",
       "scrape_date": "2026-04-29T23:13:25.696326Z",
       "stabilities": [
-        "unstable",
-        "staging"
+        "staging",
+        "unstable"
       ],
       "unfree": false,
       "version": "0.11.7",

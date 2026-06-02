@@ -1,0 +1,36 @@
+# golangci-lint v2 configuration.
+# Conservative, high-signal linter set. Generated protobuf packages under
+# core/go/gen are excluded — they are owned by buf, not hand-edited.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - unconvert
+  settings:
+    errcheck:
+      # Writes to stdout/stderr and best-effort Close in defers are
+      # idiomatic fire-and-forget; checking them adds noise without value.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+  exclusions:
+    generated: lax
+    paths:
+      - core/go/gen
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - core/go/gen

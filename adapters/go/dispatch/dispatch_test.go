@@ -117,7 +117,7 @@ func TestTypeMismatchCaughtAtSubmit(t *testing.T) {
 // Shutdown immediately with a 2s drain, and check the handler completed
 // AND Shutdown waited for it.
 func TestShutdownDrainsRunningGoroutines(t *testing.T) {
-	d := New(Options{Proto: drain(2*time.Second)})
+	d := New(Options{Proto: drain(2 * time.Second)})
 
 	var completed atomic.Bool
 	Register(d, "/x/Work", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -155,7 +155,7 @@ func TestShutdownDrainsRunningGoroutines(t *testing.T) {
 // than DrainTimeout, Shutdown cancels the per-handler context so a
 // well-behaved handler can bail. We still wait for the handler to return.
 func TestShutdownCancelsContextAfterDrainTimeout(t *testing.T) {
-	d := New(Options{Proto: drain(50*time.Millisecond)})
+	d := New(Options{Proto: drain(50 * time.Millisecond)})
 
 	var bailedOnCancel atomic.Bool
 	handlerReturned := make(chan struct{})
@@ -620,7 +620,7 @@ func TestStatusUnknownIDReturnsFalse(t *testing.T) {
 // TestConcurrentSubmissionsAndShutdown stresses the dispatch+drain path
 // under N concurrent submissions racing with a Shutdown.
 func TestConcurrentSubmissionsAndShutdown(t *testing.T) {
-	d := New(Options{Proto: drain(2*time.Second)})
+	d := New(Options{Proto: drain(2 * time.Second)})
 
 	var completed atomic.Int64
 	Register(d, "/x/Quick", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {

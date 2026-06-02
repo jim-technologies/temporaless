@@ -72,8 +72,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"

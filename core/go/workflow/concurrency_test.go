@@ -186,11 +186,11 @@ func TestConcurrencyMultipleWorkflowsObeyLimit(t *testing.T) {
 	gate := make(chan struct{}) // closed to release blocked bodies
 
 	var (
-		inflight   atomic.Int64
+		inflight    atomic.Int64
 		maxInflight atomic.Int64
-		busy       atomic.Int64
-		succeeded  atomic.Int64
-		wg         sync.WaitGroup
+		busy        atomic.Int64
+		succeeded   atomic.Int64
+		wg          sync.WaitGroup
 	)
 	wg.Add(total)
 	for i := 0; i < total; i++ {
@@ -374,4 +374,3 @@ func TestConcurrencyValidationPaired(t *testing.T) {
 		})
 	}
 }
-

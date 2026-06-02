@@ -4,8 +4,17 @@ set -eu
 buf lint
 buf format -w api
 buf generate
-go test ./...
+# Go gate: gofmt-check + vet + golangci-lint + race-enabled tests. Generated
+# protobuf packages under core/go/gen are buf-owned and excluded from gofmt.
+unformatted="$(gofmt -l . | grep -v '^core/go/gen/' || true)"
+if [ -n "$unformatted" ]; then
+  echo "gofmt needs to run on:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
 go vet ./...
+golangci-lint run ./...
+go test -race ./...
 ( cd core/rs/temporaless && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test )
 uv sync --project core/py
 uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py

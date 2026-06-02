@@ -8,6 +8,18 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Added
+
+- **`scheduler_runner.run` (Python)** — the optional *serverful* half of
+  scheduling. The `cronscheduler.Scheduler` is serverless on its own (a
+  stateless `tick(now)` driven by any external clock); this is a thin resident
+  loop that ticks it on a fixed interval until a `stop` event is set, for
+  callers who want one always-on process instead of an external scheduler. It
+  adds no scheduling logic and imports nothing from the core engine
+  (`workflow`/`storage`) — it only owns the clock and the loop. Single-process
+  by design; multi-process still uses stateless `tick` + `last_fire_from_runs`.
+  A failing tick is logged, not fatal. *(Go parity is a follow-up.)*
+
 ## [0.2.0] — 2026-05-24
 
 The framework remains **pre-1.0**. This release bakes a per-submission

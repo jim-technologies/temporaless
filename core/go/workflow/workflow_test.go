@@ -1456,6 +1456,68 @@ func TestRunActivityInvalidRetryPolicyRejected(t *testing.T) {
 	}
 }
 
+// TestRunIsPointInTimeAgainstMutatingSource is the leakage-guard property
+// medallion-os depends on: once an activity has fetched-and-stored a value at
+// as-of time T, replaying the run returns that frozen snapshot even after the
+// underlying live source has moved. A re-run can never pull in "future" data,
+// because the stored boundary short-circuits re-execution. This is what makes
+// a temporaless-backed feature pipeline point-in-time correct rather than
+// silently look-ahead-biased.
+func TestRunIsPointInTimeAgainstMutatingSource(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	// liveSource models a mutable upstream (an exchange tick, a freshly
+	// retrained model output, a moving fundamentals row). It returns a
+	// different value on every read.
+	var liveSource atomic.Int64
+	liveSource.Store(100)
+
+	var bodyExecutions atomic.Int64
+	run := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return ExecuteActivity(
+			ctx,
+			&ActivityOptions{ActivityId: "fetch:price"},
+			input,
+			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+			func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				bodyExecutions.Add(1)
+				return wrapperspb.String(fmt.Sprintf("%s@%d", input.GetValue(), liveSource.Load())), nil
+			},
+		)
+	}
+
+	opts := &Options{WorkflowId: "feature:price", RunId: "2026-05-31", CodeVersion: "v1"}
+	first, err := Run(ctx, store, opts, nil,
+		wrapperspb.String("AAPL"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+		run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GetValue() != "AAPL@100" {
+		t.Fatalf("first as-of snapshot = %q, want AAPL@100", first.GetValue())
+	}
+
+	// The live source moves AFTER the as-of snapshot was committed.
+	liveSource.Store(250)
+
+	second, err := Run(ctx, store, opts, nil,
+		wrapperspb.String("AAPL"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+		run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replay must return the frozen as-of value, not the moved source.
+	if second.GetValue() != "AAPL@100" {
+		t.Fatalf("replay leaked future data: got %q, want frozen AAPL@100", second.GetValue())
+	}
+	if got := bodyExecutions.Load(); got != 1 {
+		t.Fatalf("activity body executed %d times, want 1 (replay must not re-run)", got)
+	}
+}
+
 func newTestStore(t *testing.T) *storage.OpenDALStore {
 	t.Helper()
 

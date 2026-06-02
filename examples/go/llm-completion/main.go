@@ -18,7 +18,7 @@
 //     replicas dispatch.
 //   - workflow.Annotate — durable per-activity metadata (model, tokens,
 //     vendor) that survives replay and is queryable via Hive partitioning
-//     + DuckDB.
+//   - DuckDB.
 //
 // Run with `go run ./examples/go/llm-completion`.
 package main
@@ -72,7 +72,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer claimsBucket.Close()
+	defer func() { _ = claimsBucket.Close() }()
 	claimStore := gocdkclaims.NewStore(claimsBucket)
 
 	options := &workflow.Options{

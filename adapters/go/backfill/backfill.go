@@ -148,25 +148,35 @@ func Backfill[Resp any](
 	var haltOnce sync.Once
 	closeHalt := func() { haltOnce.Do(func() { close(halt) }) }
 
+	// Dispatch run_ids in submission order. Acquiring the semaphore in the
+	// dispatch loop (rather than inside each goroutine) is what makes
+	// HaltOnError deterministic: with concurrency N, at most N runs are
+	// in-flight when a failure closes halt, and every run_id that has not
+	// yet been dispatched is reported Pending in order. Eagerly spawning all
+	// goroutines would let later run_ids race ahead of an earlier failure and
+	// defeat halt-on-error entirely.
 	var wg sync.WaitGroup
 	for i, runID := range runIDs {
+		select {
+		case <-halt:
+			entries[i] = Entry[Resp]{RunID: runID, Status: StatusPending}
+			continue
+		case sem <- struct{}{}:
+		}
+		// halt may have closed while we waited for a semaphore slot; release
+		// the slot and mark Pending rather than dispatching past a failure.
+		select {
+		case <-halt:
+			<-sem
+			entries[i] = Entry[Resp]{RunID: runID, Status: StatusPending}
+			continue
+		default:
+		}
+
 		wg.Add(1)
 		go func(idx int, rid string) {
 			defer wg.Done()
-			select {
-			case <-halt:
-				entries[idx] = Entry[Resp]{RunID: rid, Status: StatusPending}
-				return
-			case sem <- struct{}{}:
-			}
 			defer func() { <-sem }()
-
-			select {
-			case <-halt:
-				entries[idx] = Entry[Resp]{RunID: rid, Status: StatusPending}
-				return
-			default:
-			}
 
 			result, err := invoke(ctx, rid)
 			if err == nil {
