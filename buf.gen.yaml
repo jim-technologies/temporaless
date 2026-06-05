@@ -1,0 +1,21 @@
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: core/go/gen
+    opt: paths=source_relative
+  - remote: buf.build/connectrpc/go
+    out: core/go/gen
+    opt: paths=source_relative
+  - remote: buf.build/protocolbuffers/python
+    out: core/py/src
+    include_imports: true
+  - remote: buf.build/protocolbuffers/pyi
+    out: core/py/src
+    include_imports: true
+  - remote: buf.build/connectrpc/python
+    out: core/py/src
+  # Rust proto codegen lives in core/rs/temporaless/build.rs (prost-build).
+  # The buf community plugin uses prost-build 0.14 which doesn't support
+  # edition 2023 yet; build.rs uses the latest crates.io prost-build instead.
+inputs:
+  - directory: api

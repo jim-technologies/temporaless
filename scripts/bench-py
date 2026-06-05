@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run the Python benchmark suite. Each benchmark auto-scales N until wall time
+# reaches ~1s, then prints "BenchmarkName N ns/op" — Go's testing.B format —
+# so cross-language costs are directly comparable.
+set -eu
+
+cd "$(dirname "$0")/../core/py"
+uv run python -m benchmarks "$@"

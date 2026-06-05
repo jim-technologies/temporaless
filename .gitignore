@@ -1,0 +1,48 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+*.test
+coverage.out
+
+# Coverage data
+.coverage
+.coverage.*
+*.cover
+htmlcov/
+
+# Compiled Go binaries dropped at the repo root by `go build` (no -o flag).
+# `go run ./...` is fine; `go build ./examples/go/quant-service` puts a binary here.
+/quant-service
+/fetch-prices
+/llm-completion
+/production-server
+/stocks-pipeline
+/twitter-webhook
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.iml
+
+# Local environment files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+build/
+*.tar.gz
+*.whl
+
+# Rust build / lock artifacts. We do commit Cargo.lock for application
+# crates per Cargo guidance, but the target dir is local-only.
+target/
+
+# Flox runtime state — only the manifest (`.flox/env`) and lock should be tracked
+.flox/cache/
+.flox/run/

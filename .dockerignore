@@ -1,0 +1,59 @@
+# Keep Docker build context small and reproducible.
+# Match .gitignore patterns plus repo-only artifacts that shouldn't ship.
+
+# Version control
+.git/
+.github/
+.gitignore
+
+# Python virtualenvs / caches
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/dist/
+**/*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# Go build artifacts at the repo root or example dirs
+/quant-service
+/fetch-prices
+/llm-completion
+/stocks-pipeline
+/twitter-webhook
+
+# Flox runtime state — host-specific, never goes in containers
+.flox/
+
+# Adapter venvs / projects we don't ship in core image
+adapters/
+
+# Build artifacts and binaries
+*.test
+coverage.out
+*.tar.gz
+*.whl
+build/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.iml
+
+# Local secrets
+.env
+.env.*
+
+# Docs and dev tooling — keep image lean
+docs/
+PRD.md
+AGENTS.md
+decision.md
+scripts/
+core/py/benchmarks/
+core/py/tests/
+adapters/

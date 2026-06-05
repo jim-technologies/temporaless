@@ -1,0 +1,27 @@
+schema-version = "1.11.0"
+
+[install]
+go.pkg-path = "go"
+python313.pkg-path = "python313"
+uv.pkg-path = "uv"
+libffi.pkg-path = "libffi"
+buf.pkg-path = "buf"
+# Go linter. It is a CLI, not an importable module, so it cannot live in
+# go.mod — same thin-manifest rationale as clippy/rustfmt below for Rust.
+golangci-lint.pkg-path = "golangci-lint"
+gcc-unwrapped.pkg-path = "gcc-unwrapped"
+gcc-unwrapped.outputs = ["lib"]
+# Rust SDK (core/rs/). rustc + cargo only — third-party crates live in
+# core/rs/temporaless/Cargo.toml, same thin-manifest rationale as Go/Python.
+rustc.pkg-path = "rustc"
+cargo.pkg-path = "cargo"
+clippy.pkg-path = "clippy"
+rustfmt.pkg-path = "rustfmt"
+
+[vars]
+UV_PYTHON_DOWNLOADS = "never"
+
+[hook]
+on-activate = '''
+  export UV_PYTHON="$(command -v python3.13)"
+'''

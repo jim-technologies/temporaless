@@ -1,0 +1,15 @@
+#!/bin/sh
+# Run the Rust benchmark suite. Output format matches Go's testing.B —
+# "BenchmarkName N ns/op" — so cross-language numbers are directly comparable
+# alongside scripts/bench-go and scripts/bench-py.
+set -eu
+
+cd "$(dirname "$0")/.."
+
+# Release build for benchmark-meaningful numbers. The first run will take a
+# while (the dep graph is big — opendal pulls in reqwest + http for the
+# generic operator surface even though only `fs` is enabled here); subsequent
+# runs reuse the target/release cache.
+cd core/rs/temporaless
+cargo build --release --bin bench-storage --quiet
+./target/release/bench-storage "$@"
