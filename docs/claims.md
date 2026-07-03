@@ -38,7 +38,7 @@ Claim records should be protobuf binary like all other framework state.
 Recommended path:
 
 ```text
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=claim/claim_id={claim_id}/record.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 ```
 
 Recommended fields:

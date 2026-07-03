@@ -19,14 +19,20 @@ import pytest
 import uvicorn
 from google.protobuf.duration_pb2 import Duration
 from google.protobuf.wrappers_pb2 import StringValue
+from temporaless_indexstore import IndexedStore
 
-from temporaless.connectstore import ConnectStore, asgi_application
+from temporaless.connectstore import (
+    ConnectQueryStore,
+    ConnectStore,
+    asgi_application,
+    query_asgi_application,
+)
 from temporaless.inspector import (
     list_workflows_by_status,
     reset_activity,
     reset_workflow,
 )
-from temporaless.storage import ActivityKey, OpenDALStore, WorkflowKey
+from temporaless.storage import ActivityKey, WorkflowKey
 from temporaless.v1 import temporaless_pb2
 from temporaless.workflow import (
     ActivityError,
@@ -46,10 +52,21 @@ def _free_port() -> int:
 
 @pytest.fixture
 def remote_store(tmp_path):
-    backend = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    backend = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    store_app = asgi_application(backend)
+    query_app = query_asgi_application(backend)
+
+    async def app(scope, receive, send):
+        path = scope.get("path", "")
+        if path.startswith("/temporaless.v1.RecordQueryService/"):
+            await query_app(scope, receive, send)
+            return
+        await store_app(scope, receive, send)
+
     port = _free_port()
     config = uvicorn.Config(
-        asgi_application(backend),
+        app,
         host="127.0.0.1",
         port=port,
         log_level="warning",
@@ -71,13 +88,15 @@ def remote_store(tmp_path):
     if not server.started:
         raise RuntimeError("uvicorn server failed to start")
     try:
-        yield ConnectStore.from_address(f"http://127.0.0.1:{port}")
+        address = f"http://127.0.0.1:{port}"
+        yield ConnectStore.from_address(address), ConnectQueryStore.from_address(address)
     finally:
         server.should_exit = True
         thread.join(timeout=5)
 
 
-async def test_remote_workflow_run_end_to_end(remote_store: ConnectStore) -> None:
+async def test_remote_workflow_run_end_to_end(remote_store) -> None:
+    remote_store, remote_query = remote_store
     options = Options(
         workflow_id="remote:retry",
         run_id="2026-05-04",
@@ -119,7 +138,7 @@ async def test_remote_workflow_run_end_to_end(remote_store: ConnectStore) -> Non
 
     # Inspector via remote store.
     completed = await list_workflows_by_status(
-        remote_store, temporaless_pb2.WORKFLOW_STATUS_COMPLETED
+        remote_query, temporaless_pb2.WORKFLOW_STATUS_COMPLETED
     )
     assert [r.key.workflow_id for r in completed] == ["remote:retry"]
 
@@ -161,7 +180,8 @@ async def test_remote_workflow_run_end_to_end(remote_store: ConnectStore) -> Non
     assert fresh_calls == 1
 
 
-async def test_remote_sweep_and_due_timers_round_trip(remote_store: ConnectStore) -> None:
+async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:
+    remote_store, remote_query = remote_store
     """The compound RPCs (Sweep + DueTimers) work over the real ASGI wire.
     In-process tests cover the service handlers; this proves the proto
     serialization round-trip too. One round-trip per call rather than the
@@ -194,7 +214,7 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store: ConnectStore
             )
         )
 
-    deleted = await remote_store.sweep("", datetime.now(UTC), timedelta(hours=24))
+    deleted = await remote_query.sweep("", datetime.now(UTC), timedelta(hours=24))
     assert deleted == 1
     assert (
         await remote_store.get_workflow(WorkflowKey(workflow_id="remote:sweep", run_id="old"))

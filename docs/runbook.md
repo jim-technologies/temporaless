@@ -14,11 +14,11 @@ The framework's design means most operator work is **reading records out of obje
 
 ```python
 from temporaless.inspector import list_in_flight_workflows
-from temporaless import OpenDALStore
+from temporaless_indexstore import IndexedStore
 import opendal
 
-store = OpenDALStore(opendal.AsyncOperator("s3", root="..."))
-async for wf in list_in_flight_workflows(store):
+store = IndexedStore.from_opendal(opendal.AsyncOperator("s3", root="..."), "/var/temporaless/index.sqlite")
+for wf in await list_in_flight_workflows(store):
     if wf.workflow_id == "the-stuck-one":
         print(wf)  # check created_at, last activity_id, pending events
 ```
@@ -26,8 +26,8 @@ async for wf in list_in_flight_workflows(store):
 Inspect the actual records (the framework's transparency promise — they're protobuf at deterministic paths):
 
 ```sh
-aws s3 ls s3://your-bucket/temporaless/v1/namespace=default/workflow_id=<wf_id>/run_id=<run_id>/
-# Should show kind=workflow/, kind=activity/, kind=timer/, kind=event/, kind=claim/ subdirs
+aws s3 ls s3://your-bucket/temporaless/v2/default/<wf_id>/<run_id>/
+# Should show workflow.binpb plus activity/, timer/, event/, claim/ subdirs
 ```
 
 **Common causes & fixes:**
@@ -172,7 +172,7 @@ The framework deliberately makes this DR scenario boring — there's no separate
 
 **Cause:** Two cron-scheduler instances ticked at the same time and both dispatched. The framework's `workflow.run` is idempotent — the second dispatch will see the existing record and short-circuit via replay. **No correctness issue.**
 
-If you want to suppress the duplicate dispatch entirely (to save the storage round-trip), set `cronscheduler.LastFireFromRuns` to derive last-fire from existing run records — both schedulers see the same state and both correctly skip the already-fired tick.
+If you want to suppress duplicate dispatches after restarts (to save the workflow-run round-trip), seed the scheduler with `cronscheduler.LastFireFromRuns` / `last_fire_from_runs`. It reads the latest-run pointer for each schedule and both schedulers converge on the same last-fire state.
 
 ---
 

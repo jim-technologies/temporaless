@@ -64,9 +64,9 @@ Shared runtime options are protobuf messages. Go and Python both use generated `
 
 Shared framework constants are protobuf enums. Record schema versions, timer kinds, claim resource types, and claim capabilities are declared once in `temporaless.v1` and consumed from generated Go and Python code.
 
-The storage RPC layer is defined by `temporaless.v1.RecordStoreService`. It includes workflow, activity, timer, claim, and capability calls. Local OpenDAL stores still need small language-specific infrastructure code to render object paths and invoke each binding, but the records, keys, statuses, capabilities, and RPC messages are generated from protobuf.
+The point-storage RPC layer is defined by `temporaless.v1.RecordStoreService`. It includes workflow, activity, timer, event, claim, latest-pointer, due-ledger, and capability calls. Local OpenDAL stores still need small language-specific infrastructure code to render object paths and invoke each binding, but the records, keys, statuses, capabilities, and RPC messages are generated from protobuf.
 
-`RecordStoreService` is the cross-language store contract. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as the service and wrap a generated service client back into the local store interface. This keeps the business layer simple while still making storage reusable across processes and languages.
+`RecordStoreService` is the cross-language core durability contract. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as the service and wrap a generated service client back into the local store interface. Cross-run listing, inspector search, and indexed retention live on optional `RecordQueryService` implementations.
 
 ## RPC-Shaped Wrappers
 

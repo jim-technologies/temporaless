@@ -3,6 +3,7 @@ from datetime import timedelta
 import opendal
 import pytest
 from google.protobuf.wrappers_pb2 import StringValue
+from temporaless_indexstore import IndexedStore
 
 from temporaless.inspector import (
     list_activities,
@@ -16,7 +17,7 @@ from temporaless.inspector import (
 from temporaless.storage import (
     ActivityKey,
     EventKey,
-    OpenDALStore,
+    Store,
     WorkflowKey,
     send_event,
 )
@@ -41,12 +42,12 @@ def operator(root):
 
 
 @pytest.fixture
-def store(operator):
-    return OpenDALStore(operator)
+def store(operator, tmp_path):
+    return IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
 
 
 async def test_list_activities_and_reset_helpers(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     calls = 0
 
@@ -85,7 +86,7 @@ async def test_list_activities_and_reset_helpers(
 
 
 async def test_reset_event_clears_delivered_event(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     key = EventKey(workflow_id="prices:event-reset", run_id="2026-05-04", event_id="approval")
     await send_event(store, key, StringValue(value="manager"))
@@ -95,7 +96,7 @@ async def test_reset_event_clears_delivered_event(
     assert await store.get_event(key) is None
 
 
-async def test_reset_is_idempotent_on_missing_path(store: OpenDALStore) -> None:
+async def test_reset_is_idempotent_on_missing_path(store: Store) -> None:
     await reset_workflow(
         store,
         WorkflowKey(workflow_id="missing", run_id="missing"),
@@ -103,7 +104,7 @@ async def test_reset_is_idempotent_on_missing_path(store: OpenDALStore) -> None:
 
 
 async def test_list_in_flight_and_failed_workflows(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     # completed
     async def done(_w: Workflow, _r: StringValue) -> StringValue:

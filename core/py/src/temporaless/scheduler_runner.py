@@ -3,7 +3,8 @@ the optional "serverful" half of scheduling.
 
 The scheduler is serverless on its own: :meth:`Scheduler.tick` is a stateless
 step you drive from any external clock (OS cron, a cloud scheduler, a one-shot
-function), and ``last_fire_from_runs`` lets the storage tree be the only state.
+function), and ``last_fire_from_runs`` lets bucket latest-run pointers be the
+only durable state.
 This module is the opposite trade-off, for callers who want one always-on
 process: a small loop that ticks the scheduler on a fixed interval until
 stopped. It adds **no scheduling logic** — it only owns the clock and the loop,

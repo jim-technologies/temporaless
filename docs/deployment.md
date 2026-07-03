@@ -4,7 +4,8 @@ Temporaless has no engine to deploy. What you deploy is:
 
 1. A **Store** backend (S3, GCS, Azure Blob, etc.) shared across processes.
 2. **Triggers** — any process that calls `workflow.Run` (a gRPC handler, a cloud function, a queue worker).
-3. Optional periodic jobs — **cron scheduler**, **timer scanner**, **janitor** — run as cron jobs, Kubernetes CronJobs, EventBridge schedules, etc.
+3. Optional periodic jobs — **cron scheduler**, **timer scanner**, and, when you use an index, **janitor** — run as cron jobs, Kubernetes CronJobs, EventBridge schedules, etc.
+4. Optional **query index** for workflow listing, inspector views, and indexed retention sweeps.
 
 This doc walks through the standard production layout.
 
@@ -65,6 +66,11 @@ from temporaless import asgi_application
 app = asgi_application(store)
 uvicorn.run(app, host="0.0.0.0", port=8080)
 ```
+
+`asgi_application(store)` exposes the core `RecordStoreService`: point
+GET/PUT/DELETE operations, run-scoped lists, latest-run pointer reads, and the
+due-timer ledger. If you also deploy a query index, mount
+`query_asgi_application(indexed_store)` separately for `RecordQueryService`.
 
 ### Auth, rate limiting, tracing — standard ConnectRPC interceptors
 
@@ -252,7 +258,7 @@ scheduler, _ := cronscheduler.New(
     },
 )
 
-// Stateless seeding from existing workflow records — no separate persistence.
+// Stateless seeding from latest-run pointer objects — no separate persistence.
 snapshot, _ := cronscheduler.LastFiresFromRuns(ctx, store, "",
     []string{"prices:aapl", "prices:tsla"}, time.RFC3339)
 scheduler.Restore(snapshot)
@@ -296,10 +302,11 @@ scheduler = Scheduler(
     dispatch,
 )
 
-# Stateless seeding from existing workflow records — no separate persistence.
-scheduler.restore(
-    last_fires_from_runs(store, "", ["prices:aapl", "prices:tsla"], "%Y-%m-%dT%H:%M:%SZ")
+# Stateless seeding from latest-run pointer objects — no separate persistence.
+snapshot = await last_fires_from_runs(
+    store, "", ["prices:aapl", "prices:tsla"], "%Y-%m-%dT%H:%M:%SZ"
 )
+scheduler.restore(snapshot)
 
 # Run a tick on a 1-minute cron / Kubernetes CronJob / EventBridge schedule.
 await scheduler.tick(datetime.now(UTC))
@@ -309,7 +316,9 @@ Two cron-scheduler processes can run concurrently — `workflow.Run` / `await ru
 
 ### Timer scanner
 
-For workflows that use `workflow.Sleep` (durable timers):
+For workflows that use `workflow.Sleep` (durable timers), the core writes a
+small due-ledger entry alongside each pending timer. Scanners list that ledger,
+not the whole workflow tree:
 
 ```go
 due, _ := timerscanner.DueTimers(ctx, store, time.Now())
@@ -320,12 +329,16 @@ for _, t := range due {
 }
 ```
 
-Run on a cadence (every minute, every 30s — depends on the smallest timer interval you care about).
+Run on a cadence (every minute, every 30s — depends on the smallest timer interval you care about). The ledger contains only pending timers and self-prunes when timers fire or are cancelled.
 
 ### Janitor
 
+Bucket-only deployments should prefer bucket lifecycle rules for broad
+retention. Exact "delete completed runs older than X" is a cross-run query and
+requires `RecordQueryService` / an index-backed `QueryStore`.
+
 ```go
-deleted, _ := janitor.Sweep(ctx, store, time.Now(), 7*24*time.Hour)
+deleted, _ := janitor.Sweep(ctx, queryStore, time.Now(), 7*24*time.Hour)
 log.Printf("janitor swept %d completed runs older than 7 days", deleted)
 ```
 
@@ -361,6 +374,7 @@ from temporaless.background import (
 
 workers = BackgroundWorkers(
     store,
+    query_store=indexed_store,
     cron=CronConfig(scheduler=scheduler),
     timer_scanner=TimerScannerConfig(dispatch=dispatch_due_timer),
     janitor=JanitorConfig(max_age=timedelta(days=7)),
@@ -383,8 +397,9 @@ latency-sensitive) and keep cron + janitor on a single operator replica.
 complexity the framework explicitly rejects. The simpler answer: deployers
 choose which replicas run periodic work. If you mis-configure and two
 replicas both run a loop, framework replay catches duplicate dispatches
-(workflow.Run is idempotent on `workflow_id + run_id`) and store sweeps
-are idempotent — so it's an efficiency loss, never a correctness one.
+(workflow.Run is idempotent on `workflow_id + run_id`) and indexed sweeps
+mirror idempotent run-prefix deletes — so it's an efficiency loss, never a
+correctness one.
 
 **Skip the helper entirely** when your platform already provides
 scheduled invocations: Lambda + EventBridge, Cloud Run + Cloud Scheduler,
@@ -396,7 +411,7 @@ in-process; don't pay for both.
 
 ### Multi-process within one region
 
-Default: claims serialize activities, replays serialize results. Multiple workflow workers, schedulers, scanners, and janitors can all run concurrently against the same Store. Recommended setup: one process pool per role (Lambda function, Cloud Run service, K8s Deployment, etc.), each scaled horizontally.
+Default: claims serialize activities, replays serialize results. Multiple workflow workers, schedulers, and scanners can all run concurrently against the same Store; indexed janitors additionally use the query store. Recommended setup: one process pool per role (Lambda function, Cloud Run service, K8s Deployment, etc.), each scaled horizontally.
 
 ### Multi-region active/active
 
@@ -463,6 +478,7 @@ For activity-level spans inside a workflow body, use your tracer directly inline
 - **Process crash mid-workflow**: `IN_PROGRESS` workflow record is persisted before the body runs. Next invocation re-executes the body; activities replay from their stored records.
 - **Storage unavailable**: `workflow.Run` returns the storage error. Caller's responsibility to retry.
 - **Schedule missed during outage**: `cronscheduler.Tick` catches up — it dispatches every fire time between `last_fire` and `now`.
+- **Query index unavailable**: workflow execution, cron pointer seeding, and durable timer resumption continue. Listing, inspector search, and indexed sweeps fail until the index is back or rebuilt.
 
 ## 8. Deployment shape
 
@@ -472,7 +488,8 @@ The framework is platform-agnostic. The pieces you actually deploy:
 Workflow service     N replicas    serves the ConnectRPC trigger surface
 Cron scheduler tick  1/min         calls Scheduler.tick(now)
 Timer scanner tick   1/min         calls DueTimers + dispatches re-invocations
-Janitor (optional)   1/day         calls Sweep(maxAge)
+Janitor (optional)   1/day         calls RecordQueryService.Sweep(maxAge), or use bucket lifecycle rules
+Query index           optional      SQLite adapter for search and indexed retention
 Code version env     git short SHA bumped on breaking workflow body changes
 Storage credentials  S3 / GCS / Azure Blob via your secret manager
 Bucket               production-temporaless

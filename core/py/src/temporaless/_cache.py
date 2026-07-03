@@ -20,7 +20,7 @@ intentionally private — workflow.run constructs it, no caller needs to.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from temporaless.storage import (
     ActivityKey,
@@ -119,13 +119,10 @@ class RunScopedCache:
                 self._workflow_known = True
                 self._workflow = record
 
-    async def list_workflows(
-        self,
-        namespace: str,
-        workflow_id: str,
-        status: temporaless_pb2.WorkflowStatus,
-    ) -> list[temporaless_pb2.WorkflowRecord]:
-        return await self._inner.list_workflows(namespace, workflow_id, status)
+    async def get_latest_workflow_run(
+        self, namespace: str, workflow_id: str
+    ) -> temporaless_pb2.LatestWorkflowRunPointer | None:
+        return await self._inner.get_latest_workflow_run(namespace, workflow_id)
 
     async def delete_workflow(self, key: WorkflowKey) -> bool:
         deleted = await self._inner.delete_workflow(key)
@@ -133,6 +130,20 @@ class RunScopedCache:
             async with self._lock:
                 self._workflow_known = True
                 self._workflow = None
+        return deleted
+
+    async def delete_run(self, key: WorkflowKey) -> int:
+        deleted = await self._inner.delete_run(key)
+        if self._in_scope(key.namespace, key.workflow_id, key.run_id):
+            async with self._lock:
+                self._workflow_known = True
+                self._workflow = None
+                self._activities.clear()
+                self._activities_listed = True
+                self._timers.clear()
+                self._timers_listed = True
+                self._events.clear()
+                self._events_listed = True
         return deleted
 
     # ActivityStore ---------------------------------------------------------
@@ -306,10 +317,7 @@ class RunScopedCache:
             )
         return self._inner
 
-    # Operator-only methods pass straight through --------------------------
-
-    async def sweep(self, namespace: str, now: datetime, max_age: timedelta) -> int:
-        return await self._inner.sweep(namespace, now, max_age)
+    # Runtime scanner method passes straight through -----------------------
 
     async def due_timers(self, namespace: str, now: datetime) -> list[DueTimer]:
         return await self._inner.due_timers(namespace, now)

@@ -9,13 +9,15 @@ import asyncio
 
 from benchmarks._harness import run_benchmark
 from benchmarks.bench_storage import (
-    _list_workflows_scan,
-    bench_list_workflows_scoped_by_id,
-    bench_list_workflows_unscoped,
+    bench_index_list_workflows_filtered,
+    bench_last_fire_pointer_get,
+    bench_legacy_bucket_walk_last_fire,
+    bench_legacy_bucket_walk_list_workflows_filtered,
     bench_put_get_activity,
     bench_put_get_workflow,
     bench_put_workflow_parallel_50,
     bench_put_workflow_serial_50,
+    bench_run_scoped_prefetch_activities,
 )
 from benchmarks.bench_workflow import (
     bench_retry_loop_in_process,
@@ -28,13 +30,22 @@ async def _run_all() -> None:
     suite = [
         ("BenchmarkPutGetWorkflow", bench_put_get_workflow),
         ("BenchmarkPutGetActivity", bench_put_get_activity),
-        ("BenchmarkListWorkflowsScan/workflows=10", _list_workflows_scan(10)),
-        ("BenchmarkListWorkflowsScan/workflows=100", _list_workflows_scan(100)),
-        ("BenchmarkListWorkflowsScan/workflows=500", _list_workflows_scan(500)),
-        ("BenchmarkListWorkflowsScopedByID/unscoped", bench_list_workflows_unscoped),
         (
-            "BenchmarkListWorkflowsScopedByID/scoped_by_workflow_id",
-            bench_list_workflows_scoped_by_id,
+            "BenchmarkLastFireSeeding/pointer_get",
+            bench_last_fire_pointer_get,
+        ),
+        (
+            "BenchmarkLastFireSeeding/legacy_full_bucket_walk",
+            bench_legacy_bucket_walk_last_fire,
+        ),
+        ("BenchmarkRunScopedPrefetchActivities50", bench_run_scoped_prefetch_activities),
+        (
+            "BenchmarkListWorkflowsFiltered/index",
+            bench_index_list_workflows_filtered,
+        ),
+        (
+            "BenchmarkListWorkflowsFiltered/legacy_full_bucket_walk",
+            bench_legacy_bucket_walk_list_workflows_filtered,
         ),
         ("BenchmarkWorkflowRunFreshExecution", bench_workflow_run_fresh_execution),
         ("BenchmarkWorkflowRunReplay", bench_workflow_run_replay),

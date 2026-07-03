@@ -12,14 +12,14 @@ This page documents:
 ## Compatibility invariant
 
 All three SDKs encode protobuf records identically and write them at
-identical Hive-partitioned paths:
+identical v2 flat keys:
 
 ```text
-temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb
-temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=activity/activity_id={aid}/record.binpb
-temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=timer/timer_id={tid}/record.binpb
-temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/event_id={eid}/record.binpb
-temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=claim/claim_id={cid}/record.binpb
+temporaless/v2/{ns}/{wf}/{rid}/workflow.binpb
+temporaless/v2/{ns}/{wf}/{rid}/activity/{aid}.binpb
+temporaless/v2/{ns}/{wf}/{rid}/timer/{tid}.binpb
+temporaless/v2/{ns}/{wf}/{rid}/event/{eid}.binpb
+temporaless/v2/{ns}/{wf}/{rid}/claim/{cid}.binpb
 ```
 
 The replay contract is identical across SDKs: a stored record is reused
@@ -104,6 +104,12 @@ named (`activity_id="fetch:quote"`) if you intend to run replays of it
 from another language.
 
 ## What ships today
+
+v0.3.0 note: the v2 storage transition is Python-gated. Some Go packages,
+notably `adapters/go/connectstore` and `examples/go/production-server`, do not
+compile against the regenerated storage stubs yet; Go/Rust storage parity is a
+follow-up tracked in the changelog. The matrix below is the intended SDK
+surface, not the v0.3.0 gate.
 
 | Capability | Go | Python | Rust |
 |---|:-:|:-:|:-:|

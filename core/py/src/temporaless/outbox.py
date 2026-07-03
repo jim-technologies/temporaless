@@ -60,7 +60,7 @@ def derive(namespace: str, workflow_id: str, run_id: str, activity_id: str) -> s
     scripts, tests, cross-language probes). Prefer :func:`idempotency_key`
     inside an activity body."""
     # `|` is not a permitted character in any framework ID (the validation
-    # regex is [A-Za-z0-9._:-]), so it's an unambiguous separator.
+    # regex is [A-Za-z0-9._:=-]), so it's an unambiguous separator.
     identity = f"{namespace}|{workflow_id}|{run_id}|{activity_id}"
     digest = hashlib.sha256(identity.encode()).hexdigest()
     # 16 hex bytes (64 bits) is plenty for collision-freeness across any

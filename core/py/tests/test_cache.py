@@ -42,7 +42,6 @@ class CountingStore:
         self.put_activity_calls = 0
         self.get_workflow_calls = 0
         self.put_workflow_calls = 0
-        self.list_workflow_calls = 0
         self.get_timer_calls = 0
         self.list_timer_calls = 0
         self.put_timer_calls = 0
@@ -73,12 +72,14 @@ class CountingStore:
         self.put_workflow_calls += 1
         return await self._inner.put_workflow(record)
 
-    async def list_workflows(self, namespace, workflow_id, status):
-        self.list_workflow_calls += 1
-        return await self._inner.list_workflows(namespace, workflow_id, status)
+    async def get_latest_workflow_run(self, namespace, workflow_id):
+        return await self._inner.get_latest_workflow_run(namespace, workflow_id)
 
     async def delete_workflow(self, key):
         return await self._inner.delete_workflow(key)
+
+    async def delete_run(self, key):
+        return await self._inner.delete_run(key)
 
     async def get_timer(self, key):
         self.get_timer_calls += 1
@@ -109,9 +110,6 @@ class CountingStore:
 
     async def delete_event(self, key):
         return await self._inner.delete_event(key)
-
-    async def sweep(self, namespace, now, max_age):
-        return await self._inner.sweep(namespace, now, max_age)
 
     async def due_timers(self, namespace, now):
         return await self._inner.due_timers(namespace, now)

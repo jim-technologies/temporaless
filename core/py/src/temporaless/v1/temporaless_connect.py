@@ -27,6 +27,9 @@ class RecordStoreService(Protocol):
     async def put_workflow(self, request: temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
+    async def get_latest_workflow_run(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
     async def get_timer(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetTimerRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetTimerResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
@@ -54,9 +57,6 @@ class RecordStoreService(Protocol):
     async def put_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.PutEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.PutEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
-    async def list_workflows(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
-
     async def list_activities(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
@@ -78,7 +78,7 @@ class RecordStoreService(Protocol):
     async def delete_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
-    async def sweep(self, request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+    async def delete_run(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
     async def due_timers(self, request: temporaless_dot_v1_dot_temporaless__pb2.DueTimersRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DueTimersResponse:
@@ -119,6 +119,16 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=svc.put_workflow,
+                ),
+                "/temporaless.v1.RecordStoreService/GetLatestWorkflowRun": Endpoint.unary(
+                    method=MethodInfo(
+                        name="GetLatestWorkflowRun",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.get_latest_workflow_run,
                 ),
                 "/temporaless.v1.RecordStoreService/GetTimer": Endpoint.unary(
                     method=MethodInfo(
@@ -210,16 +220,6 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                     ),
                     function=svc.put_event,
                 ),
-                "/temporaless.v1.RecordStoreService/ListWorkflows": Endpoint.unary(
-                    method=MethodInfo(
-                        name="ListWorkflows",
-                        service_name="temporaless.v1.RecordStoreService",
-                        input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-                        output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=svc.list_workflows,
-                ),
                 "/temporaless.v1.RecordStoreService/ListActivities": Endpoint.unary(
                     method=MethodInfo(
                         name="ListActivities",
@@ -290,15 +290,15 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                     ),
                     function=svc.delete_event,
                 ),
-                "/temporaless.v1.RecordStoreService/Sweep": Endpoint.unary(
+                "/temporaless.v1.RecordStoreService/DeleteRun": Endpoint.unary(
                     method=MethodInfo(
-                        name="Sweep",
+                        name="DeleteRun",
                         service_name="temporaless.v1.RecordStoreService",
-                        input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
-                        output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                        input=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse,
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
-                    function=svc.sweep,
+                    function=svc.delete_run,
                 ),
                 "/temporaless.v1.RecordStoreService/DueTimers": Endpoint.unary(
                     method=MethodInfo(
@@ -378,6 +378,26 @@ class RecordStoreServiceClient(ConnectClient):
                 service_name="temporaless.v1.RecordStoreService",
                 input=temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowRequest,
                 output=temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def get_latest_workflow_run(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetLatestWorkflowRun",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -564,26 +584,6 @@ class RecordStoreServiceClient(ConnectClient):
             timeout_ms=timeout_ms,
         )
 
-    async def list_workflows(
-        self,
-        request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
-        return await self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="ListWorkflows",
-                service_name="temporaless.v1.RecordStoreService",
-                input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-                output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
-                idempotency_level=IdempotencyLevel.UNKNOWN,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
     async def list_activities(
         self,
         request: temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesRequest,
@@ -724,20 +724,20 @@ class RecordStoreServiceClient(ConnectClient):
             timeout_ms=timeout_ms,
         )
 
-    async def sweep(
+    async def delete_run(
         self,
-        request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+        request: temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
         *,
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse:
         return await self.execute_unary(
             request=request,
             method=MethodInfo(
-                name="Sweep",
+                name="DeleteRun",
                 service_name="temporaless.v1.RecordStoreService",
-                input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
-                output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                input=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -764,6 +764,159 @@ class RecordStoreServiceClient(ConnectClient):
             timeout_ms=timeout_ms,
         )
 
+class RecordQueryService(Protocol):
+    async def list_workflows(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
+    async def list_activities(self, request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
+    async def sweep(self, request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
+    async def due_timers(self, request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
+
+class RecordQueryServiceASGIApplication(ConnectASGIApplication[RecordQueryService]):
+    def __init__(self, service: RecordQueryService | AsyncGenerator[RecordQueryService], *, interceptors: Iterable[Interceptor]=(), read_max_bytes: int | None = None, compressions: Iterable[Compression] | None = None, codecs: Iterable[Codec] | None = None) -> None:
+        super().__init__(
+            service=service,
+            endpoints=lambda svc: {
+                "/temporaless.v1.RecordQueryService/ListWorkflows": Endpoint.unary(
+                    method=MethodInfo(
+                        name="ListWorkflows",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.list_workflows,
+                ),
+                "/temporaless.v1.RecordQueryService/ListActivities": Endpoint.unary(
+                    method=MethodInfo(
+                        name="ListActivities",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.list_activities,
+                ),
+                "/temporaless.v1.RecordQueryService/Sweep": Endpoint.unary(
+                    method=MethodInfo(
+                        name="Sweep",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.sweep,
+                ),
+                "/temporaless.v1.RecordQueryService/DueTimers": Endpoint.unary(
+                    method=MethodInfo(
+                        name="DueTimers",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.due_timers,
+                ),
+            },
+            interceptors=interceptors,
+            read_max_bytes=read_max_bytes,
+            compressions=compressions,
+            codecs=codecs,
+        )
+
+    @property
+    def path(self) -> str:
+        """Returns the URL path to mount the application to when serving multiple applications."""
+        return "/temporaless.v1.RecordQueryService"
+
+
+class RecordQueryServiceClient(ConnectClient):
+    async def list_workflows(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListWorkflows",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def list_activities(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListActivities",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def sweep(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="Sweep",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def due_timers(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DueTimers",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
 
 
 
@@ -774,6 +927,8 @@ class RecordStoreServiceSync(Protocol):
     def get_workflow(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetWorkflowRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetWorkflowResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def put_workflow(self, request: temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def get_latest_workflow_run(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def get_timer(self, request: temporaless_dot_v1_dot_temporaless__pb2.GetTimerRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.GetTimerResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
@@ -793,8 +948,6 @@ class RecordStoreServiceSync(Protocol):
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def put_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.PutEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.PutEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
-    def list_workflows(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def list_activities(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def list_timers(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListTimersRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListTimersResponse:
@@ -809,7 +962,7 @@ class RecordStoreServiceSync(Protocol):
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def delete_event(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteEventRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
-    def sweep(self, request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+    def delete_run(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def due_timers(self, request: temporaless_dot_v1_dot_temporaless__pb2.DueTimersRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DueTimersResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
@@ -848,6 +1001,16 @@ class RecordStoreServiceWSGIApplication(ConnectWSGIApplication):
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=service.put_workflow,
+                ),
+                "/temporaless.v1.RecordStoreService/GetLatestWorkflowRun": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="GetLatestWorkflowRun",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.get_latest_workflow_run,
                 ),
                 "/temporaless.v1.RecordStoreService/GetTimer": EndpointSync.unary(
                     method=MethodInfo(
@@ -939,16 +1102,6 @@ class RecordStoreServiceWSGIApplication(ConnectWSGIApplication):
                     ),
                     function=service.put_event,
                 ),
-                "/temporaless.v1.RecordStoreService/ListWorkflows": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListWorkflows",
-                        service_name="temporaless.v1.RecordStoreService",
-                        input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-                        output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.list_workflows,
-                ),
                 "/temporaless.v1.RecordStoreService/ListActivities": EndpointSync.unary(
                     method=MethodInfo(
                         name="ListActivities",
@@ -1019,15 +1172,15 @@ class RecordStoreServiceWSGIApplication(ConnectWSGIApplication):
                     ),
                     function=service.delete_event,
                 ),
-                "/temporaless.v1.RecordStoreService/Sweep": EndpointSync.unary(
+                "/temporaless.v1.RecordStoreService/DeleteRun": EndpointSync.unary(
                     method=MethodInfo(
-                        name="Sweep",
+                        name="DeleteRun",
                         service_name="temporaless.v1.RecordStoreService",
-                        input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
-                        output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                        input=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse,
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
-                    function=service.sweep,
+                    function=service.delete_run,
                 ),
                 "/temporaless.v1.RecordStoreService/DueTimers": EndpointSync.unary(
                     method=MethodInfo(
@@ -1107,6 +1260,26 @@ class RecordStoreServiceClientSync(ConnectClientSync):
                 service_name="temporaless.v1.RecordStoreService",
                 input=temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowRequest,
                 output=temporaless_dot_v1_dot_temporaless__pb2.PutWorkflowResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def get_latest_workflow_run(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetLatestWorkflowRun",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.GetLatestWorkflowRunResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -1293,26 +1466,6 @@ class RecordStoreServiceClientSync(ConnectClientSync):
             timeout_ms=timeout_ms,
         )
 
-    def list_workflows(
-        self,
-        request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="ListWorkflows",
-                service_name="temporaless.v1.RecordStoreService",
-                input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
-                output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
-                idempotency_level=IdempotencyLevel.UNKNOWN,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-
     def list_activities(
         self,
         request: temporaless_dot_v1_dot_temporaless__pb2.ListActivitiesRequest,
@@ -1453,20 +1606,20 @@ class RecordStoreServiceClientSync(ConnectClientSync):
             timeout_ms=timeout_ms,
         )
 
-    def sweep(
+    def delete_run(
         self,
-        request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+        request: temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
         *,
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
-    ) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse:
         return self.execute_unary(
             request=request,
             method=MethodInfo(
-                name="Sweep",
+                name="DeleteRun",
                 service_name="temporaless.v1.RecordStoreService",
-                input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
-                output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                input=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.DeleteRunResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -1487,6 +1640,155 @@ class RecordStoreServiceClientSync(ConnectClientSync):
                 service_name="temporaless.v1.RecordStoreService",
                 input=temporaless_dot_v1_dot_temporaless__pb2.DueTimersRequest,
                 output=temporaless_dot_v1_dot_temporaless__pb2.DueTimersResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+class RecordQueryServiceSync(Protocol):
+    def list_workflows(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def list_activities(self, request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def sweep(self, request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def due_timers(self, request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
+
+class RecordQueryServiceWSGIApplication(ConnectWSGIApplication):
+    def __init__(self, service: RecordQueryServiceSync, interceptors: Iterable[InterceptorSync]=(), read_max_bytes: int | None = None, compressions: Iterable[Compression] | None = None, codecs: Iterable[Codec] | None = None) -> None:
+        super().__init__(
+            endpoints={
+                "/temporaless.v1.RecordQueryService/ListWorkflows": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="ListWorkflows",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.list_workflows,
+                ),
+                "/temporaless.v1.RecordQueryService/ListActivities": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="ListActivities",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.list_activities,
+                ),
+                "/temporaless.v1.RecordQueryService/Sweep": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="Sweep",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.sweep,
+                ),
+                "/temporaless.v1.RecordQueryService/DueTimers": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="DueTimers",
+                        service_name="temporaless.v1.RecordQueryService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.due_timers,
+                ),
+            },
+            interceptors=interceptors,
+            read_max_bytes=read_max_bytes,
+            compressions=compressions,
+            codecs=codecs,
+        )
+
+    @property
+    def path(self) -> str:
+        """Returns the URL path to mount the application to when serving multiple applications."""
+        return "/temporaless.v1.RecordQueryService"
+
+
+class RecordQueryServiceClientSync(ConnectClientSync):
+    def list_workflows(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListWorkflows",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.ListWorkflowsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def list_activities(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListActivities",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceListActivitiesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def sweep(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.SweepResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="Sweep",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.SweepRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.SweepResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def due_timers(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DueTimers",
+                service_name="temporaless.v1.RecordQueryService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.RecordQueryServiceDueTimersResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

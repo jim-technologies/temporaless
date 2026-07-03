@@ -15,8 +15,8 @@ RPC client/server wiring, conflict-error variants):
   (``WorkflowConflictError``, ``ActivityConflictError``,
   ``TimerConflictError``) and lower-level activity primitives.
 - ``from temporaless.connectstore import …`` — ``RecordStoreService``,
-  ``RecordStoreClient`` (Protocol) for custom RPC client implementations.
-- ``from temporaless.inspector import …`` — operator visibility helpers.
+  ``RecordQueryService``, and client Protocols for custom RPC clients.
+- ``from temporaless.inspector import …`` — query-index-backed visibility helpers.
 - ``from temporaless.janitor import …`` / ``temporaless.timerscanner`` /
   ``temporaless.cronscheduler`` — periodic operations adapters.
 

@@ -7,9 +7,9 @@ Demonstrates the full end-to-end production pattern:
 3. The workflow body fetches a price (an activity) and computes a signal
    (another activity). Both records are persisted, so the workflow replays
    for free if the same (workflow_id, run_id) is re-invoked.
-4. Stateless seeding: on startup the scheduler asks storage what the
-   most-recent fire time was via ``last_fires_from_runs`` — so the scheduler
-   has no separate persistence; the records ARE its memory.
+4. Stateless seeding: on startup the scheduler reads each workflow's
+   latest-run pointer via ``last_fires_from_runs`` — so the scheduler has no
+   separate persistence.
 
 In production:
 
@@ -47,7 +47,6 @@ from temporaless.cronscheduler import (
     Scheduler,
     last_fires_from_runs,
 )
-from temporaless.v1 import temporaless_pb2
 
 RUN_ID_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -136,10 +135,9 @@ async def main() -> None:
 
     print("\nfinal storage snapshot:")
     for schedule in schedules:
-        records = await store.list_workflows(
-            "", schedule.id, temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED
-        )
-        print(f"  {schedule.id}: {len(records)} runs persisted")
+        pointer = await store.get_latest_workflow_run("", schedule.id)
+        latest = pointer.key.run_id if pointer is not None else "none"
+        print(f"  {schedule.id}: latest run {latest}")
 
 
 if __name__ == "__main__":

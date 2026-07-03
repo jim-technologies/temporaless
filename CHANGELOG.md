@@ -20,6 +20,118 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
   by design; multi-process still uses stateless `tick` + `last_fire_from_runs`.
   A failing tick is logged, not fatal. *(Go parity is a follow-up.)*
 
+## [0.3.0] — 2026-07-03
+
+The framework remains **pre-1.0**. This release makes the storage boundary
+match the product identity: core = point operations on your bucket; search =
+optional derived index.
+
+### Added
+
+- **v2 flat storage keys** for Python core records:
+  `temporaless/v2/{namespace}/{workflow_id}/{run_id}/workflow.binpb`,
+  `activity/{activity_id}.binpb`, `timer/{timer_id}.binpb`,
+  `event/{event_id}.binpb`, and `claim/{claim_id}.binpb`.
+- **Latest-run pointer records** written by the bucket store on
+  `IN_PROGRESS`, `COMPLETED`, and `FAILED` workflow puts. Cron seeding via
+  `last_fire_from_runs` now does one pointer GET per schedule instead of a
+  cross-run bucket walk. The pointer update is best-effort read-compare-write:
+  when both run IDs parse as schedule fire times, parsed fire time is the
+  monotonic guard; otherwise record timestamp is used. Racing writers can
+  momentarily lose a pointer update, but never corrupt the authoritative
+  workflow record. The built-in compact date parser accepts bare `%Y%m%d`
+  dates only when the run ID is exactly eight digits; shorter numeric IDs fall
+  back to record-time comparison.
+- **Due-timer ledger** under the bucket. Pending timers write compact ledger
+  entries sorted by `fire_at`; firing/cancel/deletion removes them. Durable
+  timer scanning no longer walks all workflow records. Ledger entries are
+  written before timer records so a crash leaves a self-pruning orphan instead
+  of an unfindable pending timer. Corrupt ledger entries are moved to
+  `_due_invalid/` instead of being retried forever.
+- **`RecordQueryService` protobuf service** for optional cross-run search:
+  `ListWorkflows`, query-style `ListActivities`, `Sweep`, and indexed
+  `DueTimers`.
+- **`adapters/py/indexstore`**: write-through SQLite query index for Python.
+  It stores keys, statuses, and timestamps only; protobuf payloads remain in
+  the bucket. `rebuild()` repopulates the index from a v2 bucket using staging
+  tables and an atomic merge; rows written through the same index while the
+  walk is running survive the merge, corrupt bucket records are skipped and
+  counted, and records that disappear between LIST and GET are skipped
+  silently.
+- **`temporaless-migrate-v1-to-v2`** CLI. Reads a v1 hive tree, writes v2
+  records, emits a JSONL audit log, supports `--all-runs` and
+  `--newest-per-workflow`, and can populate the SQLite index.
+- **Storage benchmarks** comparing latest-pointer seeding and index-backed
+  listing against legacy full-bucket walks, plus run-scoped prefetch.
+
+### Changed (breaking)
+
+- **Python `Store` protocol shrank.** Core stores no longer expose cross-run
+  `list_workflows` or `sweep`. Use `QueryStore` / `RecordQueryService` for
+  listing, inspector views, and indexed retention.
+- **`RecordStoreService` is point-operation only.** `ListWorkflows` and
+  `Sweep` moved to `RecordQueryService`; `GetLatestWorkflowRun`, `DeleteRun`,
+  and core `DueTimers` were added.
+- **Storage paths are incompatible with v1.** There is no runtime legacy mode
+  and no automatic fallback. Run `temporaless-migrate-v1-to-v2` once for
+  existing buckets.
+- **ID validation now permits `=`.** Slashes remain rejected because object
+  keys are path-like. The old `=` restriction existed only for v1 path
+  parsing. Namespace and workflow_id values beginning with `_` are now reserved
+  for Temporaless system prefixes such as `_latest` and `_due`.
+- **`last_fire_from_runs` changed semantics.** v1 derived scheduler memory by
+  walking every run for a workflow and taking the max parsed run_id. v2 reads
+  the latest-run pointer and relies on the pointer's parsed-fire-time
+  monotonicity rule. If the pointer is missing or unparseable, a provided query
+  index is used as fallback and paged until a parseable run is found within the
+  bounded fallback window.
+- **`DeleteRun` caveat.** Deleting the run that owns a latest-run pointer
+  deletes that pointer; the bucket store does not scan for the previous run.
+  Keep schedule runs until lifecycle expiry or seed from a query index/offline
+  scan after destructive deletes when that memory matters.
+- **Inspector and janitor require a query store for cross-run work.** Bucket
+  only deployments should use bucket lifecycle rules for retention and
+  offline scans for ad hoc inspection.
+- **Docs and APIs now treat SQL as optional index infrastructure.** Core
+  Python packages import no SQL modules; SQLite lives only in
+  `temporaless-indexstore`.
+
+### Migration
+
+1. Run `temporaless-migrate-v1-to-v2 --source-fs-root OLD --dest-fs-root NEW
+   --audit-log migration.jsonl --all-runs` to preserve replay history.
+2. Use `--newest-per-workflow` only when you are seeding schedules and do not
+   need old replay history. It compares parsed run_id fire times for common
+   ISO-like formats by default; pass `--run-id-format` for deployment-specific
+   formats.
+3. Add `--index-sqlite index.sqlite` if you want the query index populated
+   during migration; otherwise call `IndexedStore.rebuild()` later.
+4. Records whose legacy IDs are invalid under v2 validation are skipped with an
+   audit-log reason; they do not abort the migration.
+5. Corrupt v1 protobuf blobs are skipped with an audit-log reason; they do not
+   abort the migration.
+6. Update code that called `store.list_workflows(...)` or `store.sweep(...)`
+   to depend on a `QueryStore`.
+
+### Parity Notes
+
+- Go and Rust storage parity is a follow-up. Shared protobufs were regenerated,
+  but the Python core and Python index adapter are the implementation target
+  for this release.
+- `adapters/go/connectstore` and `examples/go/production-server` do not compile
+  against the regenerated stubs in this release. They are excluded from the
+  default `scripts/check` gate; set `TEMPORALESS_CHECK_GO_RUST=1` to run the
+  explicitly failing parity gate while the follow-up is in progress.
+- The query index adapter is SQLite-only. Postgres-via-DSN is future work.
+
+### Known Follow-ups
+
+- `delete_run` removes files but can leave empty directories on filesystem
+  backends.
+- Index write-through is best-effort after the bucket write. If SQLite upsert
+  or delete fails, rows can diverge until `rebuild()` or query-time pruning
+  repairs them.
+
 ## [0.2.0] — 2026-05-24
 
 The framework remains **pre-1.0**. This release bakes a per-submission

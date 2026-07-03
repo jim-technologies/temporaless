@@ -9,7 +9,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Cloud storage with native atomicity.** S3, GCS, or Azure Blob. The OpenDAL `fs` scheme is **dev-only** — it cannot be safely shared across processes (see `docs/hard-cases.md`).
 - [ ] **Bucket isolated per environment.** `temporaless-prod-{namespace}`. Disaster-recovery bucket replication if your RPO < your bucket-region RPO.
 - [ ] **Versioning enabled.** Lets you recover from accidental record deletes (a janitor mis-configuration, a bad inspector script).
-- [ ] **Lifecycle rules sized for your retention.** The bundled `janitor.sweep_completed(max_age=…)` deletes COMPLETED runs older than `max_age`. Bucket lifecycle is the safety net.
+- [ ] **Lifecycle rules sized for your retention.** Bucket lifecycle is the bucket-only retention mechanism. If you need exact "COMPLETED older than max_age" deletion, deploy the optional query index and run `janitor.sweep`.
 - [ ] **Encryption at rest.** SSE-KMS (AWS), CMEK (GCS), customer-managed keys (Azure) per your compliance posture.
 - [ ] **Bucket-level audit logging.** S3 Access Logs / Cloud Audit Logs / Azure diagnostic logs. Records are protobuf binaries, so this lets you reconstruct who-touched-what without trusting the application.
 
@@ -36,7 +36,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 
 - [ ] **Cron scheduler ticked from a reliable trigger.** EventBridge / Cloud Scheduler / GitHub Actions schedule / cron(8) / a K8s CronJob / an in-process `while True: tick(); sleep(60)` loop — pick whichever fits your platform. The scheduler is stateless — scale to N copies safely.
 - [ ] **Timer scanner ticked at the granularity you need.** ~1-minute polling is the framework's expected cadence. Tighter loops increase storage RPCs without lowering wake-up latency below the `sleep(duration)` precision you persisted.
-- [ ] **Janitor running on a schedule** if you have retention requirements. Daily / weekly per your retention policy. Idempotent — duplicate runs are free.
+- [ ] **Janitor running on a schedule** only if you deploy a query index for exact retention. Otherwise configure bucket lifecycle rules. Daily / weekly per your retention policy. Idempotent — duplicate runs are free.
 
 ## Observability
 
@@ -46,8 +46,8 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 
 ## Failure modes and recovery
 
-- [ ] **Workflows in `IN_PROGRESS` past their expected duration are alerted on.** A workflow stuck `IN_PROGRESS` for hours past its timer's `wake_at` indicates a stuck timer-scanner or a pending-event that nothing's delivering. Use `inspector.list_in_flight_workflows(store)` to enumerate.
-- [ ] **`ListWorkflows(status=FAILED)` reviewed regularly.** Failed runs are a queue of incidents. Use `inspector.reset_workflow(...)` to clear before re-running.
+- [ ] **Workflows in `IN_PROGRESS` past their expected duration are alerted on.** A workflow stuck `IN_PROGRESS` for hours past its timer's `wake_at` indicates a stuck timer-scanner or a pending-event that nothing's delivering. Use the query index plus `inspector.list_in_flight_workflows(query_store)` to enumerate.
+- [ ] **Failed workflow index reviewed regularly.** Failed runs are a queue of incidents. Use `RecordQueryService.ListWorkflows(status=FAILED)` and `inspector.reset_workflow(...)` to clear before re-running.
 - [ ] **Disaster recovery runbook.** "Bucket gone" → restore from versioning / cross-region replica. "Process crash mid-write" → records are append-only per key, partial writes don't corrupt prior records (object-storage atomicity).
 - [ ] **`ClaimBusy` budget watched.** A spike in `Code.ALREADY_EXISTS` from claim contention indicates either a claim leak (lease expired but holder didn't release) or a thundering-herd retry pattern. Tune `DEFAULT_CLAIM_LEASE_DURATION` per workflow type.
 
@@ -77,7 +77,7 @@ There is no engine to run, no control plane to operate. Pick whichever platform 
 
 ## What you do not need
 
-- **A workflow database.** Records ARE the state. No Postgres / Cassandra / Redis to operate.
+- **A workflow database.** Records ARE the state. No Postgres / Cassandra / Redis is required for execution; a query index is optional search infrastructure.
 - **A scheduler binary.** The cron scheduler is a Python class you tick from any reliable cron source.
 - **A control plane.** No service registry, no leader election, no quorum.
 - **Sticky routing.** Every RPC against the same `(workflow_id, run_id)` produces the same result via replay; round-robin is fine.

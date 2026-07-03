@@ -4,9 +4,10 @@ import opendal
 import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import StringValue
+from temporaless_indexstore import IndexedStore
 
 from temporaless.janitor import sweep
-from temporaless.storage import OpenDALStore, Store, WorkflowKey
+from temporaless.storage import Store, WorkflowKey
 from temporaless.v1 import temporaless_pb2
 from temporaless.workflow import (
     ActivityOptions,
@@ -28,12 +29,12 @@ def operator(root):
 
 
 @pytest.fixture
-def store(operator):
-    return OpenDALStore(operator)
+def store(operator, tmp_path):
+    return IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
 
 
 async def test_sweep_deletes_old_completed_runs(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     # Run 1: backdated to 48h ago, should be swept.
     await _run_workflow(store, "prices:old", "2026-05-03")
@@ -63,15 +64,13 @@ async def test_sweep_deletes_old_completed_runs(
     )
 
 
-async def test_sweep_rejects_bad_input(
-    operator: opendal.AsyncOperator, store: OpenDALStore
-) -> None:
+async def test_sweep_rejects_bad_input(operator: opendal.AsyncOperator, store: Store) -> None:
     with pytest.raises(ValueError):
         await sweep(store, datetime.now(UTC), timedelta(0))
 
 
 async def test_sweep_skips_in_progress_and_failed_records(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     """Sweep only deletes COMPLETED runs older than max_age. IN_PROGRESS and
     FAILED records are kept regardless of age — operators audit FAILED, and
@@ -117,7 +116,7 @@ async def test_sweep_skips_in_progress_and_failed_records(
 
 
 async def test_sweep_on_empty_store_returns_zero(
-    operator: opendal.AsyncOperator, store: OpenDALStore
+    operator: opendal.AsyncOperator, store: Store
 ) -> None:
     """No COMPLETED records → sweep is a no-op returning 0."""
     deleted = await sweep(store, datetime.now(UTC), timedelta(hours=24))

@@ -24,11 +24,12 @@ docs/                 Architecture and design notes
 
 | Adapter | Purpose |
 |---|---|
-| [`adapters/go/connectstore`](adapters/go/connectstore) | Expose `RecordStoreService` over ConnectRPC; client wraps the service back as a `storage.Store` |
+| [`adapters/go/connectstore`](adapters/go/connectstore) | ConnectRPC store adapter; v2 regenerated-stub parity is a 0.3 follow-up |
 | [`adapters/go/gocdkclaims`](adapters/go/gocdkclaims) | Create-only activity claims via GoCDK Blob `IfNotExist` (S3, GCS native atomicity) |
 | [`adapters/go/temporalcompat`](adapters/go/temporalcompat) | Run Temporaless-shaped handlers on the real Temporal Go SDK (worker direction) |
 | [`adapters/py/temporalcompat`](adapters/py/temporalcompat) | Same for Python via `temporalio` |
 | [`adapters/py/prefectcompat`](adapters/py/prefectcompat) | Run Temporaless-shaped handlers as Prefect 3 flows / tasks; keep Prefect's UI + scheduling, keep our storage-first replay |
+| [`adapters/py/indexstore`](adapters/py/indexstore) | Optional SQLite query index for workflow/activity listing, retention sweeps, and indexed due-timer queries |
 | [`adapters/go/timerscanner`](adapters/go/timerscanner) | Find due durable timers belonging to in-flight workflows |
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
 | [`adapters/go/inspector`](adapters/go/inspector) | List in-flight / failed workflows, reset records for re-execution |
@@ -52,7 +53,7 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 | [`examples/py/stocks_cron.py`](examples/py/stocks_cron.py) | Cron-driven workflow: scheduler dispatches per-symbol workflows, statelessly seeded from existing run records |
 | [`examples/py/approval_workflow.py`](examples/py/approval_workflow.py) | **Long-running**: durable sleep + wait-for-event + multi-step replay across simulated process deaths |
 | [`examples/py/data_pipeline.py`](examples/py/data_pipeline.py) | **Airflow-style ETL**: extract → parallel transform (fan-out) → validate → conditional branch → load → notify, with backfill and replay |
-| [`examples/go/production-server`](examples/go/production-server) / [`examples/py/production_server.py`](examples/py/production_server.py) | **Production server (Go + Python parity)**: ConnectStore + bearer-token auth interceptor + `/healthz` & `/readyz` endpoints + structured JSON logs with correlation IDs + graceful shutdown on SIGTERM. The wiring you copy into your own service. |
+| [`examples/go/production-server`](examples/go/production-server) / [`examples/py/production_server.py`](examples/py/production_server.py) | **Production server**: Python is current for v2 storage; Go regenerated-stub parity is a 0.3 follow-up. Shows ConnectStore + bearer-token auth interceptor + `/healthz` & `/readyz` endpoints + structured JSON logs with correlation IDs + graceful shutdown on SIGTERM. |
 
 ## Docs
 
@@ -72,14 +73,15 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 - [`docs/orchestrator-adapters.md`](docs/orchestrator-adapters.md) — Dagster / Prefect adapter notes
 - [`docs/dependencies.md`](docs/dependencies.md) — what lives where (Flox vs go.mod vs uv)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — Go and Python benchmark suites with cross-language baseline numbers
-- [`docs/analytics.md`](docs/analytics.md) — DuckDB / Trino / BigQuery queries against the Hive-partitioned bucket (storage-first audit story in practice)
+- [`docs/analytics.md`](docs/analytics.md) — bucket archive, optional query index, and offline protobuf analytics
 - [`docs/sdks.md`](docs/sdks.md) — cross-SDK surface comparison + capability matrix (Go / Python / Rust)
 
 ## Development
 
 ```sh
 flox activate
-flox activate -- scripts/check       # full local gate: buf lint/format/generate, go test, ruff, ty, pytest
+flox activate -- scripts/check       # proto + Python core/adapters gate
+TEMPORALESS_CHECK_GO_RUST=1 flox activate -- scripts/check  # include explicitly gated Go/Rust parity checks
 flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot paths)
 flox activate -- scripts/bench-py    # Python benchmarks (same suite, same output format)
 ```
@@ -88,29 +90,31 @@ The Flox manifest intentionally stays thin: just `go`, `python313`, `uv`, `buf`,
 
 ## Storage convention
 
-Records are stored as protobuf binary at:
+Records are stored as protobuf binary at deterministic v2 keys:
 
 ```text
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=workflow/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=activity/activity_id={activity_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=timer/timer_id={timer_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=event/event_id={event_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=claim/claim_id={claim_id}/record.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/workflow.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/activity/{activity_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/timer/{timer_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 ```
 
-Paths follow strict **Hive partitioning** (every directory level is `key=value`). Pointing Spark / Trino / DuckDB / Athena at the bucket auto-discovers `namespace`, `workflow_id`, `run_id`, `kind`, and the per-kind id (`activity_id` / `timer_id` / `event_id` / `claim_id`) as partition columns — predicates push down to the bucket so `WHERE namespace='default' AND kind='activity'` only fetches activity records.
+Keys are constructed from protobuf keys; runtime code never parses paths back into record identity. A run's records stay co-located under one prefix so replay prefetch, run deletion, and bucket lifecycle rules remain simple.
 
-IDs may contain letters, numbers, `.`, `_`, `-`, and `:` only. Slashes and `=` are rejected so the Hive-style paths stay predictable. The framework does not generate IDs — workflow IDs, run IDs, activity IDs, timer IDs, claim owner IDs, and event IDs are application-owned and must be passed explicitly.
+IDs may contain letters, numbers, `.`, `_`, `-`, `:`, and `=`. Slashes are rejected because object keys are path-like. Namespace and workflow ID values beginning with `_` are reserved for Temporaless system prefixes such as `_latest` and `_due`. The framework does not generate IDs — workflow IDs, run IDs, activity IDs, timer IDs, claim owner IDs, and event IDs are application-owned and must be passed explicitly.
 
-The storage service contract is generated from `temporaless.v1.RecordStoreService`. Record schema versions, timer kinds, claim resource types, and claim capabilities are protobuf enums, not handwritten per-language string constants.
+The core storage contract is generated from `temporaless.v1.RecordStoreService`: point GET/PUT/DELETE, run-scoped lists for replay prefetch and run deletion, create-if-absent claims, latest-run pointers, and the compact due-timer ledger. Cross-run search lives on optional `RecordQueryService` implementations such as `temporaless-indexstore`; the bucket remains the source of truth and the index is rebuildable.
 
 ## What you do and do not get
 
-**Generic core (in scope):** workflow + activity replay, retry policy with `RETRYING`-record persistence, durable timers and signals via `EventRecord`, claim-based coordination tiers, durable structured annotations, in-process scheduler with stateless seeding from storage, full CRUD+list RPC surface for every record kind, comprehensive proto-typed errors.
+**Generic core (in scope):** workflow + activity replay, retry policy with `RETRYING`-record persistence, durable timers and signals via `EventRecord`, claim-based coordination tiers, durable structured annotations, in-process scheduler with O(1) latest-run pointer seeding, run-scoped prefetch/deletion, and comprehensive proto-typed errors.
 
 **Temporal-flavored knobs (adapter-only or out of scope):** activity timeouts, heartbeats, sticky task queues, signal-channel select, workflow-level retry policy, child workflows, payload converters. Use `adapters/{go,py}/temporalcompat` if you need any of those.
 
-**Stateful processes (none required):** the core runtime is a pure function of `(input, store_state)`. Inspector, janitor, timerscanner are fully stateless. The cron scheduler keeps last-fires in memory but exposes `Snapshot()`/`Restore()` for explicit migration, plus `LastFireFromRuns` for deriving state from existing workflow records — fully stateless when run_ids embed fire times.
+**Search and retention (optional index):** bucket-only deployments run workflows, scheduling, durable timers, and lifecycle-based retention without a database. Listing workflows, inspector views, and indexed sweeps require a derived query index or an offline scan.
+
+**Stateful processes (none required):** the core runtime is a pure function of `(input, store_state)`. The cron scheduler keeps last-fires in memory but exposes `Snapshot()`/`Restore()` for explicit migration, plus `LastFireFromRuns` for deriving state from latest-run pointer objects when run_ids embed fire times. Timer resumption uses a compact due ledger, not a full bucket walk.
 
 **Python is async-only.** Workflow bodies, activity bodies, and the runtime entry points (`run`, `execute_activity`, `wait_event`, `sleep`) are all `async def`. Sync callables are rejected at wrap time. The framework's I/O-bound workloads (LLM, HTTP, vendor APIs) are a natural fit for async; aligning with the Temporal Python SDK removes impedance. Go stays sync — goroutines + sync function signatures are idiomatic Go and there is no equivalent of `async/await`.
 

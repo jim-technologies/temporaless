@@ -2,14 +2,13 @@
 //
 // Temporaless is a storage-first, serverless workflow framework. Workflow runs,
 // activity invocations, durable timers, signals (events), and coordination
-// claims are all serialized as protobuf records at deterministic paths under
-// `temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind={kind}/...`
-// (strict Hive partitioning — every directory level is `key=value`, so Spark /
-// Trino / DuckDB / Athena auto-discover the partition columns).
+// claims are all serialized as protobuf records at deterministic flat v2 keys
+// under `temporaless/v2/{namespace}/{workflow_id}/{run_id}/...`.
 //
-// `RecordStoreService` is the cross-language storage contract. Any backend
-// (OpenDAL filesystem, S3, GCS, SQL, ...) implements the same RPC surface, so
-// generated CLI / gRPC / HTTP / MCP wrappers all see the same operations.
+// `RecordStoreService` is the cross-language durability contract: point
+// get/put/delete, run-scoped lists, latest-run pointer reads, claims, and the
+// bucket due-timer ledger. Cross-run search/retention APIs live on the optional
+// `RecordQueryService`, implemented by derived indexes.
 //
 // Edition 2023: lets us declare field-level string defaults (used by
 // `ReservedNames` below) so framework-reserved literals like
@@ -41,6 +40,8 @@ const _ = connect.IsAtLeastVersion1_13_0
 const (
 	// RecordStoreServiceName is the fully-qualified name of the RecordStoreService service.
 	RecordStoreServiceName = "temporaless.v1.RecordStoreService"
+	// RecordQueryServiceName is the fully-qualified name of the RecordQueryService service.
+	RecordQueryServiceName = "temporaless.v1.RecordQueryService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -60,6 +61,9 @@ const (
 	// RecordStoreServicePutWorkflowProcedure is the fully-qualified name of the RecordStoreService's
 	// PutWorkflow RPC.
 	RecordStoreServicePutWorkflowProcedure = "/temporaless.v1.RecordStoreService/PutWorkflow"
+	// RecordStoreServiceGetLatestWorkflowRunProcedure is the fully-qualified name of the
+	// RecordStoreService's GetLatestWorkflowRun RPC.
+	RecordStoreServiceGetLatestWorkflowRunProcedure = "/temporaless.v1.RecordStoreService/GetLatestWorkflowRun"
 	// RecordStoreServiceGetTimerProcedure is the fully-qualified name of the RecordStoreService's
 	// GetTimer RPC.
 	RecordStoreServiceGetTimerProcedure = "/temporaless.v1.RecordStoreService/GetTimer"
@@ -87,9 +91,6 @@ const (
 	// RecordStoreServicePutEventProcedure is the fully-qualified name of the RecordStoreService's
 	// PutEvent RPC.
 	RecordStoreServicePutEventProcedure = "/temporaless.v1.RecordStoreService/PutEvent"
-	// RecordStoreServiceListWorkflowsProcedure is the fully-qualified name of the RecordStoreService's
-	// ListWorkflows RPC.
-	RecordStoreServiceListWorkflowsProcedure = "/temporaless.v1.RecordStoreService/ListWorkflows"
 	// RecordStoreServiceListActivitiesProcedure is the fully-qualified name of the RecordStoreService's
 	// ListActivities RPC.
 	RecordStoreServiceListActivitiesProcedure = "/temporaless.v1.RecordStoreService/ListActivities"
@@ -111,12 +112,24 @@ const (
 	// RecordStoreServiceDeleteEventProcedure is the fully-qualified name of the RecordStoreService's
 	// DeleteEvent RPC.
 	RecordStoreServiceDeleteEventProcedure = "/temporaless.v1.RecordStoreService/DeleteEvent"
-	// RecordStoreServiceSweepProcedure is the fully-qualified name of the RecordStoreService's Sweep
-	// RPC.
-	RecordStoreServiceSweepProcedure = "/temporaless.v1.RecordStoreService/Sweep"
+	// RecordStoreServiceDeleteRunProcedure is the fully-qualified name of the RecordStoreService's
+	// DeleteRun RPC.
+	RecordStoreServiceDeleteRunProcedure = "/temporaless.v1.RecordStoreService/DeleteRun"
 	// RecordStoreServiceDueTimersProcedure is the fully-qualified name of the RecordStoreService's
 	// DueTimers RPC.
 	RecordStoreServiceDueTimersProcedure = "/temporaless.v1.RecordStoreService/DueTimers"
+	// RecordQueryServiceListWorkflowsProcedure is the fully-qualified name of the RecordQueryService's
+	// ListWorkflows RPC.
+	RecordQueryServiceListWorkflowsProcedure = "/temporaless.v1.RecordQueryService/ListWorkflows"
+	// RecordQueryServiceListActivitiesProcedure is the fully-qualified name of the RecordQueryService's
+	// ListActivities RPC.
+	RecordQueryServiceListActivitiesProcedure = "/temporaless.v1.RecordQueryService/ListActivities"
+	// RecordQueryServiceSweepProcedure is the fully-qualified name of the RecordQueryService's Sweep
+	// RPC.
+	RecordQueryServiceSweepProcedure = "/temporaless.v1.RecordQueryService/Sweep"
+	// RecordQueryServiceDueTimersProcedure is the fully-qualified name of the RecordQueryService's
+	// DueTimers RPC.
+	RecordQueryServiceDueTimersProcedure = "/temporaless.v1.RecordQueryService/DueTimers"
 )
 
 // RecordStoreServiceClient is a client for the temporaless.v1.RecordStoreService service.
@@ -127,6 +140,8 @@ type RecordStoreServiceClient interface {
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
 	// Write or replace a single workflow record.
 	PutWorkflow(context.Context, *connect.Request[v1.PutWorkflowRequest]) (*connect.Response[v1.PutWorkflowResponse], error)
+	// Read the derived latest-run pointer for one workflow_id.
+	GetLatestWorkflowRun(context.Context, *connect.Request[v1.GetLatestWorkflowRunRequest]) (*connect.Response[v1.GetLatestWorkflowRunResponse], error)
 	// Read a single durable timer record by key.
 	GetTimer(context.Context, *connect.Request[v1.GetTimerRequest]) (*connect.Response[v1.GetTimerResponse], error)
 	// Write or replace a single timer record.
@@ -149,16 +164,13 @@ type RecordStoreServiceClient interface {
 	// Deliver a signal payload to a waiting workflow. External services
 	// (webhooks, approvals) call this to wake up a `WaitEvent`.
 	PutEvent(context.Context, *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error)
-	// List workflow records, optionally filtered by namespace and status.
-	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// List all activity records under a single workflow run.
 	ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error)
 	// List timer records under a single workflow run, optionally filtered by status.
 	ListTimers(context.Context, *connect.Request[v1.ListTimersRequest]) (*connect.Response[v1.ListTimersResponse], error)
 	// List event records under a single workflow run.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
-	// Idempotently remove a workflow record. Children (activities/timers/events/claims)
-	// are not touched; use list+delete or `janitor.Sweep` for recursive cleanup.
+	// Idempotently remove a workflow record only.
 	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// Idempotently remove an activity record so the next `ExecuteActivity`
 	// re-executes the activity body.
@@ -168,11 +180,8 @@ type RecordStoreServiceClient interface {
 	// Idempotently remove an event record. Resets a delivered signal so
 	// `WaitEvent` returns pending again on the next workflow invocation.
 	DeleteEvent(context.Context, *connect.Request[v1.DeleteEventRequest]) (*connect.Response[v1.DeleteEventResponse], error)
-	// Sweep COMPLETED workflow runs older than `max_age`, deleting their
-	// activities, timers, and events first. The retention story for the
-	// storage-first model — operators run this on a daily cron. Idempotent;
-	// returns the number of runs deleted.
-	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
+	// Recursively delete one workflow run prefix. Bounded by a single run.
+	DeleteRun(context.Context, *connect.Request[v1.DeleteRunRequest]) (*connect.Response[v1.DeleteRunResponse], error)
 	// Find SCHEDULED durable timers whose `fire_at <= now` and whose parent
 	// workflow is still IN_PROGRESS. Operators run this on a minute cron and
 	// re-invoke the workflow handler for each entry, which lets a stored
@@ -207,6 +216,12 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+RecordStoreServicePutWorkflowProcedure,
 			connect.WithSchema(recordStoreServiceMethods.ByName("PutWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		getLatestWorkflowRun: connect.NewClient[v1.GetLatestWorkflowRunRequest, v1.GetLatestWorkflowRunResponse](
+			httpClient,
+			baseURL+RecordStoreServiceGetLatestWorkflowRunProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("GetLatestWorkflowRun")),
 			connect.WithClientOptions(opts...),
 		),
 		getTimer: connect.NewClient[v1.GetTimerRequest, v1.GetTimerResponse](
@@ -263,12 +278,6 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(recordStoreServiceMethods.ByName("PutEvent")),
 			connect.WithClientOptions(opts...),
 		),
-		listWorkflows: connect.NewClient[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse](
-			httpClient,
-			baseURL+RecordStoreServiceListWorkflowsProcedure,
-			connect.WithSchema(recordStoreServiceMethods.ByName("ListWorkflows")),
-			connect.WithClientOptions(opts...),
-		),
 		listActivities: connect.NewClient[v1.ListActivitiesRequest, v1.ListActivitiesResponse](
 			httpClient,
 			baseURL+RecordStoreServiceListActivitiesProcedure,
@@ -311,10 +320,10 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(recordStoreServiceMethods.ByName("DeleteEvent")),
 			connect.WithClientOptions(opts...),
 		),
-		sweep: connect.NewClient[v1.SweepRequest, v1.SweepResponse](
+		deleteRun: connect.NewClient[v1.DeleteRunRequest, v1.DeleteRunResponse](
 			httpClient,
-			baseURL+RecordStoreServiceSweepProcedure,
-			connect.WithSchema(recordStoreServiceMethods.ByName("Sweep")),
+			baseURL+RecordStoreServiceDeleteRunProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("DeleteRun")),
 			connect.WithClientOptions(opts...),
 		),
 		dueTimers: connect.NewClient[v1.DueTimersRequest, v1.DueTimersResponse](
@@ -331,6 +340,7 @@ type recordStoreServiceClient struct {
 	getStoreCapabilities *connect.Client[v1.GetStoreCapabilitiesRequest, v1.GetStoreCapabilitiesResponse]
 	getWorkflow          *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
 	putWorkflow          *connect.Client[v1.PutWorkflowRequest, v1.PutWorkflowResponse]
+	getLatestWorkflowRun *connect.Client[v1.GetLatestWorkflowRunRequest, v1.GetLatestWorkflowRunResponse]
 	getTimer             *connect.Client[v1.GetTimerRequest, v1.GetTimerResponse]
 	putTimer             *connect.Client[v1.PutTimerRequest, v1.PutTimerResponse]
 	getActivity          *connect.Client[v1.GetActivityRequest, v1.GetActivityResponse]
@@ -340,7 +350,6 @@ type recordStoreServiceClient struct {
 	deleteClaim          *connect.Client[v1.DeleteClaimRequest, v1.DeleteClaimResponse]
 	getEvent             *connect.Client[v1.GetEventRequest, v1.GetEventResponse]
 	putEvent             *connect.Client[v1.PutEventRequest, v1.PutEventResponse]
-	listWorkflows        *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
 	listActivities       *connect.Client[v1.ListActivitiesRequest, v1.ListActivitiesResponse]
 	listTimers           *connect.Client[v1.ListTimersRequest, v1.ListTimersResponse]
 	listEvents           *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
@@ -348,7 +357,7 @@ type recordStoreServiceClient struct {
 	deleteActivity       *connect.Client[v1.DeleteActivityRequest, v1.DeleteActivityResponse]
 	deleteTimer          *connect.Client[v1.DeleteTimerRequest, v1.DeleteTimerResponse]
 	deleteEvent          *connect.Client[v1.DeleteEventRequest, v1.DeleteEventResponse]
-	sweep                *connect.Client[v1.SweepRequest, v1.SweepResponse]
+	deleteRun            *connect.Client[v1.DeleteRunRequest, v1.DeleteRunResponse]
 	dueTimers            *connect.Client[v1.DueTimersRequest, v1.DueTimersResponse]
 }
 
@@ -365,6 +374,11 @@ func (c *recordStoreServiceClient) GetWorkflow(ctx context.Context, req *connect
 // PutWorkflow calls temporaless.v1.RecordStoreService.PutWorkflow.
 func (c *recordStoreServiceClient) PutWorkflow(ctx context.Context, req *connect.Request[v1.PutWorkflowRequest]) (*connect.Response[v1.PutWorkflowResponse], error) {
 	return c.putWorkflow.CallUnary(ctx, req)
+}
+
+// GetLatestWorkflowRun calls temporaless.v1.RecordStoreService.GetLatestWorkflowRun.
+func (c *recordStoreServiceClient) GetLatestWorkflowRun(ctx context.Context, req *connect.Request[v1.GetLatestWorkflowRunRequest]) (*connect.Response[v1.GetLatestWorkflowRunResponse], error) {
+	return c.getLatestWorkflowRun.CallUnary(ctx, req)
 }
 
 // GetTimer calls temporaless.v1.RecordStoreService.GetTimer.
@@ -412,11 +426,6 @@ func (c *recordStoreServiceClient) PutEvent(ctx context.Context, req *connect.Re
 	return c.putEvent.CallUnary(ctx, req)
 }
 
-// ListWorkflows calls temporaless.v1.RecordStoreService.ListWorkflows.
-func (c *recordStoreServiceClient) ListWorkflows(ctx context.Context, req *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
-	return c.listWorkflows.CallUnary(ctx, req)
-}
-
 // ListActivities calls temporaless.v1.RecordStoreService.ListActivities.
 func (c *recordStoreServiceClient) ListActivities(ctx context.Context, req *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error) {
 	return c.listActivities.CallUnary(ctx, req)
@@ -452,9 +461,9 @@ func (c *recordStoreServiceClient) DeleteEvent(ctx context.Context, req *connect
 	return c.deleteEvent.CallUnary(ctx, req)
 }
 
-// Sweep calls temporaless.v1.RecordStoreService.Sweep.
-func (c *recordStoreServiceClient) Sweep(ctx context.Context, req *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error) {
-	return c.sweep.CallUnary(ctx, req)
+// DeleteRun calls temporaless.v1.RecordStoreService.DeleteRun.
+func (c *recordStoreServiceClient) DeleteRun(ctx context.Context, req *connect.Request[v1.DeleteRunRequest]) (*connect.Response[v1.DeleteRunResponse], error) {
+	return c.deleteRun.CallUnary(ctx, req)
 }
 
 // DueTimers calls temporaless.v1.RecordStoreService.DueTimers.
@@ -470,6 +479,8 @@ type RecordStoreServiceHandler interface {
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
 	// Write or replace a single workflow record.
 	PutWorkflow(context.Context, *connect.Request[v1.PutWorkflowRequest]) (*connect.Response[v1.PutWorkflowResponse], error)
+	// Read the derived latest-run pointer for one workflow_id.
+	GetLatestWorkflowRun(context.Context, *connect.Request[v1.GetLatestWorkflowRunRequest]) (*connect.Response[v1.GetLatestWorkflowRunResponse], error)
 	// Read a single durable timer record by key.
 	GetTimer(context.Context, *connect.Request[v1.GetTimerRequest]) (*connect.Response[v1.GetTimerResponse], error)
 	// Write or replace a single timer record.
@@ -492,16 +503,13 @@ type RecordStoreServiceHandler interface {
 	// Deliver a signal payload to a waiting workflow. External services
 	// (webhooks, approvals) call this to wake up a `WaitEvent`.
 	PutEvent(context.Context, *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error)
-	// List workflow records, optionally filtered by namespace and status.
-	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// List all activity records under a single workflow run.
 	ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error)
 	// List timer records under a single workflow run, optionally filtered by status.
 	ListTimers(context.Context, *connect.Request[v1.ListTimersRequest]) (*connect.Response[v1.ListTimersResponse], error)
 	// List event records under a single workflow run.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
-	// Idempotently remove a workflow record. Children (activities/timers/events/claims)
-	// are not touched; use list+delete or `janitor.Sweep` for recursive cleanup.
+	// Idempotently remove a workflow record only.
 	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// Idempotently remove an activity record so the next `ExecuteActivity`
 	// re-executes the activity body.
@@ -511,11 +519,8 @@ type RecordStoreServiceHandler interface {
 	// Idempotently remove an event record. Resets a delivered signal so
 	// `WaitEvent` returns pending again on the next workflow invocation.
 	DeleteEvent(context.Context, *connect.Request[v1.DeleteEventRequest]) (*connect.Response[v1.DeleteEventResponse], error)
-	// Sweep COMPLETED workflow runs older than `max_age`, deleting their
-	// activities, timers, and events first. The retention story for the
-	// storage-first model — operators run this on a daily cron. Idempotent;
-	// returns the number of runs deleted.
-	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
+	// Recursively delete one workflow run prefix. Bounded by a single run.
+	DeleteRun(context.Context, *connect.Request[v1.DeleteRunRequest]) (*connect.Response[v1.DeleteRunResponse], error)
 	// Find SCHEDULED durable timers whose `fire_at <= now` and whose parent
 	// workflow is still IN_PROGRESS. Operators run this on a minute cron and
 	// re-invoke the workflow handler for each entry, which lets a stored
@@ -546,6 +551,12 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		RecordStoreServicePutWorkflowProcedure,
 		svc.PutWorkflow,
 		connect.WithSchema(recordStoreServiceMethods.ByName("PutWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceGetLatestWorkflowRunHandler := connect.NewUnaryHandler(
+		RecordStoreServiceGetLatestWorkflowRunProcedure,
+		svc.GetLatestWorkflowRun,
+		connect.WithSchema(recordStoreServiceMethods.ByName("GetLatestWorkflowRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	recordStoreServiceGetTimerHandler := connect.NewUnaryHandler(
@@ -602,12 +613,6 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		connect.WithSchema(recordStoreServiceMethods.ByName("PutEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
-	recordStoreServiceListWorkflowsHandler := connect.NewUnaryHandler(
-		RecordStoreServiceListWorkflowsProcedure,
-		svc.ListWorkflows,
-		connect.WithSchema(recordStoreServiceMethods.ByName("ListWorkflows")),
-		connect.WithHandlerOptions(opts...),
-	)
 	recordStoreServiceListActivitiesHandler := connect.NewUnaryHandler(
 		RecordStoreServiceListActivitiesProcedure,
 		svc.ListActivities,
@@ -650,10 +655,10 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		connect.WithSchema(recordStoreServiceMethods.ByName("DeleteEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
-	recordStoreServiceSweepHandler := connect.NewUnaryHandler(
-		RecordStoreServiceSweepProcedure,
-		svc.Sweep,
-		connect.WithSchema(recordStoreServiceMethods.ByName("Sweep")),
+	recordStoreServiceDeleteRunHandler := connect.NewUnaryHandler(
+		RecordStoreServiceDeleteRunProcedure,
+		svc.DeleteRun,
+		connect.WithSchema(recordStoreServiceMethods.ByName("DeleteRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	recordStoreServiceDueTimersHandler := connect.NewUnaryHandler(
@@ -670,6 +675,8 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceGetWorkflowHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutWorkflowProcedure:
 			recordStoreServicePutWorkflowHandler.ServeHTTP(w, r)
+		case RecordStoreServiceGetLatestWorkflowRunProcedure:
+			recordStoreServiceGetLatestWorkflowRunHandler.ServeHTTP(w, r)
 		case RecordStoreServiceGetTimerProcedure:
 			recordStoreServiceGetTimerHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutTimerProcedure:
@@ -688,8 +695,6 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceGetEventHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutEventProcedure:
 			recordStoreServicePutEventHandler.ServeHTTP(w, r)
-		case RecordStoreServiceListWorkflowsProcedure:
-			recordStoreServiceListWorkflowsHandler.ServeHTTP(w, r)
 		case RecordStoreServiceListActivitiesProcedure:
 			recordStoreServiceListActivitiesHandler.ServeHTTP(w, r)
 		case RecordStoreServiceListTimersProcedure:
@@ -704,8 +709,8 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceDeleteTimerHandler.ServeHTTP(w, r)
 		case RecordStoreServiceDeleteEventProcedure:
 			recordStoreServiceDeleteEventHandler.ServeHTTP(w, r)
-		case RecordStoreServiceSweepProcedure:
-			recordStoreServiceSweepHandler.ServeHTTP(w, r)
+		case RecordStoreServiceDeleteRunProcedure:
+			recordStoreServiceDeleteRunHandler.ServeHTTP(w, r)
 		case RecordStoreServiceDueTimersProcedure:
 			recordStoreServiceDueTimersHandler.ServeHTTP(w, r)
 		default:
@@ -727,6 +732,10 @@ func (UnimplementedRecordStoreServiceHandler) GetWorkflow(context.Context, *conn
 
 func (UnimplementedRecordStoreServiceHandler) PutWorkflow(context.Context, *connect.Request[v1.PutWorkflowRequest]) (*connect.Response[v1.PutWorkflowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.PutWorkflow is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) GetLatestWorkflowRun(context.Context, *connect.Request[v1.GetLatestWorkflowRunRequest]) (*connect.Response[v1.GetLatestWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.GetLatestWorkflowRun is not implemented"))
 }
 
 func (UnimplementedRecordStoreServiceHandler) GetTimer(context.Context, *connect.Request[v1.GetTimerRequest]) (*connect.Response[v1.GetTimerResponse], error) {
@@ -765,10 +774,6 @@ func (UnimplementedRecordStoreServiceHandler) PutEvent(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.PutEvent is not implemented"))
 }
 
-func (UnimplementedRecordStoreServiceHandler) ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ListWorkflows is not implemented"))
-}
-
 func (UnimplementedRecordStoreServiceHandler) ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ListActivities is not implemented"))
 }
@@ -797,10 +802,170 @@ func (UnimplementedRecordStoreServiceHandler) DeleteEvent(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DeleteEvent is not implemented"))
 }
 
-func (UnimplementedRecordStoreServiceHandler) Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.Sweep is not implemented"))
+func (UnimplementedRecordStoreServiceHandler) DeleteRun(context.Context, *connect.Request[v1.DeleteRunRequest]) (*connect.Response[v1.DeleteRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DeleteRun is not implemented"))
 }
 
 func (UnimplementedRecordStoreServiceHandler) DueTimers(context.Context, *connect.Request[v1.DueTimersRequest]) (*connect.Response[v1.DueTimersResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DueTimers is not implemented"))
+}
+
+// RecordQueryServiceClient is a client for the temporaless.v1.RecordQueryService service.
+type RecordQueryServiceClient interface {
+	// List workflow records with server-side filters, ordering, and pagination.
+	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
+	// List activity records across runs or under one run, depending on filters.
+	ListActivities(context.Context, *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error)
+	// Indexed retention sweep. The implementation mirrors deletes to the bucket
+	// and removes index rows.
+	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
+	// Optional indexed due-timer scan. Bucket-only deployments use the
+	// RecordStoreService ledger implementation.
+	DueTimers(context.Context, *connect.Request[v1.RecordQueryServiceDueTimersRequest]) (*connect.Response[v1.RecordQueryServiceDueTimersResponse], error)
+}
+
+// NewRecordQueryServiceClient constructs a client for the temporaless.v1.RecordQueryService
+// service. By default, it uses the Connect protocol with the binary Protobuf Codec, asks for
+// gzipped responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply
+// the connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewRecordQueryServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) RecordQueryServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	recordQueryServiceMethods := v1.File_temporaless_v1_temporaless_proto.Services().ByName("RecordQueryService").Methods()
+	return &recordQueryServiceClient{
+		listWorkflows: connect.NewClient[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse](
+			httpClient,
+			baseURL+RecordQueryServiceListWorkflowsProcedure,
+			connect.WithSchema(recordQueryServiceMethods.ByName("ListWorkflows")),
+			connect.WithClientOptions(opts...),
+		),
+		listActivities: connect.NewClient[v1.RecordQueryServiceListActivitiesRequest, v1.RecordQueryServiceListActivitiesResponse](
+			httpClient,
+			baseURL+RecordQueryServiceListActivitiesProcedure,
+			connect.WithSchema(recordQueryServiceMethods.ByName("ListActivities")),
+			connect.WithClientOptions(opts...),
+		),
+		sweep: connect.NewClient[v1.SweepRequest, v1.SweepResponse](
+			httpClient,
+			baseURL+RecordQueryServiceSweepProcedure,
+			connect.WithSchema(recordQueryServiceMethods.ByName("Sweep")),
+			connect.WithClientOptions(opts...),
+		),
+		dueTimers: connect.NewClient[v1.RecordQueryServiceDueTimersRequest, v1.RecordQueryServiceDueTimersResponse](
+			httpClient,
+			baseURL+RecordQueryServiceDueTimersProcedure,
+			connect.WithSchema(recordQueryServiceMethods.ByName("DueTimers")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// recordQueryServiceClient implements RecordQueryServiceClient.
+type recordQueryServiceClient struct {
+	listWorkflows  *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
+	listActivities *connect.Client[v1.RecordQueryServiceListActivitiesRequest, v1.RecordQueryServiceListActivitiesResponse]
+	sweep          *connect.Client[v1.SweepRequest, v1.SweepResponse]
+	dueTimers      *connect.Client[v1.RecordQueryServiceDueTimersRequest, v1.RecordQueryServiceDueTimersResponse]
+}
+
+// ListWorkflows calls temporaless.v1.RecordQueryService.ListWorkflows.
+func (c *recordQueryServiceClient) ListWorkflows(ctx context.Context, req *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
+	return c.listWorkflows.CallUnary(ctx, req)
+}
+
+// ListActivities calls temporaless.v1.RecordQueryService.ListActivities.
+func (c *recordQueryServiceClient) ListActivities(ctx context.Context, req *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error) {
+	return c.listActivities.CallUnary(ctx, req)
+}
+
+// Sweep calls temporaless.v1.RecordQueryService.Sweep.
+func (c *recordQueryServiceClient) Sweep(ctx context.Context, req *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error) {
+	return c.sweep.CallUnary(ctx, req)
+}
+
+// DueTimers calls temporaless.v1.RecordQueryService.DueTimers.
+func (c *recordQueryServiceClient) DueTimers(ctx context.Context, req *connect.Request[v1.RecordQueryServiceDueTimersRequest]) (*connect.Response[v1.RecordQueryServiceDueTimersResponse], error) {
+	return c.dueTimers.CallUnary(ctx, req)
+}
+
+// RecordQueryServiceHandler is an implementation of the temporaless.v1.RecordQueryService service.
+type RecordQueryServiceHandler interface {
+	// List workflow records with server-side filters, ordering, and pagination.
+	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
+	// List activity records across runs or under one run, depending on filters.
+	ListActivities(context.Context, *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error)
+	// Indexed retention sweep. The implementation mirrors deletes to the bucket
+	// and removes index rows.
+	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
+	// Optional indexed due-timer scan. Bucket-only deployments use the
+	// RecordStoreService ledger implementation.
+	DueTimers(context.Context, *connect.Request[v1.RecordQueryServiceDueTimersRequest]) (*connect.Response[v1.RecordQueryServiceDueTimersResponse], error)
+}
+
+// NewRecordQueryServiceHandler builds an HTTP handler from the service implementation. It returns
+// the path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewRecordQueryServiceHandler(svc RecordQueryServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	recordQueryServiceMethods := v1.File_temporaless_v1_temporaless_proto.Services().ByName("RecordQueryService").Methods()
+	recordQueryServiceListWorkflowsHandler := connect.NewUnaryHandler(
+		RecordQueryServiceListWorkflowsProcedure,
+		svc.ListWorkflows,
+		connect.WithSchema(recordQueryServiceMethods.ByName("ListWorkflows")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordQueryServiceListActivitiesHandler := connect.NewUnaryHandler(
+		RecordQueryServiceListActivitiesProcedure,
+		svc.ListActivities,
+		connect.WithSchema(recordQueryServiceMethods.ByName("ListActivities")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordQueryServiceSweepHandler := connect.NewUnaryHandler(
+		RecordQueryServiceSweepProcedure,
+		svc.Sweep,
+		connect.WithSchema(recordQueryServiceMethods.ByName("Sweep")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordQueryServiceDueTimersHandler := connect.NewUnaryHandler(
+		RecordQueryServiceDueTimersProcedure,
+		svc.DueTimers,
+		connect.WithSchema(recordQueryServiceMethods.ByName("DueTimers")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/temporaless.v1.RecordQueryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case RecordQueryServiceListWorkflowsProcedure:
+			recordQueryServiceListWorkflowsHandler.ServeHTTP(w, r)
+		case RecordQueryServiceListActivitiesProcedure:
+			recordQueryServiceListActivitiesHandler.ServeHTTP(w, r)
+		case RecordQueryServiceSweepProcedure:
+			recordQueryServiceSweepHandler.ServeHTTP(w, r)
+		case RecordQueryServiceDueTimersProcedure:
+			recordQueryServiceDueTimersHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedRecordQueryServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedRecordQueryServiceHandler struct{}
+
+func (UnimplementedRecordQueryServiceHandler) ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordQueryService.ListWorkflows is not implemented"))
+}
+
+func (UnimplementedRecordQueryServiceHandler) ListActivities(context.Context, *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordQueryService.ListActivities is not implemented"))
+}
+
+func (UnimplementedRecordQueryServiceHandler) Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordQueryService.Sweep is not implemented"))
+}
+
+func (UnimplementedRecordQueryServiceHandler) DueTimers(context.Context, *connect.Request[v1.RecordQueryServiceDueTimersRequest]) (*connect.Response[v1.RecordQueryServiceDueTimersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordQueryService.DueTimers is not implemented"))
 }

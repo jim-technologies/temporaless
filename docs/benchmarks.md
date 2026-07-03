@@ -1,8 +1,9 @@
 # Benchmarks
 
-All three SDKs ship a benchmark suite covering the storage hot paths. Output
-format matches Go's `testing.B` (`BenchmarkName N ns/op`) so cross-language
-costs are directly comparable.
+Temporaless keeps benchmark suites for the storage hot paths. Output format
+matches Go's `testing.B` (`BenchmarkName N ns/op`) so cross-language costs are
+directly comparable. v0.3.0's v2 storage transition is Python-gated; Go/Rust
+benchmark parity is a follow-up alongside the regenerated-stub work.
 
 ```sh
 flox activate -- scripts/bench-go    # Go:     go test -bench=. on core/go/storage + core/go/workflow
@@ -16,8 +17,9 @@ flox activate -- scripts/bench-rs    # Rust:   cargo build --release && ./target
 |---|---|
 | `BenchmarkPutGetWorkflow` | Round-trip put + get for a single `WorkflowRecord`. |
 | `BenchmarkPutGetActivity` | Round-trip put + get for a single `ActivityRecord`. |
-| `BenchmarkListWorkflowsScan/workflows={10,100,500}` | Walk the workflow tree at three scales. |
-| `BenchmarkListWorkflowsScopedByID/{unscoped,scoped_by_workflow_id}` | List all 500 runs vs. one schedule's 10 runs. |
+| `BenchmarkLastFireSeeding/{pointer_get,legacy_full_bucket_walk}` | Scheduler seeding via latest-run pointer vs. old full-bucket scan. |
+| `BenchmarkRunScopedPrefetchActivities50` | Run-scoped activity list used by replay prefetch. |
+| `BenchmarkListWorkflowsFiltered/{index,legacy_full_bucket_walk}` | Query-index workflow listing vs. full bucket walk. |
 | `BenchmarkWorkflowRunFreshExecution` | Fresh `workflow.Run` with one activity from a clean store. |
 | `BenchmarkWorkflowRunReplay` | Replay a completed workflow (id match → return stored result). |
 | `BenchmarkRetryLoopInProcess` | Three-attempt retry loop with 1ms backoff. |

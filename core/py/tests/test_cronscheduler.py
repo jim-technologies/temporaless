@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import opendal
 import pytest
+from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import StringValue
 
 from temporaless.cronscheduler import (
@@ -10,7 +11,8 @@ from temporaless.cronscheduler import (
     last_fire_from_runs,
     last_fires_from_runs,
 )
-from temporaless.storage import OpenDALStore
+from temporaless.storage import WORKFLOW_RECORD_SCHEMA_VERSION, OpenDALStore, WorkflowKey
+from temporaless.v1 import temporaless_pb2
 from temporaless.workflow import Options, run
 
 
@@ -138,6 +140,124 @@ async def test_last_fire_from_runs_derives_state_from_storage(tmp_path) -> None:
     assert last.replace(tzinfo=UTC) == datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
 
 
+async def test_last_fire_from_runs_reads_latest_pointer_once(tmp_path) -> None:
+    class CountingStore(OpenDALStore):
+        def __init__(self, operator: opendal.AsyncOperator) -> None:
+            super().__init__(operator)
+            self.latest_reads = 0
+
+        async def get_latest_workflow_run(self, namespace: str, workflow_id: str):
+            self.latest_reads += 1
+            return await super().get_latest_workflow_run(namespace, workflow_id)
+
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    store = CountingStore(operator)
+    await run(
+        store,
+        Options(
+            workflow_id="prices:aapl",
+            run_id="2026-05-04T09:32:00Z",
+            code_version="test",
+        ),
+        StringValue(value="AAPL"),
+        StringValue,
+        _ok_workflow,
+    )
+    store.latest_reads = 0
+
+    last = await last_fire_from_runs(store, "", "prices:aapl", "%Y-%m-%dT%H:%M:%SZ")
+
+    assert last == datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
+    assert store.latest_reads == 1
+
+
+async def test_last_fire_from_runs_uses_query_fallback_for_unparseable_pointer(tmp_path) -> None:
+    class QueryFallback:
+        async def list_workflows(self, *_args, **_kwargs):
+            return [
+                _workflow_record(
+                    "prices:aapl",
+                    "2026-05-04T09:32:00Z",
+                    datetime(2026, 5, 4, 9, 32, tzinfo=UTC),
+                )
+            ], ""
+
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    store = OpenDALStore(operator)
+    await run(
+        store,
+        Options(
+            workflow_id="prices:aapl",
+            run_id="manual-backfill",
+            code_version="test",
+        ),
+        StringValue(value="AAPL"),
+        StringValue,
+        _ok_workflow,
+    )
+
+    last = await last_fire_from_runs(
+        store,
+        "",
+        "prices:aapl",
+        "%Y-%m-%dT%H:%M:%SZ",
+        query=QueryFallback(),
+    )
+
+    assert last == datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
+
+
+async def test_last_fire_from_runs_query_fallback_pages_past_unparseable_runs(tmp_path) -> None:
+    class QueryFallback:
+        def __init__(self) -> None:
+            self.tokens: list[str] = []
+
+        async def list_workflows(self, *_args, page_token: str = "", **_kwargs):
+            self.tokens.append(page_token)
+            if not page_token:
+                return [
+                    _workflow_record(
+                        "prices:aapl",
+                        f"manual-{idx}",
+                        datetime(2026, 5, 4, 10, idx, tzinfo=UTC),
+                    )
+                    for idx in range(32)
+                ], "next"
+            return [
+                _workflow_record(
+                    "prices:aapl",
+                    "2026-05-04T09:32:00Z",
+                    datetime(2026, 5, 4, 9, 32, tzinfo=UTC),
+                )
+            ], ""
+
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    store = OpenDALStore(operator)
+    await run(
+        store,
+        Options(
+            workflow_id="prices:aapl",
+            run_id="manual-latest",
+            code_version="test",
+        ),
+        StringValue(value="AAPL"),
+        StringValue,
+        _ok_workflow,
+    )
+    query = QueryFallback()
+
+    last = await last_fire_from_runs(
+        store,
+        "",
+        "prices:aapl",
+        "%Y-%m-%dT%H:%M:%SZ",
+        query=query,
+    )
+
+    assert last == datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
+    assert query.tokens == ["", "next"]
+
+
 async def test_last_fires_from_runs_skips_unknown_schedules(tmp_path) -> None:
     operator = opendal.AsyncOperator("fs", root=str(tmp_path))
     store = OpenDALStore(operator)
@@ -161,3 +281,21 @@ async def test_last_fires_from_runs_skips_unknown_schedules(tmp_path) -> None:
     )
     assert "prices:aapl" in snapshot
     assert "prices:never-ran" not in snapshot
+
+
+def _workflow_record(
+    workflow_id: str, run_id: str, created_at: datetime
+) -> temporaless_pb2.WorkflowRecord:
+    created = Timestamp()
+    created.FromDatetime(created_at)
+    completed = Timestamp()
+    completed.FromDatetime(created_at)
+    return temporaless_pb2.WorkflowRecord(
+        schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+        key=WorkflowKey(workflow_id=workflow_id, run_id=run_id).to_proto(),
+        workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
+        code_version="test",
+        status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        created_at=created,
+        completed_at=completed,
+    )

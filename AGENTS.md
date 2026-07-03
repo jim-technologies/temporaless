@@ -38,7 +38,7 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
   - `adapters/py/`: Python adapters
   - `examples/go/` and `examples/py/`: language-specific examples
 - The core owns workflow/activity replay, protobuf records, and blessed storage infrastructure.
-- Inside core, workflow packages are the business layer and storage packages are infrastructure. OpenDAL-backed stores may live in core storage.
+- Inside core, workflow packages are the business layer and storage packages are infrastructure. OpenDAL-backed point stores may live in core storage.
 - Workflow and activity wrappers live in the core business layer because they only adapt the unary protobuf function shape into replay semantics. Keep this API thin and opinionated.
 - Adapters live next to the core when they adapt external systems such as ConnectRPC, Temporal, scheduler indexes, or narrow backend-specific claims.
 - Temporal compatibility adapters must use real Temporal SDKs and must cover retries, activity timeouts, and durable sleeps before claiming support. Keep Temporal SDK dependencies out of core packages.
@@ -48,24 +48,25 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
 - Temporaless is a generic workflow framework, not a 1-to-1 Temporal replacement. Temporal-flavored knobs (activity timeouts, heartbeats, schedule-to-close, sticky task queues, signal-channel select, workflow-level retry policy) must NOT live in the core. If a caller needs them, they belong in a Temporal-compat adapter. Generic options that exist in Dagster, Prefect, and other orchestrators (retry policy, durable sleep, events, claims, annotations) are fine in core.
 - Adapters must either prove compatibility with the source system or document each semantic decision and rejection in the adapter package.
 - Storage is durable and distributed by default. Prefer OpenDAL-backed stores. Avoid in-memory storage in framework APIs, examples, and tests.
+- Core storage is point-operation only: deterministic GET/PUT/DELETE by protobuf key, run-scoped listing for replay prefetch and run deletion, create-if-absent claims, latest-run pointers, and the due-timer ledger. Cross-run search, inspector listing, status filtering, and indexed retention belong in optional query adapters, never in the core bucket store.
 - ConnectRPC is the transport layer whenever a protobuf RPC boundary is needed.
 - Go and Python are the only first-class languages.
 
 ## Storage
 
-Stored records are protobuf binary files at strict Hive-partitioned paths (every directory level is `key=value`):
+Stored records are protobuf binary files at deterministic v2 flat keys:
 
 ```text
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=workflow/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=activity/activity_id={activity_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=timer/timer_id={timer_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=event/event_id={event_id}/record.binpb
-temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind=claim/claim_id={claim_id}/record.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/workflow.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/activity/{activity_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/timer/{timer_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb
+temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 ```
 
-Hive partitioning means analytical engines (Spark / Trino / DuckDB / Athena) pointed at `temporaless/v1/` auto-discover `namespace`, `workflow_id`, `run_id`, `kind`, and the per-kind id as partition columns — predicates push down to the bucket.
+Keys are constructed from protobuf key fields and must not be parsed back into identity in runtime code. If code needs an id, read the protobuf payload. The only v1 path parser lives in the one-shot migration tool.
 
-IDs may contain only ASCII letters, numbers, `.`, `_`, `-`, and `:`. Slashes and `=` are rejected so Hive paths stay unambiguous.
+IDs may contain only ASCII letters, numbers, `.`, `_`, `-`, `:`, and `=`. Slashes are rejected because object keys are path-like. Namespace and workflow_id values beginning with `_` are reserved for Temporaless system prefixes such as `_latest` and `_due`; do not use them for application records. Do not add charset rules solely to support path parsing.
 
 Do not generate workflow IDs, run IDs, activity IDs, timer IDs, or claim owner IDs inside the framework. The caller must provide them explicitly. Temporaless may validate storage-safe characters for path components, but it must not choose an ID scheme for the application.
 
@@ -79,9 +80,9 @@ Use Protovalidate for protobuf-defined validation. Cross-language runtime option
 
 Framework constants that affect records, RPCs, or cross-language behavior must be protobuf enums or protobuf messages. Examples: record schema versions, timer kinds, claim resource types, and claim capabilities. Avoid parallel handwritten string constants in Go and Python.
 
-Storage RPC contracts belong in `temporaless.v1.RecordStoreService`. Language storage interfaces may remain as small infrastructure seams, but they should mirror generated protobuf request/response semantics and use generated record, key, enum, and option types.
+Point storage RPC contracts belong in `temporaless.v1.RecordStoreService`. Cross-run query RPC contracts belong in `temporaless.v1.RecordQueryService`, implemented only by optional derived indexes. Language storage interfaces may remain as small infrastructure seams, but they should mirror generated protobuf request/response semantics and use generated record, key, enum, and option types.
 
-When adding storage RPC code, keep one cohesive `RecordStoreService` instead of separate workflow/activity/timer RPC services. Provide a thin service wrapper for local stores and a thin client-backed store for generated clients.
+When adding point storage RPC code, keep one cohesive `RecordStoreService` instead of separate workflow/activity/timer RPC services. Provide a thin service wrapper for local stores and a thin client-backed store for generated clients. Do not add SQL imports or database requirements to core packages.
 
 ## Development Environment
 

@@ -2,7 +2,7 @@
 timer scanner, janitor) into the workflow service process as toggleable
 asyncio.Task loops.
 
-**Why this exists.** Every replica polling the bucket for cron / timer / janitor
+**Why this exists.** Every replica driving cron, timer, or indexed janitor
 work is wasteful. Deployers typically want one "operator" replica running these
 loops while N "handler" replicas just serve workflow RPCs. This module makes
 that wiring tidy without adding new concepts — each loop is opt-in via its
@@ -14,14 +14,15 @@ configure only the replicas they want to run background work.
 
 **Safety net if you mis-configure.** If two replicas accidentally both run the
 same loop, the framework's replay model still produces correct results — the
-second ``workflow.run`` short-circuits via stored records; ``store.sweep`` and
-record deletes are idempotent. The opt-in is purely an efficiency optimization,
-not a correctness one.
+second ``workflow.run`` short-circuits via stored records, and indexed sweeps
+mirror idempotent run-prefix deletes. The opt-in is purely an efficiency
+optimization, not a correctness one.
 
 Typical wiring (operator replica)::
 
     workers = BackgroundWorkers(
         store,
+        query_store=indexed_store,
         cron=CronConfig(scheduler=my_scheduler),
         timer_scanner=TimerScannerConfig(dispatch=dispatch_due_timer),
         janitor=JanitorConfig(max_age=timedelta(days=7)),
@@ -50,7 +51,7 @@ from datetime import UTC, datetime, timedelta
 
 from temporaless.cronscheduler import Scheduler
 from temporaless.janitor import sweep as janitor_sweep
-from temporaless.storage import DueTimer, Store
+from temporaless.storage import DueTimer, QueryStore, Store
 from temporaless.timerscanner import due_timers as scan_due_timers
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ class TimerScannerConfig:
 
 @dataclass
 class JanitorConfig:
-    """Periodically sweep COMPLETED runs older than ``max_age``."""
+    """Periodically sweep COMPLETED runs older than ``max_age`` via a query index."""
 
     max_age: timedelta
     interval: timedelta = timedelta(hours=24)
@@ -108,6 +109,7 @@ class BackgroundWorkers:
         self,
         store: Store,
         *,
+        query_store: QueryStore | None = None,
         cron: CronConfig | None = None,
         timer_scanner: TimerScannerConfig | None = None,
         janitor: JanitorConfig | None = None,
@@ -121,7 +123,10 @@ class BackgroundWorkers:
                 raise ValueError("janitor.interval must be > 0")
             if janitor.max_age <= timedelta(0):
                 raise ValueError("janitor.max_age must be > 0")
+            if query_store is None:
+                raise ValueError("query_store is required when janitor is configured")
         self._store = store
+        self._query_store = query_store
         self._cron = cron
         self._timer_scanner = timer_scanner
         self._janitor = janitor
@@ -186,11 +191,14 @@ class BackgroundWorkers:
         await self._loop("timer_scanner", cfg.interval, tick)
 
     async def _run_janitor(self, cfg: JanitorConfig) -> None:
+        if self._query_store is None:
+            raise RuntimeError("query_store is required when janitor is configured")
+        query_store = self._query_store
         await self._loop(
             "janitor",
             cfg.interval,
             lambda: janitor_sweep(
-                self._store, datetime.now(UTC), cfg.max_age, namespace=cfg.namespace
+                query_store, datetime.now(UTC), cfg.max_age, namespace=cfg.namespace
             ),
         )
 

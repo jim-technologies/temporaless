@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import opendal
 import pytest
+from temporaless_indexstore import IndexedStore
 
 from temporaless.background import (
     BackgroundWorkers,
@@ -21,12 +22,12 @@ from temporaless.background import (
     TimerScannerConfig,
 )
 from temporaless.cronscheduler import Schedule, Scheduler
-from temporaless.storage import OpenDALStore
 
 
 @pytest.fixture
 def store(tmp_path):
-    return OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    return IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
 
 
 async def test_no_config_start_is_noop(store):
@@ -147,6 +148,7 @@ async def test_janitor_loop_runs(store):
 
     workers = BackgroundWorkers(
         store,
+        query_store=store,
         janitor=JanitorConfig(max_age=timedelta(hours=1), interval=timedelta(milliseconds=50)),
     )
     await workers.start()

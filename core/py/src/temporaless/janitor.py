@@ -1,19 +1,20 @@
 """Sweep completed workflow runs older than a max-age threshold.
 
-Thin wrapper around :meth:`Store.sweep` so callers that imported
-``janitor.sweep`` directly keep working. Backend-agnostic — operates over the
-Store interface so it works for any backend, including remote ConnectStore
-(which forwards to the server-side ``Sweep`` RPC in a single round-trip).
+Retention sweep is a cross-run query. Use an index-backed QueryStore for the
+online janitor; bucket-only deployments should use lifecycle rules or an
+offline scan.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from temporaless.storage import Store
+from temporaless.storage import QueryStore
 
 
-async def sweep(store: Store, now: datetime, max_age: timedelta, *, namespace: str = "") -> int:
+async def sweep(
+    query: QueryStore, now: datetime, max_age: timedelta, *, namespace: str = ""
+) -> int:
     """Delete COMPLETED workflow runs older than ``max_age``. Returns the
     number of runs deleted."""
-    return await store.sweep(namespace, now, max_age)
+    return await query.sweep(namespace, now, max_age)

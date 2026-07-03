@@ -12,10 +12,10 @@ or restartable use:
 - On next boot, call ``restore()`` with the persisted map.
 
 For fully storage-derived state (no separate persistence), pair the scheduler
-with ``last_fire_from_runs``: it scans existing workflow records for the
-schedule and parses run_ids as timestamps, returning the most recent fire time.
-This is the recommended pattern when run_ids follow the
-``prices:aapl/2026-05-04T09:30:00Z`` convention.
+with ``last_fire_from_runs``: it reads the schedule's latest-run pointer and
+parses the pointed run_id as a timestamp. This is the recommended pattern when
+run_ids follow the
+``2026-05-04T09:30:00Z`` convention.
 """
 
 from __future__ import annotations
@@ -27,10 +27,12 @@ from datetime import UTC, datetime
 
 from croniter import croniter
 
-from temporaless.storage import Store
+from temporaless.storage import DEFAULT_NAMESPACE, QueryStore, Store
 from temporaless.v1 import temporaless_pb2
 
 Dispatcher = Callable[[str, datetime], Awaitable[None]]
+_QUERY_FALLBACK_PAGE_SIZE = 32
+_QUERY_FALLBACK_MAX_PAGES = 8
 
 
 @dataclass(frozen=True)
@@ -128,38 +130,51 @@ async def last_fire_from_runs(
     namespace: str,
     schedule_id: str,
     run_id_format: str,
+    *,
+    query: QueryStore | None = None,
 ) -> datetime | None:
-    """Scan existing workflow records for ``schedule_id`` and return the most
-    recent fire time, parsed from run_ids using ``run_id_format``.
+    """Read ``schedule_id``'s latest-run pointer and return the fire time
+    parsed from its run_id using ``run_id_format``.
 
     This is the recommended path to seed the scheduler statelessly: when
-    run_ids embed the schedule fire time, the storage tree already carries the
+    run_ids embed the schedule fire time, a small bucket pointer carries the
     scheduler's "memory". No separate persistence needed.
 
-    Returns ``None`` when no parseable runs exist yet. Run records whose IDs do
-    not parse with ``run_id_format`` are skipped.
+    Returns ``None`` when no parseable run exists yet. If a query index is
+    passed and the pointer is missing or unparseable, the index is used as a
+    fallback.
     """
     if not schedule_id:
         raise ValueError("schedule_id is required")
     if not run_id_format:
         raise ValueError("run_id_format is required (e.g. '%Y-%m-%dT%H:%M:%S%z')")
 
-    # Use the workflow_id filter so the storage walk is scoped to this
-    # schedule's runs only.
-    records = await store.list_workflows(
-        namespace, schedule_id, temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED
-    )
-    latest: datetime | None = None
-    for record in records:
-        try:
-            fire_time = datetime.strptime(record.key.run_id, run_id_format)
-        except ValueError:
-            continue
-        if fire_time.tzinfo is None:
-            fire_time = fire_time.replace(tzinfo=UTC)
-        if latest is None or fire_time > latest:
-            latest = fire_time
-    return latest
+    pointer = await store.get_latest_workflow_run(namespace or DEFAULT_NAMESPACE, schedule_id)
+    if pointer is not None:
+        parsed = _parse_run_fire_time(pointer.key.run_id, run_id_format)
+        if parsed is not None:
+            return parsed
+
+    if query is None:
+        return None
+
+    page_token = ""
+    for _ in range(_QUERY_FALLBACK_MAX_PAGES):
+        records, page_token = await query.list_workflows(
+            namespace,
+            schedule_id,
+            temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+            order_by="created_at desc",
+            page_size=_QUERY_FALLBACK_PAGE_SIZE,
+            page_token=page_token,
+        )
+        for record in records:
+            parsed = _parse_run_fire_time(record.key.run_id, run_id_format)
+            if parsed is not None:
+                return parsed
+        if not page_token:
+            break
+    return None
 
 
 async def last_fires_from_runs(
@@ -167,12 +182,24 @@ async def last_fires_from_runs(
     namespace: str,
     schedule_ids: list[str],
     run_id_format: str,
+    *,
+    query: QueryStore | None = None,
 ) -> dict[str, datetime]:
     """Multi-schedule convenience: returns a snapshot suitable for
     ``Scheduler.restore``."""
     out: dict[str, datetime] = {}
     for schedule_id in schedule_ids:
-        last = await last_fire_from_runs(store, namespace, schedule_id, run_id_format)
+        last = await last_fire_from_runs(store, namespace, schedule_id, run_id_format, query=query)
         if last is not None:
             out[schedule_id] = last
     return out
+
+
+def _parse_run_fire_time(run_id: str, run_id_format: str) -> datetime | None:
+    try:
+        fire_time = datetime.strptime(run_id, run_id_format)
+    except ValueError:
+        return None
+    if fire_time.tzinfo is None:
+        fire_time = fire_time.replace(tzinfo=UTC)
+    return fire_time

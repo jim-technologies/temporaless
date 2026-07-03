@@ -2,14 +2,13 @@
 //
 // Temporaless is a storage-first, serverless workflow framework. Workflow runs,
 // activity invocations, durable timers, signals (events), and coordination
-// claims are all serialized as protobuf records at deterministic paths under
-// `temporaless/v1/namespace={namespace}/workflow_id={workflow_id}/run_id={run_id}/kind={kind}/...`
-// (strict Hive partitioning — every directory level is `key=value`, so Spark /
-// Trino / DuckDB / Athena auto-discover the partition columns).
+// claims are all serialized as protobuf records at deterministic flat v2 keys
+// under `temporaless/v2/{namespace}/{workflow_id}/{run_id}/...`.
 //
-// `RecordStoreService` is the cross-language storage contract. Any backend
-// (OpenDAL filesystem, S3, GCS, SQL, ...) implements the same RPC surface, so
-// generated CLI / gRPC / HTTP / MCP wrappers all see the same operations.
+// `RecordStoreService` is the cross-language durability contract: point
+// get/put/delete, run-scoped lists, latest-run pointer reads, claims, and the
+// bucket due-timer ledger. Cross-run search/retention APIs live on the optional
+// `RecordQueryService`, implemented by derived indexes.
 //
 // Edition 2023: lets us declare field-level string defaults (used by
 // `ReservedNames` below) so framework-reserved literals like
@@ -34,7 +33,7 @@ option go_package = "github.com/jim-technologies/temporaless/core/go/gen/tempora
 
 // WorkflowOptions identifies a single workflow run plus its replay context.
 //
-// IDs are caller-provided. The framework validates path-safe ASCII but never
+// IDs are caller-provided. The framework validates segment-safe ASCII but never
 // generates them — the application owns the ID scheme (e.g. `prices:aapl`,
 // `tweet:12345`, `llm:answer`).
 message WorkflowOptions {
@@ -42,12 +41,17 @@ message WorkflowOptions {
   string workflow_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.workflow_options.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_options.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   // Identifier for this particular run of the workflow. By convention,
@@ -56,7 +60,7 @@ message WorkflowOptions {
   string run_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.workflow_options.run_id.not_dot_path"
@@ -73,7 +77,7 @@ message WorkflowOptions {
   // invocations is what allows resume of a stuck claim by the same logical
   // worker.
   string claim_owner_id = 4 [
-    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:-]+$"},
+    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:=-]+$"},
     (buf.validate.field).cel = {
       id: "temporaless.workflow_options.claim_owner_id.not_dot_path"
       message: "claim_owner_id must not be . or .."
@@ -97,7 +101,7 @@ message WorkflowOptions {
   // Empty disables concurrency capping (the default). When set, must be
   // path-safe and `concurrency_limit` must be > 0.
   string concurrency_key = 5 [
-    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:-]+$"},
+    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:=-]+$"},
     (buf.validate.field).cel = {
       id: "temporaless.workflow_options.concurrency_key.not_dot_path"
       message: "concurrency_key must not be . or .."
@@ -124,7 +128,7 @@ message ActivityOptions {
   string activity_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.id.activity_id.not_dot_path"
@@ -371,33 +375,48 @@ enum ClaimCapability {
 }
 
 // WorkflowKey addresses a single workflow run.
+//
+// V2 object storage reserves namespace and workflow_id values beginning with
+// "_" for system prefixes such as "_latest" and "_due". Runtime key validation
+// rejects those values for application record keys; framework-owned claim keys
+// may use reserved workflow_ids such as "__concurrency__".
 message WorkflowKey {
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.workflow_key.namespace.not_dot_path"
       message: "namespace must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_key.namespace.not_system_prefix"
+      message: "namespace must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.workflow_key.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_key.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.workflow_key.run_id.not_dot_path"
@@ -412,29 +431,39 @@ message ActivityKey {
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.activity_key.namespace.not_dot_path"
       message: "namespace must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.namespace.not_system_prefix"
+      message: "namespace must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.activity_key.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_key.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.activity_key.run_id.not_dot_path"
@@ -445,7 +474,7 @@ message ActivityKey {
   string activity_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.activity_key.activity_id.not_dot_path"
@@ -460,29 +489,39 @@ message TimerKey {
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.timer_key.namespace.not_dot_path"
       message: "namespace must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.namespace.not_system_prefix"
+      message: "namespace must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.timer_key.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.timer_key.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.timer_key.run_id.not_dot_path"
@@ -493,7 +532,7 @@ message TimerKey {
   string timer_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.timer_key.timer_id.not_dot_path"
@@ -508,29 +547,39 @@ message EventKey {
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.event_key.namespace.not_dot_path"
       message: "namespace must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.namespace.not_system_prefix"
+      message: "namespace must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.event_key.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.event_key.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.event_key.run_id.not_dot_path"
@@ -541,7 +590,7 @@ message EventKey {
   string event_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.event_key.event_id.not_dot_path"
@@ -556,29 +605,39 @@ message ClaimKey {
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.claim_key.namespace.not_dot_path"
       message: "namespace must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.namespace.not_system_prefix"
+      message: "namespace must not start with _"
+      expression: "!this.startsWith('_')"
     }
   ];
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.claim_key.workflow_id.not_dot_path"
       message: "workflow_id must not be . or .."
       expression: "this != '.' && this != '..'"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.claim_key.workflow_id.not_system_prefix"
+      message: "workflow_id must not start with _ unless it is framework-owned"
+      expression: "this == '__concurrency__' || !this.startsWith('_')"
     }
   ];
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.claim_key.run_id.not_dot_path"
@@ -589,7 +648,7 @@ message ClaimKey {
   string claim_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
-      pattern: "^[A-Za-z0-9._:-]+$"
+      pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
       id: "temporaless.claim_key.claim_id.not_dot_path"
@@ -632,7 +691,7 @@ message ActivityAttempt {
 }
 
 // ActivityRecord captures everything the runtime needs to replay or resume an
-// activity. Stored at `activities/{activity_id}.binpb` under the workflow run.
+// activity. Stored at `activity/{activity_id}.binpb` under the workflow run.
 message ActivityRecord {
   // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
@@ -697,7 +756,7 @@ message WorkflowRecord {
   map<string, string> annotations = 12;
 }
 
-// TimerRecord backs `workflow.Sleep`. Stored at `timers/{timer_id}.binpb`.
+// TimerRecord backs `workflow.Sleep`. Stored at `timer/{timer_id}.binpb`.
 message TimerRecord {
   // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
@@ -720,7 +779,7 @@ message TimerRecord {
 
 // EventRecord delivers an external signal payload to a waiting workflow.
 // Written by external services (webhook handlers, approval flows) via
-// `SendEvent` / `PutEvent`. Stored at `events/{event_id}.binpb`.
+// `SendEvent` / `PutEvent`. Stored at `event/{event_id}.binpb`.
 message EventRecord {
   RecordSchemaVersion schema_version = 1;
   EventKey key = 2;
@@ -731,7 +790,7 @@ message EventRecord {
 }
 
 // ClaimRecord coordinates execution between concurrent invocations. Stored
-// at `claims/{claim_id}.binpb`. Write semantics depend on the backend's
+// at `claim/{claim_id}.binpb`. Write semantics depend on the backend's
 // `ClaimCapability`.
 message ClaimRecord {
   // Field 7 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
@@ -754,6 +813,33 @@ message ClaimRecord {
   google.protobuf.Timestamp heartbeat_at = 10;
 }
 
+// LatestWorkflowRunPointer is a tiny derived object written beside workflow
+// records so schedulers can seed from one point GET instead of listing a
+// workflow's full run history. The bucket object is best-effort monotonic: a
+// lost read/compare/write race can leave it stale, but it must never invent a
+// run that does not exist. Bucket stores compare parsed run_id fire times when
+// both the current and incoming run_ids match the store's configured schedule
+// formats; otherwise they fall back to record_time.
+message LatestWorkflowRunPointer {
+  WorkflowKey key = 1;
+  WorkflowStatus status = 2;
+  // Timestamp used for best-effort monotonic comparison. For IN_PROGRESS this
+  // is the workflow record's created_at; for terminal records it is
+  // completed_at.
+  google.protobuf.Timestamp record_time = 3;
+  // Wall-clock time at which the pointer object was written.
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+// DueTimerEntry is the compact bucket ledger entry written for pending timers.
+// It intentionally stores keys, not payloads; the timer and workflow records
+// remain the source of truth.
+message DueTimerEntry {
+  TimerKey key = 1;
+  WorkflowKey workflow_key = 2;
+  google.protobuf.Timestamp fire_at = 3;
+}
+
 message GetWorkflowRequest {
   WorkflowKey key = 1;
 }
@@ -770,6 +856,16 @@ message PutWorkflowRequest {
 }
 
 message PutWorkflowResponse {}
+
+message GetLatestWorkflowRunRequest {
+  string namespace = 1;
+  string workflow_id = 2;
+}
+
+message GetLatestWorkflowRunResponse {
+  bool found = 1;
+  LatestWorkflowRunPointer pointer = 2;
+}
 
 message GetTimerRequest {
   TimerKey key = 1;
@@ -824,13 +920,19 @@ message ListWorkflowsRequest {
   // (`WORKFLOW_STATUS_IN_PROGRESS`) or failed (`WORKFLOW_STATUS_FAILED`) runs.
   WorkflowStatus status = 2;
   // Empty workflow_id lists across all workflow_ids in the namespace(s).
-  // Setting this scopes the storage-level walk to a single workflow's runs,
-  // which is much faster than listing everything and filtering client-side.
   string workflow_id = 3;
+  // AIP-132 order_by. Query adapters should support created_at and
+  // completed_at; unsupported fields are rejected.
+  string order_by = 4;
+  // Maximum records to return. Zero lets the adapter choose its default.
+  int32 page_size = 5;
+  // Opaque token returned by the previous response.
+  string page_token = 6;
 }
 
 message ListWorkflowsResponse {
   repeated WorkflowRecord records = 1;
+  string next_page_token = 2;
 }
 
 // ListActivitiesRequest scopes to a single workflow run.
@@ -863,6 +965,21 @@ message ListEventsResponse {
   repeated EventRecord records = 1;
 }
 
+message RecordQueryServiceListActivitiesRequest {
+  string namespace = 1;
+  string workflow_id = 2;
+  string run_id = 3;
+  ActivityStatus status = 4;
+  string order_by = 5;
+  int32 page_size = 6;
+  string page_token = 7;
+}
+
+message RecordQueryServiceListActivitiesResponse {
+  repeated ActivityRecord records = 1;
+  string next_page_token = 2;
+}
+
 // DeleteWorkflowRequest removes only the workflow record. Activities, timers,
 // events, and claims under the run are left intact — call the corresponding
 // Delete* RPCs or use a higher-level adapter (e.g. `janitor.Sweep`) for
@@ -875,6 +992,17 @@ message DeleteWorkflowResponse {
   // True if the record existed and was removed; false if it was already gone
   // (idempotent).
   bool deleted = 1;
+}
+
+// DeleteRunRequest recursively deletes every core record under one workflow
+// run prefix: workflow, activities, timers, events, and claims. It is a point
+// operation over a bounded run prefix, not a cross-run query.
+message DeleteRunRequest {
+  WorkflowKey key = 1;
+}
+
+message DeleteRunResponse {
+  uint32 deleted = 1;
 }
 
 message DeleteActivityRequest {
@@ -984,15 +1112,23 @@ message DueTimersResponse {
   repeated DueTimer due = 1;
 }
 
-// RecordStoreService is the cross-language storage contract.
+message RecordQueryServiceDueTimersRequest {
+  string namespace = 1;
+  google.protobuf.Timestamp now = 2;
+}
+
+message RecordQueryServiceDueTimersResponse {
+  repeated DueTimer due = 1;
+}
+
+// RecordStoreService is the cross-language core durability contract.
 //
 // Every record kind (workflow, activity, timer, event, claim) supports
-// Get/Put. Workflow / activity / timer / event additionally support List + Delete.
-// Claims have specialized creation semantics (`TryCreateClaim`) and intentionally
-// no Delete in V1 — they are write-once for create-only adapters.
+// point Get/Put/Delete. Activity, timer, and event lists are scoped to a
+// single workflow run for replay prefetch and run deletion. Cross-run search
+// lives on RecordQueryService.
 //
-// Backends implement this same surface so generated CLI / gRPC / HTTP / MCP
-// wrappers all see the same operations regardless of where records live.
+// Bucket/file backends implement this surface directly without SQL.
 service RecordStoreService {
   // Report what the configured store can do (claim coordination tier, etc.).
   rpc GetStoreCapabilities(GetStoreCapabilitiesRequest) returns (GetStoreCapabilitiesResponse);
@@ -1001,6 +1137,8 @@ service RecordStoreService {
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
   // Write or replace a single workflow record.
   rpc PutWorkflow(PutWorkflowRequest) returns (PutWorkflowResponse);
+  // Read the derived latest-run pointer for one workflow_id.
+  rpc GetLatestWorkflowRun(GetLatestWorkflowRunRequest) returns (GetLatestWorkflowRunResponse);
 
   // Read a single durable timer record by key.
   rpc GetTimer(GetTimerRequest) returns (GetTimerResponse);
@@ -1028,8 +1166,6 @@ service RecordStoreService {
   // (webhooks, approvals) call this to wake up a `WaitEvent`.
   rpc PutEvent(PutEventRequest) returns (PutEventResponse);
 
-  // List workflow records, optionally filtered by namespace and status.
-  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   // List all activity records under a single workflow run.
   rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);
   // List timer records under a single workflow run, optionally filtered by status.
@@ -1037,8 +1173,7 @@ service RecordStoreService {
   // List event records under a single workflow run.
   rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
 
-  // Idempotently remove a workflow record. Children (activities/timers/events/claims)
-  // are not touched; use list+delete or `janitor.Sweep` for recursive cleanup.
+  // Idempotently remove a workflow record only.
   rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
   // Idempotently remove an activity record so the next `ExecuteActivity`
   // re-executes the activity body.
@@ -1048,16 +1183,28 @@ service RecordStoreService {
   // Idempotently remove an event record. Resets a delivered signal so
   // `WaitEvent` returns pending again on the next workflow invocation.
   rpc DeleteEvent(DeleteEventRequest) returns (DeleteEventResponse);
-
-  // Sweep COMPLETED workflow runs older than `max_age`, deleting their
-  // activities, timers, and events first. The retention story for the
-  // storage-first model — operators run this on a daily cron. Idempotent;
-  // returns the number of runs deleted.
-  rpc Sweep(SweepRequest) returns (SweepResponse);
+  // Recursively delete one workflow run prefix. Bounded by a single run.
+  rpc DeleteRun(DeleteRunRequest) returns (DeleteRunResponse);
 
   // Find SCHEDULED durable timers whose `fire_at <= now` and whose parent
   // workflow is still IN_PROGRESS. Operators run this on a minute cron and
   // re-invoke the workflow handler for each entry, which lets a stored
   // `Workflow.Sleep` resume.
   rpc DueTimers(DueTimersRequest) returns (DueTimersResponse);
+}
+
+// RecordQueryService is the optional cross-run search and retention surface.
+// Implementations are derived indexes that store record keys and metadata only;
+// the Python adapter is SQLite today. The bucket remains the source of truth.
+service RecordQueryService {
+  // List workflow records with server-side filters, ordering, and pagination.
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  // List activity records across runs or under one run, depending on filters.
+  rpc ListActivities(RecordQueryServiceListActivitiesRequest) returns (RecordQueryServiceListActivitiesResponse);
+  // Indexed retention sweep. The implementation mirrors deletes to the bucket
+  // and removes index rows.
+  rpc Sweep(SweepRequest) returns (SweepResponse);
+  // Optional indexed due-timer scan. Bucket-only deployments use the
+  // RecordStoreService ledger implementation.
+  rpc DueTimers(RecordQueryServiceDueTimersRequest) returns (RecordQueryServiceDueTimersResponse);
 }

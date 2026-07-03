@@ -1,6 +1,6 @@
 [project]
 name = "temporaless"
-version = "0.1.0"
+version = "0.3.0"
 description = "Storage-first serverless workflow replay for protobuf activities."
 readme = "../../README.md"
 requires-python = ">=3.13"
@@ -8,9 +8,12 @@ dependencies = [
     "connectrpc>=0.10.0",
     "croniter>=2.0.0",
     "opendal>=0.47.1",
-    "protobuf>=7.35.0",
+    "protobuf>=7.35.1",
     "protovalidate>=1.2.0",
 ]
+
+[project.scripts]
+temporaless-migrate-v1-to-v2 = "temporaless.migrate_v1_to_v2:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -21,6 +24,9 @@ packages = ["src/buf", "src/temporaless"]
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+temporaless-indexstore = { path = "../../adapters/py/indexstore", editable = true }
 
 [tool.ruff]
 line-length = 100
@@ -50,6 +56,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.15.12",
+    "temporaless-indexstore",
     "ty>=0.0.34",
     "types-protobuf>=7.34.1.20260503",
     "uvicorn>=0.34.0",

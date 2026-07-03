@@ -22,6 +22,12 @@ The framework relies on the underlying storage providing **atomic record writes*
 
 The OpenDAL `fs` scheme used in tests and small-scale local deployments **does not** provide truly atomic concurrent writes — readers can observe partial files during a write. This is acceptable for development but not safe for multi-writer production use. Use S3, GCS, or another backend with native object-store semantics in production.
 
+Python OpenDAL exposes `if_not_exists=True`, so the Python core can provide
+create-only claims on backends that honor that precondition. On `fs`, treat
+that as local-development coordination, not a distributed lock. Filesystem
+deployments that need multiple writers should use a backend-specific claim
+adapter or keep activities idempotent.
+
 The bundled `gocdkclaims` adapter wraps GoCDK's `WriterOptions.IfNotExist`. The fileblob driver implements this as Stat-then-Rename, which is racy across goroutines, so the adapter additionally serializes `TryCreateClaim` through a process-level mutex. For multi-process atomicity, again rely on S3/GCS native preconditions.
 
 ## Side Effects
@@ -77,7 +83,9 @@ For market-data ingestion, prefer small activities:
 
 Durable sleeps are timer records, not blocked processes. A workflow that reaches a future timer returns a pending error and must be invoked again after the timer is due.
 
-Cron should be implemented as a scheduler adapter that creates workflow runs from a schedule. SQL can be introduced as an optional due-work index for large timer and cron volumes, but the core should not require it.
+Pending timers also write compact due-ledger entries under the bucket. Timer scanners list that ledger by sortable `fire_at`, stop when they pass `now`, and delete stale entries when timers fire or are cancelled. They do not walk every workflow run.
+
+Cron should be implemented as a scheduler adapter that creates workflow runs from a schedule. The bundled scheduler seeds from latest-run pointer objects written by the bucket store. SQL can be introduced as an optional query index for search and large operational views, but the core must not require it.
 
 ## Determinism
 

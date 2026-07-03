@@ -391,6 +391,28 @@ class ClaimRecord(_message.Message):
     heartbeat_at: _timestamp_pb2.Timestamp
     def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ClaimKey, _Mapping]] = ..., owner_id: _Optional[str] = ..., resource_type: _Optional[_Union[ClaimResourceType, str]] = ..., resource_id: _Optional[str] = ..., code_version: _Optional[str] = ..., lease_expires_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., heartbeat_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
+class LatestWorkflowRunPointer(_message.Message):
+    __slots__ = ("key", "status", "record_time", "updated_at")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    RECORD_TIME_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    status: WorkflowStatus
+    record_time: _timestamp_pb2.Timestamp
+    updated_at: _timestamp_pb2.Timestamp
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., status: _Optional[_Union[WorkflowStatus, str]] = ..., record_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class DueTimerEntry(_message.Message):
+    __slots__ = ("key", "workflow_key", "fire_at")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_KEY_FIELD_NUMBER: _ClassVar[int]
+    FIRE_AT_FIELD_NUMBER: _ClassVar[int]
+    key: TimerKey
+    workflow_key: WorkflowKey
+    fire_at: _timestamp_pb2.Timestamp
+    def __init__(self, key: _Optional[_Union[TimerKey, _Mapping]] = ..., workflow_key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., fire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
 class GetWorkflowRequest(_message.Message):
     __slots__ = ("key",)
     KEY_FIELD_NUMBER: _ClassVar[int]
@@ -414,6 +436,22 @@ class PutWorkflowRequest(_message.Message):
 class PutWorkflowResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class GetLatestWorkflowRunRequest(_message.Message):
+    __slots__ = ("namespace", "workflow_id")
+    NAMESPACE_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
+    namespace: str
+    workflow_id: str
+    def __init__(self, namespace: _Optional[str] = ..., workflow_id: _Optional[str] = ...) -> None: ...
+
+class GetLatestWorkflowRunResponse(_message.Message):
+    __slots__ = ("found", "pointer")
+    FOUND_FIELD_NUMBER: _ClassVar[int]
+    POINTER_FIELD_NUMBER: _ClassVar[int]
+    found: bool
+    pointer: LatestWorkflowRunPointer
+    def __init__(self, found: _Optional[bool] = ..., pointer: _Optional[_Union[LatestWorkflowRunPointer, _Mapping]] = ...) -> None: ...
 
 class GetTimerRequest(_message.Message):
     __slots__ = ("key",)
@@ -488,20 +526,28 @@ class PutEventResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class ListWorkflowsRequest(_message.Message):
-    __slots__ = ("namespace", "status", "workflow_id")
+    __slots__ = ("namespace", "status", "workflow_id", "order_by", "page_size", "page_token")
     NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
+    ORDER_BY_FIELD_NUMBER: _ClassVar[int]
+    PAGE_SIZE_FIELD_NUMBER: _ClassVar[int]
+    PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     namespace: str
     status: WorkflowStatus
     workflow_id: str
-    def __init__(self, namespace: _Optional[str] = ..., status: _Optional[_Union[WorkflowStatus, str]] = ..., workflow_id: _Optional[str] = ...) -> None: ...
+    order_by: str
+    page_size: int
+    page_token: str
+    def __init__(self, namespace: _Optional[str] = ..., status: _Optional[_Union[WorkflowStatus, str]] = ..., workflow_id: _Optional[str] = ..., order_by: _Optional[str] = ..., page_size: _Optional[int] = ..., page_token: _Optional[str] = ...) -> None: ...
 
 class ListWorkflowsResponse(_message.Message):
-    __slots__ = ("records",)
+    __slots__ = ("records", "next_page_token")
     RECORDS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     records: _containers.RepeatedCompositeFieldContainer[WorkflowRecord]
-    def __init__(self, records: _Optional[_Iterable[_Union[WorkflowRecord, _Mapping]]] = ...) -> None: ...
+    next_page_token: str
+    def __init__(self, records: _Optional[_Iterable[_Union[WorkflowRecord, _Mapping]]] = ..., next_page_token: _Optional[str] = ...) -> None: ...
 
 class ListActivitiesRequest(_message.Message):
     __slots__ = ("key",)
@@ -541,6 +587,32 @@ class ListEventsResponse(_message.Message):
     records: _containers.RepeatedCompositeFieldContainer[EventRecord]
     def __init__(self, records: _Optional[_Iterable[_Union[EventRecord, _Mapping]]] = ...) -> None: ...
 
+class RecordQueryServiceListActivitiesRequest(_message.Message):
+    __slots__ = ("namespace", "workflow_id", "run_id", "status", "order_by", "page_size", "page_token")
+    NAMESPACE_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ORDER_BY_FIELD_NUMBER: _ClassVar[int]
+    PAGE_SIZE_FIELD_NUMBER: _ClassVar[int]
+    PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    namespace: str
+    workflow_id: str
+    run_id: str
+    status: ActivityStatus
+    order_by: str
+    page_size: int
+    page_token: str
+    def __init__(self, namespace: _Optional[str] = ..., workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., status: _Optional[_Union[ActivityStatus, str]] = ..., order_by: _Optional[str] = ..., page_size: _Optional[int] = ..., page_token: _Optional[str] = ...) -> None: ...
+
+class RecordQueryServiceListActivitiesResponse(_message.Message):
+    __slots__ = ("records", "next_page_token")
+    RECORDS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    records: _containers.RepeatedCompositeFieldContainer[ActivityRecord]
+    next_page_token: str
+    def __init__(self, records: _Optional[_Iterable[_Union[ActivityRecord, _Mapping]]] = ..., next_page_token: _Optional[str] = ...) -> None: ...
+
 class DeleteWorkflowRequest(_message.Message):
     __slots__ = ("key",)
     KEY_FIELD_NUMBER: _ClassVar[int]
@@ -552,6 +624,18 @@ class DeleteWorkflowResponse(_message.Message):
     DELETED_FIELD_NUMBER: _ClassVar[int]
     deleted: bool
     def __init__(self, deleted: _Optional[bool] = ...) -> None: ...
+
+class DeleteRunRequest(_message.Message):
+    __slots__ = ("key",)
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ...) -> None: ...
+
+class DeleteRunResponse(_message.Message):
+    __slots__ = ("deleted",)
+    DELETED_FIELD_NUMBER: _ClassVar[int]
+    deleted: int
+    def __init__(self, deleted: _Optional[int] = ...) -> None: ...
 
 class DeleteActivityRequest(_message.Message):
     __slots__ = ("key",)
@@ -672,6 +756,20 @@ class DueTimersRequest(_message.Message):
     def __init__(self, namespace: _Optional[str] = ..., now: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class DueTimersResponse(_message.Message):
+    __slots__ = ("due",)
+    DUE_FIELD_NUMBER: _ClassVar[int]
+    due: _containers.RepeatedCompositeFieldContainer[DueTimer]
+    def __init__(self, due: _Optional[_Iterable[_Union[DueTimer, _Mapping]]] = ...) -> None: ...
+
+class RecordQueryServiceDueTimersRequest(_message.Message):
+    __slots__ = ("namespace", "now")
+    NAMESPACE_FIELD_NUMBER: _ClassVar[int]
+    NOW_FIELD_NUMBER: _ClassVar[int]
+    namespace: str
+    now: _timestamp_pb2.Timestamp
+    def __init__(self, namespace: _Optional[str] = ..., now: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class RecordQueryServiceDueTimersResponse(_message.Message):
     __slots__ = ("due",)
     DUE_FIELD_NUMBER: _ClassVar[int]
     due: _containers.RepeatedCompositeFieldContainer[DueTimer]

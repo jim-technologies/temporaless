@@ -263,7 +263,7 @@ For real-time tracing / metrics / structured logging, use **standard ConnectRPC 
 
 ## 10. Operator visibility
 
-`temporaless.inspector` walks the storage tree without requiring a control plane:
+`temporaless.inspector` uses the optional query index for cross-run visibility and the core store for reset operations:
 
 ```python
 from temporaless.inspector import (
@@ -273,9 +273,12 @@ from temporaless.inspector import (
     reset_workflow,
     reset_activity,
 )
+from temporaless_indexstore import IndexedStore
 
-in_flight = await list_in_flight_workflows(store)
-failed = await list_failed_workflows(store)
+query_store = IndexedStore.from_opendal(operator, "/var/temporaless/index.sqlite")
+
+in_flight = await list_in_flight_workflows(query_store)
+failed = await list_failed_workflows(query_store)
 activities = await list_activities(store, workflow_key)
 
 # Reset a FAILED run to re-execute from scratch:
@@ -283,17 +286,17 @@ await reset_workflow(store, workflow_key)
 await reset_activity(store, activity_key)
 ```
 
-The same operations are reachable as gRPC RPCs on `RecordStoreService` (via `ConnectStore`), so a remote storage server is a single round-trip away.
+Point operations are reachable as gRPC RPCs on `RecordStoreService` (via `ConnectStore`). Cross-run listing is reachable through optional `RecordQueryService` when you deploy a query index.
 
 ## 11. Retention
 
-`temporaless.janitor.sweep` recursively deletes COMPLETED runs older than a max-age threshold. Backed by a server-side `Sweep` RPC, so on a remote `ConnectStore` it's one round-trip:
+Bucket-only deployments should use bucket lifecycle rules for retention. If you deploy the optional query index, `temporaless.janitor.sweep` deletes COMPLETED runs older than a max-age threshold by selecting indexed metadata and mirroring deletes to the bucket:
 
 ```python
 from datetime import UTC, datetime, timedelta
 from temporaless.janitor import sweep
 
-deleted = await sweep(store, datetime.now(UTC), timedelta(days=7))
+deleted = await sweep(query_store, datetime.now(UTC), timedelta(days=7))
 ```
 
 ## 12. Trigger surface
