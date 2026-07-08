@@ -1,0 +1,62 @@
+{
+  "name": "@jim-technologies/temporaless",
+  "version": "0.3.0",
+  "description": "TypeScript SDK for Temporaless protobuf, ConnectRPC, and Invariant Protocol projections.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./core/ts/dist/index.js",
+  "types": "./core/ts/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./core/ts/dist/index.d.ts",
+      "import": "./core/ts/dist/index.js"
+    },
+    "./gen/temporaless/v1": {
+      "types": "./core/ts/dist/gen/temporaless/v1/temporaless_pb.d.ts",
+      "import": "./core/ts/dist/gen/temporaless/v1/temporaless_pb.js"
+    },
+    "./invariant": {
+      "types": "./core/ts/dist/invariant.d.ts",
+      "import": "./core/ts/dist/invariant.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "core/ts/dist",
+    "core/ts/README.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p core/ts/tsconfig.json && node core/ts/scripts/copy-assets.mjs",
+    "test": "vitest run core/ts/test",
+    "check": "npm run build && npm test",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.1",
+    "@connectrpc/connect": "^2.1.2",
+    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#a54e5de1ef4021aa65cee44526b2b61567643a27"
+  },
+  "peerDependencies": {
+    "@connectrpc/connect-node": ">=2.0.0",
+    "@connectrpc/connect-web": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@connectrpc/connect-node": {
+      "optional": true
+    },
+    "@connectrpc/connect-web": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

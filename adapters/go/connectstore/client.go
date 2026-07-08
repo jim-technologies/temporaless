@@ -2,6 +2,7 @@ package connectstore
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"connectrpc.com/connect"
@@ -16,15 +17,39 @@ var _ storage.Store = (*ClientStore)(nil)
 var _ storage.ClaimStore = (*ClientStore)(nil)
 
 type ClientStore struct {
-	client temporalessv1connect.RecordStoreServiceClient
+	client      temporalessv1connect.RecordStoreServiceClient
+	queryClient temporalessv1connect.RecordQueryServiceClient
 }
 
 func NewClientStore(client temporalessv1connect.RecordStoreServiceClient) *ClientStore {
 	return &ClientStore{client: client}
 }
 
+func NewClientStoreWithQuery(client temporalessv1connect.RecordStoreServiceClient, queryClient temporalessv1connect.RecordQueryServiceClient) *ClientStore {
+	return &ClientStore{client: client, queryClient: queryClient}
+}
+
+// NewLocalClientStore dispatches through the protobuf service-shaped handlers
+// in-process. Its query side uses the local/dev QueryHandler fallback; use an
+// indexed RecordQueryService client for production search and exact retention.
+func NewLocalClientStore(store storage.Store) *ClientStore {
+	return NewClientStoreWithQuery(NewHandler(store), NewQueryHandler(store))
+}
+
+// NewLocalClientStoreWithClaims is NewLocalClientStore with an explicit claim
+// store for the RecordStoreService side.
+func NewLocalClientStoreWithClaims(store storage.Store, claimStore storage.ClaimStore) *ClientStore {
+	return NewClientStoreWithQuery(NewHandlerWithClaims(store, claimStore), NewQueryHandler(store))
+}
+
+// NewHTTPClientStore wraps remote RecordStoreService and RecordQueryService
+// endpoints mounted at the same base URL. Point operations need only
+// RecordStoreService; ListWorkflows and Sweep require RecordQueryService.
 func NewHTTPClientStore(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) *ClientStore {
-	return NewClientStore(temporalessv1connect.NewRecordStoreServiceClient(httpClient, baseURL, opts...))
+	return NewClientStoreWithQuery(
+		temporalessv1connect.NewRecordStoreServiceClient(httpClient, baseURL, opts...),
+		temporalessv1connect.NewRecordQueryServiceClient(httpClient, baseURL, opts...),
+	)
 }
 
 func (store *ClientStore) GetActivity(ctx context.Context, key storage.ActivityKey) (*temporalessv1.ActivityRecord, bool, error) {
@@ -79,7 +104,10 @@ func (store *ClientStore) PutTimer(ctx context.Context, record *temporalessv1.Ti
 }
 
 func (store *ClientStore) ListWorkflows(ctx context.Context, namespace string, workflowID string, status temporalessv1.WorkflowStatus) ([]*temporalessv1.WorkflowRecord, error) {
-	resp, err := store.client.ListWorkflows(ctx, connect.NewRequest(&temporalessv1.ListWorkflowsRequest{
+	if store.queryClient == nil {
+		return nil, errors.New("record query service client is required for ListWorkflows")
+	}
+	resp, err := store.queryClient.ListWorkflows(ctx, connect.NewRequest(&temporalessv1.ListWorkflowsRequest{
 		Namespace:  namespace,
 		Status:     status,
 		WorkflowId: workflowID,
@@ -217,7 +245,10 @@ func (store *ClientStore) DeleteClaim(ctx context.Context, key storage.ClaimKey)
 }
 
 func (store *ClientStore) Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error) {
-	resp, err := store.client.Sweep(ctx, connect.NewRequest(&temporalessv1.SweepRequest{
+	if store.queryClient == nil {
+		return 0, errors.New("record query service client is required for Sweep")
+	}
+	resp, err := store.queryClient.Sweep(ctx, connect.NewRequest(&temporalessv1.SweepRequest{
 		Namespace: namespace,
 		Now:       timestamppb.New(now),
 		MaxAge:    durationpb.New(maxAge),

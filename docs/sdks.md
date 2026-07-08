@@ -1,17 +1,20 @@
 # SDKs
 
-Temporaless ships three SDKs that share the same wire format. Workflow
-records authored in any SDK are readable from any other.
+Temporaless ships three runtime SDKs that share the same wire format: Go,
+Python, and Rust. It also ships a TypeScript SDK with generated protobuf
+types, ConnectRPC store/query clients, and an optional invariantprotocol
+projection subpath.
 
 This page documents:
 
 1. The compatibility invariant (what "shares the same wire format" means).
 2. The user-facing surfaces, side by side.
-3. What each SDK ships today vs. what's still on the runway.
+3. What each runtime SDK ships today vs. what's still on the runway.
+4. What the TypeScript package provides.
 
 ## Compatibility invariant
 
-All three SDKs encode protobuf records identically and write them at
+The runtime SDKs encode protobuf records identically and write them at
 identical v2 flat keys:
 
 ```text
@@ -49,7 +52,8 @@ This means:
 - A workflow that runs partially in Python, crashes, and is resumed by a
   Go worker re-reading the same bucket completes cleanly — same ids, same
   shape, same replay.
-- Inspector tooling written in any SDK works against any bucket.
+- Inspector tooling written in any SDK or TypeScript client works against any
+  exposed `RecordStoreService` / `RecordQueryService`.
 
 The cross-language replay test
 (`rust_replays_python_authored_workflow_record` in
@@ -59,9 +63,9 @@ replays it without `WorkflowConflict`.
 
 ## Surface comparison
 
-The framework's thesis is "a workflow is a decorated gRPC handler" — so
-the surfaces converge on three concepts: **construct the store**, **decorate
-the handler**, **call activities from the body**. Everything else is
+The framework's thesis is "a workflow is a decorated gRPC handler" — so the
+runtime surfaces converge on three concepts: **construct the store**,
+**decorate the handler**, **call activities from the body**. Everything else is
 language-idiomatic glue.
 
 ### Construct the store
@@ -141,6 +145,31 @@ ConnectRPC, the operator adapters) need their own iterations. Read the
 storage records from Rust today; run a Rust-authored workflow against
 those records as the rest of the SDK lands.
 
+The TypeScript package is not in the runtime matrix. Its root export ships
+generated `temporaless.v1` protobuf types plus `ConnectStore` /
+`ConnectQueryStore` wrappers for browser or Node Connect transports. Its
+`@jim-technologies/temporaless/invariant` subpath uses
+`@jim-technologies/invariant-protocol` to project the same descriptor into MCP,
+CLI, HTTP/Connect, and descriptor-backed tool catalogs. It is for clients,
+inspectors, dashboards, and application services that need the canonical RPC
+contract without executing workflows locally.
+
+## Install from Git
+
+The SDKs are installable directly from git:
+
+```sh
+go get github.com/jim-technologies/temporaless@main
+pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@main#subdirectory=core/py"
+npm install "github:jim-technologies/temporaless#main"
+```
+
+```toml
+temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", branch = "main", package = "temporaless" }
+```
+
+Use a commit SHA instead of `main` for reproducible production builds.
+
 ## Adapter audit
 
 All adapters either ship for both Go and Python today or are tracked as
@@ -181,14 +210,17 @@ heavyweight deps so they ship as separate uv projects under
 - **Rust-native tooling on the bucket** — Rust. Analytics CLIs, MCP
   servers, inspector dashboards, custom adapters. ~2× faster than Go at
   the storage layer, and you can author + replay simple workflows today.
+- **Browser/Node clients and inspectors** — TypeScript. Generated protobuf
+  types and ConnectRPC clients for app code; Node-only invariantprotocol
+  projection for MCP/CLI/HTTP tool surfaces. No local workflow replay runtime.
 - **Mixed deployments** — pick per workflow. The wire format is the
   contract; the SDK is the implementation choice.
 
 ## Versioning the SDKs
 
 The proto definitions in `api/temporaless/v1/temporaless.proto` are the
-contract. SDKs follow the proto: any time you add a field, all three SDKs
-inherit it via `buf generate`. Most ergonomic helpers (the `activity()`
+contract. SDKs follow the proto: any time you add a field, generated SDKs and
+client packages inherit it via `buf generate`. Most ergonomic helpers (the `activity()`
 shortcut, the outbox idempotency-key helper, the ConnectRPC wrappers) are
 purely language-local — they're allowed to diverge in idiom, but their
 output (the records they write) must match.

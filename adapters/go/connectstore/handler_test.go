@@ -166,10 +166,93 @@ func TestClientStoreUsesRecordStoreService(t *testing.T) {
 	}
 }
 
-func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
+func TestHTTPHandlerDoesNotMountLocalQueryFallbackByDefault(t *testing.T) {
 	ctx := context.Background()
 	backend := newTestStore(t)
 	_, handler := NewHTTPHandler(backend)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	clientStore := NewHTTPClientStore(server.Client(), server.URL)
+	if _, err := clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED); err == nil {
+		t.Fatal("expected default HTTP handler to omit RecordQueryService")
+	}
+}
+
+func TestLocalClientStoreUsesRecordServicesWithoutHTTP(t *testing.T) {
+	ctx := context.Background()
+	clientStore := NewLocalClientStore(newTestStore(t))
+
+	key := storage.NewWorkflowKey("prices:local", "2026-05-02")
+	if err := clientStore.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
+		CodeVersion:   "test-version",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	record, found, err := clientStore.GetWorkflow(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("workflow record not found")
+	}
+	if record.GetWorkflowType() != "workflow:google.protobuf.StringValue->google.protobuf.StringValue" {
+		t.Fatalf("workflow type = %q", record.GetWorkflowType())
+	}
+
+	records, err := clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(records); got != 1 {
+		t.Fatalf("list count = %d, want 1", got)
+	}
+}
+
+func TestQueryHandlerRejectsUnsupportedOrderingAndPagination(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(context.Context, *QueryHandler) error
+	}{
+		{
+			name: "workflow order_by",
+			run: func(ctx context.Context, handler *QueryHandler) error {
+				_, err := handler.ListWorkflows(ctx, connect.NewRequest(&temporalessv1.ListWorkflowsRequest{
+					OrderBy: "created_at desc",
+				}))
+				return err
+			},
+		},
+		{
+			name: "activity page_size",
+			run: func(ctx context.Context, handler *QueryHandler) error {
+				_, err := handler.ListActivities(ctx, connect.NewRequest(&temporalessv1.RecordQueryServiceListActivitiesRequest{
+					PageSize: 10,
+				}))
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run(context.Background(), NewQueryHandler(newTestStore(t)))
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
+			}
+		})
+	}
+}
+
+func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	_, handler := NewHTTPHandlerWithLocalQuery(backend)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 

@@ -28,6 +28,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 ## Workflow service (your trigger surface)
 
 - [ ] **Same auth interceptor surface.** Your `WorkflowService` is just another ConnectRPC service — same interceptor list as ConnectStore.
+- [ ] **Direct path preserved for normal APIs.** Application services keep ordinary API reads and routine synchronous actions callable in-process without Temporaless. Workflow wrappers are opt-in for idempotent, retriable, scheduled, or long-running operations; if Temporaless storage or operators are down, direct APIs still serve and only the durable operation returns an explicit unavailable/deferred result.
 - [ ] **`workflow_id` and `run_id` are caller-provided.** The framework rejects empty / ambiguous IDs. Document your conventions: typically `{pipeline}:{symbol_or_partition}` for `workflow_id`; `{date}` or `{fire_time_iso}` for `run_id`.
 - [ ] **`code_version` bumped on every breaking workflow body change.** Otherwise existing run records replay against new code → `WorkflowConflictError`. Convention: tie to git short-SHA or semver.
 - [ ] **Activity bodies idempotent.** They run once per `(workflow_id, run_id, activity_id)` on the happy path; on retry they may run again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system gives you at-most-once-per-claim windows but cannot extend across vendor boundaries.

@@ -14,6 +14,12 @@ plugins:
     include_imports: true
   - remote: buf.build/connectrpc/python
     out: core/py/src
+  - remote: buf.build/bufbuild/es
+    out: core/ts/src/gen
+    opt:
+      - target=ts
+      - import_extension=js
+    include_imports: true
   # Rust proto codegen lives in core/rs/temporaless/build.rs (prost-build).
   # The buf community plugin uses prost-build 0.14 which doesn't support
   # edition 2023 yet; build.rs uses the latest crates.io prost-build instead.

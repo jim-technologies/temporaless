@@ -4,6 +4,13 @@ set -eu
 buf lint
 buf format -w api
 buf generate
+scripts/public-surface-check
+buf build api --as-file-descriptor-set -o core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb
+if command -v npm >/dev/null 2>&1; then
+  npm run check
+else
+  echo "Skipping TypeScript client checks; npm is not on PATH." >&2
+fi
 if [ "${TEMPORALESS_CHECK_GO_RUST:-0}" = "1" ]; then
   # Go gate: gofmt-check + vet + golangci-lint + race-enabled tests. Generated
   # protobuf packages under core/go/gen are buf-owned and excluded from gofmt.

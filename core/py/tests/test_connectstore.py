@@ -4,7 +4,7 @@ from temporaless_indexstore import IndexedStore
 from temporaless.connectstore import (
     ConnectQueryStore,
     ConnectStore,
-    RecordQueryService,
+    LocalRecordStoreClient,
     RecordStoreService,
 )
 from temporaless.storage import (
@@ -20,9 +20,7 @@ from temporaless.v1 import temporaless_pb2
 
 
 async def test_connect_store_uses_record_store_service(tmp_path) -> None:
-    service = RecordStoreService(OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path))))
-    client = DirectRecordStoreClient(service)
-    store = ConnectStore(client)
+    store = ConnectStore.local(OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path))))
     key = WorkflowKey(workflow_id="prices:rpc", run_id="2026-05-02")
 
     assert await store.claim_capability() == CREATE_ONLY_CLAIMS
@@ -47,7 +45,7 @@ async def test_connect_store_uses_record_store_service(tmp_path) -> None:
 
 async def test_connect_store_covers_storage_surface(tmp_path) -> None:
     service = RecordStoreService(OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path))))
-    client = DirectRecordStoreClient(service)
+    client = LocalRecordStoreClient(service)
     store = ConnectStore(client)
 
     activity_key = ActivityKey(workflow_id="prices:rpc", run_id="2026-05-02", activity_id="fetch")
@@ -101,8 +99,8 @@ async def test_connect_store_sweep_round_trip(tmp_path) -> None:
 
     operator = opendal.AsyncOperator("fs", root=str(tmp_path))
     backend = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
-    store = ConnectStore(DirectRecordStoreClient(RecordStoreService(backend)))
-    query = ConnectQueryStore(DirectRecordQueryClient(RecordQueryService(backend)))
+    store = ConnectStore.local(backend)
+    query = ConnectQueryStore.local(backend)
 
     # Seed: one COMPLETED workflow backdated 48h, one fresh.
     old_completed = Timestamp()
@@ -142,9 +140,7 @@ async def test_connect_store_due_timers_round_trip(tmp_path) -> None:
     )
 
     backend = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
-    service = RecordStoreService(backend)
-    client = DirectRecordStoreClient(service)
-    store = ConnectStore(client)
+    store = ConnectStore.local(backend)
 
     wf_key = WorkflowKey(workflow_id="prices:timer", run_id="2026-05-04")
     timer_key = TimerKey(workflow_id="prices:timer", run_id="2026-05-04", timer_id="wait:vendor")
@@ -180,8 +176,8 @@ async def test_connect_store_due_timers_round_trip(tmp_path) -> None:
 async def test_connect_store_list_and_delete_round_trip(tmp_path) -> None:
     operator = opendal.AsyncOperator("fs", root=str(tmp_path))
     backend = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
-    store = ConnectStore(DirectRecordStoreClient(RecordStoreService(backend)))
-    query = ConnectQueryStore(DirectRecordQueryClient(RecordQueryService(backend)))
+    store = ConnectStore.local(backend)
+    query = ConnectQueryStore.local(backend)
 
     keep = WorkflowKey(workflow_id="prices:keep", run_id="2026-05-02")
     drop = WorkflowKey(workflow_id="prices:drop", run_id="2026-05-02")
@@ -204,146 +200,3 @@ async def test_connect_store_list_and_delete_round_trip(tmp_path) -> None:
 
     records, _ = await query.list_workflows("", "", temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
     assert [r.key.workflow_id for r in records] == ["prices:keep"]
-
-
-class DirectRecordStoreClient:
-    """In-process client that calls the async service directly — bypasses the
-    HTTP wire while still exercising the full request/response object types.
-    The integration test in ``test_integration.py`` covers the real ASGI path.
-    """
-
-    def __init__(self, service: RecordStoreService) -> None:
-        self.service = service
-
-    async def get_store_capabilities(
-        self, request: temporaless_pb2.GetStoreCapabilitiesRequest
-    ) -> temporaless_pb2.GetStoreCapabilitiesResponse:
-        return await self.service.get_store_capabilities(request, None)
-
-    async def get_workflow(
-        self, request: temporaless_pb2.GetWorkflowRequest
-    ) -> temporaless_pb2.GetWorkflowResponse:
-        return await self.service.get_workflow(request, None)
-
-    async def put_workflow(
-        self, request: temporaless_pb2.PutWorkflowRequest
-    ) -> temporaless_pb2.PutWorkflowResponse:
-        return await self.service.put_workflow(request, None)
-
-    async def get_latest_workflow_run(
-        self, request: temporaless_pb2.GetLatestWorkflowRunRequest
-    ) -> temporaless_pb2.GetLatestWorkflowRunResponse:
-        return await self.service.get_latest_workflow_run(request, None)
-
-    async def get_activity(
-        self, request: temporaless_pb2.GetActivityRequest
-    ) -> temporaless_pb2.GetActivityResponse:
-        return await self.service.get_activity(request, None)
-
-    async def put_activity(
-        self, request: temporaless_pb2.PutActivityRequest
-    ) -> temporaless_pb2.PutActivityResponse:
-        return await self.service.put_activity(request, None)
-
-    async def get_timer(
-        self, request: temporaless_pb2.GetTimerRequest
-    ) -> temporaless_pb2.GetTimerResponse:
-        return await self.service.get_timer(request, None)
-
-    async def put_timer(
-        self, request: temporaless_pb2.PutTimerRequest
-    ) -> temporaless_pb2.PutTimerResponse:
-        return await self.service.put_timer(request, None)
-
-    async def get_claim(
-        self, request: temporaless_pb2.GetClaimRequest
-    ) -> temporaless_pb2.GetClaimResponse:
-        return await self.service.get_claim(request, None)
-
-    async def try_create_claim(
-        self, request: temporaless_pb2.TryCreateClaimRequest
-    ) -> temporaless_pb2.TryCreateClaimResponse:
-        return await self.service.try_create_claim(request, None)
-
-    async def delete_claim(
-        self, request: temporaless_pb2.DeleteClaimRequest
-    ) -> temporaless_pb2.DeleteClaimResponse:
-        return await self.service.delete_claim(request, None)
-
-    async def get_event(
-        self, request: temporaless_pb2.GetEventRequest
-    ) -> temporaless_pb2.GetEventResponse:
-        return await self.service.get_event(request, None)
-
-    async def put_event(
-        self, request: temporaless_pb2.PutEventRequest
-    ) -> temporaless_pb2.PutEventResponse:
-        return await self.service.put_event(request, None)
-
-    async def list_activities(
-        self, request: temporaless_pb2.ListActivitiesRequest
-    ) -> temporaless_pb2.ListActivitiesResponse:
-        return await self.service.list_activities(request, None)
-
-    async def list_timers(
-        self, request: temporaless_pb2.ListTimersRequest
-    ) -> temporaless_pb2.ListTimersResponse:
-        return await self.service.list_timers(request, None)
-
-    async def list_events(
-        self, request: temporaless_pb2.ListEventsRequest
-    ) -> temporaless_pb2.ListEventsResponse:
-        return await self.service.list_events(request, None)
-
-    async def delete_workflow(
-        self, request: temporaless_pb2.DeleteWorkflowRequest
-    ) -> temporaless_pb2.DeleteWorkflowResponse:
-        return await self.service.delete_workflow(request, None)
-
-    async def delete_activity(
-        self, request: temporaless_pb2.DeleteActivityRequest
-    ) -> temporaless_pb2.DeleteActivityResponse:
-        return await self.service.delete_activity(request, None)
-
-    async def delete_timer(
-        self, request: temporaless_pb2.DeleteTimerRequest
-    ) -> temporaless_pb2.DeleteTimerResponse:
-        return await self.service.delete_timer(request, None)
-
-    async def delete_event(
-        self, request: temporaless_pb2.DeleteEventRequest
-    ) -> temporaless_pb2.DeleteEventResponse:
-        return await self.service.delete_event(request, None)
-
-    async def delete_run(
-        self, request: temporaless_pb2.DeleteRunRequest
-    ) -> temporaless_pb2.DeleteRunResponse:
-        return await self.service.delete_run(request, None)
-
-    async def due_timers(
-        self, request: temporaless_pb2.DueTimersRequest
-    ) -> temporaless_pb2.DueTimersResponse:
-        return await self.service.due_timers(request, None)
-
-
-class DirectRecordQueryClient:
-    def __init__(self, service: RecordQueryService) -> None:
-        self.service = service
-
-    async def list_workflows(
-        self, request: temporaless_pb2.ListWorkflowsRequest
-    ) -> temporaless_pb2.ListWorkflowsResponse:
-        return await self.service.list_workflows(request, None)
-
-    async def list_activities(
-        self, request: temporaless_pb2.RecordQueryServiceListActivitiesRequest
-    ) -> temporaless_pb2.RecordQueryServiceListActivitiesResponse:
-        return await self.service.list_activities(request, None)
-
-    async def sweep(self, request: temporaless_pb2.SweepRequest) -> temporaless_pb2.SweepResponse:
-        return await self.service.sweep(request, None)
-
-    async def due_timers(
-        self, request: temporaless_pb2.RecordQueryServiceDueTimersRequest
-    ) -> temporaless_pb2.RecordQueryServiceDueTimersResponse:
-        return await self.service.due_timers(request, None)

@@ -146,6 +146,15 @@ class ConnectStore:
         self._client = client
 
     @classmethod
+    def local(cls, store: Store, claim_store: ClaimStore | None = None) -> ConnectStore:
+        """Construct a store client that calls RecordStoreService in-process.
+
+        This preserves the generated protobuf request/response contract without
+        requiring an HTTP/ConnectRPC hop for local deployments.
+        """
+        return cls(LocalRecordStoreClient(RecordStoreService(store, claim_store)))
+
+    @classmethod
     def from_address(
         cls,
         address: str,
@@ -320,6 +329,11 @@ class ConnectQueryStore:
         self._client = client
 
     @classmethod
+    def local(cls, query: QueryStore) -> ConnectQueryStore:
+        """Construct a query client that calls RecordQueryService in-process."""
+        return cls(LocalRecordQueryClient(RecordQueryService(query)))
+
+    @classmethod
     def from_address(
         cls,
         address: str,
@@ -424,7 +438,7 @@ class RecordStoreService:
     async def get_store_capabilities(
         self,
         request: temporaless_pb2.GetStoreCapabilitiesRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetStoreCapabilitiesResponse:
         capability = NO_CLAIMS
         if self._claim_store is not None:
@@ -434,7 +448,7 @@ class RecordStoreService:
     async def get_activity(
         self,
         request: temporaless_pb2.GetActivityRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetActivityResponse:
         record = await self._store.get_activity(activity_key_from_proto(request.key))
         if record is None:
@@ -444,7 +458,7 @@ class RecordStoreService:
     async def put_activity(
         self,
         request: temporaless_pb2.PutActivityRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.PutActivityResponse:
         await self._store.put_activity(request.record)
         return temporaless_pb2.PutActivityResponse()
@@ -452,7 +466,7 @@ class RecordStoreService:
     async def get_workflow(
         self,
         request: temporaless_pb2.GetWorkflowRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetWorkflowResponse:
         record = await self._store.get_workflow(workflow_key_from_proto(request.key))
         if record is None:
@@ -462,7 +476,7 @@ class RecordStoreService:
     async def put_workflow(
         self,
         request: temporaless_pb2.PutWorkflowRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.PutWorkflowResponse:
         await self._store.put_workflow(request.record)
         return temporaless_pb2.PutWorkflowResponse()
@@ -470,7 +484,7 @@ class RecordStoreService:
     async def get_latest_workflow_run(
         self,
         request: temporaless_pb2.GetLatestWorkflowRunRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetLatestWorkflowRunResponse:
         pointer = await self._store.get_latest_workflow_run(request.namespace, request.workflow_id)
         if pointer is None:
@@ -480,7 +494,7 @@ class RecordStoreService:
     async def get_timer(
         self,
         request: temporaless_pb2.GetTimerRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetTimerResponse:
         record = await self._store.get_timer(timer_key_from_proto(request.key))
         if record is None:
@@ -490,7 +504,7 @@ class RecordStoreService:
     async def put_timer(
         self,
         request: temporaless_pb2.PutTimerRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.PutTimerResponse:
         await self._store.put_timer(request.record)
         return temporaless_pb2.PutTimerResponse()
@@ -498,7 +512,7 @@ class RecordStoreService:
     async def get_claim(
         self,
         request: temporaless_pb2.GetClaimRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetClaimResponse:
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
@@ -510,7 +524,7 @@ class RecordStoreService:
     async def try_create_claim(
         self,
         request: temporaless_pb2.TryCreateClaimRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.TryCreateClaimResponse:
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
@@ -521,7 +535,7 @@ class RecordStoreService:
     async def delete_claim(
         self,
         request: temporaless_pb2.DeleteClaimRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteClaimResponse:
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
@@ -532,7 +546,7 @@ class RecordStoreService:
     async def get_event(
         self,
         request: temporaless_pb2.GetEventRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.GetEventResponse:
         record = await self._store.get_event(event_key_from_proto(request.key))
         if record is None:
@@ -542,7 +556,7 @@ class RecordStoreService:
     async def put_event(
         self,
         request: temporaless_pb2.PutEventRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.PutEventResponse:
         await self._store.put_event(request.record)
         return temporaless_pb2.PutEventResponse()
@@ -550,7 +564,7 @@ class RecordStoreService:
     async def list_activities(
         self,
         request: temporaless_pb2.ListActivitiesRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.ListActivitiesResponse:
         records = await self._store.list_activities(workflow_key_from_proto(request.key))
         return temporaless_pb2.ListActivitiesResponse(records=records)
@@ -558,7 +572,7 @@ class RecordStoreService:
     async def list_timers(
         self,
         request: temporaless_pb2.ListTimersRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.ListTimersResponse:
         records = await self._store.list_timers(
             workflow_key_from_proto(request.key), request.status
@@ -568,7 +582,7 @@ class RecordStoreService:
     async def list_events(
         self,
         request: temporaless_pb2.ListEventsRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.ListEventsResponse:
         records = await self._store.list_events(workflow_key_from_proto(request.key))
         return temporaless_pb2.ListEventsResponse(records=records)
@@ -576,7 +590,7 @@ class RecordStoreService:
     async def delete_workflow(
         self,
         request: temporaless_pb2.DeleteWorkflowRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteWorkflowResponse:
         deleted = await self._store.delete_workflow(workflow_key_from_proto(request.key))
         return temporaless_pb2.DeleteWorkflowResponse(deleted=deleted)
@@ -584,7 +598,7 @@ class RecordStoreService:
     async def delete_activity(
         self,
         request: temporaless_pb2.DeleteActivityRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteActivityResponse:
         deleted = await self._store.delete_activity(activity_key_from_proto(request.key))
         return temporaless_pb2.DeleteActivityResponse(deleted=deleted)
@@ -592,7 +606,7 @@ class RecordStoreService:
     async def delete_timer(
         self,
         request: temporaless_pb2.DeleteTimerRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteTimerResponse:
         deleted = await self._store.delete_timer(timer_key_from_proto(request.key))
         return temporaless_pb2.DeleteTimerResponse(deleted=deleted)
@@ -600,7 +614,7 @@ class RecordStoreService:
     async def delete_event(
         self,
         request: temporaless_pb2.DeleteEventRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteEventResponse:
         deleted = await self._store.delete_event(event_key_from_proto(request.key))
         return temporaless_pb2.DeleteEventResponse(deleted=deleted)
@@ -608,7 +622,7 @@ class RecordStoreService:
     async def delete_run(
         self,
         request: temporaless_pb2.DeleteRunRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteRunResponse:
         deleted = await self._store.delete_run(workflow_key_from_proto(request.key))
         return temporaless_pb2.DeleteRunResponse(deleted=deleted)
@@ -616,7 +630,7 @@ class RecordStoreService:
     async def due_timers(
         self,
         request: temporaless_pb2.DueTimersRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.DueTimersResponse:
         now = request.now.ToDatetime()
         if now.tzinfo is None:
@@ -641,7 +655,7 @@ class RecordQueryService:
     async def list_workflows(
         self,
         request: temporaless_pb2.ListWorkflowsRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.ListWorkflowsResponse:
         records, next_page_token = await self._query.list_workflows(
             request.namespace,
@@ -658,7 +672,7 @@ class RecordQueryService:
     async def list_activities(
         self,
         request: temporaless_pb2.RecordQueryServiceListActivitiesRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.RecordQueryServiceListActivitiesResponse:
         records, next_page_token = await self._query.list_activities_query(
             request.namespace,
@@ -676,7 +690,7 @@ class RecordQueryService:
     async def sweep(
         self,
         request: temporaless_pb2.SweepRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.SweepResponse:
         now = request.now.ToDatetime()
         if now.tzinfo is None:
@@ -688,7 +702,7 @@ class RecordQueryService:
     async def due_timers(
         self,
         request: temporaless_pb2.RecordQueryServiceDueTimersRequest,
-        ctx: RequestContext,
+        ctx: RequestContext | None,
     ) -> temporaless_pb2.RecordQueryServiceDueTimersResponse:
         now = request.now.ToDatetime()
         if now.tzinfo is None:
@@ -704,6 +718,152 @@ class RecordQueryService:
                 for entry in due
             ]
         )
+
+
+class LocalRecordStoreClient:
+    """In-process RecordStoreService client.
+
+    Local deployments use the same generated request/response messages as a
+    remote ConnectRPC deployment, but dispatch directly to the service object.
+    """
+
+    def __init__(self, service: RecordStoreService) -> None:
+        self.service = service
+
+    async def get_store_capabilities(
+        self, request: temporaless_pb2.GetStoreCapabilitiesRequest
+    ) -> temporaless_pb2.GetStoreCapabilitiesResponse:
+        return await self.service.get_store_capabilities(request, None)
+
+    async def get_workflow(
+        self, request: temporaless_pb2.GetWorkflowRequest
+    ) -> temporaless_pb2.GetWorkflowResponse:
+        return await self.service.get_workflow(request, None)
+
+    async def put_workflow(
+        self, request: temporaless_pb2.PutWorkflowRequest
+    ) -> temporaless_pb2.PutWorkflowResponse:
+        return await self.service.put_workflow(request, None)
+
+    async def get_latest_workflow_run(
+        self, request: temporaless_pb2.GetLatestWorkflowRunRequest
+    ) -> temporaless_pb2.GetLatestWorkflowRunResponse:
+        return await self.service.get_latest_workflow_run(request, None)
+
+    async def get_activity(
+        self, request: temporaless_pb2.GetActivityRequest
+    ) -> temporaless_pb2.GetActivityResponse:
+        return await self.service.get_activity(request, None)
+
+    async def put_activity(
+        self, request: temporaless_pb2.PutActivityRequest
+    ) -> temporaless_pb2.PutActivityResponse:
+        return await self.service.put_activity(request, None)
+
+    async def get_timer(
+        self, request: temporaless_pb2.GetTimerRequest
+    ) -> temporaless_pb2.GetTimerResponse:
+        return await self.service.get_timer(request, None)
+
+    async def put_timer(
+        self, request: temporaless_pb2.PutTimerRequest
+    ) -> temporaless_pb2.PutTimerResponse:
+        return await self.service.put_timer(request, None)
+
+    async def get_claim(
+        self, request: temporaless_pb2.GetClaimRequest
+    ) -> temporaless_pb2.GetClaimResponse:
+        return await self.service.get_claim(request, None)
+
+    async def try_create_claim(
+        self, request: temporaless_pb2.TryCreateClaimRequest
+    ) -> temporaless_pb2.TryCreateClaimResponse:
+        return await self.service.try_create_claim(request, None)
+
+    async def delete_claim(
+        self, request: temporaless_pb2.DeleteClaimRequest
+    ) -> temporaless_pb2.DeleteClaimResponse:
+        return await self.service.delete_claim(request, None)
+
+    async def get_event(
+        self, request: temporaless_pb2.GetEventRequest
+    ) -> temporaless_pb2.GetEventResponse:
+        return await self.service.get_event(request, None)
+
+    async def put_event(
+        self, request: temporaless_pb2.PutEventRequest
+    ) -> temporaless_pb2.PutEventResponse:
+        return await self.service.put_event(request, None)
+
+    async def list_activities(
+        self, request: temporaless_pb2.ListActivitiesRequest
+    ) -> temporaless_pb2.ListActivitiesResponse:
+        return await self.service.list_activities(request, None)
+
+    async def list_timers(
+        self, request: temporaless_pb2.ListTimersRequest
+    ) -> temporaless_pb2.ListTimersResponse:
+        return await self.service.list_timers(request, None)
+
+    async def list_events(
+        self, request: temporaless_pb2.ListEventsRequest
+    ) -> temporaless_pb2.ListEventsResponse:
+        return await self.service.list_events(request, None)
+
+    async def delete_workflow(
+        self, request: temporaless_pb2.DeleteWorkflowRequest
+    ) -> temporaless_pb2.DeleteWorkflowResponse:
+        return await self.service.delete_workflow(request, None)
+
+    async def delete_activity(
+        self, request: temporaless_pb2.DeleteActivityRequest
+    ) -> temporaless_pb2.DeleteActivityResponse:
+        return await self.service.delete_activity(request, None)
+
+    async def delete_timer(
+        self, request: temporaless_pb2.DeleteTimerRequest
+    ) -> temporaless_pb2.DeleteTimerResponse:
+        return await self.service.delete_timer(request, None)
+
+    async def delete_event(
+        self, request: temporaless_pb2.DeleteEventRequest
+    ) -> temporaless_pb2.DeleteEventResponse:
+        return await self.service.delete_event(request, None)
+
+    async def delete_run(
+        self, request: temporaless_pb2.DeleteRunRequest
+    ) -> temporaless_pb2.DeleteRunResponse:
+        return await self.service.delete_run(request, None)
+
+    async def due_timers(
+        self, request: temporaless_pb2.DueTimersRequest
+    ) -> temporaless_pb2.DueTimersResponse:
+        return await self.service.due_timers(request, None)
+
+
+class LocalRecordQueryClient:
+    """In-process RecordQueryService client."""
+
+    def __init__(self, service: RecordQueryService) -> None:
+        self.service = service
+
+    async def list_workflows(
+        self, request: temporaless_pb2.ListWorkflowsRequest
+    ) -> temporaless_pb2.ListWorkflowsResponse:
+        return await self.service.list_workflows(request, None)
+
+    async def list_activities(
+        self, request: temporaless_pb2.RecordQueryServiceListActivitiesRequest
+    ) -> temporaless_pb2.RecordQueryServiceListActivitiesResponse:
+        return await self.service.list_activities(request, None)
+
+    async def sweep(self, request: temporaless_pb2.SweepRequest) -> temporaless_pb2.SweepResponse:
+        return await self.service.sweep(request, None)
+
+    async def due_timers(
+        self, request: temporaless_pb2.RecordQueryServiceDueTimersRequest
+    ) -> temporaless_pb2.RecordQueryServiceDueTimersResponse:
+        return await self.service.due_timers(request, None)
 
 
 def asgi_application(

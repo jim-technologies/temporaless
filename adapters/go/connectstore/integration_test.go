@@ -32,7 +32,7 @@ func TestRemoteWorkflowRunEndToEnd(t *testing.T) {
 	t.Cleanup(operator.Close)
 	backend := storage.NewOpenDALStore(operator)
 
-	_, handler := connectstore.NewHTTPHandler(backend)
+	_, handler := connectstore.NewHTTPHandlerWithLocalQuery(backend)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	remoteStore := connectstore.NewHTTPClientStore(server.Client(), server.URL)

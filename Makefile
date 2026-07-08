@@ -1,9 +1,9 @@
 # Temporaless top-level developer gate.
 #
-# `make check` is the Go-focused gate: gofmt-check + go vet + golangci-lint +
-# go test -race. It mirrors the Go portion of `scripts/check` (which also runs
-# buf, Rust, and the Python/uv suites) so a Go-only change can be validated
-# fast without the full cross-language gate.
+# `make check` is the fast gate: public-surface audit + gofmt-check + go vet +
+# golangci-lint + go test -race. It mirrors the Go portion of `scripts/check`
+# (which also runs buf, Rust, and the Python/uv suites) so a Go-only change can
+# be validated fast without the full cross-language gate.
 #
 # Run inside the Flox env so the pinned go / golangci-lint are on PATH:
 #
@@ -16,9 +16,20 @@ GOFMT     ?= gofmt
 GOFLAGS   ?=
 GO_PKGS   ?= ./...
 
-.PHONY: check fmt fmt-check vet lint test gate tidy-check
+.DEFAULT_GOAL := help
 
-check: fmt-check vet lint test
+.PHONY: help check public-surface-check fmt fmt-check vet lint test ts-check gate tidy-check
+
+## help: show available make targets.
+help:
+	@awk 'BEGIN {printf "Usage:\n  make <target>\n\nTargets:\n"} /^## / {line=$$0; sub(/^## /, "", line); target=line; sub(/:.*/, "", target); if (target ~ /^[A-Za-z0-9_.-]+$$/) {desc=line; sub(/^[^:]+: */, "", desc); printf "  %-14s %s\n", target, desc}}' $(MAKEFILE_LIST)
+
+## check: run the fast developer gate.
+check: public-surface-check fmt-check vet lint test
+
+## public-surface-check: fail on private/internal wording in public docs/examples.
+public-surface-check:
+	scripts/public-surface-check
 
 ## fmt: rewrite Go sources in place with gofmt.
 fmt:
@@ -44,6 +55,10 @@ lint:
 ## test: go test with the race detector.
 test:
 	$(GO) test -race $(GOFLAGS) $(GO_PKGS)
+
+## ts-check: run the TypeScript client build and tests.
+ts-check:
+	npm run check
 
 ## tidy-check: verify go.mod / go.sum are tidy.
 tidy-check:

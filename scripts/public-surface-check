@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+# Keep public OSS docs, examples, and README-style surfaces free of private
+# organization/product names. Public package coordinates such as
+# github.com/jim-technologies/temporaless are intentionally allowed.
+pattern='(^|[^[:alnum:]_])(medallion|jimtech)([^[:alnum:]_]|$)|Connect/Ontology'
+
+if command -v rg >/dev/null 2>&1; then
+  matches="$(
+    rg -n -i \
+      --glob '!**/dist/**' \
+      --glob '!**/node_modules/**' \
+      --glob '!**/gen/**' \
+      "$pattern" \
+      README.md docs core/ts/README.md examples \
+      || true
+  )"
+else
+  matches="$(
+    grep -RInEi "$pattern" README.md docs core/ts/README.md examples \
+      | grep -v '/dist/' \
+      | grep -v '/node_modules/' \
+      | grep -v '/gen/' \
+      || true
+  )"
+fi
+
+if [ -n "$matches" ]; then
+  echo "Private/internal references found on public OSS surfaces:" >&2
+  echo "$matches" >&2
+  echo >&2
+  echo "Use generic wording such as application services, consumer services, or services using Temporaless." >&2
+  exit 1
+fi

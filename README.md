@@ -1,6 +1,6 @@
 # Temporaless
 
-A storage-first, language-agnostic, serverless workflow framework for Go, Python, and Rust (storage layer).
+A storage-first, language-agnostic, serverless workflow framework for Go, Python, Rust, and TypeScript clients.
 
 The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. When workflow code reaches a stored boundary, the runtime first looks for a matching record. If one exists, the stored result is reused. If not, the boundary is executed and stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
 
@@ -9,16 +9,48 @@ The core idea: every workflow boundary (start, activity, durable timer, signal, 
 - [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough: store, workflow, retries, sleep, events, schedule, inspect, sweep
 - [`docs/deployment.md`](docs/deployment.md) — production patterns (S3/GCS, ConnectRPC, multi-process, multi-region)
 
+## Application Service Adoption
+
+Temporaless is optional infrastructure for work that benefits from durable replay: idempotent, retriable, scheduled, or long-running operations. Application services should keep normal API reads and routine request/response actions on a direct in-process path.
+
+The direct handler should remain the canonical implementation. A Temporaless workflow wrapper may call that same unary protobuf handler when durability is needed, but ordinary reads/actions must not require Temporaless storage, the timer scanner, the query index, or background operators to be healthy. If Temporaless is disabled or unavailable, services should still serve normal APIs directly and only reject, defer, or explicitly fall back for the durable background operation.
+
+Good Temporaless candidates are discovery, refresh, sync, migration, bootstrap,
+and other orchestration paths where retries and replay are part of the product
+contract. Simple product reads and one-shot synchronous actions should stay on
+the direct service path.
+
 ## Layout
 
 ```text
 api/                  protobuf API definitions only
 core/{go,py}/         Runtime + generated protobuf + OpenDAL store + ConnectRPC service
 core/rs/              Rust SDK — storage layer only (native opendal crate); runtime layers TBD
+core/ts/              TypeScript SDK — generated protobuf, ConnectRPC wrappers, invariantprotocol projection
 adapters/{go,py}/     Adapters: claims, schedulers, inspectors, retention, Temporal compat
 examples/{go,py}/     Runnable demos: fetch-prices, llm-completion, production-server, quant-service, stocks-pipeline, twitter-webhook
 docs/                 Architecture and design notes
 ```
+
+## Install From Git
+
+Temporaless packages are designed for direct git consumption, not registry
+publishing. Pin a commit SHA for production builds.
+
+```sh
+go get github.com/jim-technologies/temporaless@main
+pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@main#subdirectory=core/py"
+npm install "github:jim-technologies/temporaless#main"
+```
+
+Rust consumers can depend on the workspace crate from git:
+
+```toml
+temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", branch = "main", package = "temporaless" }
+```
+
+The TypeScript package entry lives at the repository root so npm git installs
+work without a package registry; its source stays under `core/ts`.
 
 ## Adapters
 
@@ -74,7 +106,7 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 - [`docs/dependencies.md`](docs/dependencies.md) — what lives where (Flox vs go.mod vs uv)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — Go and Python benchmark suites with cross-language baseline numbers
 - [`docs/analytics.md`](docs/analytics.md) — bucket archive, optional query index, and offline protobuf analytics
-- [`docs/sdks.md`](docs/sdks.md) — cross-SDK surface comparison + capability matrix (Go / Python / Rust)
+- [`docs/sdks.md`](docs/sdks.md) — cross-SDK surface comparison + capability matrix (Go / Python / Rust / TypeScript)
 
 ## Development
 
@@ -82,11 +114,12 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 flox activate
 flox activate -- scripts/check       # proto + Python core/adapters gate
 TEMPORALESS_CHECK_GO_RUST=1 flox activate -- scripts/check  # include explicitly gated Go/Rust parity checks
+npm run check                        # TypeScript client build + tests
 flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot paths)
 flox activate -- scripts/bench-py    # Python benchmarks (same suite, same output format)
 ```
 
-The Flox manifest intentionally stays thin: just `go`, `python313`, `uv`, `buf`, plus the C runtime libs OpenDAL and Protovalidate need. Everything else lives in `go.mod`, `core/py/uv.lock`, or Buf remote plugin config.
+The Flox manifest intentionally stays thin: just `go`, `python313`, `uv`, `buf`, plus the C runtime libs OpenDAL and Protovalidate need. Everything else lives in `go.mod`, `Cargo.toml`, `core/py/uv.lock`, root `package-lock.json`, or Buf remote plugin config.
 
 ## Storage convention
 

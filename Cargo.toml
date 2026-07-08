@@ -1,0 +1,4 @@
+[workspace]
+members = ["core/rs/temporaless"]
+resolver = "2"
+

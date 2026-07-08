@@ -11,7 +11,7 @@ Flox contains only tools or runtime libraries needed before language package man
 - `libffi`: required by the Apache OpenDAL Go binding.
 - `gcc-unwrapped` `lib` output: provides `libstdc++.so.6` for Python Protovalidate's RE2 dependency.
 
-The environment intentionally does not include `make`, `protoc`, or language-specific linters. Go and uv already handle those needs for this repository.
+The environment intentionally does not include `make`, `node`, `npm`, `protoc`, or language-specific linters. Go, uv, npm, Cargo, and Buf already handle those needs for this repository.
 
 ## Go
 
@@ -45,6 +45,22 @@ The Python Temporal adapter has its own uv project in `adapters/py/temporalcompa
 - `temporalio`: strict Temporal compatibility adapter only. It is intentionally outside `core/py` so the core runtime does not depend on Temporal.
 - `temporaless`: editable path dependency on `core/py` for generated protobuf types and core conventions.
 - `ruff`, `ty`, and `pytest`: adapter-local quality gate. (`types-protobuf` is also a dev dep so ty resolves `google.protobuf` modules in tests.)
+
+## Rust
+
+Rust dependencies live in `core/rs/temporaless/Cargo.toml`. The repository
+root has a small `Cargo.toml` workspace so Cargo can install the crate directly
+from git without a registry.
+
+## TypeScript
+
+TypeScript dependencies live in root `package.json` and `package-lock.json`.
+The npm package entry is at the repository root because npm git dependencies
+install from the repository package root; TypeScript source remains under
+`core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
+`core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
+backed by `@jim-technologies/invariant-protocol`; the root TypeScript export
+stays a lightweight generated-types + Connect-client surface.
 
 ## Buf
 

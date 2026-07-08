@@ -66,7 +66,7 @@ Shared framework constants are protobuf enums. Record schema versions, timer kin
 
 The point-storage RPC layer is defined by `temporaless.v1.RecordStoreService`. It includes workflow, activity, timer, event, claim, latest-pointer, due-ledger, and capability calls. Local OpenDAL stores still need small language-specific infrastructure code to render object paths and invoke each binding, but the records, keys, statuses, capabilities, and RPC messages are generated from protobuf.
 
-`RecordStoreService` is the cross-language core durability contract. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as the service and wrap a generated service client back into the local store interface. Cross-run listing, inspector search, and indexed retention live on optional `RecordQueryService` implementations.
+`RecordStoreService` is the cross-language core durability contract. Treat the generated protobuf request/response service shape as canonical, not the network hop. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as an in-process service client or use generated ConnectRPC clients for remote storage. Cross-run listing, inspector search, and indexed retention live on optional `RecordQueryService` implementations. SQL and DuckLake-style stores should implement these service contracts as adapters rather than changing replay semantics. Local bucket-backed query fallbacks are for development and small deployments only; production query/search/retention should use an indexed `RecordQueryService`.
 
 ## RPC-Shaped Wrappers
 
@@ -110,7 +110,7 @@ The core should stay small enough that every function has a clear reason to exis
 
 All stored workflow state is protobuf binary. This gives us:
 
-- stable schemas across Go, Python, and Rust
+- stable schemas across Go, Python, Rust, and TypeScript clients
 - deterministic serialization (records compare and replicate by bytes)
 - schema evolution with Buf linting and a checked-in breaking-change policy
 - native ConnectRPC request and response models

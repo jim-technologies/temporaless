@@ -8,18 +8,44 @@ Cross-run search is separate: `temporaless.v1.RecordQueryService`. It is impleme
 
 ## Boundary
 
+`RecordStoreService` and `RecordQueryService` are the canonical adapter
+contracts. Deployment decides how those service-shaped clients dispatch:
+
+- local clients call the service implementation directly in-process, with no
+  network hop
+- remote clients use generated ConnectRPC/gRPC stubs
+- OpenDAL-style bucket stores implement the point `RecordStoreService`
+- SQL, DuckLake, or another rebuildable index implements production
+  `RecordQueryService`
+
 The domain-facing store interfaces still exist in each language:
 
 - Go: `storage.Store` and `storage.ClaimStore`
 - Python: `Store` and `ClaimStore` protocols
 
-Those interfaces are the business-layer seam used by workflow replay. The RPC service is the cross-process and cross-language seam. A local OpenDAL store can be wrapped as a `RecordStoreService`, and a remote `RecordStoreService` can be wrapped back into the local store interface. Inspector listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
+Those interfaces are the business-layer seam used by workflow replay. They
+mirror the protobuf service semantics and are intentionally thin. Inspector
+listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
 
 ## Implementations
 
-- Go exposes a ConnectRPC handler and client-backed store in `adapters/go/connectstore`;
-  v0.3.0 regenerated-stub parity for that package is a follow-up.
-- Python exposes `temporaless.connectstore.RecordStoreService` (async), `ConnectStore` (async client), and `asgi_application` (mount on uvicorn/hypercorn/any ASGI server).
+- Go exposes local and HTTP client-backed stores in `adapters/go/connectstore`:
+  `NewLocalClientStore(...)` calls the generated service interface in-process,
+  and `NewHTTPClientStore(...)` uses generated ConnectRPC clients.
+  `NewHTTPHandler(...)` mounts only `RecordStoreService`;
+  `NewHTTPHandlerWithLocalQuery(...)` explicitly adds the local/development
+  query fallback over `storage.Store`; `NewHTTPHandlerWithQuery(...)` mounts a
+  caller-supplied indexed `RecordQueryService`.
+- Python exposes `temporaless.connectstore.RecordStoreService` (async),
+  `ConnectStore.local(...)`, `ConnectStore.from_address(...)`,
+  `ConnectQueryStore.local(...)`, `ConnectQueryStore.from_address(...)`, and
+  `asgi_application` / `query_asgi_application` for ASGI servers.
+- TypeScript exposes generated `temporaless.v1` types, `ConnectStore` and
+  `ConnectQueryStore` wrappers, and a Node-only
+  `@jim-technologies/temporaless/invariant` subpath that uses
+  invariantprotocol to project `RecordStoreService` / `RecordQueryService`
+  into MCP, CLI, HTTP/Connect, and descriptor-backed tool catalogs. It is not a
+  workflow runtime.
 - The protobuf definitions and generated request/response types live under `api/temporaless/v1`.
 
 ## Core Surface
@@ -46,6 +72,11 @@ Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetc
 - `DueTimers`
 
 Query RPCs provide status filters, ordering, pagination, indexed retention, and alternate indexed due-timer lookup. The bucket remains authoritative; query rows contain metadata only.
+
+Production inspectors, large operational search, and exact retention sweeps
+should use an indexed `RecordQueryService` backed by SQL, DuckLake, or another
+rebuildable metadata index. Bucket/local query fallbacks are only for small
+local deployments and development.
 
 ## Rules
 
