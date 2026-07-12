@@ -20,6 +20,7 @@ run_ids follow the
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ class Scheduler:
         self._dispatch = dispatch
         self._last_fires: dict[str, datetime] = {}
         self._lock = threading.Lock()
+        self._tick_lock = asyncio.Lock()
 
     def seed(self, schedule_id: str, last_fire: datetime) -> None:
         if last_fire.tzinfo is None:
@@ -82,26 +84,35 @@ class Scheduler:
         """
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
-        # Plan dispatches under the lock so ``snapshot``/``seed`` from other
-        # threads see a consistent view, then dispatch outside the lock so
-        # awaiting the dispatcher doesn't block them.
-        plan: list[tuple[str, datetime]] = []
-        with self._lock:
-            for schedule in self._schedules:
-                anchor = self._last_fires.get(schedule.id)
-                if anchor is None:
-                    self._last_fires[schedule.id] = now
-                    continue
-                iterator = croniter(schedule.expression, anchor)
-                next_fire = iterator.get_next(datetime)
-                while next_fire <= now:
-                    plan.append((schedule.id, next_fire))
-                    self._last_fires[schedule.id] = next_fire
+        # Serialize ticks so two concurrent callers cannot plan the same fire.
+        # Plan under the thread lock so ``snapshot``/``seed`` see a consistent
+        # view, but never hold that lock while awaiting user code.
+        async with self._tick_lock:
+            plan: list[tuple[str, datetime]] = []
+            with self._lock:
+                for schedule in self._schedules:
+                    anchor = self._last_fires.get(schedule.id)
+                    if anchor is None:
+                        self._last_fires[schedule.id] = now
+                        continue
+                    iterator = croniter(schedule.expression, anchor)
                     next_fire = iterator.get_next(datetime)
+                    while next_fire <= now:
+                        plan.append((schedule.id, next_fire))
+                        next_fire = iterator.get_next(datetime)
 
-        for schedule_id, fire_time in plan:
-            await self._dispatch(schedule_id, fire_time)
-        return len(plan)
+            dispatched = 0
+            for schedule_id, fire_time in plan:
+                await self._dispatch(schedule_id, fire_time)
+                # A fire is durable scheduler state only after dispatch
+                # succeeds. If dispatch raises, the failed fire remains due on
+                # the next tick while earlier successful fires stay committed.
+                with self._lock:
+                    current = self._last_fires.get(schedule_id)
+                    if current is None or fire_time > current:
+                        self._last_fires[schedule_id] = fire_time
+                dispatched += 1
+            return dispatched
 
     def snapshot(self) -> dict[str, datetime]:
         """Return a copy of the current last-fire map for external persistence."""

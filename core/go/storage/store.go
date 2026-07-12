@@ -64,9 +64,16 @@ type ClaimStore interface {
 	TryCreateClaim(context.Context, *temporalessv1.ClaimRecord) (bool, error)
 	// DeleteClaim idempotently releases a held claim. Returns true when the
 	// claim existed and was removed, false when it was already absent. Used by
-	// the runtime to release concurrency-key slots when a workflow reaches a
-	// terminal status or returns a pending error.
+	// the runtime to release workflow-execution, activity, and concurrency-key
+	// claims at their durable/orderly boundaries.
 	DeleteClaim(context.Context, ClaimKey) (bool, error)
+}
+
+// ClaimRunStore is the optional, run-scoped extension used by DeleteRun.
+// It deliberately exposes no cross-run claim search or filtering.
+type ClaimRunStore interface {
+	ClaimStore
+	ListClaims(context.Context, WorkflowKey) ([]*temporalessv1.ClaimRecord, error)
 }
 
 type Store interface {
@@ -75,10 +82,11 @@ type Store interface {
 	TimerStore
 	WorkflowStore
 
-	// Sweep deletes every COMPLETED workflow run under the given namespace
-	// (empty = all namespaces) whose completed_at is older than now-maxAge.
-	// Activities, timers, and events under each swept run are deleted before
-	// the workflow record itself. Returns the number of runs deleted.
+	// Sweep is the record-only retention fallback for stores with no claim
+	// coordination. It deletes every externally quiesced COMPLETED workflow run
+	// under the namespace whose completed_at is older than now-maxAge, after
+	// prevalidating activities, timers, and events. Claim-aware callers use the
+	// janitor/query adapter with a ClaimRunStore so claims are removed first.
 	Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error)
 
 	// DueTimers returns SCHEDULED timer records under the given namespace

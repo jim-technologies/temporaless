@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import opendal
@@ -35,6 +36,78 @@ async def test_tick_fires_due_schedules_after_seed() -> None:
         datetime(2026, 5, 2, 9, 32, tzinfo=UTC),
         datetime(2026, 5, 2, 9, 33, tzinfo=UTC),
     ]
+
+
+@pytest.mark.parametrize(
+    ("failed_minute", "committed_minute", "retried_minutes"),
+    [
+        (31, 30, [31, 32, 33]),
+        (32, 31, [32, 33]),
+    ],
+)
+async def test_tick_commits_only_successful_dispatches(
+    failed_minute: int,
+    committed_minute: int,
+    retried_minutes: list[int],
+) -> None:
+    attempted: list[datetime] = []
+    fail_once = True
+
+    async def dispatch(_schedule_id: str, fire_time: datetime) -> None:
+        nonlocal fail_once
+        attempted.append(fire_time)
+        if fail_once and fire_time.minute == failed_minute:
+            fail_once = False
+            raise RuntimeError("dispatch failed")
+
+    scheduler = Scheduler(
+        [Schedule(id="every-minute", expression="* * * * *")],
+        dispatch,
+    )
+    scheduler.seed("every-minute", datetime(2026, 5, 2, 9, 30, tzinfo=UTC))
+    now = datetime(2026, 5, 2, 9, 33, tzinfo=UTC)
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        await scheduler.tick(now)
+
+    assert scheduler.last_fire("every-minute") == datetime(
+        2026, 5, 2, 9, committed_minute, tzinfo=UTC
+    )
+
+    attempted.clear()
+    count = await scheduler.tick(now)
+
+    assert count == len(retried_minutes)
+    assert [fire_time.minute for fire_time in attempted] == retried_minutes
+    assert scheduler.last_fire("every-minute") == datetime(2026, 5, 2, 9, 33, tzinfo=UTC)
+
+
+async def test_concurrent_ticks_do_not_dispatch_the_same_fire_twice() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    fired: list[datetime] = []
+
+    async def dispatch(_schedule_id: str, fire_time: datetime) -> None:
+        fired.append(fire_time)
+        entered.set()
+        await release.wait()
+
+    scheduler = Scheduler(
+        [Schedule(id="every-minute", expression="* * * * *")],
+        dispatch,
+    )
+    scheduler.seed("every-minute", datetime(2026, 5, 2, 9, 30, tzinfo=UTC))
+    now = datetime(2026, 5, 2, 9, 31, tzinfo=UTC)
+
+    first = asyncio.create_task(scheduler.tick(now))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = asyncio.create_task(scheduler.tick(now))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await first == 1
+    assert await second == 0
+    assert fired == [now]
 
 
 async def test_tick_without_seed_anchors_to_first_tick() -> None:

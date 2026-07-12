@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from temporaless.workflow import (
+    ClaimBusyError,
+    ConcurrencyBusyError,
     EventPendingError,
     TimerPendingError,
     WorkflowDependencyPendingError,
@@ -94,10 +96,10 @@ async def backfill[T](
     are independent: a failure in one run_id doesn't affect others, unless
     ``halt_on_error=True``.
 
-    Workflow runs that stay IN_PROGRESS (``TimerPendingError``,
-    ``EventPendingError``, ``WorkflowDependencyPendingError``, or their
-    ``ConnectError(UNAVAILABLE)`` mapped form) are reported as PENDING — they
-    aren't failures, they need a scanner to re-invoke them.
+    Workflow runs that stay IN_PROGRESS (timer/event/dependency pending or a
+    live claim holder), plus concurrency-cap contention, are PENDING. Their
+    ConnectRPC forms (UNAVAILABLE, ALREADY_EXISTS, RESOURCE_EXHAUSTED) are
+    classified the same way.
 
     Args:
         invoke: callable mapping a run_id to a workflow result.
@@ -139,14 +141,24 @@ async def backfill[T](
 def _is_pending_error(exc: BaseException) -> bool:
     if isinstance(
         exc,
-        (TimerPendingError, EventPendingError, WorkflowDependencyPendingError),
+        (
+            TimerPendingError,
+            EventPendingError,
+            WorkflowDependencyPendingError,
+            ClaimBusyError,
+            ConcurrencyBusyError,
+        ),
     ):
         return True
     try:
         from connectrpc.code import Code
         from connectrpc.errors import ConnectError
 
-        if isinstance(exc, ConnectError) and exc.code is Code.UNAVAILABLE:
+        if isinstance(exc, ConnectError) and exc.code in {
+            Code.UNAVAILABLE,
+            Code.ALREADY_EXISTS,
+            Code.RESOURCE_EXHAUSTED,
+        }:
             return True
     except ImportError:
         pass

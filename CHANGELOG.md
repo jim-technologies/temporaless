@@ -8,8 +8,24 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-12
+
 ### Added
 
+- **Storage-backed workflow single-flight** — a caller-provided
+  `WorkflowOptions.claim_owner_id` now serializes live invocations of the same
+  workflow run with an atomic `workflow:execution` claim. Terminal records
+  still replay immediately, while overlapping live calls receive a typed busy
+  error (`ALREADY_EXISTS` over ConnectRPC).
+- **Activity execution claims** — missing and due-retry activities use
+  deterministic `activity:{activity_id}` claims and release them only after a
+  durable terminal or retry boundary. Ambiguous execution/storage outcomes
+  retain the claim for verified operator recovery.
+- **Claim-capability enforcement and bounded claim listing** — requested
+  coordination now fails explicitly when the store lacks create-if-absent
+  support. `RecordStoreService.ListClaims` and `ClaimRunStore` let `DeleteRun`
+  and retention sweeps clean claims from local, remote, or separately
+  configured claim backends.
 - **`scheduler_runner.run` (Python)** — the optional *serverful* half of
   scheduling. The `cronscheduler.Scheduler` is serverless on its own (a
   stateless `tick(now)` driven by any external clock); this is a thin resident
@@ -19,6 +35,25 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
   (`workflow`/`storage`) — it only owns the clock and the loop. Single-process
   by design; multi-process still uses stateless `tick` + `last_fire_from_runs`.
   A failing tick is logged, not fatal. *(Go parity is a follow-up.)*
+
+### Changed
+
+- `concurrency_key` now requires the caller-owned `claim_owner_id`; the
+  framework no longer invents claim owner identities.
+- `DeleteRun` and indexed retention sweeps prevalidate complete run snapshots,
+  delete run-scoped claims before records, and reject claim-capable backends
+  that cannot enumerate one run. These cleanup operations explicitly require
+  external quiescence and are not execution fences or transactions.
+- Backfill classifies claim/concurrency contention as pending work rather than
+  a workflow failure.
+
+### Fixed
+
+- Cron ticks advance each fire only after successful dispatch, so a failed
+  dispatch remains due and concurrent ticks cannot skip or double-commit it.
+- Activity retry claims no longer consume a due retry timer before claim
+  arbitration, and durable retries can resume under a different caller-owned
+  claim identity.
 
 ## [0.3.0] — 2026-07-03
 

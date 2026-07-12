@@ -217,6 +217,35 @@ func (c *runScopedCache) GetActivity(ctx context.Context, key storage.ActivityKe
 	return rec, true, nil
 }
 
+// refreshActivity bypasses any cached hit or miss and reloads the activity
+// from the authoritative store. Claim arbitration uses this after a failed or
+// successful create: another invocation may have committed a terminal record
+// after this run cached an earlier miss. The refreshed value is written back
+// into the run cache so subsequent replay reads observe the same state.
+func (c *runScopedCache) refreshActivity(
+	ctx context.Context,
+	key storage.ActivityKey,
+) (*temporalessv1.ActivityRecord, bool, error) {
+	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
+		return c.inner.GetActivity(ctx, key)
+	}
+	rec, found, err := c.inner.GetActivity(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	c.mu.Lock()
+	if found {
+		c.activities[key.ActivityID] = rec
+	} else {
+		c.activities[key.ActivityID] = nil
+	}
+	c.mu.Unlock()
+	if !found {
+		return nil, false, nil
+	}
+	return rec, true, nil
+}
+
 func (c *runScopedCache) PutActivity(ctx context.Context, record *temporalessv1.ActivityRecord) error {
 	if err := c.inner.PutActivity(ctx, record); err != nil {
 		return err

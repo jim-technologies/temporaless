@@ -15,6 +15,7 @@ import (
 
 var _ storage.Store = (*ClientStore)(nil)
 var _ storage.ClaimStore = (*ClientStore)(nil)
+var _ storage.ClaimRunStore = (*ClientStore)(nil)
 
 type ClientStore struct {
 	client      temporalessv1connect.RecordStoreServiceClient
@@ -39,7 +40,7 @@ func NewLocalClientStore(store storage.Store) *ClientStore {
 // NewLocalClientStoreWithClaims is NewLocalClientStore with an explicit claim
 // store for the RecordStoreService side.
 func NewLocalClientStoreWithClaims(store storage.Store, claimStore storage.ClaimStore) *ClientStore {
-	return NewClientStoreWithQuery(NewHandlerWithClaims(store, claimStore), NewQueryHandler(store))
+	return NewClientStoreWithQuery(NewHandlerWithClaims(store, claimStore), NewQueryHandlerWithClaims(store, claimStore))
 }
 
 // NewHTTPClientStore wraps remote RecordStoreService and RecordQueryService
@@ -179,6 +180,16 @@ func (store *ClientStore) ListEvents(ctx context.Context, key storage.WorkflowKe
 	return resp.Msg.GetRecords(), nil
 }
 
+func (store *ClientStore) ListClaims(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
+	resp, err := store.client.ListClaims(ctx, connect.NewRequest(&temporalessv1.ListClaimsRequest{
+		Key: key.Proto(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRecords(), nil
+}
+
 func (store *ClientStore) DeleteEvent(ctx context.Context, key storage.EventKey) (bool, error) {
 	resp, err := store.client.DeleteEvent(ctx, connect.NewRequest(&temporalessv1.DeleteEventRequest{
 		Key: key.Proto(),
@@ -240,6 +251,16 @@ func (store *ClientStore) DeleteClaim(ctx context.Context, key storage.ClaimKey)
 	}))
 	if err != nil {
 		return false, err
+	}
+	return resp.Msg.GetDeleted(), nil
+}
+
+func (store *ClientStore) DeleteRun(ctx context.Context, key storage.WorkflowKey) (uint32, error) {
+	resp, err := store.client.DeleteRun(ctx, connect.NewRequest(&temporalessv1.DeleteRunRequest{
+		Key: key.Proto(),
+	}))
+	if err != nil {
+		return 0, err
 	}
 	return resp.Msg.GetDeleted(), nil
 }

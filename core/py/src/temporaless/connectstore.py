@@ -11,19 +11,28 @@ from connectrpc.errors import ConnectError
 from connectrpc.interceptor import Interceptor
 from connectrpc.request import RequestContext
 from google.protobuf.duration_pb2 import Duration
+from google.protobuf.message import DecodeError
 from google.protobuf.timestamp_pb2 import Timestamp
+from protovalidate import ValidationError
 
 from temporaless.storage import (
     NO_CLAIMS,
     ActivityKey,
     ClaimKey,
+    ClaimRunListingUnsupportedError,
+    ClaimRunStore,
     ClaimStore,
     DueTimer,
     EventKey,
     QueryStore,
+    RunRecordValidationError,
     Store,
     TimerKey,
     WorkflowKey,
+    _activity_keys_for_run,
+    _claim_keys_for_run,
+    _event_keys_for_run,
+    _timer_keys_for_run,
     activity_key_from_proto,
     claim_key_from_proto,
     event_key_from_proto,
@@ -97,6 +106,10 @@ class RecordStoreClient(Protocol):
     async def list_events(
         self, request: temporaless_pb2.ListEventsRequest
     ) -> temporaless_pb2.ListEventsResponse: ...
+
+    async def list_claims(
+        self, request: temporaless_pb2.ListClaimsRequest
+    ) -> temporaless_pb2.ListClaimsResponse: ...
 
     async def delete_workflow(
         self, request: temporaless_pb2.DeleteWorkflowRequest
@@ -275,6 +288,12 @@ class ConnectStore:
     async def list_events(self, key: WorkflowKey) -> list[temporaless_pb2.EventRecord]:
         response = await self._client.list_events(
             temporaless_pb2.ListEventsRequest(key=key.to_proto())
+        )
+        return list(response.records)
+
+    async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
+        response = await self._client.list_claims(
+            temporaless_pb2.ListClaimsRequest(key=key.to_proto())
         )
         return list(response.records)
 
@@ -587,6 +606,14 @@ class RecordStoreService:
         records = await self._store.list_events(workflow_key_from_proto(request.key))
         return temporaless_pb2.ListEventsResponse(records=records)
 
+    async def list_claims(
+        self,
+        request: temporaless_pb2.ListClaimsRequest,
+        ctx: RequestContext | None,
+    ) -> temporaless_pb2.ListClaimsResponse:
+        records = await self._claims_for_run(workflow_key_from_proto(request.key))
+        return temporaless_pb2.ListClaimsResponse(records=records)
+
     async def delete_workflow(
         self,
         request: temporaless_pb2.DeleteWorkflowRequest,
@@ -624,8 +651,61 @@ class RecordStoreService:
         request: temporaless_pb2.DeleteRunRequest,
         ctx: RequestContext | None,
     ) -> temporaless_pb2.DeleteRunResponse:
-        deleted = await self._store.delete_run(workflow_key_from_proto(request.key))
+        key = workflow_key_from_proto(request.key)
+        deleted = 0
+        # A separately configured claim store is authoritative for claims.
+        # Preflight every bounded listing before mutating anything, then
+        # remove claims first so later record deletion can be retried.
+        await self._validate_record_listings_for_run(key)
+        claims = await self._claims_for_run(key)
+        if self._claim_store is not None:
+            for claim in claims:
+                if await self._claim_store.delete_claim(claim_key_from_proto(claim.key)):
+                    deleted += 1
+        try:
+            deleted += await self._store.delete_run(key)
+        except (DecodeError, ValidationError, ValueError) as exc:
+            raise ConnectError(Code.DATA_LOSS, f"invalid record in run deletion: {exc}") from exc
         return temporaless_pb2.DeleteRunResponse(deleted=deleted)
+
+    async def _validate_record_listings_for_run(self, key: WorkflowKey) -> None:
+        try:
+            activities = await self._store.list_activities(key)
+            timers = await self._store.list_timers(key, temporaless_pb2.TIMER_STATUS_UNSPECIFIED)
+            events = await self._store.list_events(key)
+            _activity_keys_for_run(key, activities)
+            _timer_keys_for_run(key, timers)
+            _event_keys_for_run(key, events)
+        except (DecodeError, ValidationError, ValueError) as exc:
+            raise ConnectError(Code.DATA_LOSS, f"invalid record key in run listing: {exc}") from exc
+
+    async def _claims_for_run(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
+        if self._claim_store is None:
+            return []
+        capability = await self._claim_store.claim_capability()
+        if capability not in (
+            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+        ):
+            return []
+        if not isinstance(self._claim_store, ClaimRunStore):
+            raise ConnectError(
+                Code.FAILED_PRECONDITION,
+                "claim store does not support run-scoped claim listing",
+            )
+        try:
+            records = await self._claim_store.list_claims(key)
+            _claim_keys_for_run(key, records)
+        except TypeError as exc:
+            # Structural pass-through adapters expose list_claims even when
+            # their wrapped create-only claim store lacks ClaimRunStore.
+            raise ConnectError(
+                Code.FAILED_PRECONDITION,
+                "claim store does not support run-scoped claim listing",
+            ) from exc
+        except (DecodeError, ValidationError, ValueError) as exc:
+            raise ConnectError(Code.DATA_LOSS, f"invalid claim key in run listing: {exc}") from exc
+        return records
 
     async def due_timers(
         self,
@@ -696,7 +776,15 @@ class RecordQueryService:
         if now.tzinfo is None:
             now = now.replace(tzinfo=UTC)
         max_age = request.max_age.ToTimedelta()
-        deleted = await self._query.sweep(request.namespace, now, max_age)
+        try:
+            deleted = await self._query.sweep(request.namespace, now, max_age)
+        except ClaimRunListingUnsupportedError as exc:
+            raise ConnectError(
+                Code.FAILED_PRECONDITION,
+                "claim store does not support run-scoped claim listing",
+            ) from exc
+        except (DecodeError, ValidationError, RunRecordValidationError) as exc:
+            raise ConnectError(Code.DATA_LOSS, f"invalid record in retention sweep: {exc}") from exc
         return temporaless_pb2.SweepResponse(deleted=deleted)
 
     async def due_timers(
@@ -809,6 +897,11 @@ class LocalRecordStoreClient:
         self, request: temporaless_pb2.ListEventsRequest
     ) -> temporaless_pb2.ListEventsResponse:
         return await self.service.list_events(request, None)
+
+    async def list_claims(
+        self, request: temporaless_pb2.ListClaimsRequest
+    ) -> temporaless_pb2.ListClaimsResponse:
+        return await self.service.list_claims(request, None)
 
     async def delete_workflow(
         self, request: temporaless_pb2.DeleteWorkflowRequest

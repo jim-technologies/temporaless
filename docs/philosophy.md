@@ -23,7 +23,7 @@ There is no engine to run, no control plane to operate. Every workflow boundary 
 Consequences:
 
 - **Pods are interchangeable.** What you deploy is a Store backend (S3 / GCS / Azure Blob) and stateless processes calling `workflow.run`.
-- **Multi-process is free.** `workflow.run` is idempotent on `(workflow_id, run_id, code_version)`. Two workers racing produce the same result.
+- **Multi-process is explicit.** Terminal runs replay on `(workflow_id, run_id, code_version)`. To serialize two workers racing on missing or `IN_PROGRESS` work, supply `claim_owner_id` with an atomic claim store; otherwise execution is at-least-once.
 - **Disaster recovery is the storage backup.** Records are the state.
 - **Search is derived.** The core does point reads/writes on your bucket. Cross-run listings, inspector views, and age-based sweeps come from an optional rebuildable query index.
 

@@ -121,10 +121,10 @@ type Invoke[Resp any] func(ctx context.Context, runID string) (Resp, error)
 // the results into a Report. Per-run errors are independent unless
 // opts.HaltOnError is set.
 //
-// Workflow runs that stay IN_PROGRESS (TimerPendingError, EventPendingError,
-// WorkflowDependencyPendingError, or their connect.CodeUnavailable mapped
-// form) are reported as Pending — they aren't failures, they need a scanner
-// to re-invoke them.
+// Workflow runs that stay IN_PROGRESS (timer/event/dependency pending or a
+// live claim holder), plus concurrency-cap contention, are reported as
+// Pending. Their ConnectRPC forms (Unavailable, AlreadyExists, and
+// ResourceExhausted) are classified the same way.
 func Backfill[Resp any](
 	ctx context.Context,
 	runIDs []string,
@@ -210,9 +210,20 @@ func isPendingError(err error) bool {
 	if errors.As(err, &depPending) {
 		return true
 	}
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) && connectErr.Code() == connect.CodeUnavailable {
+	var claimBusy *workflow.ClaimBusyError
+	if errors.As(err, &claimBusy) {
 		return true
+	}
+	var concurrencyBusy *workflow.ConcurrencyBusyError
+	if errors.As(err, &concurrencyBusy) {
+		return true
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		switch connectErr.Code() {
+		case connect.CodeUnavailable, connect.CodeAlreadyExists, connect.CodeResourceExhausted:
+			return true
+		}
 	}
 	return false
 }

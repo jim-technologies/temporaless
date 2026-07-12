@@ -27,6 +27,15 @@ func TestHandlerClaimRPCsRequireClaimStore(t *testing.T) {
 	if _, err := handler.TryCreateClaim(ctx, connect.NewRequest(&temporalessv1.TryCreateClaimRequest{})); err == nil {
 		t.Fatal("TryCreateClaim should error without claim store")
 	}
+	listed, err := handler.ListClaims(ctx, connect.NewRequest(&temporalessv1.ListClaimsRequest{
+		Key: storage.NewWorkflowKey("missing", "run").Proto(),
+	}))
+	if err != nil {
+		t.Fatalf("ListClaims without claim store: %v", err)
+	}
+	if len(listed.Msg.GetRecords()) != 0 {
+		t.Fatalf("ListClaims count = %d, want 0", len(listed.Msg.GetRecords()))
+	}
 }
 
 func TestHandlerGetWorkflowReportsNotFound(t *testing.T) {

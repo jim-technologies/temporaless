@@ -43,6 +43,8 @@ import (
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // schemeRegistry maps the user-facing --store-scheme flag to OpenDAL Schemes.
@@ -368,7 +370,10 @@ func cmdSweep(ctx context.Context, store storage.Store, args []string, stdout io
 	if maxAge <= 0 {
 		return errors.New("--max-age must be > 0")
 	}
-	deleted, err := janitor.Sweep(ctx, store, time.Now().UTC(), maxAge)
+	deleted, err := janitor.Sweep(ctx, store, nil, &temporalessv1.SweepRequest{
+		Now:    timestamppb.New(time.Now().UTC()),
+		MaxAge: durationpb.New(maxAge),
+	})
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
-import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -37,7 +36,7 @@ from temporaless.v1 import temporaless_pb2
 
 RequestT = TypeVar("RequestT", bound=Message)
 ResultT = TypeVar("ResultT", bound=Message)
-DEFAULT_CLAIM_LEASE_DURATION = timedelta(minutes=15)
+TaskResultT = TypeVar("TaskResultT")
 Options = temporaless_pb2.WorkflowOptions
 ActivityOptions = temporaless_pb2.ActivityOptions
 RetryPolicy = temporaless_pb2.RetryPolicy
@@ -48,11 +47,42 @@ RetryPolicy = temporaless_pb2.RetryPolicy
 # contract is the single source of truth — renaming any reserved string is a
 # one-line proto change plus regenerate, no SDK constant drifts.
 _RESERVED_NAMES = temporaless_pb2.ReservedNames()
+_RUNTIME_DEFAULTS = temporaless_pb2.RuntimeDefaults()
+DEFAULT_CLAIM_LEASE_DURATION = timedelta(seconds=_RUNTIME_DEFAULTS.claim_lease_duration_seconds)
 
 # Marks timer records owned by the runtime's durable retry path. User code
 # passing this prefix to ``Workflow.sleep`` is rejected so framework-managed
 # retry timers don't collide with user timers.
 ACTIVITY_RETRY_TIMER_ID_PREFIX = _RESERVED_NAMES.activity_retry_timer_id_prefix
+ACTIVITY_CLAIM_ID_PREFIX = _RESERVED_NAMES.activity_claim_id_prefix
+
+# Deterministic claim_id used to serialize live invocations of one workflow
+# run. The workflow_id and run_id live in the surrounding ClaimKey.
+WORKFLOW_EXECUTION_CLAIM_ID = _RESERVED_NAMES.workflow_execution_claim_id
+
+
+async def _await_task_to_completion(
+    task: asyncio.Task[TaskResultT],
+) -> tuple[TaskResultT, asyncio.CancelledError | None]:
+    """Wait for a state-changing child task without letting repeated parent
+    cancellation abandon it mid-operation.
+
+    Returns the first cancellation request after the child has resolved. The
+    caller records the acquired/released state, then re-raises cancellation.
+    ``uncancel`` removes only the request consumed here; any earlier
+    cancellation already propagating through a surrounding finally remains.
+    """
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+    return task.result(), cancellation
 
 
 def _activity_retry_timer_id(activity_id: str) -> str:
@@ -74,8 +104,9 @@ async def _acquire_concurrency_slot(
     """Try slots 0..limit-1 in order; return the slot_id of the acquired slot
     or None when all slots are taken by other owners.
 
-    A slot held by the same owner is treated as re-acquired (crash recovery),
-    so one workflow can't consume multiple slots across crash boundaries.
+    Existing slots are always occupied, even when owner_id matches. Treating a
+    matching owner as re-acquired would let two live duplicate invocations
+    share and prematurely release the same slot.
 
     Distributed-safe: uses only :meth:`ClaimStore.try_create_claim` (the
     storage backend arbitrates the create race via S3 If-None-Match / GCS
@@ -108,11 +139,6 @@ async def _acquire_concurrency_slot(
         )
         if await claim_store.try_create_claim(claim):
             return slot_id
-        # Slot taken — see whether it's our own stale claim from a prior
-        # invocation that crashed before releasing.
-        existing = await claim_store.get_claim(slot_key)
-        if existing is not None and existing.owner_id == owner_id:
-            return slot_id
     return None
 
 
@@ -132,6 +158,50 @@ async def _release_concurrency_slot(
         claim_id=slot_id,
     )
     await claim_store.delete_claim(slot_key)
+
+
+async def _release_activity_claim(claim_store: ClaimStore, claim_key: ClaimKey) -> None:
+    try:
+        await claim_store.delete_claim(claim_key)
+    except BaseException as exc:
+        raise ClaimReleaseError("activity claim", exc) from exc
+
+
+async def _release_invocation_claims(
+    claim_store: ClaimStore,
+    concurrency_key: str,
+    acquired_slot_id: str | None,
+    workflow_claim_key: ClaimKey | None,
+) -> None:
+    """Release every claim held by one workflow invocation.
+
+    Both deletes are attempted. Cleanup failures are surfaced to the caller;
+    silently returning a pending workflow with a leaked create-only claim
+    would make every later resume fail with ClaimBusyError.
+    """
+    failures: list[ClaimReleaseError] = []
+    if acquired_slot_id is not None and concurrency_key:
+        try:
+            await _release_concurrency_slot(
+                claim_store,
+                DEFAULT_NAMESPACE,
+                concurrency_key,
+                acquired_slot_id,
+            )
+        except BaseException as exc:  # cleanup must still attempt the run claim
+            failures.append(ClaimReleaseError("concurrency slot", exc))
+    if workflow_claim_key is not None:
+        try:
+            await claim_store.delete_claim(workflow_claim_key)
+        except BaseException as exc:  # surfaced after both deletes are attempted
+            failures.append(ClaimReleaseError("workflow execution claim", exc))
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise ClaimReleaseError(
+            "workflow invocation claims",
+            ExceptionGroup("multiple claim releases failed", failures),
+        )
 
 
 def default_retry_policy() -> RetryPolicy:
@@ -258,13 +328,6 @@ class ConcurrencyBusyError(RuntimeError):
 CONCURRENCY_WORKFLOW_ID = _RESERVED_NAMES.concurrency_workflow_id
 
 
-def _concurrency_owner_id(workflow_id: str, run_id: str) -> str:
-    """Stable owner identity for the workflow holding the slot. Using
-    ``workflow_id:run_id`` lets a crashed invocation's next invocation
-    re-acquire its previously-held slot (idempotent recovery)."""
-    return f"{workflow_id}:{run_id}"
-
-
 class ClaimBusyError(RuntimeError):
     def __init__(
         self,
@@ -275,12 +338,39 @@ class ClaimBusyError(RuntimeError):
     ) -> None:
         message = f"claim {claim_id!r} is busy"
         if lease_expires_at is not None:
-            message = f"{message} until {lease_expires_at.isoformat()}"
+            message = f"{message} (recorded lease expiry {lease_expires_at.isoformat()})"
         super().__init__(message)
         self.claim_id = claim_id
         self.owner_id = owner_id
         self.lease_expires_at = lease_expires_at
         self.capability = capability
+
+
+class ClaimReleaseError(RuntimeError):
+    """Raised when an acquired workflow or concurrency claim cannot be
+    released. Retrying may remain busy until operator cleanup."""
+
+    def __init__(self, resource: str, cause: BaseException) -> None:
+        super().__init__(f"failed to release {resource}: {cause}")
+        self.resource = resource
+        self.__cause__ = cause
+
+
+class ClaimCapabilityError(RuntimeError):
+    """Requested claim coordination is unavailable from the configured store.
+
+    The runtime fails closed rather than silently degrading ``claim_owner_id``
+    or ``concurrency_key`` to at-least-once execution.
+    """
+
+    def __init__(self, capability: temporaless_pb2.ClaimCapability, option: str) -> None:
+        try:
+            capability_name = temporaless_pb2.ClaimCapability.Name(capability)
+        except ValueError:
+            capability_name = str(capability)
+        super().__init__(f"claim capability {capability_name} does not support {option}")
+        self.capability = capability
+        self.option = option
 
 
 class TimerConflictError(RuntimeError):
@@ -338,6 +428,9 @@ def workflow_error_to_connect_code(exc: BaseException) -> tuple[object, str] | N
       ``WorkflowDependencyPendingError`` → ``UNAVAILABLE``
       (caller should retry later — workflow stays IN_PROGRESS).
     - ``ClaimBusyError`` → ``ALREADY_EXISTS`` (another worker holds the claim).
+    - ``ClaimReleaseError`` → ``INTERNAL`` (cleanup failed and retry may stay busy).
+    - ``ClaimCapabilityError`` → ``FAILED_PRECONDITION`` (the store cannot
+      provide coordination requested by the workflow options).
     - ``WorkflowConflictError``, ``ActivityConflictError``, ``TimerConflictError``
       → ``FAILED_PRECONDITION`` (stored record's workflow_type / activity_type
       / timer kind / code_version is incompatible with the current call).
@@ -351,12 +444,16 @@ def workflow_error_to_connect_code(exc: BaseException) -> tuple[object, str] | N
     """
     from connectrpc.code import Code
 
+    if isinstance(exc, ClaimReleaseError):
+        return (Code.INTERNAL, str(exc))
     if isinstance(exc, (TimerPendingError, EventPendingError, WorkflowDependencyPendingError)):
         return (Code.UNAVAILABLE, str(exc))
     if isinstance(exc, ClaimBusyError):
         return (Code.ALREADY_EXISTS, str(exc))
     if isinstance(exc, ConcurrencyBusyError):
         return (Code.RESOURCE_EXHAUSTED, str(exc))
+    if isinstance(exc, ClaimCapabilityError):
+        return (Code.FAILED_PRECONDITION, str(exc))
     if isinstance(exc, (WorkflowConflictError, ActivityConflictError, TimerConflictError)):
         return (Code.FAILED_PRECONDITION, str(exc))
     if isinstance(exc, (ActivityError, WorkflowDependencyFailedError)):
@@ -425,6 +522,8 @@ class Workflow:
         self,
         store: Store,
         options: Options,
+        *,
+        claim_capability: temporaless_pb2.ClaimCapability | None = None,
     ) -> None:
         options = normalized_workflow_options(options)
         claim_store: ClaimStore | None = None
@@ -434,6 +533,7 @@ class Workflow:
             claim_store = store
         self._store = store
         self._claim_store = claim_store
+        self._claim_capability = claim_capability
         self._workflow_id = options.workflow_id
         self._run_id = options.run_id
         self._code_version = options.code_version
@@ -471,208 +571,283 @@ class Workflow:
             activity_id=activity_id,
         )
 
-        record = await self._store.get_activity(key)
-        attempts: list[temporaless_pb2.ActivityAttempt] = []
-        seeded_annotations: dict[str, str] = {}
-        if record is not None:
-            if record.status in (
+        def inspect_record(
+            stored: temporaless_pb2.ActivityRecord | None,
+        ) -> tuple[
+            ResultT | None,
+            list[temporaless_pb2.ActivityAttempt],
+            dict[str, str],
+            datetime | None,
+        ]:
+            if stored is None:
+                return None, [], {}, None
+            if stored.status in (
                 temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                 temporaless_pb2.ACTIVITY_STATUS_FAILED,
             ):
-                return _replay_record(record, activity_type, self._code_version, result_factory)
-            if record.status == temporaless_pb2.ACTIVITY_STATUS_RETRYING:
-                _assert_activity_identity(record, activity_type, self._code_version)
-                # Durable retry resume: if the record carries next_attempt_at
-                # and the wake instant hasn't arrived yet, bail back to the
-                # workflow as pending. The paired TIMER_KIND_ACTIVITY_RETRY
-                # timer keeps the scanner waking the workflow until fire_at.
-                if record.HasField("next_attempt_at"):
-                    wake_at = record.next_attempt_at.ToDatetime().replace(tzinfo=UTC)
-                    if datetime.now(UTC) < wake_at:
-                        raise TimerPendingError(_activity_retry_timer_id(activity_id), wake_at)
-                    # Past the wake instant — mark the paired timer FIRED so
-                    # the scanner stops returning it while we run the resume.
-                    await self._mark_activity_retry_timer_fired(activity_id)
-                attempts = list(record.attempts)
-                # Restore prior annotations so per-attempt metadata survives
-                # cross-invocation resumes.
-                seeded_annotations = dict(record.annotations)
-            else:
+                return (
+                    _replay_record(stored, activity_type, self._code_version, result_factory),
+                    [],
+                    {},
+                    None,
+                )
+            if stored.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING:
                 raise ActivityConflictError("stored activity has unknown status")
+            _assert_activity_identity(stored, activity_type, self._code_version)
+            wake_at = None
+            if stored.HasField("next_attempt_at"):
+                wake_at = stored.next_attempt_at.ToDatetime().replace(tzinfo=UTC)
+            return None, list(stored.attempts), dict(stored.annotations), wake_at
 
-        if self._claim_owner is not None:
-            claim_id = f"activity:{activity_id}"
-            claim_key = ClaimKey(
-                workflow_id=self._workflow_id,
-                run_id=self._run_id,
-                claim_id=claim_id,
-            )
-            now = datetime.now(UTC)
-            created_at = Timestamp()
-            created_at.FromDatetime(now)
-            expires_at = Timestamp()
-            expires_at.FromDatetime(now + DEFAULT_CLAIM_LEASE_DURATION)
-            claim = temporaless_pb2.ClaimRecord(
-                schema_version=CLAIM_RECORD_SCHEMA_VERSION,
-                key=claim_key.to_proto(),
-                owner_id=self._claim_owner,
-                resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
-                resource_id=activity_id,
-                code_version=self._code_version,
-                lease_expires_at=expires_at,
-                created_at=created_at,
-                heartbeat_at=created_at,
-            )
-            if self._claim_store is None:
-                raise ValueError("claim store is required when claim owner is provided")
-            if not await self._claim_store.try_create_claim(claim):
-                fresh = await self._store.get_activity(key)
-                if fresh is not None and fresh.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING:
-                    return _replay_record(
-                        fresh,
-                        activity_type,
-                        self._code_version,
-                        result_factory,
-                    )
+        record = await self._store.get_activity(key)
+        replayed, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
+        if replayed is not None:
+            return replayed
+        if retry_wake_at is not None and datetime.now(UTC) < retry_wake_at:
+            raise TimerPendingError(_activity_retry_timer_id(activity_id), retry_wake_at)
 
-                existing = await self._claim_store.get_claim(claim_key)
-                if existing is not None and existing.owner_id == self._claim_owner:
-                    # We already own the claim — resuming a prior attempt by
-                    # the same owner. Safe to proceed.
-                    pass
-                elif existing is None:
-                    raise ClaimBusyError(
-                        claim_id, capability=await self._claim_store.claim_capability()
-                    )
-                else:
-                    lease_expires_at = existing.lease_expires_at.ToDatetime().replace(tzinfo=UTC)
-                    raise ClaimBusyError(
-                        claim_id,
-                        existing.owner_id,
-                        lease_expires_at,
-                        await self._claim_store.claim_capability(),
-                    )
-
-        input_any = Any()
-        input_any.Pack(input_message)
-
-        interval = plan.initial_interval
-        attempt_idx = len(attempts)
-        activity_annotations = _AnnotationsBag(data=dict(seeded_annotations))
-        annotations_token = _annotations_var.set(activity_annotations)
+        activity_claim_key: ClaimKey | None = None
+        activity_claim_acquired = False
+        release_activity_claim = False
         try:
-            while attempt_idx < plan.maximum_attempts:
-                attempt_idx += 1
-                started_at = datetime.now(UTC)
-                try:
-                    result = await execute()
-                except asyncio.CancelledError:
-                    # Cancellation is shutdown signal, not a vendor failure —
-                    # propagate without persisting an attempt or retrying.
-                    raise
-                except BaseException as run_err:  # noqa: BLE001 - we want to capture user errors
-                    completed_at = datetime.now(UTC)
-                    failure = _failure_from_exception(run_err)
-                    attempt_record = temporaless_pb2.ActivityAttempt(
-                        attempt=attempt_idx,
-                        failure=failure,
+            if self._claim_owner is not None:
+                if self._claim_store is None:
+                    raise ValueError("claim store is required when claim owner is provided")
+                if self._claim_capability is None:
+                    self._claim_capability = await self._claim_store.claim_capability()
+                if self._claim_capability not in (
+                    temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+                    temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+                ):
+                    raise ClaimCapabilityError(self._claim_capability, "claim_owner_id")
+                claim_id = f"{ACTIVITY_CLAIM_ID_PREFIX}{activity_id}"
+                activity_claim_key = ClaimKey(
+                    workflow_id=self._workflow_id,
+                    run_id=self._run_id,
+                    claim_id=claim_id,
+                )
+                for claim_attempt in range(2):
+                    now = datetime.now(UTC)
+                    created_at = Timestamp()
+                    created_at.FromDatetime(now)
+                    expires_at = Timestamp()
+                    expires_at.FromDatetime(now + DEFAULT_CLAIM_LEASE_DURATION)
+                    claim = temporaless_pb2.ClaimRecord(
+                        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+                        key=activity_claim_key.to_proto(),
+                        owner_id=self._claim_owner,
+                        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
+                        resource_id=activity_id,
+                        code_version=self._code_version,
+                        lease_expires_at=expires_at,
+                        created_at=created_at,
+                        heartbeat_at=created_at,
                     )
-                    attempt_record.started_at.FromDatetime(started_at)
-                    attempt_record.completed_at.FromDatetime(completed_at)
-                    attempts.append(attempt_record)
+                    create_task = asyncio.create_task(self._claim_store.try_create_claim(claim))
+                    created, acquisition_cancelled = await _await_task_to_completion(create_task)
+                    if acquisition_cancelled is not None:
+                        activity_claim_acquired = created
+                        raise acquisition_cancelled
+                    if created:
+                        activity_claim_acquired = True
+                        break
 
-                    # Vendor-supplied Retry-After overrides the computed
-                    # interval when it's longer. The configured exponential
-                    # schedule still applies as a floor — so an aggressive
-                    # policy doesn't undershoot a vendor's stated window.
-                    if failure.HasField("retry_after"):
-                        retry_after = failure.retry_after.ToTimedelta()
-                        if retry_after > interval:
-                            interval = retry_after
+                    # A terminal activity may have appeared after our cached
+                    # negative read and failed conditional create. Bypass the
+                    # normal replay cache and update it with authoritative state.
+                    if isinstance(self._store, RunScopedCache):
+                        fresh = await self._store.refresh_activity(key)
+                    else:
+                        fresh = await self._store.get_activity(key)
+                    if (
+                        fresh is not None
+                        and fresh.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING
+                    ):
+                        return _replay_record(
+                            fresh,
+                            activity_type,
+                            self._code_version,
+                            result_factory,
+                        )
 
-                    non_retryable = failure.code in plan.non_retryable_codes
-                    if attempt_idx >= plan.maximum_attempts or non_retryable:
-                        failed_record = temporaless_pb2.ActivityRecord(
+                    existing = await self._claim_store.get_claim(activity_claim_key)
+                    if existing is not None or claim_attempt == 1:
+                        owner_id = None
+                        lease_expires_at = None
+                        if existing is not None:
+                            owner_id = existing.owner_id
+                            if existing.HasField("lease_expires_at"):
+                                lease_expires_at = existing.lease_expires_at.ToDatetime().replace(
+                                    tzinfo=UTC
+                                )
+                        raise ClaimBusyError(
+                            claim_id,
+                            owner_id,
+                            lease_expires_at,
+                            self._claim_capability,
+                        )
+
+                if not activity_claim_acquired:
+                    raise RuntimeError("failed to acquire activity claim")
+
+                # A prior holder may have completed or advanced the retry
+                # record immediately before releasing. Refresh again after we
+                # own the claim and derive all retry state from that record.
+                release_activity_claim = True
+                if isinstance(self._store, RunScopedCache):
+                    record = await self._store.refresh_activity(key)
+                else:
+                    record = await self._store.get_activity(key)
+                replayed, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
+                if replayed is not None:
+                    return replayed
+                if retry_wake_at is not None and datetime.now(UTC) < retry_wake_at:
+                    raise TimerPendingError(_activity_retry_timer_id(activity_id), retry_wake_at)
+                # From this point through the activity body, an exception may
+                # mean a side effect or storage write had an ambiguous outcome.
+                release_activity_claim = False
+
+            # Only consume a due retry timer after claim arbitration. A busy
+            # activity leaves the timer scheduled so the scanner can try again.
+            if retry_wake_at is not None:
+                await self._mark_activity_retry_timer_fired(activity_id)
+
+            input_any = Any()
+            input_any.Pack(input_message)
+
+            interval = plan.initial_interval
+            attempt_idx = len(attempts)
+            activity_annotations = _AnnotationsBag(data=dict(seeded_annotations))
+            annotations_token = _annotations_var.set(activity_annotations)
+            try:
+                while attempt_idx < plan.maximum_attempts:
+                    attempt_idx += 1
+                    started_at = datetime.now(UTC)
+                    try:
+                        # A persisted in-process backoff is a safe release
+                        # boundary, but the next body attempt is ambiguous
+                        # again as soon as it starts.
+                        release_activity_claim = False
+                        result = await execute()
+                    except asyncio.CancelledError:
+                        # Cancellation can arrive after an external side effect
+                        # but before its result record. Retain the create-only
+                        # claim for verified operator recovery.
+                        raise
+                    except BaseException as run_err:  # noqa: BLE001
+                        completed_at = datetime.now(UTC)
+                        failure = _failure_from_exception(run_err)
+                        attempt_record = temporaless_pb2.ActivityAttempt(
+                            attempt=attempt_idx,
+                            failure=failure,
+                        )
+                        attempt_record.started_at.FromDatetime(started_at)
+                        attempt_record.completed_at.FromDatetime(completed_at)
+                        attempts.append(attempt_record)
+
+                        if failure.HasField("retry_after"):
+                            retry_after = failure.retry_after.ToTimedelta()
+                            if retry_after > interval:
+                                interval = retry_after
+
+                        non_retryable = failure.code in plan.non_retryable_codes
+                        if attempt_idx >= plan.maximum_attempts or non_retryable:
+                            failed_record = temporaless_pb2.ActivityRecord(
+                                schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+                                key=key.to_proto(),
+                                activity_type=activity_type,
+                                code_version=self._code_version,
+                                input=input_any,
+                                status=temporaless_pb2.ACTIVITY_STATUS_FAILED,
+                                failure=failure,
+                                attempts=attempts,
+                                annotations=activity_annotations.snapshot(),
+                            )
+                            failed_record.created_at.FromDatetime(
+                                attempts[0].started_at.ToDatetime()
+                            )
+                            failed_record.completed_at.FromDatetime(completed_at)
+                            await self._store.put_activity(failed_record)
+                            release_activity_claim = True
+                            raise ActivityError(failure.code, failure.message, run_err) from run_err
+
+                        retrying_record = temporaless_pb2.ActivityRecord(
                             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                             key=key.to_proto(),
                             activity_type=activity_type,
                             code_version=self._code_version,
                             input=input_any,
-                            status=temporaless_pb2.ACTIVITY_STATUS_FAILED,
+                            status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
                             failure=failure,
                             attempts=attempts,
                             annotations=activity_annotations.snapshot(),
                         )
-                        failed_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
-                        failed_record.completed_at.FromDatetime(completed_at)
-                        await self._store.put_activity(failed_record)
-                        raise ActivityError(failure.code, failure.message, run_err) from run_err
+                        retrying_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
 
-                    retrying_record = temporaless_pb2.ActivityRecord(
+                        if (
+                            plan.durable_threshold > timedelta(0)
+                            and interval >= plan.durable_threshold
+                        ):
+                            next_attempt_at = datetime.now(UTC) + interval
+                            next_at_ts = Timestamp()
+                            next_at_ts.FromDatetime(next_attempt_at)
+                            retrying_record.next_attempt_at.CopyFrom(next_at_ts)
+                            await self._store.put_activity(retrying_record)
+                            await self._put_activity_retry_timer(
+                                activity_id, interval, next_attempt_at
+                            )
+                            release_activity_claim = True
+                            raise TimerPendingError(
+                                _activity_retry_timer_id(activity_id), next_attempt_at
+                            ) from None
+
+                        await self._store.put_activity(retrying_record)
+                        release_activity_claim = True
+                        await asyncio.sleep(interval.total_seconds())
+                        interval = _next_interval(interval, plan)
+                        continue
+
+                    completed_at = datetime.now(UTC)
+                    attempt_record = temporaless_pb2.ActivityAttempt(attempt=attempt_idx)
+                    attempt_record.started_at.FromDatetime(started_at)
+                    attempt_record.completed_at.FromDatetime(completed_at)
+                    attempts.append(attempt_record)
+
+                    result_any = Any()
+                    result_any.Pack(result)
+                    completed_record = temporaless_pb2.ActivityRecord(
                         schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                         key=key.to_proto(),
                         activity_type=activity_type,
                         code_version=self._code_version,
                         input=input_any,
-                        status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
-                        failure=failure,
+                        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+                        result=result_any,
                         attempts=attempts,
                         annotations=activity_annotations.snapshot(),
                     )
-                    retrying_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
+                    completed_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
+                    completed_record.completed_at.FromDatetime(completed_at)
+                    await self._store.put_activity(completed_record)
+                    release_activity_claim = True
+                    return result
 
-                    # Durable retry branch: when the next backoff interval
-                    # crosses the configured threshold, persist the wait as a
-                    # TIMER_KIND_ACTIVITY_RETRY timer and surface
-                    # TimerPendingError. The timer scanner re-invokes the
-                    # workflow after fire_at; run_activity then enters the
-                    # RETRYING-resume branch above and continues the loop.
-                    if plan.durable_threshold > timedelta(0) and interval >= plan.durable_threshold:
-                        next_attempt_at = datetime.now(UTC) + interval
-                        next_at_ts = Timestamp()
-                        next_at_ts.FromDatetime(next_attempt_at)
-                        retrying_record.next_attempt_at.CopyFrom(next_at_ts)
-                        await self._store.put_activity(retrying_record)
-                        await self._put_activity_retry_timer(activity_id, interval, next_attempt_at)
-                        # `from None` because the workflow itself isn't
-                        # failing — the durable retry is a normal pending
-                        # signal, not an exception caused by run_err.
-                        raise TimerPendingError(
-                            _activity_retry_timer_id(activity_id), next_attempt_at
-                        ) from None
-
-                    await self._store.put_activity(retrying_record)
-                    await asyncio.sleep(interval.total_seconds())
-                    interval = _next_interval(interval, plan)
-                    continue
-
-                completed_at = datetime.now(UTC)
-                attempt_record = temporaless_pb2.ActivityAttempt(attempt=attempt_idx)
-                attempt_record.started_at.FromDatetime(started_at)
-                attempt_record.completed_at.FromDatetime(completed_at)
-                attempts.append(attempt_record)
-
-                result_any = Any()
-                result_any.Pack(result)
-                completed_record = temporaless_pb2.ActivityRecord(
-                    schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
-                    key=key.to_proto(),
-                    activity_type=activity_type,
-                    code_version=self._code_version,
-                    input=input_any,
-                    status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
-                    result=result_any,
-                    attempts=attempts,
-                    annotations=activity_annotations.snapshot(),
-                )
-                completed_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
-                completed_record.completed_at.FromDatetime(completed_at)
-                await self._store.put_activity(completed_record)
-                return result
-
-            raise RuntimeError(f"activity {activity_id!r} exhausted retry plan")
+                raise RuntimeError(f"activity {activity_id!r} exhausted retry plan")
+            finally:
+                _annotations_var.reset(annotations_token)
         finally:
-            _annotations_var.reset(annotations_token)
+            if (
+                release_activity_claim
+                and activity_claim_acquired
+                and activity_claim_key is not None
+                and self._claim_store is not None
+            ):
+                cleanup_task = asyncio.create_task(
+                    _release_activity_claim(self._claim_store, activity_claim_key)
+                )
+                _, cleanup_cancelled = await _await_task_to_completion(cleanup_task)
+                if cleanup_cancelled is not None:
+                    raise cleanup_cancelled
 
     async def execute_activity(
         self,
@@ -914,148 +1089,266 @@ async def run(
     workflow_type = message_pair_type("workflow", input_message, result_template)
     key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
 
-    # Substitute the user-provided store with a run-scoped cache. The cache
-    # is write-through for the underlying store and serves get-by-key reads
-    # from memory after prefetch — turning N round-trips per replay into
-    # one list per record kind. Out-of-scope reads (e.g. cross-pipeline
-    # dependencies) pass straight through. See _cache.py for the contract.
-    cache = RunScopedCache(store, key)
-    store = cache  # type: ignore[assignment]
+    raw_store = store
+    claim_store = cast("ClaimStore", raw_store) if isinstance(raw_store, ClaimStore) else None
 
-    record = await store.get_workflow(key)
-    created_at: Timestamp | None = None
-    if record is not None:
+    def inspect_record(
+        record: temporaless_pb2.WorkflowRecord | None,
+    ) -> tuple[ResultT | None, Timestamp | None]:
+        if record is None:
+            return None, None
         if record.status in (
             temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             temporaless_pb2.WORKFLOW_STATUS_FAILED,
         ):
-            return _replay_workflow_record(
-                record, workflow_type, options.code_version, result_factory
+            return (
+                _replay_workflow_record(
+                    record, workflow_type, options.code_version, result_factory
+                ),
+                None,
             )
         if record.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS:
             _assert_workflow_identity(record, workflow_type, options.code_version)
             created_at = Timestamp()
             created_at.CopyFrom(record.created_at)
-            # Replay: prefetch activities / timers / events in parallel so
-            # the body's subsequent get-by-key calls hit memory.
-            await cache.prefetch()
-        else:
-            raise WorkflowConflictError("stored workflow has unknown status")
+            return None, created_at
+        raise WorkflowConflictError("stored workflow has unknown status")
 
-    # Pre-emptive cluster-wide concurrency cap. Acquire BEFORE writing the
-    # IN_PROGRESS record so a "busy" condition leaves no observable side
-    # effect — the caller simply retries the same workflow.run when capacity
-    # is available. Released in the finally block so every exit path
-    # (success, failure, pending) frees the slot.
+    # Read terminal state before acquiring a claim so completed/failed runs
+    # remain pure replay, even if an old create-only claim was leaked.
+    record = await raw_store.get_workflow(key)
+    replayed, created_at = inspect_record(record)
+    if replayed is not None:
+        return replayed
+
+    claim_capability: temporaless_pb2.ClaimCapability | None = None
+    claim_option = ""
+    if options.concurrency_key:
+        claim_option = "concurrency_key"
+    elif options.claim_owner_id:
+        claim_option = "claim_owner_id"
+    if claim_option:
+        assert claim_store is not None
+        claim_capability = await claim_store.claim_capability()
+        if claim_capability not in (
+            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+        ):
+            raise ClaimCapabilityError(claim_capability, claim_option)
+
+    workflow_claim_key: ClaimKey | None = None
+    workflow_claim_acquired = False
     acquired_slot_id: str | None = None
-    if options.concurrency_key and options.concurrency_limit > 0:
-        owner_id = _concurrency_owner_id(options.workflow_id, options.run_id)
-        # `store` is now the RunScopedCache, which forwards claim methods to
-        # the wrapped underlying claim store. cast for ty.
-        acquired_slot_id = await _acquire_concurrency_slot(
-            cast("ClaimStore", store),
-            DEFAULT_NAMESPACE,
-            options.concurrency_key,
-            options.concurrency_limit,
-            owner_id,
-            options.code_version,
-            DEFAULT_CLAIM_LEASE_DURATION,
-        )
-        if acquired_slot_id is None:
-            raise ConcurrencyBusyError(options.concurrency_key, options.concurrency_limit)
-
-    input_any = Any()
-    input_any.Pack(input_message)
-
-    if created_at is None:
-        created_at = Timestamp()
-        created_at.GetCurrentTime()
-        in_progress = temporaless_pb2.WorkflowRecord(
-            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
-            key=key.to_proto(),
-            workflow_type=workflow_type,
-            code_version=options.code_version,
-            input=input_any,
-            status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
-            created_at=created_at,
-        )
-        await store.put_workflow(in_progress)
-
-    workflow = Workflow(
-        store=store,
-        options=options,
-    )
-    workflow_annotations = _AnnotationsBag()
-    annotations_token = _annotations_var.set(workflow_annotations)
-    workflow_token = _workflow_var.set(workflow)
     try:
-        try:
-            result = await execute(workflow, input_message)
-        except (TimerPendingError, ClaimBusyError, EventPendingError):
-            raise
-        except asyncio.CancelledError:
-            # Same rationale as inside run_activity: cancellation isn't a
-            # workflow failure. Leave the IN_PROGRESS record so the next
-            # invocation can resume.
-            raise
-        except BaseException as exc:
-            completed_at = Timestamp()
-            completed_at.GetCurrentTime()
-            failed = temporaless_pb2.WorkflowRecord(
+        # A caller-provided claim_owner_id opts this run into storage-backed
+        # single-flight execution. Any existing workflow claim is busy,
+        # including one with the same owner: concurrent requests often reuse a
+        # worker identity and still must not enter the body together.
+        if options.claim_owner_id:
+            if claim_store is None:
+                raise ValueError("claim store is required when claim owner is provided")
+            workflow_claim_key = ClaimKey(
+                workflow_id=options.workflow_id,
+                run_id=options.run_id,
+                claim_id=WORKFLOW_EXECUTION_CLAIM_ID,
+            )
+            for attempt in range(2):
+                now = datetime.now(UTC)
+                claim_created_at = Timestamp()
+                claim_created_at.FromDatetime(now)
+                claim_expires_at = Timestamp()
+                claim_expires_at.FromDatetime(now + DEFAULT_CLAIM_LEASE_DURATION)
+                claim_heartbeat_at = Timestamp()
+                claim_heartbeat_at.FromDatetime(now)
+                workflow_claim = temporaless_pb2.ClaimRecord(
+                    schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+                    key=workflow_claim_key.to_proto(),
+                    owner_id=options.claim_owner_id,
+                    resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+                    resource_id=options.workflow_id,
+                    code_version=options.code_version,
+                    lease_expires_at=claim_expires_at,
+                    created_at=claim_created_at,
+                    heartbeat_at=claim_heartbeat_at,
+                )
+                create_task = asyncio.create_task(claim_store.try_create_claim(workflow_claim))
+                created, acquisition_cancelled = await _await_task_to_completion(create_task)
+                if acquisition_cancelled is not None:
+                    # Record ownership before cancellation reaches the outer
+                    # finally so a successful conditional create is released.
+                    workflow_claim_acquired = created
+                    raise acquisition_cancelled
+                if created:
+                    workflow_claim_acquired = True
+                    break
+
+                # The winner may have completed between our initial read and
+                # failed claim create. Always re-read the raw store here; a
+                # run-scoped negative cache would be stale by construction.
+                fresh = await raw_store.get_workflow(key)
+                fresh_replay, _ = inspect_record(fresh)
+                if fresh_replay is not None:
+                    return fresh_replay
+
+                existing = await claim_store.get_claim(workflow_claim_key)
+                # A normal release can race our failed create. Retry once when
+                # the claim disappeared; otherwise return the current holder.
+                if existing is not None or attempt == 1:
+                    lease_expires_at = None
+                    owner_id = None
+                    if existing is not None:
+                        owner_id = existing.owner_id
+                        if existing.HasField("lease_expires_at"):
+                            lease_expires_at = existing.lease_expires_at.ToDatetime().replace(
+                                tzinfo=UTC
+                            )
+                    raise ClaimBusyError(
+                        workflow_claim_key.claim_id,
+                        owner_id,
+                        lease_expires_at,
+                        claim_capability,
+                    )
+
+            if not workflow_claim_acquired:
+                raise RuntimeError("failed to acquire workflow execution claim")
+
+            # State can change between the initial read and acquisition (for
+            # example a prior holder completed and released). Refresh before
+            # constructing a cache or entering the workflow body.
+            record = await raw_store.get_workflow(key)
+            replayed, created_at = inspect_record(record)
+            if replayed is not None:
+                return replayed
+
+        # Substitute the user-provided store with a fresh run-scoped cache
+        # only after claim arbitration. Writes remain write-through.
+        cache = RunScopedCache(raw_store, key)
+        store = cast("Store", cache)
+        if created_at is not None:
+            # Replay: prefetch activities / timers / events in parallel so the
+            # body's subsequent get-by-key calls hit memory.
+            await cache.prefetch()
+
+        # The per-run claim is acquired before the cluster-wide concurrency
+        # slot so a rejected duplicate does not consume global capacity.
+        if options.concurrency_key and options.concurrency_limit > 0:
+            if claim_store is None:
+                raise ValueError("claim store is required when concurrency_key is set")
+            slot_task = asyncio.create_task(
+                _acquire_concurrency_slot(
+                    claim_store,
+                    DEFAULT_NAMESPACE,
+                    options.concurrency_key,
+                    options.concurrency_limit,
+                    options.claim_owner_id,
+                    options.code_version,
+                    DEFAULT_CLAIM_LEASE_DURATION,
+                )
+            )
+            acquired_slot_id, acquisition_cancelled = await _await_task_to_completion(slot_task)
+            if acquisition_cancelled is not None:
+                raise acquisition_cancelled
+            if acquired_slot_id is None:
+                raise ConcurrencyBusyError(options.concurrency_key, options.concurrency_limit)
+
+        input_any = Any()
+        input_any.Pack(input_message)
+
+        if created_at is None:
+            created_at = Timestamp()
+            created_at.GetCurrentTime()
+            in_progress = temporaless_pb2.WorkflowRecord(
                 schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                 key=key.to_proto(),
                 workflow_type=workflow_type,
                 code_version=options.code_version,
                 input=input_any,
-                status=temporaless_pb2.WORKFLOW_STATUS_FAILED,
-                failure=_failure_from_exception(exc),
+                status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
+                created_at=created_at,
+            )
+            await store.put_workflow(in_progress)
+
+        workflow = Workflow(
+            store=store,
+            options=options,
+            claim_capability=claim_capability,
+        )
+        workflow_annotations = _AnnotationsBag()
+        annotations_token = _annotations_var.set(workflow_annotations)
+        workflow_token = _workflow_var.set(workflow)
+        try:
+            try:
+                result = await execute(workflow, input_message)
+            except (
+                TimerPendingError,
+                ClaimBusyError,
+                ClaimReleaseError,
+                EventPendingError,
+                WorkflowDependencyPendingError,
+            ):
+                raise
+            except asyncio.CancelledError:
+                # Cancellation is shutdown, not workflow failure. Leave the
+                # record IN_PROGRESS so another invocation can resume.
+                raise
+            except BaseException as exc:
+                completed_at = Timestamp()
+                completed_at.GetCurrentTime()
+                failed = temporaless_pb2.WorkflowRecord(
+                    schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+                    key=key.to_proto(),
+                    workflow_type=workflow_type,
+                    code_version=options.code_version,
+                    input=input_any,
+                    status=temporaless_pb2.WORKFLOW_STATUS_FAILED,
+                    failure=_failure_from_exception(exc),
+                    created_at=created_at,
+                    completed_at=completed_at,
+                    annotations=workflow_annotations.snapshot(),
+                )
+                await store.put_workflow(failed)
+                raise
+
+            result_any = Any()
+            result_any.Pack(result)
+            completed_at = Timestamp()
+            completed_at.GetCurrentTime()
+            completed = temporaless_pb2.WorkflowRecord(
+                schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+                key=key.to_proto(),
+                workflow_type=workflow_type,
+                code_version=options.code_version,
+                input=input_any,
+                status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+                result=result_any,
                 created_at=created_at,
                 completed_at=completed_at,
                 annotations=workflow_annotations.snapshot(),
             )
-            await store.put_workflow(failed)
-            raise
-
-        result_any = Any()
-        result_any.Pack(result)
-        completed_at = Timestamp()
-        completed_at.GetCurrentTime()
-        completed = temporaless_pb2.WorkflowRecord(
-            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
-            key=key.to_proto(),
-            workflow_type=workflow_type,
-            code_version=options.code_version,
-            input=input_any,
-            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
-            result=result_any,
-            created_at=created_at,
-            completed_at=completed_at,
-            annotations=workflow_annotations.snapshot(),
-        )
-        await store.put_workflow(completed)
-        return result
+            await store.put_workflow(completed)
+            return result
+        finally:
+            _workflow_var.reset(workflow_token)
+            _annotations_var.reset(annotations_token)
     finally:
-        _workflow_var.reset(workflow_token)
-        _annotations_var.reset(annotations_token)
-        if acquired_slot_id is not None and options.concurrency_key:
-            # Use a shielded release so a cancelled parent task still frees
-            # the slot. Worst case: slow release races with lease expiry, the
-            # stored claim's lease eventually expires and the slot frees itself.
-            try:
-                await asyncio.shield(
-                    _release_concurrency_slot(
-                        cast("ClaimStore", store),
-                        DEFAULT_NAMESPACE,
-                        options.concurrency_key,
-                        acquired_slot_id,
-                    )
-                )
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "failed to release concurrency slot %s for %s",
-                    acquired_slot_id,
+        held_workflow_claim = workflow_claim_key if workflow_claim_acquired else None
+        if claim_store is not None and (
+            acquired_slot_id is not None or held_workflow_claim is not None
+        ):
+            # One explicit child performs slot-first/run-claim-second cleanup.
+            # Repeated parent cancellation is recorded but cannot abandon it;
+            # cleanup errors surface because create-only leaks block resumption.
+            cleanup_task = asyncio.create_task(
+                _release_invocation_claims(
+                    claim_store,
                     options.concurrency_key,
+                    acquired_slot_id,
+                    held_workflow_claim,
                 )
+            )
+            _, cleanup_cancelled = await _await_task_to_completion(cleanup_task)
+            if cleanup_cancelled is not None:
+                raise cleanup_cancelled
 
 
 def wrap_workflow(

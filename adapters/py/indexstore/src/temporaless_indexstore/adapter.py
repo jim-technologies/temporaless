@@ -6,7 +6,6 @@ import threading
 from collections.abc import AsyncIterable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import opendal
 from google.protobuf.message import DecodeError
@@ -15,6 +14,8 @@ from temporaless.storage import (
     NO_CLAIMS,
     ActivityKey,
     ClaimKey,
+    ClaimRunListingUnsupportedError,
+    ClaimRunStore,
     ClaimStore,
     DueTimer,
     EventKey,
@@ -22,6 +23,10 @@ from temporaless.storage import (
     Store,
     TimerKey,
     WorkflowKey,
+    _activity_keys_for_run,
+    _claim_keys_for_run,
+    _event_keys_for_run,
+    _timer_keys_for_run,
     activity_key_from_proto,
     timer_key_from_proto,
     workflow_key_from_proto,
@@ -45,7 +50,9 @@ class IndexedStore:
 
     SQLite stores record keys, statuses, and timestamps only. Protobuf record
     payloads stay in the wrapped bucket store and are reloaded for every query
-    response.
+    response. When claims use a separate backend, pass it as ``claim_store``
+    so both point ``DeleteRun`` and retention ``Sweep`` clean coordination
+    records before deleting the run.
     """
 
     def __init__(
@@ -54,22 +61,40 @@ class IndexedStore:
         db_path: str | Path,
         *,
         operator: opendal.AsyncOperator | None = None,
+        claim_store: ClaimStore | None = None,
     ) -> None:
         self._inner = inner
         self._operator = operator
+        if claim_store is not None:
+            self._claim_store = claim_store
+        elif isinstance(inner, ClaimStore):
+            self._claim_store = inner
+        else:
+            self._claim_store = None
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._init_schema()
 
     @classmethod
-    def from_opendal(cls, operator: opendal.AsyncOperator, db_path: str | Path) -> IndexedStore:
-        return cls(OpenDALStore(operator), db_path, operator=operator)
+    def from_opendal(
+        cls,
+        operator: opendal.AsyncOperator,
+        db_path: str | Path,
+        *,
+        claim_store: ClaimStore | None = None,
+    ) -> IndexedStore:
+        return cls(
+            OpenDALStore(operator),
+            db_path,
+            operator=operator,
+            claim_store=claim_store,
+        )
 
     async def claim_capability(self) -> temporaless_pb2.ClaimCapability:
-        if not isinstance(self._inner, ClaimStore):
+        if self._claim_store is None:
             return NO_CLAIMS
-        return await self._inner.claim_capability()
+        return await self._claim_store.claim_capability()
 
     async def get_workflow(self, key: WorkflowKey) -> temporaless_pb2.WorkflowRecord | None:
         return await self._inner.get_workflow(key)
@@ -90,7 +115,15 @@ class IndexedStore:
         return deleted
 
     async def delete_run(self, key: WorkflowKey) -> int:
-        deleted = await self._inner.delete_run(key)
+        claim_store, claim_keys = await self._claim_deletion_plan(key)
+        await self._validate_inner_deletion_plan(key)
+
+        deleted = 0
+        if claim_store is not None:
+            for claim_key in claim_keys:
+                if await claim_store.delete_claim(claim_key):
+                    deleted += 1
+        deleted += await self._inner.delete_run(key)
         await self._run_db(lambda conn: _delete_run_rows(conn, key))
         return deleted
 
@@ -148,6 +181,9 @@ class IndexedStore:
 
     async def delete_claim(self, key: ClaimKey) -> bool:
         return await self._require_claim_store().delete_claim(key)
+
+    async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
+        return await self._require_claim_run_store().list_claims(key)
 
     async def list_workflows(
         self,
@@ -224,8 +260,7 @@ class IndexedStore:
                 workflow_id=row["workflow_id"],
                 run_id=row["run_id"],
             )
-            await self._inner.delete_run(key)
-            await self._run_db(lambda conn, key=key: _delete_run_rows(conn, key))
+            await self.delete_run(key)
             deleted += 1
         return deleted
 
@@ -333,9 +368,65 @@ class IndexedStore:
             self._conn.close()
 
     def _require_claim_store(self) -> ClaimStore:
-        if not isinstance(self._inner, ClaimStore):
-            raise TypeError("inner store does not support claims")
-        return cast("ClaimStore", self._inner)
+        if self._claim_store is None:
+            raise TypeError("configured store does not support claims")
+        return self._claim_store
+
+    def _require_claim_run_store(self) -> ClaimRunStore:
+        if not isinstance(self._claim_store, ClaimRunStore):
+            raise ClaimRunListingUnsupportedError(
+                "claim store does not support run-scoped claim listing"
+            )
+        return self._claim_store
+
+    async def _claim_deletion_plan(
+        self, key: WorkflowKey
+    ) -> tuple[ClaimStore | None, list[ClaimKey]]:
+        claim_store = self._claim_store
+        if claim_store is None:
+            return None, []
+        capability = await claim_store.claim_capability()
+        if capability not in (
+            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+        ):
+            return None, []
+        claim_run_store = self._require_claim_run_store()
+        try:
+            records = await claim_run_store.list_claims(key)
+        except TypeError as exc:
+            raise ClaimRunListingUnsupportedError(
+                "claim store does not support run-scoped claim listing"
+            ) from exc
+        return claim_store, _claim_keys_for_run(key, records)
+
+    async def _validate_inner_deletion_plan(self, key: WorkflowKey) -> None:
+        activities = await self._inner.list_activities(key)
+        timers = await self._inner.list_timers(key, temporaless_pb2.TIMER_STATUS_UNSPECIFIED)
+        events = await self._inner.list_events(key)
+        _activity_keys_for_run(key, activities)
+        _timer_keys_for_run(key, timers)
+        _event_keys_for_run(key, events)
+
+        # An explicitly separate claim store is authoritative, but the inner
+        # record store may still have its own claim objects that its
+        # delete_run implementation will inspect. Validate those too before
+        # deleting the authoritative claims.
+        if self._claim_store is self._inner or not isinstance(self._inner, ClaimRunStore):
+            return
+        capability = await self._inner.claim_capability()
+        if capability not in (
+            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+        ):
+            return
+        try:
+            records = await self._inner.list_claims(key)
+        except TypeError as exc:
+            raise ClaimRunListingUnsupportedError(
+                "inner claim store does not support run-scoped claim listing"
+            ) from exc
+        _claim_keys_for_run(key, records)
 
     async def _run_db(self, fn: Callable[[sqlite3.Connection], object]):
         with self._lock:

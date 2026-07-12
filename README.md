@@ -2,7 +2,9 @@
 
 A storage-first, language-agnostic, serverless workflow framework for Go, Python, Rust, and TypeScript clients.
 
-The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. When workflow code reaches a stored boundary, the runtime first looks for a matching record. If one exists, the stored result is reused. If not, the boundary is executed and stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
+The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. When workflow code reaches a boundary, the runtime first reads its record: terminal results replay, pending records drive suspension/resume, and missing work executes and is stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
+
+Terminal duplicate calls replay from storage. Live duplicate calls are single-flight when the caller supplies `WorkflowOptions.claim_owner_id` and an atomic claim store: the runtime creates the deterministic per-run `workflow:execution` claim, and an overlapping caller receives `ClaimBusyError` / `ALREADY_EXISTS`. Activity claims use the same opt-in and release only at durable boundaries. A store without create-if-absent capability rejects claim-requiring options; without the opt-in, missing and `IN_PROGRESS` work remains at-least-once.
 
 > Not a Temporal replacement. A narrower framework for data workflows where activities are mostly fetch / normalize / persist and storage can be the durable coordination point.
 
@@ -57,7 +59,7 @@ work without a package registry; its source stays under `core/ts`.
 | Adapter | Purpose |
 |---|---|
 | [`adapters/go/connectstore`](adapters/go/connectstore) | ConnectRPC store adapter; v2 regenerated-stub parity is a 0.3 follow-up |
-| [`adapters/go/gocdkclaims`](adapters/go/gocdkclaims) | Create-only activity claims via GoCDK Blob `IfNotExist` (S3, GCS native atomicity) |
+| [`adapters/go/gocdkclaims`](adapters/go/gocdkclaims) | Create-only workflow/activity claims via GoCDK Blob `IfNotExist` (S3, GCS native atomicity) |
 | [`adapters/go/temporalcompat`](adapters/go/temporalcompat) | Run Temporaless-shaped handlers on the real Temporal Go SDK (worker direction) |
 | [`adapters/py/temporalcompat`](adapters/py/temporalcompat) | Same for Python via `temporalio` |
 | [`adapters/py/prefectcompat`](adapters/py/prefectcompat) | Run Temporaless-shaped handlers as Prefect 3 flows / tasks; keep Prefect's UI + scheduling, keep our storage-first replay |

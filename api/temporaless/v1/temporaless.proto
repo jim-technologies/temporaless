@@ -72,10 +72,14 @@ message WorkflowOptions {
   // ID). Bumping it invalidates stored results because the digest changes.
   // Defaults to the `TEMPORALESS_CODE_VERSION` env var, or `dev` when unset.
   string code_version = 3;
-  // Owner identity for activity claims. Required when a claim store is
-  // configured; otherwise should be empty. Reusing the same owner across
-  // invocations is what allows resume of a stuck claim by the same logical
-  // worker.
+  // Caller-supplied identity for workflow-execution, activity, and
+  // concurrency-slot claims.
+  // Non-empty opts the run into storage-backed single-flight execution and
+  // requires a claim store with create-if-absent support. The value is
+  // diagnostic identity only: every existing workflow or activity claim is
+  // busy even when its owner matches, because two live requests can reuse one
+  // worker identity. Temporaless never generates this value. Empty disables
+  // claims and therefore cannot be combined with `concurrency_key`.
   string claim_owner_id = 4 [
     (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:=-]+$"},
     (buf.validate.field).cel = {
@@ -116,6 +120,11 @@ message WorkflowOptions {
     id: "temporaless.workflow_options.concurrency_key_limit_paired"
     message: "concurrency_key and concurrency_limit must both be set or both empty"
     expression: "(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.workflow_options.concurrency_requires_claim_owner"
+    message: "claim_owner_id must be set when concurrency_key is set"
+    expression: "this.concurrency_key == '' || this.claim_owner_id != ''"
   };
 }
 
@@ -332,6 +341,37 @@ message ReservedNames {
     features.field_presence = EXPLICIT,
     default = "slot:"
   ];
+
+  // Claim ID used to serialize live invocations of one workflow run. The
+  // surrounding ClaimKey already contains workflow_id and run_id, so this
+  // literal is identical for every run.
+  string workflow_execution_claim_id = 4 [
+    features.field_presence = EXPLICIT,
+    default = "workflow:execution"
+  ];
+
+  // Prefix for claims that serialize one activity_id within a workflow run.
+  // The activity_id is appended verbatim; the surrounding ClaimKey already
+  // carries namespace, workflow_id, and run_id.
+  string activity_claim_id_prefix = 5 [
+    features.field_presence = EXPLICIT,
+    default = "activity:"
+  ];
+}
+
+// RuntimeDefaults is the canonical source for cross-language defaults that
+// affect persisted records. Like ReservedNames, SDKs read Edition 2023 field
+// defaults from a fresh zero-value instance rather than serializing this
+// message.
+message RuntimeDefaults {
+  // Diagnostic expiry recorded on create-only claims. The current core does
+  // not use this timestamp for automatic takeover: without CAS refresh,
+  // owner-conditioned delete, and fenced writes, expiry is only operator
+  // information and stale claims require verified manual cleanup.
+  uint32 claim_lease_duration_seconds = 1 [
+    features.field_presence = EXPLICIT,
+    default = 900
+  ];
 }
 
 // RecordSchemaVersion identifies the record family. Each protobuf record sets
@@ -354,8 +394,8 @@ enum ClaimResourceType {
   // Cluster-wide concurrency-cap slot. The framework writes one claim record
   // per slot index (0..concurrency_limit-1) under workflow_id=__concurrency__,
   // run_id=<concurrency_key>. A workflow.Run holds one of these for the
-  // duration of an invocation; the slot is released on terminal status or
-  // when the workflow returns a pending error. See WorkflowOptions.concurrency_key.
+  // duration of an invocation and releases it on every orderly exit. See
+  // WorkflowOptions.concurrency_key.
   CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY = 4;
 }
 
@@ -363,14 +403,17 @@ enum ClaimResourceType {
 // must report this honestly via `GetStoreCapabilities`.
 enum ClaimCapability {
   CLAIM_CAPABILITY_UNSPECIFIED = 0;
-  // No claim coordination. Activities run with at-least-once semantics; side
-  // effects must be idempotent.
+  // No claim coordination. Options that require claims are rejected; callers
+  // that omit those options run workflow and activity work with at-least-once
+  // semantics and must keep side effects idempotent.
   CLAIM_CAPABILITY_NO_CLAIMS = 1;
-  // Storage supports atomic create-if-absent. Claims prevent concurrent
-  // execution within a run, but cannot safely take over stale claims.
+  // Storage supports atomic create-if-absent. When the caller enables claims,
+  // they prevent concurrent execution within a run but cannot safely take
+  // over stale claims.
   CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS = 2;
-  // Storage supports compare-and-swap (e.g. via S3 If-None-Match or GCS
-  // generation). Claims can be refreshed and stale ones can be taken over.
+  // Reserved for a store/protocol that supports version-conditioned refresh,
+  // release, and stale-claim takeover. The current core claim RPCs do not yet
+  // expose those CAS operations.
   CLAIM_CAPABILITY_CAS_CLAIMS = 3;
 }
 
@@ -799,8 +842,9 @@ message ClaimRecord {
 
   RecordSchemaVersion schema_version = 1;
   ClaimKey key = 2;
-  // Caller-supplied identity. The runtime checks this on resume to confirm
-  // that the resumer owns the claim.
+  // Caller-supplied diagnostic coordination identity. It does not prove
+  // liveness or grant re-entry: every existing core claim is busy even when
+  // this value matches.
   string owner_id = 3;
   ClaimResourceType resource_type = 4;
   // Domain ID of the resource being claimed (activity_id, timer_id, etc.).
@@ -965,6 +1009,17 @@ message ListEventsResponse {
   repeated EventRecord records = 1;
 }
 
+// ListClaimsRequest scopes to a single workflow run. This bounded listing is
+// used for run deletion; cross-run claim search is intentionally not part of
+// the core storage contract.
+message ListClaimsRequest {
+  WorkflowKey key = 1;
+}
+
+message ListClaimsResponse {
+  repeated ClaimRecord records = 1;
+}
+
 message RecordQueryServiceListActivitiesRequest {
   string namespace = 1;
   string workflow_id = 2;
@@ -996,7 +1051,11 @@ message DeleteWorkflowResponse {
 
 // DeleteRunRequest recursively deletes every core record under one workflow
 // run prefix: workflow, activities, timers, events, and claims. It is a point
-// operation over a bounded run prefix, not a cross-run query.
+// operation over a bounded run prefix, not a cross-run query. Claims are
+// deleted first; a configured claim backend that cannot list one run is
+// rejected before any record is mutated. Callers must externally quiesce the
+// run: this cleanup RPC is not an execution fence or a transaction against
+// concurrent claim/record creation.
 message DeleteRunRequest {
   WorkflowKey key = 1;
 }
@@ -1050,8 +1109,8 @@ message TryCreateClaimResponse {
   bool created = 1;
 }
 
-// DeleteClaimRequest releases a held claim so the slot is available to other
-// workers. Idempotent: returns `deleted=false` when the claim wasn't present.
+// DeleteClaimRequest releases a held claim so work is available to other
+// invocations. Idempotent: returns `deleted=false` when the claim wasn't present.
 message DeleteClaimRequest {
   ClaimKey key = 1;
 }
@@ -1064,14 +1123,19 @@ message GetStoreCapabilitiesRequest {}
 
 message GetStoreCapabilitiesResponse {
   // What the configured claim store can do. Callers should treat
-  // `CLAIM_CAPABILITY_NO_CLAIMS` as "no coordination available — use external
-  // idempotency keys for side effects".
+  // `CLAIM_CAPABILITY_NO_CLAIMS` as "claim-requiring options are unsupported";
+  // workflows that omit those options retain at-least-once semantics and use
+  // external idempotency keys for side effects.
   ClaimCapability claim_capability = 1;
 }
 
-// SweepRequest deletes every COMPLETED workflow run whose `completed_at` is
-// older than `now - max_age`. Activities, timers, and events under each swept
-// run are deleted before the workflow record itself.
+// SweepRequest deletes every externally quiesced COMPLETED workflow run whose
+// `completed_at` is older than `now - max_age`. Run-scoped claims are deleted
+// before activities, timers, events, and the workflow record. Sweep is a
+// multi-step cleanup operation, not a transaction or execution fence: callers
+// must ensure no worker can create claims or write records for eligible runs
+// while retention executes. A claim-capable backend must support bounded
+// run-scoped listing or the sweep is rejected before mutation.
 message SweepRequest {
   // Namespace to scope the sweep to. Empty means "all namespaces".
   string namespace = 1;
@@ -1124,8 +1188,8 @@ message RecordQueryServiceDueTimersResponse {
 // RecordStoreService is the cross-language core durability contract.
 //
 // Every record kind (workflow, activity, timer, event, claim) supports
-// point Get/Put/Delete. Activity, timer, and event lists are scoped to a
-// single workflow run for replay prefetch and run deletion. Cross-run search
+// point Get/Put/Delete. Activity, timer, event, and claim lists are scoped to
+// a single workflow run for replay prefetch and run deletion. Cross-run search
 // lives on RecordQueryService.
 //
 // Bucket/file backends implement this surface directly without SQL.
@@ -1152,12 +1216,14 @@ service RecordStoreService {
 
   // Read a single coordination claim by key.
   rpc GetClaim(GetClaimRequest) returns (GetClaimResponse);
-  // Write a claim only if none already exists at the key. Returns `created=false`
-  // when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
-  // safe-to-resume.
+  // Write a claim only if none already exists at the key. Returns
+  // `created=false` when the key is taken. Core workflow, activity, and
+  // concurrency coordination treats every existing claim as busy, including
+  // one with the same owner_id.
   rpc TryCreateClaim(TryCreateClaimRequest) returns (TryCreateClaimResponse);
-  // Idempotently release a claim. Used by the runtime to release a concurrency
-  // slot on workflow terminal status; safe to call when the claim doesn't exist.
+  // Idempotently release a claim. Used for workflow-execution, activity, and
+  // concurrency claims at durable/orderly boundaries; safe when the key is
+  // absent.
   rpc DeleteClaim(DeleteClaimRequest) returns (DeleteClaimResponse);
 
   // Read a single signal/event record by key.
@@ -1172,6 +1238,9 @@ service RecordStoreService {
   rpc ListTimers(ListTimersRequest) returns (ListTimersResponse);
   // List event records under a single workflow run.
   rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  // List coordination claims under a single workflow run. This is the narrow
+  // run-deletion seam, not a cross-run query API.
+  rpc ListClaims(ListClaimsRequest) returns (ListClaimsResponse);
 
   // Idempotently remove a workflow record only.
   rpc DeleteWorkflow(DeleteWorkflowRequest) returns (DeleteWorkflowResponse);
@@ -1201,8 +1270,10 @@ service RecordQueryService {
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   // List activity records across runs or under one run, depending on filters.
   rpc ListActivities(RecordQueryServiceListActivitiesRequest) returns (RecordQueryServiceListActivitiesResponse);
-  // Indexed retention sweep. The implementation mirrors deletes to the bucket
-  // and removes index rows.
+  // Indexed retention sweep. The implementation prevalidates claim and record
+  // snapshots, removes run-scoped claims before bucket records, and then
+  // removes index rows. Eligible runs must be externally quiesced; this RPC is
+  // not a transaction or execution fence.
   rpc Sweep(SweepRequest) returns (SweepResponse);
   // Optional indexed due-timer scan. Bucket-only deployments use the
   // RecordStoreService ledger implementation.

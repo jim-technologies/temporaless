@@ -230,6 +230,36 @@ async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
     assert len(report.succeeded()) == 0
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("claim", id="claim_busy"),
+        pytest.param("concurrency", id="concurrency_busy"),
+        pytest.param("already_exists", id="connect_claim_busy"),
+        pytest.param("resource_exhausted", id="connect_concurrency_busy"),
+    ],
+)
+async def test_backfill_reports_coordination_contention_as_pending(error: str) -> None:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+
+    from temporaless.workflow import ClaimBusyError, ConcurrencyBusyError
+
+    errors = {
+        "claim": ClaimBusyError("workflow:execution"),
+        "concurrency": ConcurrencyBusyError("vendor", 2),
+        "already_exists": ConnectError(Code.ALREADY_EXISTS, "claim busy"),
+        "resource_exhausted": ConnectError(Code.RESOURCE_EXHAUSTED, "cap busy"),
+    }
+
+    async def invoke(_run_id: str) -> StringValue:
+        raise errors[error]
+
+    report = await backfill(invoke, ["run:1"], concurrency=1)
+    assert len(report.pending()) == 1
+    assert len(report.failed()) == 0
+
+
 async def test_backfill_rejects_zero_concurrency(store: OpenDALStore) -> None:
     service = _FetchService(store)
     with pytest.raises(ValueError, match="concurrency"):

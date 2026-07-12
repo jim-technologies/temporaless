@@ -241,23 +241,34 @@ func TestBackfillReportsPendingForTimerPending(t *testing.T) {
 	}
 }
 
-func TestBackfillTreatsConnectUnavailableAsPending(t *testing.T) {
-	// HandleConnect maps TimerPendingError to *connect.Error{Unavailable}.
-	// When the invoke layer returns that, backfill should still classify it
-	// as Pending.
-	report, err := backfill.Backfill[*wrapperspb.StringValue](
-		context.Background(),
-		[]string{"x", "y"},
-		backfill.Options{Concurrency: 1},
-		func(_ context.Context, _ string) (*wrapperspb.StringValue, error) {
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("timer pending"))
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
+func TestBackfillTreatsCoordinationAndConnectContentionAsPending(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"claim busy", &workflow.ClaimBusyError{ClaimID: "workflow:execution"}},
+		{"concurrency busy", &workflow.ConcurrencyBusyError{Key: "vendor", Limit: 2}},
+		{"connect unavailable", connect.NewError(connect.CodeUnavailable, errors.New("timer pending"))},
+		{"connect already exists", connect.NewError(connect.CodeAlreadyExists, errors.New("claim busy"))},
+		{"connect resource exhausted", connect.NewError(connect.CodeResourceExhausted, errors.New("cap busy"))},
 	}
-	if len(report.Pending()) != 2 {
-		t.Fatalf("pending = %d, want 2", len(report.Pending()))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report, err := backfill.Backfill[*wrapperspb.StringValue](
+				context.Background(),
+				[]string{"x"},
+				backfill.Options{Concurrency: 1},
+				func(_ context.Context, _ string) (*wrapperspb.StringValue, error) {
+					return nil, test.err
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Pending()) != 1 {
+				t.Fatalf("pending = %d, want 1", len(report.Pending()))
+			}
+		})
 	}
 }
 

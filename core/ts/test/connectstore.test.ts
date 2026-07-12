@@ -4,8 +4,11 @@ import { ConnectQueryStore, ConnectStore } from "../src/connectstore.js";
 import {
   ActivityRecordSchema,
   ClaimCapability,
+  ClaimKeySchema,
+  ClaimRecordSchema,
   GetStoreCapabilitiesResponseSchema,
   GetWorkflowResponseSchema,
+  ListClaimsResponseSchema,
   ListWorkflowsResponseSchema,
   RecordQueryServiceDueTimersResponseSchema,
   SweepResponseSchema,
@@ -64,6 +67,29 @@ describe("ConnectStore", () => {
     await expect(store.claimCapability()).resolves.toBe(
       ClaimCapability.CREATE_ONLY_CLAIMS,
     );
+  });
+
+  it("lists claims within one workflow run", async () => {
+    const key = create(WorkflowKeySchema, {
+      namespace: "default",
+      workflowId: "refresh:prices",
+      runId: "run-1",
+    });
+    const record = create(ClaimRecordSchema, {
+      key: create(ClaimKeySchema, {
+        namespace: key.namespace,
+        workflowId: key.workflowId,
+        runId: key.runId,
+        claimId: "workflow:execution",
+      }),
+    });
+    const listClaims = vi.fn(async () =>
+      create(ListClaimsResponseSchema, { records: [record] }),
+    );
+    const store = new ConnectStore({ listClaims } as unknown as RecordStoreClient);
+
+    await expect(store.listClaims(key)).resolves.toEqual([record]);
+    expect(listClaims).toHaveBeenCalledWith(expect.objectContaining({ key }));
   });
 });
 

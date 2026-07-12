@@ -278,6 +278,13 @@ func (store *OpenDALStore) ListWorkflows(
 		if !found {
 			continue
 		}
+		recordKey := WorkflowKeyFromProto(record.GetKey())
+		if err := recordKey.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid workflow payload key at %s: %w", path, err)
+		}
+		if !sameWorkflowRun(recordKey, key) {
+			return nil, fmt.Errorf("workflow payload key does not match its storage location at %s", path)
+		}
 		if status != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED && record.GetStatus() != status {
 			continue
 		}
@@ -463,6 +470,18 @@ func (store *OpenDALStore) DeleteEvent(ctx context.Context, key EventKey) (bool,
 	return deleteIfExists(store.operator, path)
 }
 
+type openDALRunDeletionPlan struct {
+	key        WorkflowKey
+	activities []*temporalessv1.ActivityRecord
+	timers     []*temporalessv1.TimerRecord
+	events     []*temporalessv1.EventRecord
+}
+
+// Sweep is the OpenDAL record-only retention fallback. It is a multi-step
+// cleanup operation, not a transaction or execution fence, and callers must
+// externally quiesce eligible runs. Claim-aware deployments must use the
+// janitor adapter (or RecordQueryService.Sweep) with their ClaimStore so claims
+// are prevalidated and removed before these records.
 func (store *OpenDALStore) Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error) {
 	if maxAge <= 0 {
 		return 0, fmt.Errorf("max_age must be > 0")
@@ -472,45 +491,112 @@ func (store *OpenDALStore) Sweep(ctx context.Context, namespace string, now time
 	if err != nil {
 		return 0, err
 	}
-	var deleted uint32
+	plans := make([]openDALRunDeletionPlan, 0, len(completed))
 	for _, record := range completed {
-		if !record.GetCompletedAt().AsTime().Before(cutoff) && !record.GetCompletedAt().AsTime().Equal(cutoff) {
+		if completedAt := record.GetCompletedAt(); completedAt == nil || completedAt.AsTime().After(cutoff) {
 			continue
 		}
 		key := WorkflowKeyFromProto(record.GetKey())
+		if err := key.Validate(); err != nil {
+			return 0, fmt.Errorf("invalid workflow key in sweep listing: %w", err)
+		}
+		plan := openDALRunDeletionPlan{key: key}
 		activities, err := store.ListActivities(ctx, key)
 		if err != nil {
-			return deleted, err
+			return 0, err
 		}
-		for _, activity := range activities {
+		plan.activities = activities
+		timers, err := store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
+		if err != nil {
+			return 0, err
+		}
+		plan.timers = timers
+		events, err := store.ListEvents(ctx, key)
+		if err != nil {
+			return 0, err
+		}
+		plan.events = events
+
+		for _, activity := range plan.activities {
+			activityKey := ActivityKeyFromProto(activity.GetKey())
+			if err := validateSweepRunRecordKey("activity", key, activityKey.Namespace, activityKey.WorkflowID, activityKey.RunID, activityKey.Validate()); err != nil {
+				return 0, err
+			}
+		}
+		for _, timer := range plan.timers {
+			timerKey := TimerKeyFromProto(timer.GetKey())
+			if err := validateSweepRunRecordKey("timer", key, timerKey.Namespace, timerKey.WorkflowID, timerKey.RunID, timerKey.Validate()); err != nil {
+				return 0, err
+			}
+		}
+		for _, event := range plan.events {
+			eventKey := EventKeyFromProto(event.GetKey())
+			if err := validateSweepRunRecordKey("event", key, eventKey.Namespace, eventKey.WorkflowID, eventKey.RunID, eventKey.Validate()); err != nil {
+				return 0, err
+			}
+		}
+		plans = append(plans, plan)
+	}
+
+	var deleted uint32
+	for _, plan := range plans {
+		for _, activity := range plan.activities {
 			if _, err := store.DeleteActivity(ctx, ActivityKeyFromProto(activity.GetKey())); err != nil {
 				return deleted, err
 			}
 		}
-		timers, err := store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
-		if err != nil {
-			return deleted, err
-		}
-		for _, timer := range timers {
+		for _, timer := range plan.timers {
 			if _, err := store.DeleteTimer(ctx, TimerKeyFromProto(timer.GetKey())); err != nil {
 				return deleted, err
 			}
 		}
-		events, err := store.ListEvents(ctx, key)
-		if err != nil {
-			return deleted, err
-		}
-		for _, event := range events {
+		for _, event := range plan.events {
 			if _, err := store.DeleteEvent(ctx, EventKeyFromProto(event.GetKey())); err != nil {
 				return deleted, err
 			}
 		}
-		if _, err := store.DeleteWorkflow(ctx, key); err != nil {
+		if _, err := store.DeleteWorkflow(ctx, plan.key); err != nil {
 			return deleted, err
 		}
 		deleted++
 	}
 	return deleted, nil
+}
+
+func validateSweepRunRecordKey(
+	recordKind string,
+	target WorkflowKey,
+	recordNamespace string,
+	recordWorkflowID string,
+	recordRunID string,
+	validateErr error,
+) error {
+	if validateErr != nil {
+		return fmt.Errorf("invalid %s key in sweep listing: %w", recordKind, validateErr)
+	}
+	if recordNamespace == "" {
+		recordNamespace = DefaultNamespace
+	}
+	targetNamespace := target.Namespace
+	if targetNamespace == "" {
+		targetNamespace = DefaultNamespace
+	}
+	if recordNamespace != targetNamespace || recordWorkflowID != target.WorkflowID || recordRunID != target.RunID {
+		return fmt.Errorf("%s payload key does not match swept workflow run", recordKind)
+	}
+	return nil
+}
+
+func sameWorkflowRun(left WorkflowKey, right WorkflowKey) bool {
+	leftNamespace := left.Namespace
+	if leftNamespace == "" {
+		leftNamespace = DefaultNamespace
+	}
+	rightNamespace := right.Namespace
+	if rightNamespace == "" {
+		rightNamespace = DefaultNamespace
+	}
+	return leftNamespace == rightNamespace && left.WorkflowID == right.WorkflowID && left.RunID == right.RunID
 }
 
 func (store *OpenDALStore) DueTimers(ctx context.Context, namespace string, now time.Time) ([]DueTimer, error) {

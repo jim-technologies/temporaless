@@ -74,6 +74,9 @@ func HandleConnect[
 //   - *TimerPendingError, *EventPendingError → CodeUnavailable (caller should
 //     retry later — workflow stays IN_PROGRESS).
 //   - *ClaimBusyError → CodeAlreadyExists (another worker holds the claim).
+//   - ErrClaimRelease → CodeInternal (claim cleanup failed; retry may remain busy).
+//   - *ClaimCapabilityError → CodeFailedPrecondition (requested coordination
+//     is unavailable from the configured store).
 //   - ErrWorkflowConflict, ErrActivityConflict, ErrTimerConflict → CodeFailedPrecondition.
 //   - *ActivityError → CodeInternal with the original code preserved.
 //
@@ -81,6 +84,9 @@ func HandleConnect[
 // only when you're not using HandleConnect (e.g. driving WrapWorkflow yourself
 // behind a non-Connect transport) and need to translate the error.
 func ErrorToConnectCode(err error) (connect.Code, string, bool) {
+	if errors.Is(err, ErrClaimRelease) {
+		return connect.CodeInternal, err.Error(), true
+	}
 	var timerPending *TimerPendingError
 	if errors.As(err, &timerPending) {
 		return connect.CodeUnavailable, timerPending.Error(), true
@@ -100,6 +106,10 @@ func ErrorToConnectCode(err error) (connect.Code, string, bool) {
 	var concurrencyBusy *ConcurrencyBusyError
 	if errors.As(err, &concurrencyBusy) {
 		return connect.CodeResourceExhausted, concurrencyBusy.Error(), true
+	}
+	var capabilityErr *ClaimCapabilityError
+	if errors.As(err, &capabilityErr) {
+		return connect.CodeFailedPrecondition, capabilityErr.Error(), true
 	}
 	if errors.Is(err, ErrWorkflowConflict) ||
 		errors.Is(err, ErrActivityConflict) ||

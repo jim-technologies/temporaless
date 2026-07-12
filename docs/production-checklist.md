@@ -31,13 +31,13 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Direct path preserved for normal APIs.** Application services keep ordinary API reads and routine synchronous actions callable in-process without Temporaless. Workflow wrappers are opt-in for idempotent, retriable, scheduled, or long-running operations; if Temporaless storage or operators are down, direct APIs still serve and only the durable operation returns an explicit unavailable/deferred result.
 - [ ] **`workflow_id` and `run_id` are caller-provided.** The framework rejects empty / ambiguous IDs. Document your conventions: typically `{pipeline}:{symbol_or_partition}` for `workflow_id`; `{date}` or `{fire_time_iso}` for `run_id`.
 - [ ] **`code_version` bumped on every breaking workflow body change.** Otherwise existing run records replay against new code → `WorkflowConflictError`. Convention: tie to git short-SHA or semver.
-- [ ] **Activity bodies idempotent.** They run once per `(workflow_id, run_id, activity_id)` on the happy path; on retry they may run again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system gives you at-most-once-per-claim windows but cannot extend across vendor boundaries.
+- [ ] **Activity bodies idempotent.** Stored terminal results replay, but retries, crashes, and unclaimed concurrent execution may run a body again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system suppresses cooperating live duplicates but cannot extend exactly-once guarantees across vendor boundaries.
 
 ## Operator processes
 
-- [ ] **Cron scheduler ticked from a reliable trigger.** EventBridge / Cloud Scheduler / GitHub Actions schedule / cron(8) / a K8s CronJob / an in-process `while True: tick(); sleep(60)` loop — pick whichever fits your platform. The scheduler is stateless — scale to N copies safely.
+- [ ] **Cron scheduler ticked from a reliable trigger.** EventBridge / Cloud Scheduler / GitHub Actions schedule / cron(8) / a K8s CronJob / an in-process `while True: tick(); sleep(60)` loop — pick whichever fits your platform. The scheduler tick is stateless; multiple copies provide at-least-once dispatch, so the resulting workflow calls must use execution claims or tolerate overlap.
 - [ ] **Timer scanner ticked at the granularity you need.** ~1-minute polling is the framework's expected cadence. Tighter loops increase storage RPCs without lowering wake-up latency below the `sleep(duration)` precision you persisted.
-- [ ] **Janitor running on a schedule** only if you deploy a query index for exact retention. Otherwise configure bucket lifecycle rules. Daily / weekly per your retention policy. Idempotent — duplicate runs are free.
+- [ ] **Janitor running on a schedule** only if you deploy a query index for exact retention. Otherwise configure bucket lifecycle rules. Wire the deployment's `ClaimRunStore` so run-scoped claims are removed before records, and externally quiesce eligible runs during the nontransactional sweep. Daily / weekly per your retention policy.
 
 ## Observability
 
@@ -50,7 +50,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Workflows in `IN_PROGRESS` past their expected duration are alerted on.** A workflow stuck `IN_PROGRESS` for hours past its timer's `wake_at` indicates a stuck timer-scanner or a pending-event that nothing's delivering. Use the query index plus `inspector.list_in_flight_workflows(query_store)` to enumerate.
 - [ ] **Failed workflow index reviewed regularly.** Failed runs are a queue of incidents. Use `RecordQueryService.ListWorkflows(status=FAILED)` and `inspector.reset_workflow(...)` to clear before re-running.
 - [ ] **Disaster recovery runbook.** "Bucket gone" → restore from versioning / cross-region replica. "Process crash mid-write" → records are append-only per key, partial writes don't corrupt prior records (object-storage atomicity).
-- [ ] **`ClaimBusy` budget watched.** A spike in `Code.ALREADY_EXISTS` from claim contention indicates either a claim leak (lease expired but holder didn't release) or a thundering-herd retry pattern. Tune `DEFAULT_CLAIM_LEASE_DURATION` per workflow type.
+- [ ] **`ClaimBusy` budget watched.** A spike in `Code.ALREADY_EXISTS` indicates a live holder, a thundering herd, or a leaked create-only claim. Lease expiry does not free create-only claims; verify the owner is gone and delete the stale claim manually. CAS takeover is future-only.
 
 ## Container image (optional)
 
@@ -81,4 +81,4 @@ There is no engine to run, no control plane to operate. Pick whichever platform 
 - **A workflow database.** Records ARE the state. No Postgres / Cassandra / Redis is required for execution; a query index is optional search infrastructure.
 - **A scheduler binary.** The cron scheduler is a Python class you tick from any reliable cron source.
 - **A control plane.** No service registry, no leader election, no quorum.
-- **Sticky routing.** Every RPC against the same `(workflow_id, run_id)` produces the same result via replay; round-robin is fine.
+- **Sticky routing.** Terminal RPCs against the same `(workflow_id, run_id)` produce the stored result via replay. Round-robin live execution requires `claim_owner_id` plus an atomic claim store for single-flight; otherwise overlapping calls are at-least-once.

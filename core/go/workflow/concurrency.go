@@ -43,22 +43,13 @@ func (err *ConcurrencyBusyError) Unwrap() error {
 	return ErrConcurrencyBusy
 }
 
-// concurrencyOwnerID returns the stable owner identity for the workflow
-// holding the slot. Using "workflow_id:run_id" lets a crashed invocation's
-// next invocation re-acquire its previously-held slot.
-func concurrencyOwnerID(workflowID, runID string) string {
-	return workflowID + ":" + runID
-}
-
 // acquireConcurrencySlot tries slots 0..limit-1 in order; returns the slot_id
-// of the acquired slot or empty string when all slots are taken by other
-// owners. A slot held by the same owner is treated as re-acquired (crash
-// recovery) — this prevents one workflow from consuming multiple slots across
-// crash boundaries.
+// of the newly acquired slot or empty string when all slots are occupied.
+// Existing slots are never treated as acquired, even when owner_id matches.
 //
-// Lease duration is the safety valve: if the worker dies mid-execution, the
-// slot is held until the lease expires. The slot is normally released
-// explicitly via releaseConcurrencySlot before the lease matters.
+// The lease timestamp is diagnostic for create-only stores; expiry and owner
+// equality do not grant takeover. Normal exits release the slot explicitly;
+// a leaked slot requires verified operator cleanup.
 func acquireConcurrencySlot(
 	ctx context.Context,
 	claimStore storage.ClaimStore,
@@ -97,15 +88,6 @@ func acquireConcurrencySlot(
 			return "", err
 		}
 		if created {
-			return slotID, nil
-		}
-		// Slot is taken — see whether it's our own stale claim from a prior
-		// invocation that crashed before releasing.
-		existing, found, err := claimStore.GetClaim(ctx, slotKey)
-		if err != nil {
-			return "", err
-		}
-		if found && existing.GetOwnerId() == ownerID {
 			return slotID, nil
 		}
 	}

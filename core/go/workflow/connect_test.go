@@ -102,6 +102,8 @@ func TestErrorToConnectCodeMapsEachErrorType(t *testing.T) {
 		{"event pending", &workflow.EventPendingError{EventID: "e1"}, connect.CodeUnavailable},
 		{"workflow dep pending", &workflow.WorkflowDependencyPendingError{WorkflowID: "upstream", RunID: "2026-05-04"}, connect.CodeUnavailable},
 		{"claim busy", &workflow.ClaimBusyError{ClaimID: "activity:fetch"}, connect.CodeAlreadyExists},
+		{"claim release", workflow.ErrClaimRelease, connect.CodeInternal},
+		{"claim capability", &workflow.ClaimCapabilityError{Capability: storage.NoClaims, Option: "claim_owner_id"}, connect.CodeFailedPrecondition},
 		{"workflow conflict", workflow.ErrWorkflowConflict, connect.CodeFailedPrecondition},
 		{"activity conflict", workflow.ErrActivityConflict, connect.CodeFailedPrecondition},
 		{"timer conflict", workflow.ErrTimerConflict, connect.CodeFailedPrecondition},

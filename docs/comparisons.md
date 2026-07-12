@@ -110,7 +110,7 @@ We're not aiming to compete head-on with these for asset-graph or lineage worklo
 - A DAG isn't declared — it's *expressed* as a workflow body using async/await. This means refactors are normal Python refactors; no separate "register the new task" step.
 - "Tasks" are activities. Each gets a stable `activity_id` you choose — deterministic across re-runs. Reusing an `activity_id` with different input is a bug (we'll raise `ActivityConflictError`).
 - "DAG run" = `workflow_id + run_id`. Caller-provided. By convention, `run_id` embeds the fire time / partition / batch ID for backfill-friendliness.
-- The "scheduler" doesn't own state. It's a stateless tick that calls `run()` for each due schedule. Two schedulers racing both call `run()`; the second one's results match the first via replay — duplicate dispatches are free.
+- The "scheduler" doesn't own state. It's a stateless tick that calls `run()` for each due schedule. Terminal duplicate dispatches replay. To serialize two schedulers racing on a first invocation, set `claim_owner_id` and use an atomic claim store; otherwise dispatch is at-least-once.
 
 If your pipelining needs are **lineage-aware** (Dagster's whole identity) or **visual / no-code** (n8n / Zapier), use those tools. If your needs are **code-first ETL with retries / fan-out / backfill / cross-pipeline waits**, you can deliver them with this framework and zero engine to operate.
 

@@ -52,7 +52,10 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/cronscheduler"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
 	"github.com/jim-technologies/temporaless/adapters/go/timerscanner"
+	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // CronConfig runs Scheduler.Tick on a loop. The scheduler is responsible for
@@ -83,6 +86,9 @@ type JanitorConfig struct {
 	MaxAge time.Duration
 	// Interval defaults to 24h when zero.
 	Interval time.Duration
+	// ClaimStore is the optional separately configured claim backend. Nil lets
+	// janitor.Sweep auto-detect claim support from the record store.
+	ClaimStore storage.ClaimStore
 }
 
 // Config selects which background loops this replica runs. Nil entries are
@@ -239,7 +245,10 @@ func (w *Workers) runJanitor(ctx context.Context, cfg *JanitorConfig) {
 		interval = 24 * time.Hour
 	}
 	w.loop(ctx, "janitor", interval, func(ctx context.Context) error {
-		_, err := janitor.Sweep(ctx, w.store, time.Now().UTC(), cfg.MaxAge)
+		_, err := janitor.Sweep(ctx, w.store, cfg.ClaimStore, &temporalessv1.SweepRequest{
+			Now:    timestamppb.New(time.Now().UTC()),
+			MaxAge: durationpb.New(cfg.MaxAge),
+		})
 		return err
 	})
 }

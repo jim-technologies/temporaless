@@ -27,7 +27,6 @@ from temporaless.workflow import (
     ConcurrencyBusyError,
     Options,
     Workflow,
-    _concurrency_owner_id,
     run,
 )
 
@@ -47,6 +46,7 @@ async def test_concurrency_acquire_when_free(store):
         workflow_id="wf",
         run_id="r-1",
         code_version="test",
+        claim_owner_id="worker:free",
         concurrency_key="vendor:test",
         concurrency_limit=3,
     )
@@ -94,6 +94,7 @@ async def test_concurrency_busy_when_full(store):
         workflow_id="wf",
         run_id="r-1",
         code_version="test",
+        claim_owner_id="worker:busy",
         concurrency_key="vendor:test",
         concurrency_limit=2,
     )
@@ -118,6 +119,7 @@ async def test_concurrency_released_on_failure(store):
         workflow_id="wf",
         run_id="r-failed",
         code_version="test",
+        claim_owner_id="worker:failure",
         concurrency_key="vendor:test",
         concurrency_limit=2,
     )
@@ -138,10 +140,9 @@ async def test_concurrency_released_on_failure(store):
     assert record is None, "slot must be released after workflow failure"
 
 
-async def test_concurrency_owner_reacquires_stale_slot(store):
-    """Crashed-and-restarted workflow re-acquires its own stale slot rather
-    than consuming a second one."""
-    owner_id = _concurrency_owner_id("wf", "r-1")
+async def test_concurrency_stale_same_owner_slot_is_not_reacquired(store):
+    """Matching owner text is not fencing and cannot bypass contention."""
+    owner_id = "worker:same"
     slot_key = ClaimKey(
         namespace=DEFAULT_NAMESPACE,
         workflow_id=CONCURRENCY_WORKFLOW_ID,
@@ -168,23 +169,22 @@ async def test_concurrency_owner_reacquires_stale_slot(store):
         workflow_id="wf",
         run_id="r-1",
         code_version="test",
+        claim_owner_id=owner_id,
         concurrency_key="vendor:test",
-        concurrency_limit=2,
+        concurrency_limit=1,
     )
 
+    executed = False
+
     async def body(workflow: Workflow, request: StringValue) -> StringValue:
-        # Inside body, slot:1 must NOT be held — we reused slot:0.
-        slot1 = ClaimKey(
-            namespace=DEFAULT_NAMESPACE,
-            workflow_id=CONCURRENCY_WORKFLOW_ID,
-            run_id="vendor:test",
-            claim_id="slot:1",
-        )
-        existing = await store.get_claim(slot1)
-        assert existing is None, "slot:1 should not be held"
+        nonlocal executed
+        executed = True
         return StringValue(value="ok")
 
-    await run(store, options, StringValue(value="x"), StringValue, body)
+    with pytest.raises(ConcurrencyBusyError):
+        await run(store, options, StringValue(value="x"), StringValue, body)
+    assert executed is False
+    assert await store.get_claim(slot_key) is not None
 
 
 async def test_concurrency_validation_paired_rejects_unbalanced():
@@ -194,8 +194,26 @@ async def test_concurrency_validation_paired_rejects_unbalanced():
     from temporaless.workflow import normalized_workflow_options
 
     for opts in (
-        Options(workflow_id="w", run_id="r", concurrency_key="x", concurrency_limit=0),
-        Options(workflow_id="w", run_id="r", concurrency_key="", concurrency_limit=5),
+        Options(
+            workflow_id="w",
+            run_id="r",
+            claim_owner_id="worker",
+            concurrency_key="x",
+            concurrency_limit=0,
+        ),
+        Options(
+            workflow_id="w",
+            run_id="r",
+            claim_owner_id="worker",
+            concurrency_key="",
+            concurrency_limit=5,
+        ),
+        Options(
+            workflow_id="w",
+            run_id="r",
+            concurrency_key="x",
+            concurrency_limit=1,
+        ),
     ):
         with pytest.raises(ValidationError):
             normalized_workflow_options(opts)
@@ -224,6 +242,7 @@ async def test_concurrency_multiple_workflows_obey_limit(store):
                     workflow_id="wf",
                     run_id=f"r-{i}",
                     code_version="test",
+                    claim_owner_id=f"worker:{i}",
                     concurrency_key="vendor:test",
                     concurrency_limit=limit,
                 ),

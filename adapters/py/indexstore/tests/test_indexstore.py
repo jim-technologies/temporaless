@@ -2,12 +2,17 @@ from datetime import UTC, datetime, timedelta
 
 import opendal
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError
 from google.protobuf.timestamp_pb2 import Timestamp
+from temporaless.connectstore import ConnectQueryStore
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
+    CLAIM_RECORD_SCHEMA_VERSION,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
     ActivityKey,
+    ClaimKey,
     OpenDALStore,
     TimerKey,
     WorkflowKey,
@@ -30,6 +35,31 @@ async def test_write_through_lists_workflows(tmp_path) -> None:
     records, token = await store.list_workflows("", "", temporaless_pb2.WORKFLOW_STATUS_FAILED)
     assert token == ""
     assert [record.key.workflow_id for record in records] == ["prices:aapl"]
+
+
+async def test_claim_run_listing_passes_through(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="r1")
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="arbitrary",
+    )
+    assert await store.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+
+    claims = await store.list_claims(key)
+
+    assert [claim.key.claim_id for claim in claims] == ["arbitrary"]
 
 
 async def test_rebuild_from_populated_bucket(tmp_path) -> None:
@@ -285,6 +315,288 @@ async def test_sweep_deletes_bucket_and_index_rows(tmp_path) -> None:
         "", "prices:aapl", temporaless_pb2.WORKFLOW_STATUS_COMPLETED
     )
     assert [record.key.run_id for record in records] == ["fresh"]
+
+
+async def test_sweep_deletes_claims_from_separate_claim_store(tmp_path) -> None:
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=claims,
+    )
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="old")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="activity:fetch",
+    )
+    assert await claims.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="worker",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
+            resource_id="fetch",
+            code_version="v1",
+        )
+    )
+
+    deleted = await store.sweep("", datetime.now(UTC), timedelta(days=1))
+
+    assert deleted == 1
+    assert await records.get_workflow(key) is None
+    assert await claims.get_claim(claim_key) is None
+
+
+async def test_sweep_rejects_list_incapable_claim_store_before_mutation(tmp_path) -> None:
+    class PointOnlyClaimStore:
+        def __init__(self, inner: OpenDALStore) -> None:
+            self._inner = inner
+
+        async def claim_capability(self):
+            return await self._inner.claim_capability()
+
+        async def get_claim(self, key):
+            return await self._inner.get_claim(key)
+
+        async def try_create_claim(self, record):
+            return await self._inner.try_create_claim(record)
+
+        async def delete_claim(self, key):
+            return await self._inner.delete_claim(key)
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    point_only = PointOnlyClaimStore(claims)
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=point_only,
+    )
+    query = ConnectQueryStore.local(store)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="old")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="workflow:execution",
+    )
+    assert await point_only.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="worker",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+
+    with pytest.raises(ConnectError) as captured:
+        await query.sweep("", datetime.now(UTC), timedelta(days=1))
+
+    assert captured.value.code is Code.FAILED_PRECONDITION
+    assert await records.get_workflow(key) is not None
+    assert await claims.get_claim(claim_key) is not None
+    indexed, _ = await store.list_workflows(
+        "", key.workflow_id, temporaless_pb2.WORKFLOW_STATUS_COMPLETED
+    )
+    assert [record.key.run_id for record in indexed] == [key.run_id]
+
+
+async def test_sweep_respects_no_claims_capability(tmp_path) -> None:
+    class NoClaimsStore:
+        async def claim_capability(self):
+            return temporaless_pb2.CLAIM_CAPABILITY_NO_CLAIMS
+
+        async def get_claim(self, key):
+            raise AssertionError(f"get_claim must not be called: {key}")
+
+        async def try_create_claim(self, record):
+            raise AssertionError(f"try_create_claim must not be called: {record}")
+
+        async def delete_claim(self, key):
+            raise AssertionError(f"delete_claim must not be called: {key}")
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=NoClaimsStore(),
+    )
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="old")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+
+    assert await store.sweep("", datetime.now(UTC), timedelta(days=1)) == 1
+    assert await records.get_workflow(key) is None
+
+
+async def test_sweep_prevalidates_separate_claim_listing_before_mutation(tmp_path) -> None:
+    class CorruptClaimRunStore:
+        def __init__(
+            self,
+            inner: OpenDALStore,
+            records: list[temporaless_pb2.ClaimRecord],
+        ) -> None:
+            self._inner = inner
+            self._records = records
+            self.delete_calls = 0
+
+        async def claim_capability(self):
+            return await self._inner.claim_capability()
+
+        async def get_claim(self, key):
+            return await self._inner.get_claim(key)
+
+        async def try_create_claim(self, record):
+            return await self._inner.try_create_claim(record)
+
+        async def delete_claim(self, key):
+            self.delete_calls += 1
+            return await self._inner.delete_claim(key)
+
+        async def list_claims(self, _key):
+            return self._records
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="old")
+    valid_claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="valid",
+    )
+    valid = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=valid_claim_key.to_proto(),
+        owner_id="worker",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    assert await claims.try_create_claim(valid)
+    misplaced = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=ClaimKey(
+            workflow_id=key.workflow_id,
+            run_id="other",
+            claim_id="misplaced",
+        ).to_proto(),
+        owner_id="worker",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    corrupt_claims = CorruptClaimRunStore(claims, [valid, misplaced])
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=corrupt_claims,
+    )
+    query = ConnectQueryStore.local(store)
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+
+    with pytest.raises(ConnectError) as captured:
+        await query.sweep("", datetime.now(UTC), timedelta(days=1))
+
+    assert captured.value.code is Code.DATA_LOSS
+    assert corrupt_claims.delete_calls == 0
+    assert await claims.get_claim(valid_claim_key) is not None
+    assert await records.get_workflow(key) is not None
+
+
+async def test_sweep_prevalidates_record_listing_before_separate_claim_deletion(
+    tmp_path,
+) -> None:
+    records_operator = opendal.AsyncOperator("fs", root=str(tmp_path / "records"))
+    records = OpenDALStore(records_operator)
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=claims,
+    )
+    query = ConnectQueryStore.local(store)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="old")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="valid",
+    )
+    assert await claims.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="worker",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+    path_key = ActivityKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        activity_id="misplaced",
+    )
+    misplaced = temporaless_pb2.ActivityRecord(
+        schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+        key=ActivityKey(
+            workflow_id=key.workflow_id,
+            run_id="other",
+            activity_id="misplaced",
+        ).to_proto(),
+        activity_type="activity:test",
+        code_version="v1",
+        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    await records_operator.create_dir(path_key.dir_path())
+    await records_operator.write(path_key.path(), misplaced.SerializeToString(deterministic=True))
+
+    with pytest.raises(ConnectError) as captured:
+        await query.sweep("", datetime.now(UTC), timedelta(days=1))
+
+    assert captured.value.code is Code.DATA_LOSS
+    assert await claims.get_claim(claim_key) is not None
+    assert await records.get_workflow(key) is not None
+    assert await records_operator.exists(path_key.path())
 
 
 async def test_indexed_due_timers(tmp_path) -> None:

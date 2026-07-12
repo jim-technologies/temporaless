@@ -1,4 +1,7 @@
 import opendal
+import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError
 from temporaless_indexstore import IndexedStore
 
 from temporaless.connectstore import (
@@ -8,10 +11,15 @@ from temporaless.connectstore import (
     RecordStoreService,
 )
 from temporaless.storage import (
+    ACTIVITY_RECORD_SCHEMA_VERSION,
+    CLAIM_RECORD_SCHEMA_VERSION,
     CREATE_ONLY_CLAIMS,
+    EVENT_RECORD_SCHEMA_VERSION,
+    TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
     ActivityKey,
     ClaimKey,
+    EventKey,
     OpenDALStore,
     TimerKey,
     WorkflowKey,
@@ -55,6 +63,315 @@ async def test_connect_store_covers_storage_surface(tmp_path) -> None:
     assert await store.get_activity(activity_key) is None
     assert await store.get_timer(timer_key) is None
     assert await store.get_claim(claim_key) is None
+
+
+async def test_delete_run_deletes_all_claims_from_separate_claim_store(tmp_path) -> None:
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    store = ConnectStore.local(records, claims)
+    key = WorkflowKey(workflow_id="prices:delete-run", run_id="run:one")
+    activity_key = ActivityKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        activity_id="fetch",
+    )
+    await store.put_workflow(
+        temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            workflow_type="workflow:test",
+            code_version="v1",
+            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+    )
+    await store.put_activity(
+        temporaless_pb2.ActivityRecord(
+            schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+            key=activity_key.to_proto(),
+            activity_type="activity:test",
+            code_version="v1",
+            status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+    )
+    for claim_id in ("arbitrary:one", "arbitrary:two"):
+        created = await claims.try_create_claim(
+            temporaless_pb2.ClaimRecord(
+                schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+                key=ClaimKey(
+                    workflow_id=key.workflow_id,
+                    run_id=key.run_id,
+                    claim_id=claim_id,
+                ).to_proto(),
+                owner_id="owner",
+                resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
+                resource_id=claim_id,
+                code_version="v1",
+            )
+        )
+        assert created is True
+
+    assert {claim.key.claim_id for claim in await store.list_claims(key)} == {
+        "arbitrary:one",
+        "arbitrary:two",
+    }
+    assert await store.delete_run(key) == 4
+    assert await records.get_workflow(key) is None
+    assert await records.get_activity(activity_key) is None
+    assert await claims.list_claims(key) == []
+
+
+@pytest.mark.parametrize("record_kind", ["activity", "timer", "event"])
+async def test_delete_run_rejects_corrupt_record_listing_before_claim_deletion(
+    tmp_path,
+    record_kind: str,
+) -> None:
+    records_operator = opendal.AsyncOperator("fs", root=str(tmp_path / "records"))
+    records = OpenDALStore(records_operator)
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    store = ConnectStore.local(records, claims)
+    key = WorkflowKey(workflow_id="prices:delete-run", run_id="run:corrupt-record")
+    await records.put_workflow(
+        temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            workflow_type="workflow:test",
+            code_version="v1",
+            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+    )
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="valid",
+    )
+    assert await claims.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+
+    if record_kind == "activity":
+        path_key = ActivityKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            activity_id="misplaced",
+        )
+        record = temporaless_pb2.ActivityRecord(
+            schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+            key=ActivityKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                activity_id="misplaced",
+            ).to_proto(),
+            activity_type="activity:test",
+            code_version="v1",
+            status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+    elif record_kind == "timer":
+        path_key = TimerKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            timer_id="misplaced",
+        )
+        record = temporaless_pb2.TimerRecord(
+            schema_version=TIMER_RECORD_SCHEMA_VERSION,
+            key=TimerKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                timer_id="misplaced",
+            ).to_proto(),
+            timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
+            code_version="v1",
+            status=temporaless_pb2.TIMER_STATUS_FIRED,
+        )
+    else:
+        path_key = EventKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            event_id="misplaced",
+        )
+        record = temporaless_pb2.EventRecord(
+            schema_version=EVENT_RECORD_SCHEMA_VERSION,
+            key=EventKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                event_id="misplaced",
+            ).to_proto(),
+        )
+
+    await records_operator.create_dir(path_key.dir_path())
+    await records_operator.write(path_key.path(), record.SerializeToString(deterministic=True))
+
+    with pytest.raises(ConnectError) as captured:
+        await store.delete_run(key)
+
+    assert captured.value.code is Code.DATA_LOSS
+    assert record_kind in captured.value.message
+    assert await records.get_workflow(key) is not None
+    assert await claims.get_claim(claim_key) is not None
+    assert await records_operator.exists(path_key.path())
+
+
+async def test_delete_run_rejects_point_only_claim_store_before_mutation(tmp_path) -> None:
+    class PointOnlyClaimStore:
+        def __init__(self, inner: OpenDALStore) -> None:
+            self._inner = inner
+
+        async def claim_capability(self):
+            return await self._inner.claim_capability()
+
+        async def get_claim(self, key):
+            return await self._inner.get_claim(key)
+
+        async def try_create_claim(self, record):
+            return await self._inner.try_create_claim(record)
+
+        async def delete_claim(self, key):
+            return await self._inner.delete_claim(key)
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    point_only = PointOnlyClaimStore(claims)
+    store = ConnectStore.local(records, point_only)
+    key = WorkflowKey(workflow_id="prices:delete-run", run_id="run:point-only")
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="arbitrary",
+    )
+    await records.put_workflow(
+        temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            workflow_type="workflow:test",
+            code_version="v1",
+            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+    )
+    assert await point_only.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+
+    with pytest.raises(ConnectError) as captured:
+        await store.delete_run(key)
+
+    assert captured.value.code is Code.FAILED_PRECONDITION
+    assert await records.get_workflow(key) is not None
+    assert await claims.get_claim(claim_key) is not None
+
+
+async def test_delete_run_treats_no_claims_capability_as_record_only(tmp_path) -> None:
+    class NoClaimsStructuralStore:
+        async def claim_capability(self):
+            return temporaless_pb2.CLAIM_CAPABILITY_NO_CLAIMS
+
+        async def get_claim(self, _key):
+            raise AssertionError("get_claim must not be called")
+
+        async def try_create_claim(self, _record):
+            raise AssertionError("try_create_claim must not be called")
+
+        async def delete_claim(self, _key):
+            raise AssertionError("delete_claim must not be called")
+
+        async def list_claims(self, _key):
+            raise AssertionError("list_claims must not be called")
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    store = ConnectStore.local(records, NoClaimsStructuralStore())
+    key = WorkflowKey(workflow_id="prices:delete-run", run_id="run:no-claims")
+    await records.put_workflow(
+        temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            workflow_type="workflow:test",
+            code_version="v1",
+            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+    )
+
+    assert await store.list_claims(key) == []
+    assert await store.delete_run(key) == 1
+    assert await records.get_workflow(key) is None
+
+
+async def test_delete_run_validates_entire_claim_listing_before_delete(tmp_path) -> None:
+    class CorruptListingStore:
+        def __init__(
+            self,
+            inner: OpenDALStore,
+            records: list[temporaless_pb2.ClaimRecord],
+        ) -> None:
+            self._inner = inner
+            self._records = records
+            self.delete_calls = 0
+
+        async def claim_capability(self):
+            return await self._inner.claim_capability()
+
+        async def get_claim(self, key):
+            return await self._inner.get_claim(key)
+
+        async def try_create_claim(self, record):
+            return await self._inner.try_create_claim(record)
+
+        async def delete_claim(self, key):
+            self.delete_calls += 1
+            return await self._inner.delete_claim(key)
+
+        async def list_claims(self, _key):
+            return self._records
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    claims = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "claims")))
+    key = WorkflowKey(workflow_id="prices:delete-run", run_id="run:corrupt")
+    target_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="target",
+    )
+    target = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=target_key.to_proto(),
+        owner_id="owner",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    assert await claims.try_create_claim(target)
+    misplaced = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=ClaimKey(
+            workflow_id=key.workflow_id,
+            run_id="run:other",
+            claim_id="misplaced",
+        ).to_proto(),
+        owner_id="owner",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    corrupt = CorruptListingStore(claims, [target, misplaced])
+    store = ConnectStore.local(records, corrupt)
+
+    with pytest.raises(ConnectError) as captured:
+        await store.delete_run(key)
+
+    assert captured.value.code is Code.DATA_LOSS
+    assert corrupt.delete_calls == 0
+    assert await claims.get_claim(target_key) is not None
 
 
 async def test_asgi_application_runs_interceptors(tmp_path) -> None:

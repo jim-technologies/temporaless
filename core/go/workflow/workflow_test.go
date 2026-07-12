@@ -141,7 +141,7 @@ func TestRunActivityWithClaims(t *testing.T) {
 				Namespace:  storage.DefaultNamespace,
 				WorkflowID: "prices:claims",
 				RunID:      "2026-05-02",
-				ClaimID:    "activity:fetch:symbol",
+				ClaimID:    ActivityClaimIDPrefix + "fetch:symbol",
 			}
 			created, err := claimStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
 				SchemaVersion:  storage.ClaimRecordSchemaVersion,

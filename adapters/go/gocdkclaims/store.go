@@ -2,7 +2,9 @@ package gocdkclaims
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
@@ -15,6 +17,7 @@ import (
 const protobufContentType = "application/protobuf"
 
 var _ storage.ClaimStore = (*Store)(nil)
+var _ storage.ClaimRunStore = (*Store)(nil)
 
 // Store wraps a GoCDK blob.Bucket and implements create-only claim semantics
 // via WriterOptions.IfNotExist.
@@ -79,6 +82,53 @@ func (store *Store) GetClaim(ctx context.Context, key storage.ClaimKey) (*tempor
 		return nil, false, err
 	}
 	return record, true, nil
+}
+
+// ListClaims returns every protobuf claim record under one workflow run. The
+// object names are used only to enumerate blobs; record identity always comes
+// from the protobuf payload.
+func (store *Store) ListClaims(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if store.bucket == nil {
+		return nil, fmt.Errorf("gocdk bucket is required")
+	}
+
+	prefix, err := (storage.ClaimKey{
+		Namespace:  key.Namespace,
+		WorkflowID: key.WorkflowID,
+		RunID:      key.RunID,
+		ClaimID:    "placeholder",
+	}).DirPath()
+	if err != nil {
+		return nil, err
+	}
+
+	records := make([]*temporalessv1.ClaimRecord, 0)
+	iterator := store.bucket.List(&blob.ListOptions{Prefix: prefix})
+	for {
+		object, err := iterator.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			return records, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if object.IsDir {
+			continue
+		}
+
+		data, err := store.bucket.ReadAll(ctx, object.Key)
+		if err != nil {
+			return nil, err
+		}
+		record := &temporalessv1.ClaimRecord{}
+		if err := proto.Unmarshal(data, record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
 }
 
 func (store *Store) TryCreateClaim(ctx context.Context, record *temporalessv1.ClaimRecord) (bool, error) {

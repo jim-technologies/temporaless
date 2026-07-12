@@ -8,10 +8,17 @@ from protovalidate import ValidationError, validate
 
 from temporaless.cronscheduler import last_fire_from_runs
 from temporaless.storage import (
+    ACTIVITY_RECORD_SCHEMA_VERSION,
+    CLAIM_RECORD_SCHEMA_VERSION,
+    EVENT_RECORD_SCHEMA_VERSION,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
+    ActivityKey,
+    ClaimKey,
+    EventKey,
     OpenDALStore,
     TimerKey,
+    WorkflowKey,
     _due_entry_path,
     _parse_run_id_fire_time,
 )
@@ -41,6 +48,147 @@ async def test_latest_pointer_uses_fire_time_not_backfill_write_time(tmp_path) -
     last = await last_fire_from_runs(store, "", "prices:aapl", "%Y-%m-%d")
 
     assert last == datetime(2026, 7, 1, tzinfo=UTC)
+
+
+async def test_delete_run_validates_all_claim_payloads_before_deleting_any(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    store = OpenDALStore(operator)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="run:one")
+    valid_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="a-valid",
+    )
+    valid = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=valid_key.to_proto(),
+        owner_id="owner",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    assert await store.try_create_claim(valid)
+    misplaced_path = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="z-misplaced",
+    )
+    misplaced = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=ClaimKey(
+            workflow_id=key.workflow_id,
+            run_id="run:other",
+            claim_id="z-misplaced",
+        ).to_proto(),
+        owner_id="owner",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+        code_version="v1",
+    )
+    await operator.create_dir(misplaced_path.dir_path())
+    await operator.write(
+        misplaced_path.path(),
+        misplaced.SerializeToString(deterministic=True),
+    )
+
+    with pytest.raises(ValueError, match="does not match requested workflow run"):
+        await store.delete_run(key)
+
+    assert await store.get_claim(valid_key) is not None
+
+
+@pytest.mark.parametrize("record_kind", ["activity", "timer", "event"])
+async def test_delete_run_validates_all_record_payloads_before_deleting_any(
+    tmp_path,
+    record_kind: str,
+) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path))
+    store = OpenDALStore(operator)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="run:one")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+    )
+    valid_claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="valid",
+    )
+    assert await store.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=valid_claim_key.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+
+    if record_kind == "activity":
+        path_key = ActivityKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            activity_id="misplaced",
+        )
+        record = temporaless_pb2.ActivityRecord(
+            schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+            key=ActivityKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                activity_id="misplaced",
+            ).to_proto(),
+            activity_type="activity:test",
+            code_version="v1",
+            status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+    elif record_kind == "timer":
+        path_key = TimerKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            timer_id="misplaced",
+        )
+        record = temporaless_pb2.TimerRecord(
+            schema_version=TIMER_RECORD_SCHEMA_VERSION,
+            key=TimerKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                timer_id="misplaced",
+            ).to_proto(),
+            timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
+            code_version="v1",
+            status=temporaless_pb2.TIMER_STATUS_FIRED,
+        )
+    else:
+        path_key = EventKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            event_id="misplaced",
+        )
+        record = temporaless_pb2.EventRecord(
+            schema_version=EVENT_RECORD_SCHEMA_VERSION,
+            key=EventKey(
+                workflow_id=key.workflow_id,
+                run_id="run:other",
+                event_id="misplaced",
+            ).to_proto(),
+        )
+
+    await operator.create_dir(path_key.dir_path())
+    await operator.write(path_key.path(), record.SerializeToString(deterministic=True))
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{record_kind} payload key does not match requested workflow run",
+    ):
+        await store.delete_run(key)
+
+    assert await store.get_workflow(key) is not None
+    assert await store.get_claim(valid_claim_key) is not None
+    assert await operator.exists(path_key.path())
 
 
 async def test_latest_pointer_defaults_parse_compact_run_ids(tmp_path) -> None:

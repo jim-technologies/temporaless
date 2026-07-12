@@ -28,6 +28,15 @@ CREATE_ONLY_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
 CAS_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS
 ClaimCapability = temporaless_pb2.ClaimCapability
 
+
+class ClaimRunListingUnsupportedError(TypeError):
+    """A claim backend can coordinate claims but cannot list one run's claims."""
+
+
+class RunRecordValidationError(ValueError):
+    """A run-scoped listing returned a record owned by a different run."""
+
+
 # V2 storage is flat and constructed-only. Keys are never inverted back into
 # record identity; routines that need identity read the protobuf payload.
 STORAGE_ROOT_PREFIX = "temporaless/v2"
@@ -332,9 +341,16 @@ class ClaimStore(Protocol):
     async def delete_claim(self, key: ClaimKey) -> bool:
         """Idempotently release a held claim. Returns True when the claim
         existed and was removed, False when it was already absent. Used by
-        the runtime to release concurrency-key slots when a workflow reaches
-        a terminal status or returns a pending error."""
+        the runtime to release workflow-execution, activity, and concurrency-key
+        claims at their durable/orderly boundaries."""
         ...
+
+
+@runtime_checkable
+class ClaimRunStore(ClaimStore, Protocol):
+    """Optional run-scoped claim listing used only for bounded run deletion."""
+
+    async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]: ...
 
 
 @dataclass(frozen=True)
@@ -498,17 +514,34 @@ class OpenDALStore:
 
     async def delete_run(self, key: WorkflowKey) -> int:
         deleted = 0
-        for activity in await self.list_activities(key):
-            if await self.delete_activity(activity_key_from_proto(activity.key)):
+        claim_records = await self.list_claims(key)
+        activity_records = await self.list_activities(key)
+        timer_records = await self.list_timers(key, temporaless_pb2.TIMER_STATUS_UNSPECIFIED)
+        event_records = await self.list_events(key)
+
+        # Build and validate the complete deletion plan before removing its
+        # first object. Run-scoped listing reads identity from each protobuf
+        # payload, so a misplaced/corrupt record must never redirect deletion
+        # into another workflow run or leave this run partially deleted.
+        claim_keys = _claim_keys_for_run(key, claim_records)
+        activity_keys = _activity_keys_for_run(key, activity_records)
+        timer_keys = _timer_keys_for_run(key, timer_records)
+        event_keys = _event_keys_for_run(key, event_records)
+
+        # Claims are coordination state for the records below. Remove them
+        # first so a later record-deletion failure leaves a retryable run and
+        # never strands claims after their identifying records are gone.
+        for claim_key in claim_keys:
+            if await self.delete_claim(claim_key):
                 deleted += 1
-        for timer in await self.list_timers(key, temporaless_pb2.TIMER_STATUS_UNSPECIFIED):
-            if await self.delete_timer(timer_key_from_proto(timer.key)):
+        for activity_key in activity_keys:
+            if await self.delete_activity(activity_key):
                 deleted += 1
-        for event in await self.list_events(key):
-            if await self.delete_event(event_key_from_proto(event.key)):
+        for timer_key in timer_keys:
+            if await self.delete_timer(timer_key):
                 deleted += 1
-        for claim in await self._list_claims(key):
-            if await self.delete_claim(claim_key_from_proto(claim.key)):
+        for event_key in event_keys:
+            if await self.delete_event(event_key):
                 deleted += 1
         if await self.delete_workflow(key):
             deleted += 1
@@ -630,7 +663,7 @@ class OpenDALStore:
                 due.append(DueTimer(key=timer_key, record=timer, workflow=workflow))
         return due
 
-    async def _list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
+    async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
         dir_path = ClaimKey(
             workflow_id=key.workflow_id,
             run_id=key.run_id,
@@ -728,6 +761,99 @@ def event_key_from_proto(key: temporaless_pb2.EventKey) -> EventKey:
         run_id=key.run_id,
         event_id=key.event_id,
     )
+
+
+def _claim_keys_for_run(
+    key: WorkflowKey,
+    records: list[temporaless_pb2.ClaimRecord],
+) -> list[ClaimKey]:
+    claim_keys: list[ClaimKey] = []
+    for record in records:
+        claim_key = claim_key_from_proto(record.key)
+        claim_key.validate()
+        _validate_run_identity(
+            key,
+            claim_key.namespace,
+            claim_key.workflow_id,
+            claim_key.run_id,
+            "claim",
+        )
+        claim_keys.append(claim_key)
+    return claim_keys
+
+
+def _activity_keys_for_run(
+    key: WorkflowKey,
+    records: list[temporaless_pb2.ActivityRecord],
+) -> list[ActivityKey]:
+    activity_keys: list[ActivityKey] = []
+    for record in records:
+        activity_key = activity_key_from_proto(record.key)
+        activity_key.validate()
+        _validate_run_identity(
+            key,
+            activity_key.namespace,
+            activity_key.workflow_id,
+            activity_key.run_id,
+            "activity",
+        )
+        activity_keys.append(activity_key)
+    return activity_keys
+
+
+def _timer_keys_for_run(
+    key: WorkflowKey,
+    records: list[temporaless_pb2.TimerRecord],
+) -> list[TimerKey]:
+    timer_keys: list[TimerKey] = []
+    for record in records:
+        timer_key = timer_key_from_proto(record.key)
+        timer_key.validate()
+        _validate_run_identity(
+            key,
+            timer_key.namespace,
+            timer_key.workflow_id,
+            timer_key.run_id,
+            "timer",
+        )
+        timer_keys.append(timer_key)
+    return timer_keys
+
+
+def _event_keys_for_run(
+    key: WorkflowKey,
+    records: list[temporaless_pb2.EventRecord],
+) -> list[EventKey]:
+    event_keys: list[EventKey] = []
+    for record in records:
+        event_key = event_key_from_proto(record.key)
+        event_key.validate()
+        _validate_run_identity(
+            key,
+            event_key.namespace,
+            event_key.workflow_id,
+            event_key.run_id,
+            "event",
+        )
+        event_keys.append(event_key)
+    return event_keys
+
+
+def _validate_run_identity(
+    expected: WorkflowKey,
+    namespace: str,
+    workflow_id: str,
+    run_id: str,
+    record_kind: str,
+) -> None:
+    if (
+        namespace != expected.namespace
+        or workflow_id != expected.workflow_id
+        or run_id != expected.run_id
+    ):
+        raise RunRecordValidationError(
+            f"{record_kind} payload key does not match requested workflow run"
+        )
 
 
 async def _read_message(

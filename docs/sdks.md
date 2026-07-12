@@ -25,12 +25,13 @@ temporaless/v2/{ns}/{wf}/{rid}/event/{eid}.binpb
 temporaless/v2/{ns}/{wf}/{rid}/claim/{cid}.binpb
 ```
 
-The replay contract is identical across SDKs: a stored record is reused
-when `(workflow_id, run_id, code_version, workflow_type)` matches —
-likewise `(workflow_id, run_id, activity_id, code_version, activity_type)`
-for activities. The user-supplied IDs are the de-duplication key; the
-runtime does NOT fingerprint input bytes. If you want a distinct
-execution, choose a distinct id.
+The replay contract is identical across SDKs: a terminal workflow record is
+reused when `(workflow_id, run_id, code_version, workflow_type)` matches —
+likewise a completed/failed activity record matching `(workflow_id, run_id,
+activity_id, code_version, activity_type)`. Pending records instead drive
+resume. The user-supplied IDs are the de-duplication key; the runtime does NOT
+fingerprint input bytes. If you want a distinct execution, choose a distinct
+id.
 
 `workflow_type` and `activity_type` are formed from the protobuf
 descriptor's full name (`google.protobuf.StringValue`,
@@ -125,7 +126,7 @@ surface, not the v0.3.0 gate.
 | `Retry-After` from `ActivityFailure.retry_after` | ✓ | ✓ | ✓ |
 | Durable retry backoffs (`RetryPolicy.durable_backoff_threshold` → timer record) | ✓ | ✓ | — |
 | Concurrency keys (cluster-wide caps via claim slots) | ✓ | ✓ | — |
-| Claims (activity-level, GoCDK / OpenDAL backend) | ✓ | ✓ | — |
+| Claims (workflow single-flight + activity, GoCDK / OpenDAL backend) | ✓ | ✓ | — |
 | Durable timers (`workflow.Sleep`) | ✓ | ✓ | — |
 | Wait for event (`workflow.WaitEvent`) | ✓ | ✓ | — |
 | Annotate (per-record durable key/value) | ✓ | ✓ | ✓ |

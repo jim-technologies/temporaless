@@ -176,14 +176,24 @@ class RetryPolicy(_message.Message):
     def __init__(self, initial_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., backoff_coefficient: _Optional[float] = ..., maximum_interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., maximum_attempts: _Optional[int] = ..., non_retryable_error_codes: _Optional[_Iterable[str]] = ..., durable_backoff_threshold: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class ReservedNames(_message.Message):
-    __slots__ = ("concurrency_workflow_id", "activity_retry_timer_id_prefix", "concurrency_slot_id_prefix")
+    __slots__ = ("concurrency_workflow_id", "activity_retry_timer_id_prefix", "concurrency_slot_id_prefix", "workflow_execution_claim_id", "activity_claim_id_prefix")
     CONCURRENCY_WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     ACTIVITY_RETRY_TIMER_ID_PREFIX_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_SLOT_ID_PREFIX_FIELD_NUMBER: _ClassVar[int]
+    WORKFLOW_EXECUTION_CLAIM_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTIVITY_CLAIM_ID_PREFIX_FIELD_NUMBER: _ClassVar[int]
     concurrency_workflow_id: str
     activity_retry_timer_id_prefix: str
     concurrency_slot_id_prefix: str
-    def __init__(self, concurrency_workflow_id: _Optional[str] = ..., activity_retry_timer_id_prefix: _Optional[str] = ..., concurrency_slot_id_prefix: _Optional[str] = ...) -> None: ...
+    workflow_execution_claim_id: str
+    activity_claim_id_prefix: str
+    def __init__(self, concurrency_workflow_id: _Optional[str] = ..., activity_retry_timer_id_prefix: _Optional[str] = ..., concurrency_slot_id_prefix: _Optional[str] = ..., workflow_execution_claim_id: _Optional[str] = ..., activity_claim_id_prefix: _Optional[str] = ...) -> None: ...
+
+class RuntimeDefaults(_message.Message):
+    __slots__ = ("claim_lease_duration_seconds",)
+    CLAIM_LEASE_DURATION_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    claim_lease_duration_seconds: int
+    def __init__(self, claim_lease_duration_seconds: _Optional[int] = ...) -> None: ...
 
 class WorkflowKey(_message.Message):
     __slots__ = ("namespace", "workflow_id", "run_id")
@@ -586,6 +596,18 @@ class ListEventsResponse(_message.Message):
     RECORDS_FIELD_NUMBER: _ClassVar[int]
     records: _containers.RepeatedCompositeFieldContainer[EventRecord]
     def __init__(self, records: _Optional[_Iterable[_Union[EventRecord, _Mapping]]] = ...) -> None: ...
+
+class ListClaimsRequest(_message.Message):
+    __slots__ = ("key",)
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ...) -> None: ...
+
+class ListClaimsResponse(_message.Message):
+    __slots__ = ("records",)
+    RECORDS_FIELD_NUMBER: _ClassVar[int]
+    records: _containers.RepeatedCompositeFieldContainer[ClaimRecord]
+    def __init__(self, records: _Optional[_Iterable[_Union[ClaimRecord, _Mapping]]] = ...) -> None: ...
 
 class RecordQueryServiceListActivitiesRequest(_message.Message):
     __slots__ = ("namespace", "workflow_id", "run_id", "status", "order_by", "page_size", "page_token")

@@ -124,13 +124,19 @@ The OpenDAL `fs` scheme is intentionally not safe for concurrent writers; it's f
 
 ### Claim coordination in production
 
-For activity-level coordination across processes:
+Set `WorkflowOptions.claim_owner_id` to opt a run into workflow-execution and activity claims. The runtime creates `claim/workflow:execution.binpb` before entering missing or `IN_PROGRESS` workflow work. Another live invocation of the same `(namespace, workflow_id, run_id)` gets `ClaimBusyError` (`ALREADY_EXISTS`); a terminal workflow record still replays without waiting for the claim. Supplying a claim store alone does not opt in, and an empty `claim_owner_id` retains at-least-once overlapping execution.
+
+The runtime first checks `GetStoreCapabilities`. A store reporting `NO_CLAIMS` or `UNSPECIFIED` rejects `claim_owner_id` and `concurrency_key` with a failed-precondition error; requested coordination is never silently ignored. `concurrency_key` requires `claim_owner_id`, and that caller-owned value is stored on its slot claim too. It is diagnostic metadata, not a re-entry token—matching owners still contend.
+
+For claim coordination across processes:
 
 - Bundled `adapters/go/gocdkclaims` uses GoCDK Blob's `WriterOptions.IfNotExist`. Driver-dependent atomicity:
   - GCS, S3: native atomic — multi-process safe
   - fileblob: process-local mutex compensates for the Stat-then-Rename race; multi-process not safe
 
 - For S3-native preconditions without the GoCDK indirection: write a thin `storage.ClaimStore` against the AWS SDK using `If-None-Match: *`. Same pattern for GCS with `ifGenerationMatch=0`. Either is small.
+
+The bundled stores are create-only. Workflow claims are deleted on orderly exits. Activity claims are deleted after a terminal record or fully persisted retry boundary, but retained when cancellation or persistence failure makes an activity outcome ambiguous. Cleanup errors are always surfaced. An activity-claim cleanup failure interrupts the body and leaves the workflow `IN_PROGRESS`; an invocation-claim cleanup failure after terminal persistence leaves the stored workflow `COMPLETED` or `FAILED`. A process crash or failed cleanup can leave a claim behind, and its `lease_expires_at` timestamp does not make takeover safe. Verify that no worker is still live and delete the exact claim through `ClaimStore.delete_claim` / `DeleteClaim`. CAS renewal and takeover are not implemented by the current core.
 
 ## 2. Mounting workflows as gRPC / ConnectRPC methods
 
@@ -177,7 +183,7 @@ http.ListenAndServe(":8080", mux)
 
 `HandleConnect` unwraps the `connect.Request`, runs `workflow.Run` with replay semantics, and wraps the response — saving the boilerplate while keeping the handler signature 100% standard ConnectRPC. Inside `fetchPricesBody`, call `workflow.ExecuteActivity(ctx, ...)`, `workflow.Sleep`, `workflow.WaitEvent` like any other workflow — the in-flight workflow rides on `ctx`.
 
-It also auto-maps framework typed errors to `*connect.Error` with the right gRPC code (`TimerPendingError`/`EventPendingError` → `Unavailable`, `ClaimBusyError` → `AlreadyExists`, conflicts → `FailedPrecondition`, `ActivityError` → `Internal`). The original error is preserved via wrapping, so `errors.As(err, &workflow.TimerPendingError{...})` still recovers it. Unknown errors pass through unchanged.
+It also auto-maps framework typed errors to `*connect.Error` with the right gRPC code (`TimerPendingError`/`EventPendingError` → `Unavailable`, `ClaimBusyError` → `AlreadyExists`, claim-release failures / activity failures → `Internal`, claim-capability and record conflicts → `FailedPrecondition`). The original error is preserved via wrapping, so `errors.As(err, &workflow.TimerPendingError{...})` still recovers it. Unknown errors pass through unchanged.
 
 ### Python: `@wrap_workflow_method`
 
@@ -223,9 +229,9 @@ class PriceService:
         )
 ```
 
-Any client speaking gRPC / ConnectRPC / gRPC-Web can now trigger the workflow. Replay short-circuits via stored records, so duplicate calls with the same `workflow_id + run_id` are free. The "any server can trigger a workflow" model is literal — the framework only provides decoration.
+Any client speaking gRPC / ConnectRPC / gRPC-Web can now trigger the workflow. Terminal duplicate calls with the same `workflow_id + run_id` replay from storage. To prevent two live calls from entering a missing or `IN_PROGRESS` run together, configure a claim store and set a caller-provided `claim_owner_id`; the loser receives `ALREADY_EXISTS`. Without that opt-in, overlapping execution is at-least-once. The "any server can trigger a workflow" model is literal — the framework only provides decoration.
 
-`@wrap_workflow_method` also auto-maps framework typed errors to `ConnectError` (`TimerPendingError`/`EventPendingError` → `UNAVAILABLE`, `ClaimBusyError` → `ALREADY_EXISTS`, conflicts → `FAILED_PRECONDITION`, `ActivityError` → `INTERNAL`). The original exception is attached via `__cause__`, so `except ConnectError as e: e.__cause__` recovers the underlying type. Unknown exceptions propagate unchanged so application errors keep their full traceback.
+`@wrap_workflow_method` also auto-maps framework typed errors to `ConnectError` (`TimerPendingError`/`EventPendingError` → `UNAVAILABLE`, `ClaimBusyError` → `ALREADY_EXISTS`, claim-release failures / activity failures → `INTERNAL`, claim-capability and record conflicts → `FAILED_PRECONDITION`). The original exception is attached via `__cause__`, so `except ConnectError as e: e.__cause__` recovers the underlying type. Unknown exceptions propagate unchanged so application errors keep their full traceback.
 
 ### Mapping framework errors to gRPC codes
 
@@ -235,6 +241,8 @@ When the workflow body raises one of the framework's typed errors, `HandleConnec
 |-----------------------------------------------|----------------------|
 | `TimerPendingError`, `EventPendingError`      | `UNAVAILABLE`        |
 | `ClaimBusyError`                              | `ALREADY_EXISTS`     |
+| `ClaimReleaseError` / Go `ErrClaimRelease`   | `INTERNAL`           |
+| `ClaimCapabilityError`                       | `FAILED_PRECONDITION`|
 | `WorkflowConflictError`, `ActivityConflictError`, `TimerConflictError` | `FAILED_PRECONDITION` |
 | `ActivityError`                               | `INTERNAL`           |
 
@@ -314,7 +322,7 @@ scheduler.restore(snapshot)
 await scheduler.tick(datetime.now(UTC))
 ```
 
-Two cron-scheduler processes can run concurrently — `workflow.Run` / `await run(...)` is idempotent (same workflow_id + run_id replays), so duplicate dispatches are safe.
+Two cron-scheduler processes may dispatch the same fire concurrently. Terminal reruns replay, but suppressing overlapping first execution requires the dispatched `WorkflowOptions` to include `claim_owner_id` and an atomic claim store. Without that opt-in, scheduler delivery is at-least-once and activities must remain idempotent.
 
 ### Timer scanner
 
@@ -340,11 +348,19 @@ retention. Exact "delete completed runs older than X" is a cross-run query and
 requires `RecordQueryService` / an index-backed `QueryStore`.
 
 ```go
-deleted, _ := janitor.Sweep(ctx, queryStore, time.Now(), 7*24*time.Hour)
+deleted, _ := janitor.Sweep(ctx, queryStore, claimStore, &temporalessv1.SweepRequest{
+    Now:    timestamppb.Now(),
+    MaxAge: durationpb.New(7 * 24 * time.Hour),
+})
 log.Printf("janitor swept %d completed runs older than 7 days", deleted)
 ```
 
-Run daily.
+Pass `nil` for `claimStore` only when the query store itself exposes claim
+coordination or the deployment declares `NO_CLAIMS`. With a separate GoCDK/S3/GCS
+claim backend, pass it explicitly. The janitor prevalidates all eligible run
+snapshots and removes run-scoped claims before records. It is not an execution
+fence or transaction: externally quiesce eligible runs before the sweep, then
+run it daily.
 
 ### Operator-vs-handler replicas
 
@@ -362,7 +378,10 @@ import "github.com/jim-technologies/temporaless/adapters/go/background"
 workers, _ := background.New(store, background.Config{
     Cron:         &background.CronConfig{Scheduler: scheduler},
     TimerScanner: &background.TimerScannerConfig{Dispatch: dispatchDueTimer},
-    Janitor:      &background.JanitorConfig{MaxAge: 7 * 24 * time.Hour},
+    Janitor:      &background.JanitorConfig{
+        MaxAge:    7 * 24 * time.Hour,
+        ClaimStore: claimStore, // omit only for NO_CLAIMS or auto-detection
+    },
 })
 if err := workers.Start(ctx); err != nil { /* ... */ }
 defer workers.Stop()
@@ -397,11 +416,12 @@ latency-sensitive) and keep cron + janitor on a single operator replica.
 
 **Why this is opt-in, not leader-elected.** Coordination dances add
 complexity the framework explicitly rejects. The simpler answer: deployers
-choose which replicas run periodic work. If you mis-configure and two
-replicas both run a loop, framework replay catches duplicate dispatches
-(workflow.Run is idempotent on `workflow_id + run_id`) and indexed sweeps
-mirror idempotent run-prefix deletes — so it's an efficiency loss, never a
-correctness one.
+choose which replicas run periodic work. If you mis-configure and two replicas
+both run a loop, terminal workflow records replay and indexed sweeps mirror
+idempotent run-prefix deletes. Overlapping first execution is serialized only
+when those workflow calls opt into `claim_owner_id` with an atomic claim
+store; otherwise the duplicate dispatch is at-least-once and must be safe at
+the activity boundary.
 
 **Skip the helper entirely** when your platform already provides
 scheduled invocations: Lambda + EventBridge, Cloud Run + Cloud Scheduler,
@@ -413,7 +433,7 @@ in-process; don't pay for both.
 
 ### Multi-process within one region
 
-Default: claims serialize activities, replays serialize results. Multiple workflow workers, schedulers, and scanners can all run concurrently against the same Store; indexed janitors additionally use the query store. Recommended setup: one process pool per role (Lambda function, Cloud Run service, K8s Deployment, etc.), each scaled horizontally.
+Terminal records serialize replayed results. When `claim_owner_id` is set, the deterministic `workflow:execution` claim also serializes live invocations and activity claims coordinate missing activity work. Without that opt-in, multiple workflow workers, schedulers, and scanners may overlap with at-least-once execution even when they share the same Store. Indexed janitors additionally use the query store. Recommended setup: one process pool per role (Lambda function, Cloud Run service, K8s Deployment, etc.), each scaled horizontally.
 
 ### Multi-region active/active
 
@@ -421,7 +441,7 @@ The Store must replicate across regions. S3 cross-region replication, GCS multi-
 
 Conflict points:
 - **Claim creation**: native `If-None-Match` / generation matches are atomic per-region but not cross-region. For active/active claims, partition workflows by region (route `workflow_id` prefix → home region) and let CRR catch up the records.
-- **Workflow records during execution**: last-writer-wins is fine because the records are keyed by the same id.
+- **Workflow records during execution**: do not rely on last-writer-wins to suppress side effects. Route each workflow identity to one home region or use a coordination system with cross-region atomicity.
 
 ### Cold standby
 
@@ -477,7 +497,8 @@ For activity-level spans inside a workflow body, use your tracer directly inline
 
 - **Process crash mid-activity**: activity record stays missing. Next invocation re-executes (or claims block if configured).
 - **Process crash mid-retry**: `RETRYING` record is persisted between attempts. Next invocation resumes from the next attempt index, attempts list preserved.
-- **Process crash mid-workflow**: `IN_PROGRESS` workflow record is persisted before the body runs. Next invocation re-executes the body; activities replay from their stored records.
+- **Process crash mid-workflow without execution claims**: `IN_PROGRESS` remains and the next invocation re-executes the body; completed activities replay from their records.
+- **Process crash with a create-only execution claim**: `workflow:execution` may remain and later invocations return `ClaimBusyError`, even after its lease timestamp. After confirming the old worker is gone, delete the exact claim through `ClaimStore.delete_claim` / `DeleteClaim`. CAS takeover is future-only.
 - **Storage unavailable**: `workflow.Run` returns the storage error. Caller's responsibility to retry.
 - **Schedule missed during outage**: `cronscheduler.Tick` catches up — it dispatches every fire time between `last_fire` and `now`.
 - **Query index unavailable**: workflow execution, cron pointer seeding, and durable timer resumption continue. Listing, inspector search, and indexed sweeps fail until the index is back or rebuilt.
@@ -490,7 +511,7 @@ The framework is platform-agnostic. The pieces you actually deploy:
 Workflow service     N replicas    serves the ConnectRPC trigger surface
 Cron scheduler tick  1/min         calls Scheduler.tick(now)
 Timer scanner tick   1/min         calls DueTimers + dispatches re-invocations
-Janitor (optional)   1/day         calls RecordQueryService.Sweep(maxAge), or use bucket lifecycle rules
+Janitor (optional)   1/day         quiesces eligible runs, then calls claim-aware RecordQueryService.Sweep
 Query index           optional      SQLite adapter for search and indexed retention
 Code version env     git short SHA bumped on breaking workflow body changes
 Storage credentials  S3 / GCS / Azure Blob via your secret manager

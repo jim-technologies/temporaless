@@ -47,4 +47,12 @@ Claim adapters must declare one capability:
 - `CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS`
 - `CLAIM_CAPABILITY_CAS_CLAIMS`
 
-Create-only claims can prevent concurrent starts, but they cannot safely take over stale claims. Core code should treat an existing create-only claim as busy unless a completed activity record is already available.
+When `claim_owner_id` enables them, create-only claims prevent concurrent
+workflow starts and missing activity execution, but they cannot safely take
+over stale claims. A terminal workflow record replays before claim arbitration;
+otherwise an existing `workflow:execution` claim is busy even for the same
+owner. Completed activity records likewise replay before activity contention.
+Every existing activity claim is also busy, including for the same owner.
+Adapters must support run-scoped claim listing when they are used behind
+`DeleteRun` or claim-aware retention sweep, so recursive deletion can remove
+every claim before deleting the remaining run records.

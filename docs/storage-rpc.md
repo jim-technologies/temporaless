@@ -20,8 +20,8 @@ contracts. Deployment decides how those service-shaped clients dispatch:
 
 The domain-facing store interfaces still exist in each language:
 
-- Go: `storage.Store` and `storage.ClaimStore`
-- Python: `Store` and `ClaimStore` protocols
+- Go: `storage.Store`, `storage.ClaimStore`, and the bounded `storage.ClaimRunStore` deletion extension
+- Python: `Store`, `ClaimStore`, and `ClaimRunStore` protocols
 
 Those interfaces are the business-layer seam used by workflow replay. They
 mirror the protobuf service semantics and are intentionally thin. Inspector
@@ -57,10 +57,12 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
 - `GetActivity` / `PutActivity` / `ListActivities` / `DeleteActivity`
 - `GetTimer` / `PutTimer` / `ListTimers` / `DeleteTimer`
 - `GetEvent` / `PutEvent` / `ListEvents` / `DeleteEvent`
-- `GetClaim` / `TryCreateClaim` / `DeleteClaim`
+- `GetClaim` / `TryCreateClaim` / `DeleteClaim` / `ListClaims`
 - `DueTimers` (read the compact due-timer ledger)
 
-Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. Deletions are idempotent.
+Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. `DeleteRun` snapshots and validates every listed record before deleting claims, then activities/timers/events/workflow; a separately configured claim store must implement `ClaimRunStore` or deletion is rejected before mutation. Deletions are idempotent.
+
+`DeleteRun` is a bounded cleanup operation, not a transaction or execution fence. Quiesce the run before calling it. A claim created concurrently after the listing snapshot can survive this pass; strict concurrent deletion would require a run tombstone checked by every claim create, which the create-only core does not pretend to provide.
 
 ## Query Surface
 
@@ -72,6 +74,13 @@ Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetc
 - `DueTimers`
 
 Query RPCs provide status filters, ordering, pagination, indexed retention, and alternate indexed due-timer lookup. The bucket remains authoritative; query rows contain metadata only.
+
+`RecordQueryService.Sweep` follows the same bounded deletion rules for every
+eligible run: preflight claim capability, require `ClaimRunStore` from a
+claim-capable backend, snapshot and validate all run-scoped claims and records,
+then delete claims before records. `NO_CLAIMS` remains record-only. Sweep is
+nontransactional and is not an execution fence, so the operator must externally
+quiesce eligible runs while retention executes.
 
 Production inspectors, large operational search, and exact retention sweeps
 should use an indexed `RecordQueryService` backed by SQL, DuckLake, or another

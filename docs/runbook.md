@@ -35,9 +35,11 @@ aws s3 ls s3://your-bucket/temporaless/v2/default/<wf_id>/<run_id>/
 - **Pending timer that never fired** — the timer scanner stopped ticking. Verify your scheduler/CronJob is alive; restart it. The next tick will pick up overdue timers.
 - **Pending event that nothing's delivered** — find the event_id, deliver via `temporaless.send_event(store, key, payload)`.
 - **Pending dependency** (`WorkflowDependencyPendingError` mapped to `Unavailable`) — the upstream workflow hasn't completed. Check it with the same procedure recursively.
-- **Worker crashed mid-execution** — re-invoke the workflow (`workflow.run` is idempotent on the same input). Existing activity records replay; the body resumes from the first not-yet-recorded boundary.
+- **Worker crashed mid-execution without workflow claims** — re-invoke the workflow. Existing activity records replay; the body resumes from the first not-yet-recorded boundary with at-least-once execution at the missing boundary.
+- **Worker crashed while holding `workflow:execution`** — a create-only claim can remain after the process is gone. Confirm that no worker is still executing, then delete that exact key through `ClaimStore.delete_claim` / `DeleteClaim` before re-invoking. Its lease timestamp does not free it automatically.
+- **Activity claim retained after an ambiguous exit** — cancellation may have arrived after an external side effect, or storage may have failed after the activity returned. Confirm the old invocation is gone and reconcile the external side effect before deleting `activity:{activity_id}`. If the activity record is terminal or `RETRYING` with its timer present, normal cleanup should have released the claim; a retained claim then indicates cleanup failure.
 
-**If unrecoverable:** `inspector.reset_workflow(store, key)` deletes the workflow record (and optionally child records) so the next invocation starts fresh.
+**If unrecoverable:** `inspector.reset_workflow(store, key)` deletes the workflow record so the next invocation starts fresh. It does not delete child or claim records; remove a verified-stale `workflow:execution` claim separately through the claim store.
 
 ---
 
@@ -48,16 +50,34 @@ aws s3 ls s3://your-bucket/temporaless/v2/default/<wf_id>/<run_id>/
 **Diagnose:**
 
 ```python
-from temporaless.inspector import list_claims_for
-async for claim in list_claims_for(store, workflow_id="prices:AAPL", run_id="2026-05-04"):
-    print(claim.claim_id, claim.owner_id, claim.lease_expires_at)
+from temporaless.storage import ClaimKey
+
+key = ClaimKey(
+    workflow_id="prices:AAPL",
+    run_id="2026-05-04",
+    claim_id="workflow:execution",  # or activity:<activity_id>
+)
+claim = await store.get_claim(key)
+if claim is not None:
+    print(claim.owner_id, claim.lease_expires_at)
 ```
 
 **Common causes:**
 
-- **Claim leak.** A worker died after acquiring a claim but before releasing it; the lease is alive until expiry. Wait `DEFAULT_CLAIM_LEASE_DURATION` (15 min default) and retry; or call `inspector.reset_activity(store, key)` to clear the claim explicitly.
+- **Claim leak.** A worker died after acquiring a create-only claim but before releasing it. `lease_expires_at` is diagnostic metadata, not permission to take over: waiting past it does not free the claim. Confirm that the old worker is gone, then delete the activity claim or per-run `workflow:execution` claim explicitly through `ClaimStore.delete_claim` / `DeleteClaim`. CAS takeover is not implemented by the current core.
 - **Thundering-herd retries.** Many clients retrying the same workflow in lockstep. Add jittered backoff client-side; the server is doing the right thing rejecting duplicate work.
 - **Wrong claim store backend.** OpenDAL `fs` is **not multi-process safe**. If you see this in dev with multiple worker pods sharing an emptyDir, switch to a real cloud backend (`gocloud.dev` blob with `IfNotExist`, S3 conditional puts, GCS `ifGenerationMatch`).
+- **Claim capability is unavailable.** If a trigger opts into `claim_owner_id` or `concurrency_key` but the remote RecordStoreService has no claim backend, the runtime returns failed-precondition before writing `IN_PROGRESS`. Configure a create-only claim store or remove the coordination option and accept at-least-once overlap.
+
+---
+
+## 2a. Concurrency capacity remains consumed after a crash
+
+**Symptom:** Calls receive `ConcurrencyBusyError` / `RESOURCE_EXHAUSTED` even though fewer than `concurrency_limit` workflows are live.
+
+Concurrency slots are claims under the framework scope `workflow_id=__concurrency__`, `run_id=<concurrency_key>`, with claim IDs `slot:0`, `slot:1`, and so on. They are intentionally outside any one application run because many workflows share the pool. Consequently, application `DeleteRun` cannot discover or delete them.
+
+Inspect that pool in the claim backend and compare each slot's caller-supplied `owner_id` with your invocation/worker logs. After proving the owner is gone, delete that exact `ClaimKey` through `ClaimStore.delete_claim` / `DeleteClaim`; do not treat `lease_expires_at` as automatic permission. If owner IDs are reused across workers, use deployment logs and shutdown state to disambiguate before cleanup.
 
 ---
 
@@ -170,7 +190,7 @@ The framework deliberately makes this DR scenario boring — there's no separate
 
 **Symptom:** A scheduled workflow runs twice for the same fire time.
 
-**Cause:** Two cron-scheduler instances ticked at the same time and both dispatched. The framework's `workflow.run` is idempotent — the second dispatch will see the existing record and short-circuit via replay. **No correctness issue.**
+**Cause:** Two cron-scheduler instances ticked at the same time and both dispatched. A terminal run replays, but two first invocations can overlap unless the dispatched workflow sets `claim_owner_id` and uses an atomic claim store. In that mode one invocation runs and the other receives `ClaimBusyError`; without it, treat dispatch as at-least-once and keep activities idempotent.
 
 If you want to suppress duplicate dispatches after restarts (to save the workflow-run round-trip), seed the scheduler with `cronscheduler.LastFireFromRuns` / `last_fire_from_runs`. It reads the latest-run pointer for each schedule and both schedulers converge on the same last-fire state.
 

@@ -22,6 +22,7 @@ import (
 var ErrActivityConflict = errors.New("activity record conflicts with requested activity")
 var ErrActivityFailed = errors.New("activity failed")
 var ErrClaimBusy = errors.New("claim is busy")
+var ErrClaimRelease = errors.New("claim release failed")
 var ErrEventPending = errors.New("event is pending")
 var ErrTimerConflict = errors.New("timer record conflicts with requested timer")
 var ErrTimerPending = errors.New("timer is pending")
@@ -29,7 +30,7 @@ var ErrWorkflowConflict = errors.New("workflow record conflicts with requested w
 var ErrWorkflowDependencyPending = errors.New("workflow dependency has not completed")
 var ErrWorkflowDependencyFailed = errors.New("workflow dependency ended in a non-COMPLETED terminal state")
 
-const DefaultClaimLeaseDuration = 15 * time.Minute
+const DefaultClaimLeaseDuration = time.Duration(temporalessv1.Default_RuntimeDefaults_ClaimLeaseDurationSeconds) * time.Second
 
 // ActivityRetryTimerIDPrefix marks timer records owned by the runtime's
 // durable retry path. Sourced from the proto-declared default on
@@ -37,6 +38,15 @@ const DefaultClaimLeaseDuration = 15 * time.Minute
 // contract can't drift. User code passing this prefix to workflow.Sleep is
 // rejected so framework-managed retry timers don't collide with user timers.
 var ActivityRetryTimerIDPrefix = temporalessv1.Default_ReservedNames_ActivityRetryTimerIdPrefix
+
+// ActivityClaimIDPrefix namespaces claims that serialize one activity ID.
+// Sourced from ReservedNames so Go and Python persist identical claim keys.
+var ActivityClaimIDPrefix = temporalessv1.Default_ReservedNames_ActivityClaimIdPrefix
+
+// WorkflowExecutionClaimID is the deterministic claim_id used to serialize
+// live invocations of one workflow run. The workflow_id and run_id live in the
+// surrounding ClaimKey. Sourced from ReservedNames so SDKs cannot drift.
+var WorkflowExecutionClaimID = temporalessv1.Default_ReservedNames_WorkflowExecutionClaimId
 
 // activityRetryTimerID returns the deterministic timer_id used to pair an
 // ActivityRecord with its durable retry timer. Stable per activity_id; later
@@ -90,12 +100,13 @@ func NewRetryableActivityError(code, message string, retryAfter time.Duration, c
 }
 
 type Workflow struct {
-	store       storage.Store
-	claimStore  storage.ClaimStore
-	workflowID  string
-	runID       string
-	codeVersion string
-	claimOwner  string
+	store           storage.Store
+	claimStore      storage.ClaimStore
+	claimCapability storage.ClaimCapability
+	workflowID      string
+	runID           string
+	codeVersion     string
+	claimOwner      string
 }
 
 type workflowContextKey struct{}
@@ -186,7 +197,7 @@ func (err *ClaimBusyError) Error() string {
 		return fmt.Sprintf("claim %q is busy", err.ClaimID)
 	}
 	return fmt.Sprintf(
-		"claim %q is busy until %s",
+		"claim %q is busy (recorded lease expiry %s)",
 		err.ClaimID,
 		err.LeaseExpiresAt.UTC().Format(time.RFC3339Nano),
 	)
@@ -245,7 +256,7 @@ func Run[Req proto.Message, Resp proto.Message](
 	input Req,
 	newResult func() Resp,
 	execute WorkflowFunc[Req, Resp],
-) (Resp, error) {
+) (returnResult Resp, returnErr error) {
 	var zero Resp
 	if store == nil {
 		return zero, fmt.Errorf("store is required")
@@ -266,6 +277,9 @@ func Run[Req proto.Message, Resp proto.Message](
 	if runOptions.GetConcurrencyKey() != "" && claimStore == nil {
 		return zero, fmt.Errorf("claim store is required when concurrency_key is set")
 	}
+	if runOptions.GetClaimOwnerId() != "" && claimStore == nil {
+		return zero, fmt.Errorf("claim store is required when claim_owner_id is set")
+	}
 
 	resultTemplate := newResult()
 	if isNilMessage(resultTemplate) {
@@ -279,36 +293,170 @@ func Run[Req proto.Message, Resp proto.Message](
 		RunID:      runOptions.GetRunId(),
 	}
 
+	// Read workflow state from the authoritative store before constructing the
+	// run cache. In particular, a failed execution-claim race must not consult a
+	// negative cache populated before the winning invocation wrote its result.
+	rawStore := store
+	record, found, err := rawStore.GetWorkflow(ctx, key)
+	if err != nil {
+		return zero, err
+	}
+
+	inspectRecord := func(record *temporalessv1.WorkflowRecord, found bool) (Resp, *timestamppb.Timestamp, bool, error) {
+		if !found {
+			return zero, nil, false, nil
+		}
+		switch record.GetStatus() {
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+			temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+			result, replayErr := replayWorkflowRecord(record, workflowType, runOptions.GetCodeVersion(), newResult)
+			return result, nil, true, replayErr
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS:
+			if identityErr := assertWorkflowIdentity(record, workflowType, runOptions.GetCodeVersion()); identityErr != nil {
+				return zero, nil, false, identityErr
+			}
+			return zero, record.GetCreatedAt(), false, nil
+		default:
+			return zero, nil, false, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
+		}
+	}
+
+	replayed, createdAt, terminal, err := inspectRecord(record, found)
+	if terminal || err != nil {
+		return replayed, err
+	}
+
+	claimCapability := temporalessv1.ClaimCapability_CLAIM_CAPABILITY_UNSPECIFIED
+	claimOption := ""
+	if runOptions.GetConcurrencyKey() != "" {
+		claimOption = "concurrency_key"
+	} else if runOptions.GetClaimOwnerId() != "" {
+		claimOption = "claim_owner_id"
+	}
+	if claimOption != "" {
+		claimCapability, err = claimStore.ClaimCapability(ctx)
+		if err != nil {
+			return zero, err
+		}
+		if !supportsCreateOnlyClaims(claimCapability) {
+			return zero, &ClaimCapabilityError{
+				Capability: claimCapability,
+				Option:     claimOption,
+			}
+		}
+	}
+
+	// A caller-provided claim_owner_id opts this run into storage-backed
+	// single-flight execution. Any existing claim is busy, including one with
+	// the same owner: two live requests commonly reuse one worker identity and
+	// must never enter the same workflow body together. Normal resume works
+	// because every return path below releases the claim.
+	if runOptions.GetClaimOwnerId() != "" {
+		workflowClaimKey := storage.ClaimKey{
+			Namespace:  storage.DefaultNamespace,
+			WorkflowID: runOptions.GetWorkflowId(),
+			RunID:      runOptions.GetRunId(),
+			ClaimID:    WorkflowExecutionClaimID,
+		}
+		acquired := false
+		for attempt := 0; attempt < 2; attempt++ {
+			now := time.Now().UTC()
+			created, createErr := claimStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+				SchemaVersion:  storage.ClaimRecordSchemaVersion,
+				Key:            workflowClaimKey.Proto(),
+				OwnerId:        runOptions.GetClaimOwnerId(),
+				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+				ResourceId:     runOptions.GetWorkflowId(),
+				CodeVersion:    runOptions.GetCodeVersion(),
+				LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
+				CreatedAt:      timestamppb.New(now),
+				HeartbeatAt:    timestamppb.New(now),
+			})
+			if createErr != nil {
+				return zero, createErr
+			}
+			if created {
+				acquired = true
+				break
+			}
+
+			// The winner may have completed between our first workflow read and
+			// failed claim creation. Re-read the raw store so a terminal result
+			// wins over a stale/busy claim and can be replayed immediately.
+			fresh, freshFound, freshErr := rawStore.GetWorkflow(ctx, key)
+			if freshErr != nil {
+				return zero, freshErr
+			}
+			freshReplay, _, freshTerminal, inspectErr := inspectRecord(fresh, freshFound)
+			if freshTerminal || inspectErr != nil {
+				return freshReplay, inspectErr
+			}
+
+			existing, claimFound, getErr := claimStore.GetClaim(ctx, workflowClaimKey)
+			if getErr != nil {
+				return zero, getErr
+			}
+			// A release can race the failed create. Retry once when the claim
+			// disappeared; otherwise report the current holder as busy.
+			if claimFound || attempt == 1 {
+				busy := &ClaimBusyError{
+					ClaimID:    workflowClaimKey.ClaimID,
+					Capability: claimCapability,
+				}
+				if claimFound {
+					busy.OwnerID = existing.GetOwnerId()
+					if existing.GetLeaseExpiresAt() != nil {
+						busy.LeaseExpiresAt = existing.GetLeaseExpiresAt().AsTime()
+					}
+				}
+				return zero, busy
+			}
+		}
+		if !acquired {
+			return zero, fmt.Errorf("failed to acquire workflow execution claim")
+		}
+
+		defer func() {
+			// Release with a fresh context so request cancellation does not leak
+			// a create-only claim during an otherwise orderly return. Preserve
+			// request-scoped auth/routing values for remote claim stores.
+			releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer releaseCancel()
+			if _, releaseErr := claimStore.DeleteClaim(releaseCtx, workflowClaimKey); releaseErr != nil {
+				returnResult = zero
+				returnErr = errors.Join(
+					returnErr,
+					fmt.Errorf("%w: workflow execution claim: %w", ErrClaimRelease, releaseErr),
+				)
+			}
+		}()
+
+		// State may have changed between the initial read and acquisition (for
+		// example, a prior holder completed and released). Refresh before any
+		// cache/prefetch or workflow-body execution.
+		record, found, err = rawStore.GetWorkflow(ctx, key)
+		if err != nil {
+			return zero, err
+		}
+		replayed, createdAt, terminal, err = inspectRecord(record, found)
+		if terminal || err != nil {
+			return replayed, err
+		}
+	}
+
 	// Substitute the user-provided store with a run-scoped cache. The cache is
 	// write-through for the underlying store and serves Get-by-key reads from
 	// memory after prefetch — turning N round-trips per replay into one List
 	// per record kind. Out-of-scope reads (e.g. cross-pipeline dependencies)
 	// pass straight through. See cache.go for the full contract.
-	cachedStore := newRunScopedCache(store, key)
+	cachedStore := newRunScopedCache(rawStore, key)
 	store = cachedStore
-
-	record, found, err := store.GetWorkflow(ctx, key)
-	if err != nil {
-		return zero, err
-	}
-	var createdAt *timestamppb.Timestamp
-	if found {
-		switch record.GetStatus() {
-		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
-			return replayWorkflowRecord(record, workflowType, runOptions.GetCodeVersion(), newResult)
-		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS:
-			if err := assertWorkflowIdentity(record, workflowType, runOptions.GetCodeVersion()); err != nil {
-				return zero, err
-			}
-			createdAt = record.GetCreatedAt()
-			// Replay: prefetch activities, timers, events in parallel so the
-			// body's subsequent Get calls hit memory instead of issuing N
-			// individual round-trips against the underlying store.
-			if err := cachedStore.prefetch(ctx); err != nil {
-				return zero, err
-			}
-		default:
-			return zero, fmt.Errorf("%w: stored workflow has unknown status", ErrWorkflowConflict)
+	if createdAt != nil {
+		// Replay: prefetch activities, timers, events in parallel so the body's
+		// subsequent Get calls hit memory instead of issuing N individual
+		// round-trips against the underlying store.
+		if err := cachedStore.prefetch(ctx); err != nil {
+			return zero, err
 		}
 	}
 
@@ -321,11 +469,10 @@ func Run[Req proto.Message, Resp proto.Message](
 	concurrencyLimit := runOptions.GetConcurrencyLimit()
 	var acquiredSlotID string
 	if concurrencyKey != "" && concurrencyLimit > 0 {
-		ownerID := concurrencyOwnerID(runOptions.GetWorkflowId(), runOptions.GetRunId())
 		slotID, err := acquireConcurrencySlot(
 			ctx, claimStore,
 			storage.DefaultNamespace, concurrencyKey,
-			concurrencyLimit, ownerID,
+			concurrencyLimit, runOptions.GetClaimOwnerId(),
 			runOptions.GetCodeVersion(),
 			DefaultClaimLeaseDuration,
 		)
@@ -338,12 +485,23 @@ func Run[Req proto.Message, Resp proto.Message](
 		acquiredSlotID = slotID
 		defer func() {
 			// Use a fresh context for release so a cancelled parent ctx still
-			// frees the slot. Worst case: a slow release races with the
-			// lease — the existing claim's lease still expires and the slot
-			// eventually frees itself.
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// frees the slot. Create-only claim expiry does not grant takeover,
+			// so a failed release requires verified operator cleanup.
+			releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer releaseCancel()
-			_ = releaseConcurrencySlot(releaseCtx, claimStore, storage.DefaultNamespace, concurrencyKey, acquiredSlotID)
+			if releaseErr := releaseConcurrencySlot(
+				releaseCtx,
+				claimStore,
+				storage.DefaultNamespace,
+				concurrencyKey,
+				acquiredSlotID,
+			); releaseErr != nil {
+				returnResult = zero
+				returnErr = errors.Join(
+					returnErr,
+					fmt.Errorf("%w: concurrency slot: %w", ErrClaimRelease, releaseErr),
+				)
+			}
 		}()
 	}
 
@@ -369,12 +527,13 @@ func Run[Req proto.Message, Resp proto.Message](
 	}
 
 	workflowContext := &Workflow{
-		store:       store,
-		claimStore:  claimStore,
-		workflowID:  runOptions.GetWorkflowId(),
-		runID:       runOptions.GetRunId(),
-		codeVersion: runOptions.GetCodeVersion(),
-		claimOwner:  runOptions.GetClaimOwnerId(),
+		store:           store,
+		claimStore:      claimStore,
+		claimCapability: claimCapability,
+		workflowID:      runOptions.GetWorkflowId(),
+		runID:           runOptions.GetRunId(),
+		codeVersion:     runOptions.GetCodeVersion(),
+		claimOwner:      runOptions.GetClaimOwnerId(),
 	}
 	ctx = context.WithValue(ctx, workflowContextKey{}, workflowContext)
 	workflowAnnotations := newAnnotationsBag()
@@ -382,7 +541,11 @@ func Run[Req proto.Message, Resp proto.Message](
 
 	result, runErr := execute(ctx, input)
 	if runErr != nil {
-		if errors.Is(runErr, ErrTimerPending) || errors.Is(runErr, ErrClaimBusy) || errors.Is(runErr, ErrEventPending) {
+		if errors.Is(runErr, ErrTimerPending) ||
+			errors.Is(runErr, ErrClaimBusy) ||
+			errors.Is(runErr, ErrClaimRelease) ||
+			errors.Is(runErr, ErrEventPending) ||
+			errors.Is(runErr, ErrWorkflowDependencyPending) {
 			return zero, runErr
 		}
 		failure := failureFromError(runErr)
@@ -604,6 +767,17 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 	return &TimerPendingError{TimerID: timerID, WakeAt: fireAt}
 }
 
+func getActivityAuthoritative(
+	ctx context.Context,
+	store storage.Store,
+	key storage.ActivityKey,
+) (*temporalessv1.ActivityRecord, bool, error) {
+	if cache, ok := store.(*runScopedCache); ok {
+		return cache.refreshActivity(ctx, key)
+	}
+	return store.GetActivity(ctx, key)
+}
+
 func runActivity[T proto.Message](
 	ctx context.Context,
 	workflow *Workflow,
@@ -652,6 +826,7 @@ func runActivity[T proto.Message](
 	}
 
 	var attempts []*temporalessv1.ActivityAttempt
+	retryTimerDue := false
 	if found {
 		switch record.GetStatus() {
 		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
@@ -673,87 +848,148 @@ func runActivity[T proto.Message](
 						WakeAt:  wakeAt,
 					}
 				}
-				// We're past the wake instant — mark the paired timer FIRED
-				// so the scanner stops returning it while we run the resume.
-				if err := markActivityRetryTimerFired(ctx, workflow, activityID); err != nil {
-					return zero, err
-				}
+				retryTimerDue = true
 			}
 			attempts = record.GetAttempts()
 		default:
 			return zero, fmt.Errorf("%w: stored activity has unknown status", ErrActivityConflict)
 		}
 	}
+	inputAny, err := anypb.New(input)
+	if err != nil {
+		return zero, err
+	}
 
-	// Activity-level claims are opt-in via claim_owner_id. A claim store can
-	// be present for concurrency-key slots without enabling activity claims —
-	// keep the two orthogonal.
+	var activityClaimKey storage.ClaimKey
+	claimAcquired := false
+	releaseActivityClaim := func(result T, outcome error) (T, error) {
+		if !claimAcquired {
+			return result, outcome
+		}
+		// Preserve request-scoped auth/routing values for a remote claim store,
+		// while detaching cleanup from caller cancellation and its old deadline.
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer releaseCancel()
+		if _, releaseErr := workflow.claimStore.DeleteClaim(releaseCtx, activityClaimKey); releaseErr != nil {
+			return zero, errors.Join(
+				outcome,
+				fmt.Errorf("%w: activity claim %q: %w", ErrClaimRelease, activityID, releaseErr),
+			)
+		}
+		claimAcquired = false
+		return result, outcome
+	}
+
+	// Activity-level claims are opt-in via claim_owner_id. Existing claims are
+	// always busy, including ones with the same owner: concurrent fan-out calls
+	// within one workflow share an owner and must not execute the same activity
+	// twice. A crashed create-only claim requires verified operator cleanup.
 	if workflow.claimStore != nil && workflow.claimOwner != "" {
-		claimKey := storage.ClaimKey{
+		activityClaimKey = storage.ClaimKey{
 			Namespace:  storage.DefaultNamespace,
 			WorkflowID: workflow.workflowID,
 			RunID:      workflow.runID,
-			ClaimID:    "activity:" + activityID,
+			ClaimID:    ActivityClaimIDPrefix + activityID,
 		}
-		now := time.Now().UTC()
-		claim := &temporalessv1.ClaimRecord{
-			SchemaVersion:  storage.ClaimRecordSchemaVersion,
-			Key:            claimKey.Proto(),
-			OwnerId:        workflow.claimOwner,
-			ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
-			ResourceId:     activityID,
-			CodeVersion:    workflow.codeVersion,
-			LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
-			CreatedAt:      timestamppb.New(now),
-			HeartbeatAt:    timestamppb.New(now),
-		}
-		created, err := workflow.claimStore.TryCreateClaim(ctx, claim)
-		if err != nil {
-			return zero, err
-		}
-		if !created {
-			record, found, err := workflow.store.GetActivity(ctx, key)
-			if err != nil {
-				return zero, err
+		for claimAttempt := 0; claimAttempt < 2; claimAttempt++ {
+			now := time.Now().UTC()
+			created, createErr := workflow.claimStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+				SchemaVersion:  storage.ClaimRecordSchemaVersion,
+				Key:            activityClaimKey.Proto(),
+				OwnerId:        workflow.claimOwner,
+				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
+				ResourceId:     activityID,
+				CodeVersion:    workflow.codeVersion,
+				LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
+				CreatedAt:      timestamppb.New(now),
+				HeartbeatAt:    timestamppb.New(now),
+			})
+			if createErr != nil {
+				return zero, createErr
 			}
-			if found && record.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING {
-				return replayRecord(record, activityType, workflow.codeVersion, newResult)
+			if created {
+				claimAcquired = true
+				break
 			}
 
-			existing, found, err := workflow.claimStore.GetClaim(ctx, claimKey)
-			if err != nil {
-				return zero, err
+			// Bypass a cached miss: the winner may have committed a terminal
+			// record between our initial read and failed conditional create.
+			fresh, freshFound, freshErr := getActivityAuthoritative(ctx, workflow.store, key)
+			if freshErr != nil {
+				return zero, freshErr
 			}
-			capability, err := workflow.claimStore.ClaimCapability(ctx)
-			if err != nil {
-				return zero, err
+			if freshFound && fresh.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING {
+				return replayRecord(fresh, activityType, workflow.codeVersion, newResult)
 			}
-			if found && existing.GetOwnerId() == workflow.claimOwner {
-				// We already own the claim — resuming a prior attempt by the
-				// same owner. Safe to proceed.
-			} else if !found {
-				return zero, &ClaimBusyError{
-					ClaimID:    claimKey.ClaimID,
-					Capability: capability,
+
+			existing, claimFound, getErr := workflow.claimStore.GetClaim(ctx, activityClaimKey)
+			if getErr != nil {
+				return zero, getErr
+			}
+			if claimFound || claimAttempt == 1 {
+				busy := &ClaimBusyError{
+					ClaimID:    activityClaimKey.ClaimID,
+					Capability: workflow.claimCapability,
 				}
-			} else {
-				var expiresAt time.Time
-				if existing.GetLeaseExpiresAt() != nil {
-					expiresAt = existing.GetLeaseExpiresAt().AsTime()
+				if claimFound {
+					busy.OwnerID = existing.GetOwnerId()
+					if existing.GetLeaseExpiresAt() != nil {
+						busy.LeaseExpiresAt = existing.GetLeaseExpiresAt().AsTime()
+					}
 				}
-				return zero, &ClaimBusyError{
-					ClaimID:        claimKey.ClaimID,
-					OwnerID:        existing.GetOwnerId(),
-					LeaseExpiresAt: expiresAt,
-					Capability:     capability,
+				return zero, busy
+			}
+		}
+		if !claimAcquired {
+			return zero, fmt.Errorf("failed to acquire activity claim %q", activityID)
+		}
+
+		// A prior holder may have committed and released after our initial read.
+		// Refresh through the cache's underlying store before executing anything.
+		fresh, freshFound, freshErr := getActivityAuthoritative(ctx, workflow.store, key)
+		if freshErr != nil {
+			// Storage outcome is ambiguous; retain the claim for operator recovery.
+			return zero, freshErr
+		}
+		record, found = fresh, freshFound
+		attempts = nil
+		retryTimerDue = false
+		if found {
+			switch record.GetStatus() {
+			case temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
+				temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED:
+				replayed, replayErr := replayRecord(record, activityType, workflow.codeVersion, newResult)
+				return releaseActivityClaim(replayed, replayErr)
+			case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
+				if identityErr := assertActivityIdentity(record, activityType, workflow.codeVersion); identityErr != nil {
+					return releaseActivityClaim(zero, identityErr)
 				}
+				if nextAt := record.GetNextAttemptAt(); nextAt != nil {
+					wakeAt := nextAt.AsTime()
+					if time.Now().UTC().Before(wakeAt) {
+						return releaseActivityClaim(zero, &TimerPendingError{
+							TimerID: activityRetryTimerID(activityID),
+							WakeAt:  wakeAt,
+						})
+					}
+					retryTimerDue = true
+				}
+				attempts = record.GetAttempts()
+			default:
+				return releaseActivityClaim(
+					zero,
+					fmt.Errorf("%w: stored activity has unknown status", ErrActivityConflict),
+				)
 			}
 		}
 	}
 
-	inputAny, err := anypb.New(input)
-	if err != nil {
-		return zero, err
+	if retryTimerDue {
+		// Mark the paired timer only after claim arbitration. A storage error here
+		// leaves execution ownership ambiguous, so retain the activity claim.
+		if err := markActivityRetryTimerFired(ctx, workflow, activityID); err != nil {
+			return zero, err
+		}
 	}
 
 	if attempts == nil {
@@ -804,9 +1040,11 @@ func runActivity[T proto.Message](
 				Annotations:   activityAnnotations.snapshot(),
 			}
 			if err := workflow.store.PutActivity(ctx, completedRecord); err != nil {
+				// The terminal write may have committed despite the returned error.
+				// Retain the claim rather than permit an unsafe automatic rerun.
 				return zero, err
 			}
-			return result, nil
+			return releaseActivityClaim(result, nil)
 		}
 
 		failure := failureFromError(runErr)
@@ -841,9 +1079,13 @@ func runActivity[T proto.Message](
 				Annotations:   activityAnnotations.snapshot(),
 			}
 			if err := workflow.store.PutActivity(ctx, failedRecord); err != nil {
+				// Retain on an ambiguous terminal write.
 				return zero, err
 			}
-			return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage(), Cause: runErr}
+			return releaseActivityClaim(
+				zero,
+				&ActivityError{Code: failure.GetCode(), Message: failure.GetMessage(), Cause: runErr},
+			)
 		}
 
 		retryingRecord := &temporalessv1.ActivityRecord{
@@ -868,23 +1110,29 @@ func runActivity[T proto.Message](
 			nextAttemptAt := time.Now().UTC().Add(interval)
 			retryingRecord.NextAttemptAt = timestamppb.New(nextAttemptAt)
 			if err := workflow.store.PutActivity(ctx, retryingRecord); err != nil {
+				// Retain on an ambiguous retry-state write.
 				return zero, err
 			}
 			if err := putActivityRetryTimer(ctx, workflow, activityID, interval, nextAttemptAt); err != nil {
+				// The retry record is durable but the wakeup write failed. Retain
+				// ownership so an operator can reconcile the partial boundary.
 				return zero, err
 			}
-			return zero, &TimerPendingError{
+			return releaseActivityClaim(zero, &TimerPendingError{
 				TimerID: activityRetryTimerID(activityID),
 				WakeAt:  nextAttemptAt,
-			}
+			})
 		}
 
 		if err := workflow.store.PutActivity(ctx, retryingRecord); err != nil {
+			// Retain on an ambiguous retry-state write.
 			return zero, err
 		}
 
 		if err := sleepCtx(ctx, interval); err != nil {
-			return zero, err
+			// The failed attempt and RETRYING record are durable. Releasing is
+			// safe even when the caller canceled during the in-process backoff.
+			return releaseActivityClaim(zero, err)
 		}
 		interval = nextInterval(interval, plan)
 	}

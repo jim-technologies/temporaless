@@ -26,6 +26,7 @@ from temporaless.storage import (
     ActivityKey,
     ClaimCapability,
     ClaimKey,
+    ClaimRunStore,
     ClaimStore,
     DueTimer,
     EventKey,
@@ -160,6 +161,20 @@ class RunScopedCache:
         record = await self._inner.get_activity(key)
         async with self._lock:
             self._activities[key.activity_id] = record
+        return record
+
+    async def refresh_activity(self, key: ActivityKey) -> temporaless_pb2.ActivityRecord | None:
+        """Authoritatively re-read one activity and refresh its cache entry.
+
+        Claim arbitration uses this after a failed conditional create: another
+        worker may have written a terminal record after this cache stored a
+        negative lookup. A normal ``get_activity`` would intentionally return
+        that stale negative entry for the rest of the replay invocation.
+        """
+        record = await self._inner.get_activity(key)
+        if self._in_scope(key.namespace, key.workflow_id, key.run_id):
+            async with self._lock:
+                self._activities[key.activity_id] = record
         return record
 
     async def put_activity(self, record: temporaless_pb2.ActivityRecord) -> None:
@@ -310,10 +325,22 @@ class RunScopedCache:
         inner = self._require_claim_store()
         return await inner.delete_claim(key)
 
+    async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
+        inner = self._require_claim_run_store()
+        return await inner.list_claims(key)
+
     def _require_claim_store(self) -> ClaimStore:
         if not isinstance(self._inner, ClaimStore):
             raise TypeError(
                 "underlying store does not support claims (does not implement ClaimStore)"
+            )
+        return self._inner
+
+    def _require_claim_run_store(self) -> ClaimRunStore:
+        if not isinstance(self._inner, ClaimRunStore):
+            raise TypeError(
+                "underlying store does not support run-scoped claim listing "
+                "(does not implement ClaimRunStore)"
             )
         return self._inner
 

@@ -66,6 +66,9 @@ class RecordStoreService(Protocol):
     async def list_events(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListEventsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListEventsResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
+    async def list_claims(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+
     async def delete_workflow(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteWorkflowRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteWorkflowResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
 
@@ -249,6 +252,16 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=svc.list_events,
+                ),
+                "/temporaless.v1.RecordStoreService/ListClaims": Endpoint.unary(
+                    method=MethodInfo(
+                        name="ListClaims",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.list_claims,
                 ),
                 "/temporaless.v1.RecordStoreService/DeleteWorkflow": Endpoint.unary(
                     method=MethodInfo(
@@ -644,6 +657,26 @@ class RecordStoreServiceClient(ConnectClient):
             timeout_ms=timeout_ms,
         )
 
+    async def list_claims(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListClaims",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
     async def delete_workflow(
         self,
         request: temporaless_dot_v1_dot_temporaless__pb2.DeleteWorkflowRequest,
@@ -954,6 +987,8 @@ class RecordStoreServiceSync(Protocol):
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def list_events(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListEventsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListEventsResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
+    def list_claims(self, request: temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def delete_workflow(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteWorkflowRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteWorkflowResponse:
         raise ConnectError(Code.UNIMPLEMENTED, "Not implemented")
     def delete_activity(self, request: temporaless_dot_v1_dot_temporaless__pb2.DeleteActivityRequest, ctx: RequestContext) -> temporaless_dot_v1_dot_temporaless__pb2.DeleteActivityResponse:
@@ -1131,6 +1166,16 @@ class RecordStoreServiceWSGIApplication(ConnectWSGIApplication):
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=service.list_events,
+                ),
+                "/temporaless.v1.RecordStoreService/ListClaims": EndpointSync.unary(
+                    method=MethodInfo(
+                        name="ListClaims",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+                        output=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=service.list_claims,
                 ),
                 "/temporaless.v1.RecordStoreService/DeleteWorkflow": EndpointSync.unary(
                     method=MethodInfo(
@@ -1520,6 +1565,26 @@ class RecordStoreServiceClientSync(ConnectClientSync):
                 service_name="temporaless.v1.RecordStoreService",
                 input=temporaless_dot_v1_dot_temporaless__pb2.ListEventsRequest,
                 output=temporaless_dot_v1_dot_temporaless__pb2.ListEventsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    def list_claims(
+        self,
+        request: temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListClaims",
+                service_name="temporaless.v1.RecordStoreService",
+                input=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsRequest,
+                output=temporaless_dot_v1_dot_temporaless__pb2.ListClaimsResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

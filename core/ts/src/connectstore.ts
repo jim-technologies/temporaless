@@ -18,6 +18,7 @@ import {
   GetTimerRequestSchema,
   GetWorkflowRequestSchema,
   ListActivitiesRequestSchema,
+  ListClaimsRequestSchema,
   ListEventsRequestSchema,
   ListTimersRequestSchema,
   ListWorkflowsRequestSchema,
@@ -216,6 +217,13 @@ export class ConnectStore {
       create(GetClaimRequestSchema, { key }),
     );
     return response.found ? response.record : undefined;
+  }
+
+  async listClaims(key: WorkflowKey): Promise<ClaimRecord[]> {
+    const response = await this.client.listClaims(
+      create(ListClaimsRequestSchema, { key }),
+    );
+    return response.records;
   }
 
   async tryCreateClaim(record: ClaimRecord): Promise<boolean> {

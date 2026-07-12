@@ -2,16 +2,22 @@
 
 ## Concurrent Invocations
 
-Two serverless invocations can reach the same missing activity at the same time. Without a storage-level conditional write or lease, both may execute.
+Two serverless invocations can reach the same missing or `IN_PROGRESS` workflow at the same time. Without claim coordination, both may enter the workflow body and reach the same missing activity.
+
+A non-empty `WorkflowOptions.claim_owner_id` opts the run into single-flight execution. The runtime atomically creates the deterministic per-run `workflow:execution` claim before entering the body. A loser re-reads storage: it replays a terminal record if the winner already finished, otherwise it receives `ClaimBusyError` (`ALREADY_EXISTS`). Every existing execution claim is busy, including one with the same owner ID.
+
+When `claim_owner_id` is empty, overlapping execution remains at-least-once and `concurrency_key` is rejected because the framework will not invent a slot owner. Completed and failed records still replay, but an `IN_PROGRESS` record is observable state, not by itself a lock.
 
 For production, one of these must be added:
 
 - storage backend with atomic create-if-absent claims
-- short activity leases with expiry
+- CAS-capable leases with renewal and fenced takeover
 - queue-based single-flight execution
 - external idempotency keys for every side effect
 
-Until then, activities must tolerate duplicate execution. Do not use check-then-write as a lock; it is not atomic.
+Even with claims, activities must tolerate a crash after an external side effect but before its result record is stored. Do not use check-then-write as a lock; it is not atomic.
+
+The runtime releases the workflow claim after every orderly workflow return and releases activity claims only after a persisted terminal/retry boundary. It retains an activity claim when cancellation or storage failure leaves the activity outcome ambiguous. A process crash or failed delete can therefore leave a claim behind. Its lease timestamp does not authorize takeover: an expired create-only claim remains busy until an operator verifies no worker is live and deletes it. CAS refresh/takeover is not implemented by the current core.
 
 ### Backend atomicity expectations
 
@@ -66,6 +72,8 @@ Activities accept an optional `temporaless.v1.RetryPolicy` on `ActivityOptions`.
 Activities surface coded failures by returning `*workflow.ActivityError` (Go) or raising `workflow.ActivityError` (Python) with a stable string code. Errors without a code are still retried until exhaustion.
 
 After each failed attempt with retries remaining, the runtime persists `ActivityRecord{status: RETRYING, attempts: [...so far]}` before sleeping the backoff. If the process dies during the sleep, the next invocation reads the RETRYING record and resumes from `len(attempts) + 1` rather than restarting from attempt 1 — the full attempt history is preserved across process boundaries.
+
+With claims enabled, a fully persisted durable retry releases its activity claim before returning pending. Any later invocation may acquire a fresh claim and resume; owner equality is never used as proof that the old attempt is gone. A due retry timer is marked fired only after claim acquisition, so a busy claimant does not consume the wakeup.
 
 On exhaustion, the runtime writes `ActivityRecord{status: FAILED, failure: ..., attempts: [...]}` and surfaces the failure to the workflow. On a later workflow re-invocation the stored failure is replayed rather than re-executed; the inspector adapter's `ResetActivity` clears it for re-execution.
 

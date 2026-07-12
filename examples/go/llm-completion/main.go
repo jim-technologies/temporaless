@@ -76,9 +76,13 @@ func main() {
 	claimStore := gocdkclaims.NewStore(claimsBucket)
 
 	options := &workflow.Options{
-		WorkflowId:  "llm:answer",
-		RunId:       "2026-05-02-r1",
-		CodeVersion: "example",
+		WorkflowId:   "llm:answer",
+		RunId:        "2026-05-02-r1",
+		CodeVersion:  "example",
+		ClaimOwnerId: "llm-worker:example",
+		// ClaimOwnerId opts this run into live single-flight. It is supplied by
+		// the application (normally an invocation or logical-worker identity)
+		// and is diagnostic only; matching owners do not bypass contention.
 		// Pre-emptive cluster-wide cap: at most 5 LLM workflows in flight
 		// sharing the "vendor:openai" quota. Pair with multiple worker
 		// replicas and the framework arbitrates via storage claims.

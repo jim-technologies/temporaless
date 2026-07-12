@@ -18,7 +18,9 @@ from google.protobuf.wrappers_pb2 import Int32Value
 from temporaless._cache import RunScopedCache
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
+    CLAIM_RECORD_SCHEMA_VERSION,
     ActivityKey,
+    ClaimKey,
     OpenDALStore,
     WorkflowKey,
 )
@@ -123,6 +125,30 @@ def inner_store(tmp_path):
 @pytest.fixture
 def counter(inner_store):
     return CountingStore(inner_store)
+
+
+async def test_claim_run_listing_passes_through(inner_store: OpenDALStore) -> None:
+    key = WorkflowKey(workflow_id="prices:cache", run_id="run:one")
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="arbitrary",
+    )
+    assert await inner_store.try_create_claim(
+        temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=claim_key.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+            resource_id=key.workflow_id,
+            code_version="v1",
+        )
+    )
+    cache = RunScopedCache(inner_store, key)
+
+    claims = await cache.list_claims(key)
+
+    assert [claim.key.claim_id for claim in claims] == ["arbitrary"]
 
 
 async def _run_fanout(store, run_id: str, n: int, executions_counter: list[int]) -> Int32Value:

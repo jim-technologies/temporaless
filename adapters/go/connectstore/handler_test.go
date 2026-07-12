@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/apache/opendal-go-services/fs"
@@ -13,6 +14,8 @@ import (
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"gocloud.dev/blob/fileblob"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -415,7 +418,610 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 	}
 }
 
-func newClaimsBackend(t *testing.T) storage.ClaimStore {
+func TestClientStoreDeleteRunDeletesClaimsFromExplicitStore(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claimStore := newClaimsBackend(t)
+	_, handler := NewHTTPHandlerWithClaims(backend, claimStore)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	clientStore := NewHTTPClientStore(server.Client(), server.URL)
+
+	key := storage.NewWorkflowKey("prices:delete-run", "run:one")
+	activityKey := storage.NewActivityKey(key.WorkflowID, key.RunID, "fetch")
+	if err := clientStore.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientStore.PutActivity(ctx, &temporalessv1.ActivityRecord{
+		SchemaVersion: storage.ActivityRecordSchemaVersion,
+		Key:           activityKey.Proto(),
+		ActivityType:  "activity:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, claimID := range []string{"arbitrary:one", "arbitrary:two"} {
+		claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, claimID)
+		created, err := clientStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+			SchemaVersion: storage.ClaimRecordSchemaVersion,
+			Key:           claimKey.Proto(),
+			OwnerId:       "owner",
+			ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
+			ResourceId:    claimID,
+			CodeVersion:   "v1",
+		})
+		if err != nil || !created {
+			t.Fatalf("create claim %q: created=%v err=%v", claimID, created, err)
+		}
+	}
+
+	claims, err := clientStore.ListClaims(ctx, key)
+	if err != nil || len(claims) != 2 {
+		t.Fatalf("ListClaims before delete: count=%d err=%v", len(claims), err)
+	}
+	deleted, err := clientStore.DeleteRun(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4", deleted)
+	}
+	if _, found, err := clientStore.GetWorkflow(ctx, key); err != nil || found {
+		t.Fatalf("GetWorkflow after delete: found=%v err=%v", found, err)
+	}
+	if _, found, err := clientStore.GetActivity(ctx, activityKey); err != nil || found {
+		t.Fatalf("GetActivity after delete: found=%v err=%v", found, err)
+	}
+	claims, err = clientStore.ListClaims(ctx, key)
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("ListClaims after delete: count=%d err=%v", len(claims), err)
+	}
+}
+
+func TestClientStoreSweepDeletesClaimsFromExplicitStore(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claimStore := newClaimsBackend(t)
+	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, claimStore)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	clientStore := NewHTTPClientStore(server.Client(), server.URL)
+	key := storage.NewWorkflowKey("prices:sweep", "run:old")
+	old := timestamppb.New(time.Now().Add(-48 * time.Hour))
+	if err := clientStore.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     old,
+		CompletedAt:   old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "stale")
+	created, err := clientStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           claimKey.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create claim: created=%v err=%v", created, err)
+	}
+
+	deleted, err := clientStore.Sweep(ctx, "", time.Now(), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if _, found, err := clientStore.GetWorkflow(ctx, key); err != nil || found {
+		t.Fatalf("workflow after sweep: found=%v err=%v", found, err)
+	}
+	if _, found, err := clientStore.GetClaim(ctx, claimKey); err != nil || found {
+		t.Fatalf("claim after sweep: found=%v err=%v", found, err)
+	}
+}
+
+type pointOnlyClaimStore struct {
+	storage.ClaimStore
+}
+
+type noClaimsPointStore struct {
+	storage.ClaimStore
+}
+
+func (store *noClaimsPointStore) ClaimCapability(context.Context) (storage.ClaimCapability, error) {
+	return storage.NoClaims, nil
+}
+
+type corruptListingClaimStore struct {
+	storage.ClaimRunStore
+	records     []*temporalessv1.ClaimRecord
+	deleteCalls int
+}
+
+func (store *corruptListingClaimStore) ListClaims(context.Context, storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
+	return store.records, nil
+}
+
+func (store *corruptListingClaimStore) DeleteClaim(ctx context.Context, key storage.ClaimKey) (bool, error) {
+	store.deleteCalls++
+	return store.ClaimRunStore.DeleteClaim(ctx, key)
+}
+
+type countingClaimRunStore struct {
+	storage.ClaimRunStore
+	deleteCalls int
+}
+
+func (store *countingClaimRunStore) DeleteClaim(ctx context.Context, key storage.ClaimKey) (bool, error) {
+	store.deleteCalls++
+	return store.ClaimRunStore.DeleteClaim(ctx, key)
+}
+
+type corruptRunListingStore struct {
+	storage.Store
+	activities  []*temporalessv1.ActivityRecord
+	timers      []*temporalessv1.TimerRecord
+	events      []*temporalessv1.EventRecord
+	deleteCalls int
+}
+
+func (store *corruptRunListingStore) ListActivities(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ActivityRecord, error) {
+	if store.activities != nil {
+		return store.activities, nil
+	}
+	return store.Store.ListActivities(ctx, key)
+}
+
+func (store *corruptRunListingStore) ListTimers(ctx context.Context, key storage.WorkflowKey, status temporalessv1.TimerStatus) ([]*temporalessv1.TimerRecord, error) {
+	if store.timers != nil {
+		return store.timers, nil
+	}
+	return store.Store.ListTimers(ctx, key, status)
+}
+
+func (store *corruptRunListingStore) ListEvents(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.EventRecord, error) {
+	if store.events != nil {
+		return store.events, nil
+	}
+	return store.Store.ListEvents(ctx, key)
+}
+
+func (store *corruptRunListingStore) DeleteActivity(ctx context.Context, key storage.ActivityKey) (bool, error) {
+	store.deleteCalls++
+	return store.Store.DeleteActivity(ctx, key)
+}
+
+func (store *corruptRunListingStore) DeleteTimer(ctx context.Context, key storage.TimerKey) (bool, error) {
+	store.deleteCalls++
+	return store.Store.DeleteTimer(ctx, key)
+}
+
+func (store *corruptRunListingStore) DeleteEvent(ctx context.Context, key storage.EventKey) (bool, error) {
+	store.deleteCalls++
+	return store.Store.DeleteEvent(ctx, key)
+}
+
+func (store *corruptRunListingStore) DeleteWorkflow(ctx context.Context, key storage.WorkflowKey) (bool, error) {
+	store.deleteCalls++
+	return store.Store.DeleteWorkflow(ctx, key)
+}
+
+func TestHandlerDeleteRunRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claimStore := newClaimsBackend(t)
+	pointOnly := &pointOnlyClaimStore{ClaimStore: claimStore}
+	handler := NewHandlerWithClaims(backend, pointOnly)
+	key := storage.NewWorkflowKey("prices:delete-run", "run:point-only")
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "arbitrary")
+	created, err := pointOnly.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           claimKey.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create claim: created=%v err=%v", created, err)
+	}
+
+	_, err = handler.DeleteRun(ctx, connect.NewRequest(&temporalessv1.DeleteRunRequest{
+		Key: key.Proto(),
+	}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeFailedPrecondition, err)
+	}
+	if _, found, getErr := backend.GetWorkflow(ctx, key); getErr != nil || !found {
+		t.Fatalf("workflow mutated before rejection: found=%v err=%v", found, getErr)
+	}
+	if _, found, getErr := claimStore.GetClaim(ctx, claimKey); getErr != nil || !found {
+		t.Fatalf("claim mutated before rejection: found=%v err=%v", found, getErr)
+	}
+}
+
+func TestClientStoreSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claimStore := newClaimsBackend(t)
+	pointOnly := &pointOnlyClaimStore{ClaimStore: claimStore}
+	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, pointOnly)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	clientStore := NewHTTPClientStore(server.Client(), server.URL)
+	key := storage.NewWorkflowKey("prices:sweep", "run:point-only")
+	old := timestamppb.New(time.Now().Add(-48 * time.Hour))
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     old,
+		CompletedAt:   old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
+	created, err := claimStore.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           claimKey.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create claim: created=%v err=%v", created, err)
+	}
+
+	_, err = clientStore.Sweep(ctx, "", time.Now(), 24*time.Hour)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeFailedPrecondition, err)
+	}
+	if _, found, getErr := backend.GetWorkflow(ctx, key); getErr != nil || !found {
+		t.Fatalf("workflow mutated before rejection: found=%v err=%v", found, getErr)
+	}
+	if _, found, getErr := claimStore.GetClaim(ctx, claimKey); getErr != nil || !found {
+		t.Fatalf("claim mutated before rejection: found=%v err=%v", found, getErr)
+	}
+}
+
+func TestHandlerDeleteRunTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claimStore := &noClaimsPointStore{ClaimStore: newClaimsBackend(t)}
+	handler := NewHandlerWithClaims(backend, claimStore)
+	key := storage.NewWorkflowKey("prices:delete-run", "run:no-claims")
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := handler.ListClaims(ctx, connect.NewRequest(&temporalessv1.ListClaimsRequest{
+		Key: key.Proto(),
+	}))
+	if err != nil || len(listed.Msg.GetRecords()) != 0 {
+		t.Fatalf("ListClaims: count=%d err=%v", len(listed.Msg.GetRecords()), err)
+	}
+	deleted, err := handler.DeleteRun(ctx, connect.NewRequest(&temporalessv1.DeleteRunRequest{
+		Key: key.Proto(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Msg.GetDeleted() != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted.Msg.GetDeleted())
+	}
+}
+
+func TestHandlerDeleteRunValidatesEntireClaimListingBeforeDelete(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claims := newClaimsBackend(t)
+	key := storage.NewWorkflowKey("prices:delete-run", "run:corrupt")
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "target")
+	target := &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           claimKey.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	}
+	created, err := claims.TryCreateClaim(ctx, target)
+	if err != nil || !created {
+		t.Fatalf("create target claim: created=%v err=%v", created, err)
+	}
+	corrupt := &corruptListingClaimStore{
+		ClaimRunStore: claims,
+		records: []*temporalessv1.ClaimRecord{
+			target,
+			{
+				SchemaVersion: storage.ClaimRecordSchemaVersion,
+				Key:           storage.NewClaimKey(key.WorkflowID, "run:other", "misplaced").Proto(),
+				OwnerId:       "owner",
+				ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+				ResourceId:    key.WorkflowID,
+				CodeVersion:   "v1",
+			},
+		},
+	}
+	handler := NewHandlerWithClaims(backend, corrupt)
+
+	_, err = handler.DeleteRun(ctx, connect.NewRequest(&temporalessv1.DeleteRunRequest{
+		Key: key.Proto(),
+	}))
+	if connect.CodeOf(err) != connect.CodeDataLoss {
+		t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeDataLoss, err)
+	}
+	if corrupt.deleteCalls != 0 {
+		t.Fatalf("DeleteClaim calls = %d, want 0", corrupt.deleteCalls)
+	}
+	if _, found, getErr := claims.GetClaim(ctx, claimKey); getErr != nil || !found {
+		t.Fatalf("target claim mutated before full validation: found=%v err=%v", found, getErr)
+	}
+}
+
+func TestQueryHandlerSweepMapsCorruptClaimListingToDataLoss(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	claims := newClaimsBackend(t)
+	key := storage.NewWorkflowKey("prices:sweep", "run:corrupt")
+	old := timestamppb.New(time.Now().Add(-48 * time.Hour))
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     old,
+		CompletedAt:   old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "target")
+	target := &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           claimKey.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	}
+	created, err := claims.TryCreateClaim(ctx, target)
+	if err != nil || !created {
+		t.Fatalf("create claim: created=%v err=%v", created, err)
+	}
+	corrupt := &corruptListingClaimStore{
+		ClaimRunStore: claims,
+		records: []*temporalessv1.ClaimRecord{
+			target,
+			{Key: storage.NewClaimKey(key.WorkflowID, "run:other", "misplaced").Proto()},
+		},
+	}
+	handler := NewQueryHandlerWithClaims(backend, corrupt)
+
+	_, err = handler.Sweep(ctx, connect.NewRequest(&temporalessv1.SweepRequest{
+		Now:    timestamppb.Now(),
+		MaxAge: durationpb.New(24 * time.Hour),
+	}))
+	if connect.CodeOf(err) != connect.CodeDataLoss {
+		t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeDataLoss, err)
+	}
+	if corrupt.deleteCalls != 0 {
+		t.Fatalf("DeleteClaim calls = %d, want 0", corrupt.deleteCalls)
+	}
+	if _, found, getErr := backend.GetWorkflow(ctx, key); getErr != nil || !found {
+		t.Fatalf("workflow mutated before rejection: found=%v err=%v", found, getErr)
+	}
+	if _, found, getErr := claims.GetClaim(ctx, claimKey); getErr != nil || !found {
+		t.Fatalf("claim mutated before rejection: found=%v err=%v", found, getErr)
+	}
+}
+
+func TestHandlerDeleteRunValidatesEveryRecordSnapshotBeforeDelete(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*corruptRunListingStore, storage.WorkflowKey)
+	}{
+		{
+			name: "activity mismatched run",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.activities = []*temporalessv1.ActivityRecord{
+					{
+						Key: &temporalessv1.ActivityKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							ActivityId: "valid",
+						},
+					},
+					{Key: storage.NewActivityKey(key.WorkflowID, "run:other", "misplaced").Proto()},
+				}
+			},
+		},
+		{
+			name: "activity invalid key",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.activities = []*temporalessv1.ActivityRecord{
+					{
+						Key: &temporalessv1.ActivityKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							ActivityId: "valid",
+						},
+					},
+					{
+						Key: &temporalessv1.ActivityKey{
+							Namespace:  storage.DefaultNamespace,
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							ActivityId: "invalid/id",
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "timer mismatched run",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.timers = []*temporalessv1.TimerRecord{
+					{
+						Key: &temporalessv1.TimerKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							TimerId:    "valid",
+						},
+					},
+					{Key: storage.NewTimerKey(key.WorkflowID, "run:other", "misplaced").Proto()},
+				}
+			},
+		},
+		{
+			name: "timer invalid key",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.timers = []*temporalessv1.TimerRecord{
+					{
+						Key: &temporalessv1.TimerKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							TimerId:    "valid",
+						},
+					},
+					{
+						Key: &temporalessv1.TimerKey{
+							Namespace:  storage.DefaultNamespace,
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							TimerId:    "invalid/id",
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "event mismatched run",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.events = []*temporalessv1.EventRecord{
+					{
+						Key: &temporalessv1.EventKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							EventId:    "valid",
+						},
+					},
+					{Key: storage.NewEventKey(key.WorkflowID, "run:other", "misplaced").Proto()},
+				}
+			},
+		},
+		{
+			name: "event invalid key",
+			configure: func(store *corruptRunListingStore, key storage.WorkflowKey) {
+				store.events = []*temporalessv1.EventRecord{
+					{
+						Key: &temporalessv1.EventKey{
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							EventId:    "valid",
+						},
+					},
+					{
+						Key: &temporalessv1.EventKey{
+							Namespace:  storage.DefaultNamespace,
+							WorkflowId: key.WorkflowID,
+							RunId:      key.RunID,
+							EventId:    "invalid/id",
+						},
+					},
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			backend := newTestStore(t)
+			key := storage.NewWorkflowKey("prices:delete-run", "run:corrupt-record")
+			if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+				SchemaVersion: storage.WorkflowRecordSchemaVersion,
+				Key:           key.Proto(),
+				WorkflowType:  "workflow:test",
+				CodeVersion:   "v1",
+				Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			baseClaims := newClaimsBackend(t)
+			claims := &countingClaimRunStore{ClaimRunStore: baseClaims}
+			claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
+			created, err := claims.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+				SchemaVersion: storage.ClaimRecordSchemaVersion,
+				Key:           claimKey.Proto(),
+				OwnerId:       "owner",
+				ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+				ResourceId:    key.WorkflowID,
+				CodeVersion:   "v1",
+			})
+			if err != nil || !created {
+				t.Fatalf("create claim: created=%v err=%v", created, err)
+			}
+
+			records := &corruptRunListingStore{Store: backend}
+			test.configure(records, key)
+			handler := NewHandlerWithClaims(records, claims)
+			_, err = handler.DeleteRun(ctx, connect.NewRequest(&temporalessv1.DeleteRunRequest{
+				Key: key.Proto(),
+			}))
+			if connect.CodeOf(err) != connect.CodeDataLoss {
+				t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeDataLoss, err)
+			}
+			if claims.deleteCalls != 0 {
+				t.Fatalf("DeleteClaim calls = %d, want 0", claims.deleteCalls)
+			}
+			if records.deleteCalls != 0 {
+				t.Fatalf("record delete calls = %d, want 0", records.deleteCalls)
+			}
+			if _, found, getErr := backend.GetWorkflow(ctx, key); getErr != nil || !found {
+				t.Fatalf("workflow mutated before full validation: found=%v err=%v", found, getErr)
+			}
+			if _, found, getErr := baseClaims.GetClaim(ctx, claimKey); getErr != nil || !found {
+				t.Fatalf("claim mutated before full validation: found=%v err=%v", found, getErr)
+			}
+		})
+	}
+}
+
+func newClaimsBackend(t *testing.T) storage.ClaimRunStore {
 	t.Helper()
 	// MetadataDontWrite — see comment in gocdkclaims/store_test.go for why
 	// the sidecar would otherwise cause io.EOF on racing reads.

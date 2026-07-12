@@ -32,11 +32,13 @@ from temporaless.inspector import (
     reset_activity,
     reset_workflow,
 )
-from temporaless.storage import ActivityKey, WorkflowKey
+from temporaless.storage import ActivityKey, ClaimKey, WorkflowKey
 from temporaless.v1 import temporaless_pb2
 from temporaless.workflow import (
+    WORKFLOW_EXECUTION_CLAIM_ID,
     ActivityError,
     ActivityOptions,
+    ClaimBusyError,
     Options,
     RetryPolicy,
     Workflow,
@@ -101,6 +103,7 @@ async def test_remote_workflow_run_end_to_end(remote_store) -> None:
         workflow_id="remote:retry",
         run_id="2026-05-04",
         code_version="test-version",
+        claim_owner_id="remote-worker",
     )
     duration = Duration()
     duration.FromTimedelta(timedelta(milliseconds=1))
@@ -178,6 +181,69 @@ async def test_remote_workflow_run_end_to_end(remote_store) -> None:
     final = await run(remote_store, options, StringValue(value="AAPL"), StringValue, fresh_execute)
     assert final.value == "fresh:AAPL"
     assert fresh_calls == 1
+
+
+async def test_remote_workflow_singleflight_busy_release_and_replay(remote_store) -> None:
+    remote_store, _remote_query = remote_store
+    options = Options(
+        workflow_id="remote:singleflight",
+        run_id="run:1",
+        code_version="v1",
+        claim_owner_id="worker:shared",
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def execute(_workflow: Workflow, request: StringValue) -> StringValue:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return StringValue(value=f"ok:{request.value}")
+
+    first = asyncio.create_task(
+        run(remote_store, options, StringValue(value="AAPL"), StringValue, execute)
+    )
+    await entered.wait()
+
+    async def duplicate_body(_workflow: Workflow, _request: StringValue) -> StringValue:
+        raise AssertionError("duplicate workflow body executed")
+
+    with pytest.raises(ClaimBusyError):
+        await run(
+            remote_store,
+            options,
+            StringValue(value="AAPL"),
+            StringValue,
+            duplicate_body,
+        )
+
+    release.set()
+    assert (await first).value == "ok:AAPL"
+    assert calls == 1
+    assert (
+        await remote_store.get_claim(
+            ClaimKey(
+                workflow_id=options.workflow_id,
+                run_id=options.run_id,
+                claim_id=WORKFLOW_EXECUTION_CLAIM_ID,
+            )
+        )
+        is None
+    )
+
+    async def replay_body(_workflow: Workflow, _request: StringValue) -> StringValue:
+        raise AssertionError("terminal replay executed workflow body")
+
+    replayed = await run(
+        remote_store,
+        options,
+        StringValue(value="AAPL"),
+        StringValue,
+        replay_body,
+    )
+    assert replayed.value == "ok:AAPL"
 
 
 async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:

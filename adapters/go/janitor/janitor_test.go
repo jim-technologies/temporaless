@@ -2,15 +2,19 @@ package janitor_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
+	"github.com/jim-technologies/temporaless/adapters/go/gocdkclaims"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
+	"gocloud.dev/blob/fileblob"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -35,7 +39,7 @@ func TestSweepDeletesOldCompletedRuns(t *testing.T) {
 	// Run 3: still in progress — should be kept.
 	leaveInProgress(t, ctx, store, "prices:waiting", "2026-05-04")
 
-	deleted, err := janitor.Sweep(ctx, store, time.Now(), 24*time.Hour)
+	deleted, err := janitor.Sweep(ctx, store, nil, sweepRequest(time.Now(), 24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,8 +87,276 @@ func TestSweepRejectsBadInput(t *testing.T) {
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
 
-	if _, err := janitor.Sweep(context.Background(), store, time.Now(), 0); err == nil {
+	if _, err := janitor.Sweep(context.Background(), store, nil, sweepRequest(time.Now(), 0)); err == nil {
 		t.Fatal("expected error for non-positive maxAge")
+	}
+}
+
+type pointOnlyClaimStore struct {
+	storage.ClaimStore
+}
+
+type noClaimsPointStore struct {
+	storage.ClaimStore
+}
+
+func (store *noClaimsPointStore) ClaimCapability(context.Context) (storage.ClaimCapability, error) {
+	return storage.NoClaims, nil
+}
+
+type corruptClaimListingStore struct {
+	storage.ClaimRunStore
+	corruptFor  storage.WorkflowKey
+	corrupt     *temporalessv1.ClaimRecord
+	deleteCalls int
+}
+
+type combinedRecordClaimStore struct {
+	storage.Store
+	storage.ClaimRunStore
+}
+
+func (store *corruptClaimListingStore) ListClaims(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
+	records, err := store.ClaimRunStore.ListClaims(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if key.Namespace == store.corruptFor.Namespace && key.WorkflowID == store.corruptFor.WorkflowID && key.RunID == store.corruptFor.RunID {
+		records = append(records, store.corrupt)
+	}
+	return records, nil
+}
+
+func (store *corruptClaimListingStore) DeleteClaim(ctx context.Context, key storage.ClaimKey) (bool, error) {
+	store.deleteCalls++
+	return store.ClaimRunStore.DeleteClaim(ctx, key)
+}
+
+func TestSweepDeletesClaims(t *testing.T) {
+	tests := []struct {
+		name       string
+		autodetect bool
+	}{
+		{name: "explicit separate claim store"},
+		{name: "auto-detected claim store", autodetect: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			recordStore := newTestStore(t)
+			claimStore := newClaimStore(t)
+			key := storage.NewWorkflowKey("prices:claimed", "run:old")
+			runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
+			backdate(t, ctx, recordStore, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+			claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "stale")
+			createClaim(t, ctx, claimStore, claimKey)
+
+			var store storage.Store = recordStore
+			var explicitClaims storage.ClaimStore = claimStore
+			if test.autodetect {
+				store = &combinedRecordClaimStore{Store: recordStore, ClaimRunStore: claimStore}
+				explicitClaims = nil
+			}
+			deleted, err := janitor.Sweep(ctx, store, explicitClaims, sweepRequest(time.Now(), 24*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deleted != 1 {
+				t.Fatalf("deleted = %d, want 1", deleted)
+			}
+			if _, found, err := recordStore.GetWorkflow(ctx, key); err != nil || found {
+				t.Fatalf("workflow after sweep: found=%v err=%v", found, err)
+			}
+			if _, found, err := claimStore.GetClaim(ctx, claimKey); err != nil || found {
+				t.Fatalf("claim after sweep: found=%v err=%v", found, err)
+			}
+		})
+	}
+}
+
+func TestSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	recordStore := newTestStore(t)
+	baseClaims := newClaimStore(t)
+	claims := &pointOnlyClaimStore{ClaimStore: baseClaims}
+	key := storage.NewWorkflowKey("prices:point-only", "run:old")
+	runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
+	backdate(t, ctx, recordStore, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
+	createClaim(t, ctx, baseClaims, claimKey)
+
+	deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+	if !errors.Is(err, janitor.ErrClaimRunListingUnsupported) {
+		t.Fatalf("error = %v, want ErrClaimRunListingUnsupported", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	assertRunAndClaimPresent(t, ctx, recordStore, baseClaims, key, claimKey)
+}
+
+func TestSweepTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
+	ctx := context.Background()
+	recordStore := newTestStore(t)
+	baseClaims := newClaimStore(t)
+	claims := &noClaimsPointStore{ClaimStore: baseClaims}
+	key := storage.NewWorkflowKey("prices:no-claims", "run:old")
+	runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
+	backdate(t, ctx, recordStore, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "out-of-contract")
+	createClaim(t, ctx, baseClaims, claimKey)
+
+	deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if _, found, err := recordStore.GetWorkflow(ctx, key); err != nil || found {
+		t.Fatalf("workflow after sweep: found=%v err=%v", found, err)
+	}
+	if _, found, err := baseClaims.GetClaim(ctx, claimKey); err != nil || !found {
+		t.Fatalf("NO_CLAIMS backend record should be ignored: found=%v err=%v", found, err)
+	}
+}
+
+func TestSweepRejectsCorruptClaimSnapshotsBeforeAnyRunMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(storage.WorkflowKey) *temporalessv1.ClaimRecord
+	}{
+		{
+			name: "invalid key",
+			corrupt: func(key storage.WorkflowKey) *temporalessv1.ClaimRecord {
+				return &temporalessv1.ClaimRecord{Key: &temporalessv1.ClaimKey{
+					Namespace:  key.Namespace,
+					WorkflowId: key.WorkflowID,
+					RunId:      key.RunID,
+					ClaimId:    "invalid/id",
+				}}
+			},
+		},
+		{
+			name: "misplaced namespace",
+			corrupt: func(key storage.WorkflowKey) *temporalessv1.ClaimRecord {
+				claimKey := storage.ClaimKey{Namespace: "other", WorkflowID: key.WorkflowID, RunID: key.RunID, ClaimID: "misplaced"}
+				return &temporalessv1.ClaimRecord{Key: claimKey.Proto()}
+			},
+		},
+		{
+			name: "misplaced workflow",
+			corrupt: func(key storage.WorkflowKey) *temporalessv1.ClaimRecord {
+				return &temporalessv1.ClaimRecord{Key: storage.NewClaimKey("prices:other", key.RunID, "misplaced").Proto()}
+			},
+		},
+		{
+			name: "misplaced run",
+			corrupt: func(key storage.WorkflowKey) *temporalessv1.ClaimRecord {
+				return &temporalessv1.ClaimRecord{Key: storage.NewClaimKey(key.WorkflowID, "run:other", "misplaced").Proto()}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			recordStore := newTestStore(t)
+			baseClaims := newClaimStore(t)
+			first := storage.NewWorkflowKey("prices:first", "run:old")
+			corruptKey := storage.NewWorkflowKey("prices:corrupt", "run:old")
+			for _, key := range []storage.WorkflowKey{first, corruptKey} {
+				runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
+				backdate(t, ctx, recordStore, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+				createClaim(t, ctx, baseClaims, storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain"))
+			}
+			claims := &corruptClaimListingStore{
+				ClaimRunStore: baseClaims,
+				corruptFor:    corruptKey,
+				corrupt:       test.corrupt(corruptKey),
+			}
+
+			deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+			if !errors.Is(err, janitor.ErrRunListingDataLoss) {
+				t.Fatalf("error = %v, want ErrRunListingDataLoss", err)
+			}
+			if deleted != 0 {
+				t.Fatalf("deleted = %d, want 0", deleted)
+			}
+			if claims.deleteCalls != 0 {
+				t.Fatalf("DeleteClaim calls = %d, want 0", claims.deleteCalls)
+			}
+			for _, key := range []storage.WorkflowKey{first, corruptKey} {
+				claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
+				assertRunAndClaimPresent(t, ctx, recordStore, baseClaims, key, claimKey)
+			}
+		})
+	}
+}
+
+func newTestStore(t *testing.T) *storage.OpenDALStore {
+	t.Helper()
+	operator, err := opendal.NewOperator(fs.Scheme, opendal.OperatorOptions{"root": t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(operator.Close)
+	return storage.NewOpenDALStore(operator)
+}
+
+func newClaimStore(t *testing.T) storage.ClaimRunStore {
+	t.Helper()
+	bucket, err := fileblob.OpenBucket(t.TempDir(), &fileblob.Options{
+		Metadata: fileblob.MetadataDontWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bucket.Close() })
+	return gocdkclaims.NewStore(bucket)
+}
+
+func createClaim(t *testing.T, ctx context.Context, store storage.ClaimStore, key storage.ClaimKey) {
+	t.Helper()
+	created, err := store.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           key.Proto(),
+		OwnerId:       "owner",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+		CodeVersion:   "v1",
+	})
+	if err != nil || !created {
+		t.Fatalf("create claim: created=%v err=%v", created, err)
+	}
+}
+
+func assertRunAndClaimPresent(
+	t *testing.T,
+	ctx context.Context,
+	recordStore storage.Store,
+	claimStore storage.ClaimStore,
+	key storage.WorkflowKey,
+	claimKey storage.ClaimKey,
+) {
+	t.Helper()
+	if _, found, err := recordStore.GetWorkflow(ctx, key); err != nil || !found {
+		t.Fatalf("workflow mutated before rejection: found=%v err=%v", found, err)
+	}
+	activityKey := storage.NewActivityKey(key.WorkflowID, key.RunID, "fetch:AAPL")
+	if _, found, err := recordStore.GetActivity(ctx, activityKey); err != nil || !found {
+		t.Fatalf("activity mutated before rejection: found=%v err=%v", found, err)
+	}
+	if _, found, err := claimStore.GetClaim(ctx, claimKey); err != nil || !found {
+		t.Fatalf("claim mutated before rejection: found=%v err=%v", found, err)
+	}
+}
+
+func sweepRequest(now time.Time, maxAge time.Duration) *temporalessv1.SweepRequest {
+	return &temporalessv1.SweepRequest{
+		Now:    timestamppb.New(now),
+		MaxAge: durationpb.New(maxAge),
 	}
 }
 

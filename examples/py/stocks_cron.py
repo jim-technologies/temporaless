@@ -82,8 +82,9 @@ async def _stocks_workflow(workflow: Workflow, symbol: StringValue) -> StringVal
 def _make_dispatcher(store: Store):
     """Build the cron dispatcher that turns each fire into a workflow run.
 
-    Two cron-scheduler processes can race here — ``run`` is idempotent on
-    ``(workflow_id, run_id)``, so duplicate dispatches are free.
+    Two cron-scheduler processes can race here. The shared fire-time run ID
+    gives terminal replay, while ``claim_owner_id`` plus OpenDAL's atomic
+    create-if-absent claims prevents overlapping first execution.
     """
 
     async def dispatch(schedule_id: str, fire_time: datetime) -> None:
@@ -94,6 +95,10 @@ def _make_dispatcher(store: Store):
                 workflow_id=schedule_id,
                 run_id=fire_time.strftime(RUN_ID_FORMAT),
                 code_version="example",
+                # Two scheduler replicas may dispatch this fire together.
+                # OpenDAL supplies atomic create-if-absent claims; the caller
+                # supplies only a diagnostic owner identity.
+                claim_owner_id=f"scheduler:{schedule_id}",
             ),
             StringValue(value=symbol),
             StringValue,

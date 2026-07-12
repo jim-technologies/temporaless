@@ -2,10 +2,12 @@ package connectstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"connectrpc.com/connect"
+	"github.com/jim-technologies/temporaless/adapters/go/janitor"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/temporalessv1connect"
 	"github.com/jim-technologies/temporaless/core/go/storage"
@@ -21,7 +23,8 @@ type Handler struct {
 // and development use. It is not an indexed production query path: ordering and
 // pagination are rejected, and broad activity listing walks workflow runs.
 type QueryHandler struct {
-	Store storage.Store
+	Store      storage.Store
+	ClaimStore storage.ClaimStore
 }
 
 var _ temporalessv1connect.RecordStoreServiceClient = (*Handler)(nil)
@@ -40,7 +43,15 @@ func NewHandlerWithClaims(store storage.Store, claimStore storage.ClaimStore) *H
 }
 
 func NewQueryHandler(store storage.Store) *QueryHandler {
-	return &QueryHandler{Store: store}
+	handler := &QueryHandler{Store: store}
+	if claimStore, ok := store.(storage.ClaimStore); ok {
+		handler.ClaimStore = claimStore
+	}
+	return handler
+}
+
+func NewQueryHandlerWithClaims(store storage.Store, claimStore storage.ClaimStore) *QueryHandler {
+	return &QueryHandler{Store: store, ClaimStore: claimStore}
 }
 
 // NewHTTPHandler mounts only RecordStoreService.
@@ -78,7 +89,7 @@ func NewHTTPHandlerWithLocalQuery(store storage.Store, opts ...connect.HandlerOp
 // NewHTTPHandlerWithClaimsAndLocalQuery mounts RecordStoreService with an
 // explicit claim store plus the local/dev RecordQueryService fallback.
 func NewHTTPHandlerWithClaimsAndLocalQuery(store storage.Store, claimStore storage.ClaimStore, opts ...connect.HandlerOption) (string, http.Handler) {
-	return NewHTTPHandlerWithClaimsAndQuery(store, claimStore, NewQueryHandler(store), opts...)
+	return NewHTTPHandlerWithClaimsAndQuery(store, claimStore, NewQueryHandlerWithClaims(store, claimStore), opts...)
 }
 
 func newCombinedHTTPHandler(store temporalessv1connect.RecordStoreServiceHandler, query temporalessv1connect.RecordQueryServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
@@ -249,6 +260,14 @@ func (handler *Handler) ListEvents(ctx context.Context, req *connect.Request[tem
 	return connect.NewResponse(&temporalessv1.ListEventsResponse{Records: records}), nil
 }
 
+func (handler *Handler) ListClaims(ctx context.Context, req *connect.Request[temporalessv1.ListClaimsRequest]) (*connect.Response[temporalessv1.ListClaimsResponse], error) {
+	records, err := handler.listClaimsForRun(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&temporalessv1.ListClaimsResponse{Records: records}), nil
+}
+
 func (handler *Handler) DeleteWorkflow(ctx context.Context, req *connect.Request[temporalessv1.DeleteWorkflowRequest]) (*connect.Response[temporalessv1.DeleteWorkflowResponse], error) {
 	deleted, err := handler.Store.DeleteWorkflow(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
@@ -281,13 +300,88 @@ func (handler *Handler) DeleteEvent(ctx context.Context, req *connect.Request[te
 	return connect.NewResponse(&temporalessv1.DeleteEventResponse{Deleted: deleted}), nil
 }
 
+// DeleteRun removes one externally quiesced workflow run. It is a bounded,
+// multi-step cleanup operation, not a transaction or execution fence: callers
+// must ensure no worker can create claims or write records for the run while
+// deletion is in progress.
 func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temporalessv1.DeleteRunRequest]) (*connect.Response[temporalessv1.DeleteRunResponse], error) {
 	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
 	var deleted uint32
 
+	// Claims may live in a separately configured store. Snapshot every record
+	// kind and validate every embedded key before the first mutation: a corrupt
+	// payload under this run's storage prefix must never redirect deletion to a
+	// different run.
+	claims, err := handler.listClaimsForRun(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	activities, err := handler.Store.ListActivities(ctx, key)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	timers, err := handler.Store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	events, err := handler.Store.ListEvents(ctx, key)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	for _, activity := range activities {
+		activityKey := storage.ActivityKeyFromProto(activity.GetKey())
+		if err := validateListedRunRecordKey(
+			"activity",
+			key,
+			activityKey.Namespace,
+			activityKey.WorkflowID,
+			activityKey.RunID,
+			activityKey.Validate(),
+		); err != nil {
+			return nil, err
+		}
+	}
+	for _, timer := range timers {
+		timerKey := storage.TimerKeyFromProto(timer.GetKey())
+		if err := validateListedRunRecordKey(
+			"timer",
+			key,
+			timerKey.Namespace,
+			timerKey.WorkflowID,
+			timerKey.RunID,
+			timerKey.Validate(),
+		); err != nil {
+			return nil, err
+		}
+	}
+	for _, event := range events {
+		eventKey := storage.EventKeyFromProto(event.GetKey())
+		if err := validateListedRunRecordKey(
+			"event",
+			key,
+			eventKey.Namespace,
+			eventKey.WorkflowID,
+			eventKey.RunID,
+			eventKey.Validate(),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	// The caller has externally quiesced the run and every snapshot is valid.
+	// Claims are removed first so no stale run-scoped claim survives successful
+	// cleanup. This ordering does not make DeleteRun a fence or a transaction.
+	if handler.ClaimStore != nil {
+		for _, claim := range claims {
+			ok, err := handler.ClaimStore.DeleteClaim(ctx, storage.ClaimKeyFromProto(claim.GetKey()))
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if ok {
+				deleted++
+			}
+		}
 	}
 	for _, activity := range activities {
 		ok, err := handler.Store.DeleteActivity(ctx, storage.ActivityKeyFromProto(activity.GetKey()))
@@ -298,11 +392,6 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 			deleted++
 		}
 	}
-
-	timers, err := handler.Store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
 	for _, timer := range timers {
 		ok, err := handler.Store.DeleteTimer(ctx, storage.TimerKeyFromProto(timer.GetKey()))
 		if err != nil {
@@ -311,11 +400,6 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 		if ok {
 			deleted++
 		}
-	}
-
-	events, err := handler.Store.ListEvents(ctx, key)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	for _, event := range events {
 		ok, err := handler.Store.DeleteEvent(ctx, storage.EventKeyFromProto(event.GetKey()))
@@ -335,6 +419,75 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 		deleted++
 	}
 	return connect.NewResponse(&temporalessv1.DeleteRunResponse{Deleted: deleted}), nil
+}
+
+func validateListedRunRecordKey(
+	recordKind string,
+	target storage.WorkflowKey,
+	recordNamespace string,
+	recordWorkflowID string,
+	recordRunID string,
+	validateErr error,
+) error {
+	if validateErr != nil {
+		return connect.NewError(
+			connect.CodeDataLoss,
+			fmt.Errorf("invalid %s key in run listing: %w", recordKind, validateErr),
+		)
+	}
+	targetNamespace := target.Namespace
+	if targetNamespace == "" {
+		targetNamespace = storage.DefaultNamespace
+	}
+	if recordNamespace == "" {
+		recordNamespace = storage.DefaultNamespace
+	}
+	if recordNamespace != targetNamespace || recordWorkflowID != target.WorkflowID || recordRunID != target.RunID {
+		return connect.NewError(
+			connect.CodeDataLoss,
+			fmt.Errorf("%s payload key does not match requested workflow run", recordKind),
+		)
+	}
+	return nil
+}
+
+func (handler *Handler) listClaimsForRun(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
+	if handler.ClaimStore == nil {
+		return nil, nil
+	}
+	capability, err := handler.ClaimStore.ClaimCapability(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if capability != storage.CreateOnlyClaims && capability != storage.CASClaims {
+		return nil, nil
+	}
+	claimRunStore, ok := handler.ClaimStore.(storage.ClaimRunStore)
+	if !ok {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store does not support run-scoped claim listing"))
+	}
+	records, err := claimRunStore.ListClaims(ctx, key)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Validate the complete snapshot before DeleteRun removes any claim. A
+	// corrupt payload under this prefix must never redirect bounded deletion to
+	// another run merely because its embedded key says so.
+	for _, record := range records {
+		claimKey := storage.ClaimKeyFromProto(record.GetKey())
+		if err := validateListedRunRecordKey(
+			"claim",
+			key,
+			claimKey.Namespace,
+			claimKey.WorkflowID,
+			claimKey.RunID,
+			claimKey.Validate(),
+		); err != nil {
+			return nil, err
+		}
+	}
+	return records, nil
 }
 
 func (handler *Handler) GetClaim(ctx context.Context, req *connect.Request[temporalessv1.GetClaimRequest]) (*connect.Response[temporalessv1.GetClaimResponse], error) {
@@ -385,14 +538,9 @@ func (handler *Handler) DeleteClaim(ctx context.Context, req *connect.Request[te
 }
 
 func (handler *Handler) Sweep(ctx context.Context, req *connect.Request[temporalessv1.SweepRequest]) (*connect.Response[temporalessv1.SweepResponse], error) {
-	deleted, err := handler.Store.Sweep(
-		ctx,
-		req.Msg.GetNamespace(),
-		req.Msg.GetNow().AsTime(),
-		req.Msg.GetMaxAge().AsDuration(),
-	)
+	deleted, err := janitor.Sweep(ctx, handler.Store, handler.ClaimStore, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, sweepConnectError(err)
 	}
 	return connect.NewResponse(&temporalessv1.SweepResponse{Deleted: deleted}), nil
 }
@@ -481,16 +629,22 @@ func (handler *QueryHandler) ListActivities(ctx context.Context, req *connect.Re
 }
 
 func (handler *QueryHandler) Sweep(ctx context.Context, req *connect.Request[temporalessv1.SweepRequest]) (*connect.Response[temporalessv1.SweepResponse], error) {
-	deleted, err := handler.Store.Sweep(
-		ctx,
-		req.Msg.GetNamespace(),
-		req.Msg.GetNow().AsTime(),
-		req.Msg.GetMaxAge().AsDuration(),
-	)
+	deleted, err := janitor.Sweep(ctx, handler.Store, handler.ClaimStore, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, sweepConnectError(err)
 	}
 	return connect.NewResponse(&temporalessv1.SweepResponse{Deleted: deleted}), nil
+}
+
+func sweepConnectError(err error) error {
+	switch {
+	case errors.Is(err, janitor.ErrClaimRunListingUnsupported):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, janitor.ErrRunListingDataLoss):
+		return connect.NewError(connect.CodeDataLoss, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 func (handler *QueryHandler) DueTimers(ctx context.Context, req *connect.Request[temporalessv1.RecordQueryServiceDueTimersRequest]) (*connect.Response[temporalessv1.RecordQueryServiceDueTimersResponse], error) {

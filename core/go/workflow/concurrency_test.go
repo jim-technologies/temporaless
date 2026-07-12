@@ -17,7 +17,7 @@ import (
 // Concurrency keys: pre-emptive cluster-wide cap on in-flight workflow.Run
 // invocations sharing the same key. Tests cover the storage-arbitrated
 // acquire race, busy-on-full, release-on-completion / failure / pending,
-// and crash-recovery via owner-id match.
+// and create-only stale-slot behavior.
 
 func TestConcurrencyAcquireWhenFree(t *testing.T) {
 	ctx := context.Background()
@@ -28,6 +28,7 @@ func TestConcurrencyAcquireWhenFree(t *testing.T) {
 		WorkflowId:       "wf",
 		RunId:            "r-1",
 		CodeVersion:      "test",
+		ClaimOwnerId:     "worker:free",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 3,
 	}
@@ -95,6 +96,7 @@ func TestConcurrencyBusyWhenFull(t *testing.T) {
 		WorkflowId:       "wf",
 		RunId:            "r-1",
 		CodeVersion:      "test",
+		ClaimOwnerId:     "worker:busy",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 2,
 	}
@@ -143,6 +145,7 @@ func TestConcurrencyReleasedOnFailure(t *testing.T) {
 		WorkflowId:       "wf",
 		RunId:            "r-failed",
 		CodeVersion:      "test",
+		ClaimOwnerId:     "worker:failure",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 2,
 	}
@@ -201,6 +204,7 @@ func TestConcurrencyMultipleWorkflowsObeyLimit(t *testing.T) {
 				WorkflowId:       "wf",
 				RunId:            "r-" + intToASCII(int32(i)),
 				CodeVersion:      "test",
+				ClaimOwnerId:     "worker:" + intToASCII(int32(i)),
 				ConcurrencyKey:   "vendor:test",
 				ConcurrencyLimit: limit,
 			}
@@ -250,15 +254,15 @@ func TestConcurrencyMultipleWorkflowsObeyLimit(t *testing.T) {
 	}
 }
 
-func TestConcurrencyOwnerReacquiresStaleSlot(t *testing.T) {
+func TestConcurrencyStaleSameOwnerSlotIsNotReacquired(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	claimStore := newTestClaimStore(t)
 
-	// Simulate a prior crashed invocation: slot:0 held by us, but the
-	// workflow's IN_PROGRESS record was already written. The next invocation
-	// should re-acquire slot:0 (not consume slot:1).
-	ownerID := concurrencyOwnerID("wf", "r-1")
+	// Simulate a prior crashed invocation. Matching owner text is not fencing:
+	// treating it as re-acquired would also let two live duplicates share and
+	// prematurely release this slot.
+	ownerID := "worker:same"
 	slotKey := storage.ClaimKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: ConcurrencyWorkflowID,
@@ -283,30 +287,33 @@ func TestConcurrencyOwnerReacquiresStaleSlot(t *testing.T) {
 		WorkflowId:       "wf",
 		RunId:            "r-1",
 		CodeVersion:      "test",
+		ClaimOwnerId:     ownerID,
 		ConcurrencyKey:   "vendor:test",
-		ConcurrencyLimit: 2,
+		ConcurrencyLimit: 1,
 	}
+	executed := false
 	_, err = Run(
 		ctx, store, opts, claimStore,
 		wrapperspb.String("x"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-			// Verify slot:1 is NOT held (we reused slot:0).
-			slot1Key := storage.ClaimKey{
-				Namespace:  storage.DefaultNamespace,
-				WorkflowID: ConcurrencyWorkflowID,
-				RunID:      "vendor:test",
-				ClaimID:    "slot:1",
-			}
-			_, found, _ := claimStore.GetClaim(ctx, slot1Key)
-			if found {
-				t.Error("slot:1 should not be held — we should have re-acquired slot:0")
-			}
+			executed = true
 			return wrapperspb.String("ok"), nil
 		},
 	)
+	var busy *ConcurrencyBusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("error = %T (%v), want *ConcurrencyBusyError", err, err)
+	}
+	if executed {
+		t.Fatal("workflow body executed through a stale same-owner slot")
+	}
+	_, found, err := claimStore.GetClaim(ctx, slotKey)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("stale create-only slot was deleted or treated as acquired")
 	}
 }
 
@@ -318,6 +325,7 @@ func TestConcurrencyRequiresClaimStore(t *testing.T) {
 		WorkflowId:       "wf",
 		RunId:            "r",
 		CodeVersion:      "test",
+		ClaimOwnerId:     "worker:no-store",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 1,
 	}
@@ -340,12 +348,14 @@ func TestConcurrencyValidationPaired(t *testing.T) {
 	// concurrency_key without concurrency_limit (or vice versa) must be
 	// rejected by protovalidate's paired CEL constraint.
 	tests := []struct {
-		name string
-		key  string
-		lim  uint32
+		name  string
+		key   string
+		lim   uint32
+		owner string
 	}{
-		{"key without limit", "vendor:x", 0},
-		{"limit without key", "", 5},
+		{"key without limit", "vendor:x", 0, "worker:validation"},
+		{"limit without key", "", 5, "worker:validation"},
+		{"key without caller owner", "vendor:x", 1, ""},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -357,6 +367,7 @@ func TestConcurrencyValidationPaired(t *testing.T) {
 				WorkflowId:       "wf",
 				RunId:            "r",
 				CodeVersion:      "test",
+				ClaimOwnerId:     tc.owner,
 				ConcurrencyKey:   tc.key,
 				ConcurrencyLimit: tc.lim,
 			}

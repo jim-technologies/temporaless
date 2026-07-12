@@ -1,6 +1,6 @@
 [project]
 name = "temporaless"
-version = "0.3.0"
+version = "0.4.0"
 description = "Storage-first serverless workflow replay for protobuf activities."
 readme = "../../README.md"
 requires-python = ">=3.13"

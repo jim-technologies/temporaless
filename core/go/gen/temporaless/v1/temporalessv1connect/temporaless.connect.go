@@ -100,6 +100,9 @@ const (
 	// RecordStoreServiceListEventsProcedure is the fully-qualified name of the RecordStoreService's
 	// ListEvents RPC.
 	RecordStoreServiceListEventsProcedure = "/temporaless.v1.RecordStoreService/ListEvents"
+	// RecordStoreServiceListClaimsProcedure is the fully-qualified name of the RecordStoreService's
+	// ListClaims RPC.
+	RecordStoreServiceListClaimsProcedure = "/temporaless.v1.RecordStoreService/ListClaims"
 	// RecordStoreServiceDeleteWorkflowProcedure is the fully-qualified name of the RecordStoreService's
 	// DeleteWorkflow RPC.
 	RecordStoreServiceDeleteWorkflowProcedure = "/temporaless.v1.RecordStoreService/DeleteWorkflow"
@@ -152,12 +155,14 @@ type RecordStoreServiceClient interface {
 	PutActivity(context.Context, *connect.Request[v1.PutActivityRequest]) (*connect.Response[v1.PutActivityResponse], error)
 	// Read a single coordination claim by key.
 	GetClaim(context.Context, *connect.Request[v1.GetClaimRequest]) (*connect.Response[v1.GetClaimResponse], error)
-	// Write a claim only if none already exists at the key. Returns `created=false`
-	// when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
-	// safe-to-resume.
+	// Write a claim only if none already exists at the key. Returns
+	// `created=false` when the key is taken. Core workflow, activity, and
+	// concurrency coordination treats every existing claim as busy, including
+	// one with the same owner_id.
 	TryCreateClaim(context.Context, *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error)
-	// Idempotently release a claim. Used by the runtime to release a concurrency
-	// slot on workflow terminal status; safe to call when the claim doesn't exist.
+	// Idempotently release a claim. Used for workflow-execution, activity, and
+	// concurrency claims at durable/orderly boundaries; safe when the key is
+	// absent.
 	DeleteClaim(context.Context, *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error)
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
@@ -170,6 +175,9 @@ type RecordStoreServiceClient interface {
 	ListTimers(context.Context, *connect.Request[v1.ListTimersRequest]) (*connect.Response[v1.ListTimersResponse], error)
 	// List event records under a single workflow run.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
+	// List coordination claims under a single workflow run. This is the narrow
+	// run-deletion seam, not a cross-run query API.
+	ListClaims(context.Context, *connect.Request[v1.ListClaimsRequest]) (*connect.Response[v1.ListClaimsResponse], error)
 	// Idempotently remove a workflow record only.
 	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// Idempotently remove an activity record so the next `ExecuteActivity`
@@ -296,6 +304,12 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(recordStoreServiceMethods.ByName("ListEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		listClaims: connect.NewClient[v1.ListClaimsRequest, v1.ListClaimsResponse](
+			httpClient,
+			baseURL+RecordStoreServiceListClaimsProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("ListClaims")),
+			connect.WithClientOptions(opts...),
+		),
 		deleteWorkflow: connect.NewClient[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse](
 			httpClient,
 			baseURL+RecordStoreServiceDeleteWorkflowProcedure,
@@ -353,6 +367,7 @@ type recordStoreServiceClient struct {
 	listActivities       *connect.Client[v1.ListActivitiesRequest, v1.ListActivitiesResponse]
 	listTimers           *connect.Client[v1.ListTimersRequest, v1.ListTimersResponse]
 	listEvents           *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
+	listClaims           *connect.Client[v1.ListClaimsRequest, v1.ListClaimsResponse]
 	deleteWorkflow       *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
 	deleteActivity       *connect.Client[v1.DeleteActivityRequest, v1.DeleteActivityResponse]
 	deleteTimer          *connect.Client[v1.DeleteTimerRequest, v1.DeleteTimerResponse]
@@ -441,6 +456,11 @@ func (c *recordStoreServiceClient) ListEvents(ctx context.Context, req *connect.
 	return c.listEvents.CallUnary(ctx, req)
 }
 
+// ListClaims calls temporaless.v1.RecordStoreService.ListClaims.
+func (c *recordStoreServiceClient) ListClaims(ctx context.Context, req *connect.Request[v1.ListClaimsRequest]) (*connect.Response[v1.ListClaimsResponse], error) {
+	return c.listClaims.CallUnary(ctx, req)
+}
+
 // DeleteWorkflow calls temporaless.v1.RecordStoreService.DeleteWorkflow.
 func (c *recordStoreServiceClient) DeleteWorkflow(ctx context.Context, req *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error) {
 	return c.deleteWorkflow.CallUnary(ctx, req)
@@ -491,12 +511,14 @@ type RecordStoreServiceHandler interface {
 	PutActivity(context.Context, *connect.Request[v1.PutActivityRequest]) (*connect.Response[v1.PutActivityResponse], error)
 	// Read a single coordination claim by key.
 	GetClaim(context.Context, *connect.Request[v1.GetClaimRequest]) (*connect.Response[v1.GetClaimResponse], error)
-	// Write a claim only if none already exists at the key. Returns `created=false`
-	// when the key is taken; callers compare `owner_id` to decide ClaimBusy vs.
-	// safe-to-resume.
+	// Write a claim only if none already exists at the key. Returns
+	// `created=false` when the key is taken. Core workflow, activity, and
+	// concurrency coordination treats every existing claim as busy, including
+	// one with the same owner_id.
 	TryCreateClaim(context.Context, *connect.Request[v1.TryCreateClaimRequest]) (*connect.Response[v1.TryCreateClaimResponse], error)
-	// Idempotently release a claim. Used by the runtime to release a concurrency
-	// slot on workflow terminal status; safe to call when the claim doesn't exist.
+	// Idempotently release a claim. Used for workflow-execution, activity, and
+	// concurrency claims at durable/orderly boundaries; safe when the key is
+	// absent.
 	DeleteClaim(context.Context, *connect.Request[v1.DeleteClaimRequest]) (*connect.Response[v1.DeleteClaimResponse], error)
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
@@ -509,6 +531,9 @@ type RecordStoreServiceHandler interface {
 	ListTimers(context.Context, *connect.Request[v1.ListTimersRequest]) (*connect.Response[v1.ListTimersResponse], error)
 	// List event records under a single workflow run.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
+	// List coordination claims under a single workflow run. This is the narrow
+	// run-deletion seam, not a cross-run query API.
+	ListClaims(context.Context, *connect.Request[v1.ListClaimsRequest]) (*connect.Response[v1.ListClaimsResponse], error)
 	// Idempotently remove a workflow record only.
 	DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error)
 	// Idempotently remove an activity record so the next `ExecuteActivity`
@@ -631,6 +656,12 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		connect.WithSchema(recordStoreServiceMethods.ByName("ListEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	recordStoreServiceListClaimsHandler := connect.NewUnaryHandler(
+		RecordStoreServiceListClaimsProcedure,
+		svc.ListClaims,
+		connect.WithSchema(recordStoreServiceMethods.ByName("ListClaims")),
+		connect.WithHandlerOptions(opts...),
+	)
 	recordStoreServiceDeleteWorkflowHandler := connect.NewUnaryHandler(
 		RecordStoreServiceDeleteWorkflowProcedure,
 		svc.DeleteWorkflow,
@@ -701,6 +732,8 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceListTimersHandler.ServeHTTP(w, r)
 		case RecordStoreServiceListEventsProcedure:
 			recordStoreServiceListEventsHandler.ServeHTTP(w, r)
+		case RecordStoreServiceListClaimsProcedure:
+			recordStoreServiceListClaimsHandler.ServeHTTP(w, r)
 		case RecordStoreServiceDeleteWorkflowProcedure:
 			recordStoreServiceDeleteWorkflowHandler.ServeHTTP(w, r)
 		case RecordStoreServiceDeleteActivityProcedure:
@@ -786,6 +819,10 @@ func (UnimplementedRecordStoreServiceHandler) ListEvents(context.Context, *conne
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ListEvents is not implemented"))
 }
 
+func (UnimplementedRecordStoreServiceHandler) ListClaims(context.Context, *connect.Request[v1.ListClaimsRequest]) (*connect.Response[v1.ListClaimsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ListClaims is not implemented"))
+}
+
 func (UnimplementedRecordStoreServiceHandler) DeleteWorkflow(context.Context, *connect.Request[v1.DeleteWorkflowRequest]) (*connect.Response[v1.DeleteWorkflowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DeleteWorkflow is not implemented"))
 }
@@ -816,8 +853,10 @@ type RecordQueryServiceClient interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// List activity records across runs or under one run, depending on filters.
 	ListActivities(context.Context, *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error)
-	// Indexed retention sweep. The implementation mirrors deletes to the bucket
-	// and removes index rows.
+	// Indexed retention sweep. The implementation prevalidates claim and record
+	// snapshots, removes run-scoped claims before bucket records, and then
+	// removes index rows. Eligible runs must be externally quiesced; this RPC is
+	// not a transaction or execution fence.
 	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
 	// Optional indexed due-timer scan. Bucket-only deployments use the
 	// RecordStoreService ledger implementation.
@@ -896,8 +935,10 @@ type RecordQueryServiceHandler interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// List activity records across runs or under one run, depending on filters.
 	ListActivities(context.Context, *connect.Request[v1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[v1.RecordQueryServiceListActivitiesResponse], error)
-	// Indexed retention sweep. The implementation mirrors deletes to the bucket
-	// and removes index rows.
+	// Indexed retention sweep. The implementation prevalidates claim and record
+	// snapshots, removes run-scoped claims before bucket records, and then
+	// removes index rows. Eligible runs must be externally quiesced; this RPC is
+	// not a transaction or execution fence.
 	Sweep(context.Context, *connect.Request[v1.SweepRequest]) (*connect.Response[v1.SweepResponse], error)
 	// Optional indexed due-timer scan. Bucket-only deployments use the
 	// RecordStoreService ledger implementation.

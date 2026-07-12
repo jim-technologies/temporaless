@@ -122,6 +122,38 @@ func TestStoreGetClaim(t *testing.T) {
 	}
 }
 
+func TestStoreListClaimsScopesToOneRun(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(newFileBucket(t))
+	target := storage.NewWorkflowKey("prices:aapl", "run:one")
+	keys := []storage.ClaimKey{
+		storage.NewClaimKey(target.WorkflowID, target.RunID, "arbitrary:one"),
+		storage.NewClaimKey(target.WorkflowID, target.RunID, "arbitrary:two"),
+		storage.NewClaimKey(target.WorkflowID, "run:other", "arbitrary:other"),
+	}
+	for _, key := range keys {
+		created, err := store.TryCreateClaim(ctx, newClaimRecord(key, "owner"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !created {
+			t.Fatalf("claim %q was not created", key.ClaimID)
+		}
+	}
+
+	records, err := store.ListClaims(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(records))
+	for _, record := range records {
+		got[record.GetKey().GetClaimId()] = true
+	}
+	if len(got) != 2 || !got["arbitrary:one"] || !got["arbitrary:two"] {
+		t.Fatalf("claim ids = %v, want arbitrary:one and arbitrary:two", got)
+	}
+}
+
 func newFileBucket(t *testing.T) *blob.Bucket {
 	t.Helper()
 

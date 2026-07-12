@@ -8,13 +8,17 @@ Records persist forever by default. The janitor is the simplest workable retenti
 
 ## Position
 
-Thin wrapper over `Store.ListWorkflows(COMPLETED)` plus `Store.Delete*`. Backend-agnostic: works against any `storage.Store`, including a remote `connectstore.ClientStore`.
+Thin wrapper over `Store.ListWorkflows(COMPLETED)` plus bounded run deletion. It accepts the generated `SweepRequest` and an optional explicit `ClaimStore`; pass the deployment's separate claim backend when claims do not live on the record store. Remote `connectstore.ClientStore` instances auto-detect their service-backed claim surface.
 
 ## Supported Behavior
 
 - list `WORKFLOW_STATUS_COMPLETED` whose `completed_at` is older than `now - max_age`
-- delete the workflow's activities, timers, and events before the workflow record itself
+- preflight claim capability and require run-scoped claim listing from a claim-capable backend
+- snapshot and validate every eligible run before the first mutation
+- delete run-scoped claims before activities, timers, events, and the workflow record
 - idempotent: re-sweeping after a partial failure is safe
+
+Sweep is not an execution fence or transaction. Externally quiesce eligible runs while it executes; a concurrent record or claim created after the snapshot is outside the cleanup guarantee.
 
 ## Rejected Behavior
 
