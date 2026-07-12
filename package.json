@@ -58,5 +58,9 @@
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "github:jim-technologies/invariantprotocol#a54e5de1ef4021aa65cee44526b2b61567643a27": true,
+    "protobufjs": false
   }
 }

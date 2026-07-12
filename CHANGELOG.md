@@ -8,6 +8,12 @@ The framework is **pre-1.0** — wire-format changes will be called out clearly 
 
 ## [Unreleased]
 
+### Fixed
+
+- Clean CI installs now explicitly allow the root package's SHA-pinned Git
+  dependency, build it over HTTPS with `npm ci`, and deny unneeded transitive
+  install scripts.
+
 ## [0.4.0] — 2026-07-12
 
 ### Added
