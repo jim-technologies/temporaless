@@ -78,10 +78,18 @@ The same opt-in creates `activity:{activity_id}` before executing missing or due
 Activity claims are released only after a durable boundary:
 
 - a `COMPLETED` or `FAILED` activity record was stored
-- both the `RETRYING` activity record and its durable retry timer were stored
+- a validated durable retry timer was stored (the following `RETRYING` record
+  may lag; replay honors the timer and repeats ambiguous work at-least-once)
 - an in-process retry state was stored and the invocation exits during its backoff
 
-They are deliberately retained when the outcome is ambiguous: cancellation while the activity body is running, result serialization failure after the body returns, activity/timer storage failure, or failed claim cleanup. This is fail-closed. An operator must first verify that no old execution remains before deleting such a claim. A durable retry releases its claim, so a later invocation with a different caller-owned `claim_owner_id` can resume it.
+They are deliberately retained when a successful side effect may be ambiguous:
+cancellation while the activity body is running, terminal-result persistence
+failure after the body returns, or failed claim cleanup. This is fail-closed.
+An operator must first verify that no old execution remains before deleting
+such a claim. Retry-boundary persistence failures instead surface typed pending
+and release the claim so request redelivery can repair the timer/record pair;
+once a timer is verified, another invocation honors its wake before repeating
+ambiguous work.
 
 ## Lease Lifecycle
 

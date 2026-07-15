@@ -8,6 +8,7 @@ import (
 	opendal "github.com/apache/opendal/bindings/go"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -70,6 +71,7 @@ func TestOpenDALStoreRoundTrip(t *testing.T) {
 					TimerKind:     SleepTimerKind,
 					CodeVersion:   "test-version",
 					Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
+					FireAt:        timestamppb.Now(),
 				}
 				if err := store.PutTimer(ctx, record); err != nil {
 					return false, "", err

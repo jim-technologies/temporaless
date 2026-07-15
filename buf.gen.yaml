@@ -1,20 +1,29 @@
 version: v2
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - remote: buf.build/protocolbuffers/go:v1.36.11
     out: core/go/gen
     opt: paths=source_relative
-  - remote: buf.build/connectrpc/go
+  - remote: buf.build/connectrpc/go:v1.20.0
     out: core/go/gen
     opt: paths=source_relative
-  - remote: buf.build/protocolbuffers/python
+  - remote: buf.build/protocolbuffers/python:v35.1
     out: core/py/src
     include_imports: true
-  - remote: buf.build/protocolbuffers/pyi
+  - remote: buf.build/protocolbuffers/pyi:v35.1
     out: core/py/src
     include_imports: true
-  - remote: buf.build/connectrpc/python
+  # The BSR plugin currently trails connectrpc-python 0.11. Use the locked
+  # local generator so generated clients and servers select Google protobuf
+  # codecs to match the rest of Temporaless.
+  - local: [uv, run, --frozen, --project, core/py, protoc-gen-connectrpc]
     out: core/py/src
-  - remote: buf.build/bufbuild/es
+    # connectrpc-python defaults to protobuf-py as of 0.10. Temporaless uses
+    # Google's protobuf runtime across its Python core, Protovalidate, and
+    # generated messages, so generate matching codecs explicitly.
+    opt:
+      - protobuf=google
+      - io=async
+  - remote: buf.build/bufbuild/es:v2.12.1
     out: core/ts/src/gen
     opt:
       - target=ts

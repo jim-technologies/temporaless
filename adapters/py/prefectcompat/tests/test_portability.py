@@ -25,7 +25,12 @@ import opendal
 import temporaless
 from google.protobuf.wrappers_pb2 import StringValue
 
-from temporaless_prefectcompat import wrap_activity, wrap_workflow
+from temporaless_prefectcompat import (
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
+    wrap_activity,
+    wrap_workflow,
+)
 
 # ---- the portable body -------------------------------------------------
 
@@ -68,7 +73,9 @@ async def _temporaless_run(symbol: StringValue) -> StringValue:
 
 # ---- runtime B: Prefect via prefectcompat ------------------------------
 
-_fetch_price_prefect_task = wrap_activity(_fetch_price, name="fetch_price_portable_prefect")
+_fetch_price_prefect_task = wrap_activity(
+    _fetch_price, ActivityWrapOptions(name="fetch_price_portable_prefect")
+)
 
 
 async def _prefect_workflow_body(symbol: StringValue) -> StringValue:
@@ -78,7 +85,9 @@ async def _prefect_workflow_body(symbol: StringValue) -> StringValue:
     return result
 
 
-_PrefectFlow = wrap_workflow(_prefect_workflow_body, name="PortabilityPrefectFlow")
+_PrefectFlow = wrap_workflow(
+    _prefect_workflow_body, WorkflowWrapOptions(name="PortabilityPrefectFlow")
+)
 
 
 async def _prefect_run(symbol: StringValue) -> StringValue:

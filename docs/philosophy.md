@@ -11,8 +11,11 @@ There is no Temporaless-specific handler shape. You write a normal unary protobu
 
 — and the framework decorates it with replay, idempotency, and persistence:
 
-- Python: `@wrap_workflow_method(...)` on the method.
-- Go: `workflow.HandleConnect(ctx, req, WorkflowWrapOptions[...]{...})` inside the method.
+- Python: `@temporaless_connectworkflow.wrap_workflow_method(...)` on the method.
+- Go: `connectworkflow.Handle(ctx, req, workflow.WorkflowWrapOptions[...]{...})` inside the method.
+
+Both Connect-specific wrappers live under `adapters/{py,go}/connectworkflow`;
+the workflow replay cores remain transport-agnostic.
 
 Trigger surface and framework surface are the **same surface**. Anything that speaks gRPC / ConnectRPC / gRPC-Web — your existing service mesh, your existing auth, your CLI runner, an `invariantprotocol`-style adapter for HTTP/CLI/MCP — drops in unchanged.
 
@@ -50,7 +53,13 @@ When a feature comes up: ask *would Dagster or Prefect users also want this?* If
 
 The core store protocol stays small: point GET/PUT/DELETE by deterministic key, create-if-absent claims, run-scoped listing for replay prefetch and run deletion, latest-run pointers for cron seeding, and a due-timer ledger for durable sleeps.
 
-Everything cross-run is search: workflow listing, status filters, inspector screens, retention selection, and broad analytics. Those live in optional query adapters such as the SQLite index, and the index is always rebuildable from the bucket. Bucket-only deployments keep workflow execution, scheduling, durable timers, and lifecycle retention without running a database.
+Everything cross-run is search: workflow listing, status filters, inspector
+screens, exact retention selection, and broad analytics. Those live in optional
+query adapters such as the SQLite index, and the index is always rebuildable
+from the bucket. Bucket-only deployments still keep workflow execution,
+scheduling, and durable timers; coarse archive retention may use conservative
+bucket lifecycle rules that outlive all active timer horizons, while exact
+status/age retention requires a query adapter or an explicit offline scan.
 
 ## 7. Protobuf-first, copy over DRY
 

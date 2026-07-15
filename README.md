@@ -1,6 +1,7 @@
 # Temporaless
 
-A storage-first, language-agnostic, serverless workflow framework for Go, Python, Rust, and TypeScript clients.
+A storage-first, serverless workflow framework with first-class Go and Python
+runtimes, an experimental Rust storage SDK, and TypeScript protobuf clients.
 
 The core idea: every workflow boundary (start, activity, durable timer, signal, claim) is a protobuf record at a deterministic path in object storage, keyed by a caller-supplied id. When workflow code reaches a boundary, the runtime first reads its record: terminal results replay, pending records drive suspension/resume, and missing work executes and is stored. There is no engine, no control plane, no central server — the storage backend is the source of truth, and processes are interchangeable.
 
@@ -27,7 +28,7 @@ the direct service path.
 ```text
 api/                  protobuf API definitions only
 core/{go,py}/         Runtime + generated protobuf + OpenDAL store + ConnectRPC service
-core/rs/              Rust SDK — storage layer only (native opendal crate); runtime layers TBD
+core/rs/              Experimental Rust SDK — storage + minimal workflow runtime
 core/ts/              TypeScript SDK — generated protobuf, ConnectRPC wrappers, invariantprotocol projection
 adapters/{go,py}/     Adapters: claims, schedulers, inspectors, retention, Temporal compat
 examples/{go,py}/     Runnable demos: fetch-prices, llm-completion, production-server, quant-service, stocks-pipeline, twitter-webhook
@@ -36,19 +37,30 @@ docs/                 Architecture and design notes
 
 ## Install From Git
 
-Temporaless packages are designed for direct git consumption, not registry
-publishing. Pin a commit SHA for production builds.
+Temporaless-owned packages are distributed only from Git. They are not
+published to PyPI, the npm registry, crates.io, or another language registry.
+Pin a commit SHA for production builds; release-oriented examples may use the
+single root `vX.Y.Z` tag.
+
+Every Temporaless SDK and adapter ships in lockstep. The repository-root
+`VERSION` is the source of truth and each release uses exactly one plain root
+tag, `vX.Y.Z`; there are no language-, SDK-, or adapter-specific version
+streams. Ecosystem manifests contain checked mirrors because Python
+subdirectory builds, npm, and Cargo require local package metadata. CI rejects
+any drift, and `make version-set VERSION=X.Y.Z` updates every mirror together.
+Historical tags remain immutable and predate this unified release policy.
 
 ```sh
-go get github.com/jim-technologies/temporaless@main
-pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@main#subdirectory=core/py"
-npm install "github:jim-technologies/temporaless#main"
+go get github.com/jim-technologies/temporaless@COMMIT_SHA
+pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
+pip install "temporaless-connectworkflow @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
+npm install "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 Rust consumers can depend on the workspace crate from git:
 
 ```toml
-temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", branch = "main", package = "temporaless" }
+temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
 ```
 
 The TypeScript package entry lives at the repository root so npm git installs
@@ -58,7 +70,10 @@ work without a package registry; its source stays under `core/ts`.
 
 | Adapter | Purpose |
 |---|---|
-| [`adapters/go/connectstore`](adapters/go/connectstore) | ConnectRPC store adapter; v2 regenerated-stub parity is a 0.3 follow-up |
+| [`adapters/go/connectstore`](adapters/go/connectstore) | ConnectRPC point-store and optional query-store transport adapter |
+| [`adapters/go/connectworkflow`](adapters/go/connectworkflow) | ConnectRPC workflow-trigger transport adapter |
+| [`adapters/py/connectworkflow`](adapters/py/connectworkflow) | Async ConnectRPC workflow-method decorator and error mapping |
+| [`adapters/go/scanquery`](adapters/go/scanquery) | Offline/development OpenDAL cross-run scanner; production uses an indexed query adapter |
 | [`adapters/go/gocdkclaims`](adapters/go/gocdkclaims) | Create-only workflow/activity claims via GoCDK Blob `IfNotExist` (S3, GCS native atomicity) |
 | [`adapters/go/temporalcompat`](adapters/go/temporalcompat) | Run Temporaless-shaped handlers on the real Temporal Go SDK (worker direction) |
 | [`adapters/py/temporalcompat`](adapters/py/temporalcompat) | Same for Python via `temporalio` |
@@ -83,11 +98,11 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 | [`examples/go/stocks-pipeline`](examples/go/stocks-pipeline) | Cron scheduler + multi-activity workflow + replay |
 | [`examples/go/twitter-webhook`](examples/go/twitter-webhook) | `WaitEvent` + external `SendEvent`, workflow stays IN_PROGRESS until signal arrives |
 | [`examples/py/quant_signals.py`](examples/py/quant_signals.py) | `asyncio.gather` over 8 parallel symbol fetches + serial signal compose, full replay |
-| [`examples/go/quant-service`](examples/go/quant-service) / [`examples/py/quant_service.py`](examples/py/quant_service.py) | **Canonical ConnectRPC service**: methods with `connect.Request`/`connect.Response` shape wrapped by `workflow.HandleConnect` (Go) or `@wrap_workflow_method` (Python) — production deploys mount this on any ConnectRPC mux / `asgi_application` |
+| [`examples/go/quant-service`](examples/go/quant-service) / [`examples/py/quant_service.py`](examples/py/quant_service.py) | **Canonical ConnectRPC service**: methods with `connect.Request`/`connect.Response` shape wrapped by `connectworkflow.Handle` (Go) or `temporaless_connectworkflow.wrap_workflow_method` (Python) — production deploys mount this on a ConnectRPC mux / ASGI server |
 | [`examples/py/stocks_cron.py`](examples/py/stocks_cron.py) | Cron-driven workflow: scheduler dispatches per-symbol workflows, statelessly seeded from existing run records |
 | [`examples/py/approval_workflow.py`](examples/py/approval_workflow.py) | **Long-running**: durable sleep + wait-for-event + multi-step replay across simulated process deaths |
 | [`examples/py/data_pipeline.py`](examples/py/data_pipeline.py) | **Airflow-style ETL**: extract → parallel transform (fan-out) → validate → conditional branch → load → notify, with backfill and replay |
-| [`examples/go/production-server`](examples/go/production-server) / [`examples/py/production_server.py`](examples/py/production_server.py) | **Production server**: Python is current for v2 storage; Go regenerated-stub parity is a 0.3 follow-up. Shows ConnectStore + bearer-token auth interceptor + `/healthz` & `/readyz` endpoints + structured JSON logs with correlation IDs + graceful shutdown on SIGTERM. |
+| [`examples/go/production-server`](examples/go/production-server) / [`examples/py/production_server.py`](examples/py/production_server.py) | **Production ConnectStore wiring**: durable-record service + bearer-token auth + health endpoints + structured logs + graceful shutdown. Timer/cron routing stays in the application workflow service or an external scheduler. |
 
 ## Docs
 
@@ -114,14 +129,18 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 
 ```sh
 flox activate
-flox activate -- scripts/check       # proto + Python core/adapters gate
-TEMPORALESS_CHECK_GO_RUST=1 flox activate -- scripts/check  # include explicitly gated Go/Rust parity checks
+flox activate -- scripts/check       # Buf + TypeScript + Go + Python; Rust too when installed
+flox activate -- make version-set VERSION=X.Y.Z  # prepare one future lockstep version
 npm run check                        # TypeScript client build + tests
 flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot paths)
 flox activate -- scripts/bench-py    # Python benchmarks (same suite, same output format)
 ```
 
-The Flox manifest intentionally stays thin: just `go`, `python313`, `uv`, `buf`, plus the C runtime libs OpenDAL and Protovalidate need. Everything else lives in `go.mod`, `Cargo.toml`, `core/py/uv.lock`, root `package-lock.json`, or Buf remote plugin config.
+The Flox manifest intentionally stays thin: `go`, `python314`, `uv`, `buf`,
+and the C runtime libraries OpenDAL and Protovalidate need. The Go linter runs
+as a pinned Go module; experimental Rust is pinned separately in
+`rust-toolchain.toml` and has a mandatory CI job. Application libraries stay in
+`go.mod`, `Cargo.lock`, the uv locks, `package-lock.json`, or Buf configuration.
 
 ## Storage convention
 
@@ -149,7 +168,7 @@ The core storage contract is generated from `temporaless.v1.RecordStoreService`:
 
 **Search and retention (optional index):** bucket-only deployments run workflows, scheduling, durable timers, and lifecycle-based retention without a database. Listing workflows, inspector views, and indexed sweeps require a derived query index or an offline scan.
 
-**Stateful processes (none required):** the core runtime is a pure function of `(input, store_state)`. The cron scheduler keeps last-fires in memory but exposes `Snapshot()`/`Restore()` for explicit migration, plus `LastFireFromRuns` for deriving state from latest-run pointer objects when run_ids embed fire times. Timer resumption uses a compact due ledger, not a full bucket walk.
+**Stateful processes (none required):** the core runtime is a pure function of `(input, store_state)`. The cron scheduler keeps last-fires in memory but exposes `Snapshot()`/`Restore()` for explicit migration, plus `LastFireFromRuns` for deriving state from latest-run pointers ordered by caller-supplied `WorkflowOptions.run_order_time`. Timer resumption uses a compact due ledger, not a full bucket walk.
 
 **Python is async-only.** Workflow bodies, activity bodies, and the runtime entry points (`run`, `execute_activity`, `wait_event`, `sleep`) are all `async def`. Sync callables are rejected at wrap time. The framework's I/O-bound workloads (LLM, HTTP, vendor APIs) are a natural fit for async; aligning with the Temporal Python SDK removes impedance. Go stays sync — goroutines + sync function signatures are idiomatic Go and there is no equivalent of `async/await`.
 

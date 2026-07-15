@@ -2,6 +2,7 @@ package gocdkclaims
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -119,6 +120,31 @@ func TestStoreGetClaim(t *testing.T) {
 				t.Fatalf("found = %t, want %t", found, test.found)
 			}
 		})
+	}
+}
+
+func TestStoreTryCreateClaimRejectsWrongSchemaBeforeWrite(t *testing.T) {
+	ctx := context.Background()
+	bucket := newFileBucket(t)
+	store := NewStore(bucket)
+	key := storage.NewClaimKey("prices:aapl", "run", "claim")
+	record := newClaimRecord(key, "owner")
+	record.SchemaVersion = storage.ActivityRecordSchemaVersion
+
+	created, err := store.TryCreateClaim(ctx, record)
+	if created || !errors.Is(err, storage.ErrCorruptRecord) {
+		t.Fatalf("created=%v err=%v, want false/ErrCorruptRecord", created, err)
+	}
+	path, err := key.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exists, err := bucket.Exists(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("invalid claim was written")
 	}
 }
 

@@ -14,6 +14,8 @@ from temporalio.worker import Worker
 
 from temporaless_temporalcompat import (
     ActivityCall,
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
     execute_activity,
     sleep,
     wrap_activity,
@@ -95,37 +97,46 @@ def test_wrap_rejects_sync_executors() -> None:
         return StringValue(value="should-not-reach")
 
     with pytest.raises(ValueError, match="must be async"):
-        wrap_activity(cast(Any, sync_activity), name="sync_activity")
+        wrap_activity(cast(Any, sync_activity), ActivityWrapOptions(name="sync_activity"))
     with pytest.raises(ValueError, match="must be async"):
-        wrap_workflow(cast(Any, sync_wf), name="SyncWorkflow")
+        wrap_workflow(cast(Any, sync_wf), WorkflowWrapOptions(name="SyncWorkflow"))
 
 
 def test_wrap_helpers_validate_inputs() -> None:
     with pytest.raises(ValueError, match="activity executor"):
-        wrap_activity(cast(Any, None), name="x")
+        wrap_activity(cast(Any, None), ActivityWrapOptions(name="x"))
     with pytest.raises(ValueError, match="activity name"):
 
         async def anon(_input: StringValue) -> None:
             return None
 
         anon.__name__ = ""
-        wrap_activity(cast(Any, anon), name=None)
+        wrap_activity(cast(Any, anon), ActivityWrapOptions())
     with pytest.raises(ValueError, match="workflow executor"):
-        wrap_workflow(cast(Any, None), name="x")
+        wrap_workflow(cast(Any, None), WorkflowWrapOptions(name="x"))
     with pytest.raises(ValueError, match="workflow name"):
 
         async def anon_wf(_input: StringValue) -> None:
             return None
 
         anon_wf.__name__ = ""
-        wrap_workflow(cast(Any, anon_wf), name=None)
+        wrap_workflow(cast(Any, anon_wf), WorkflowWrapOptions())
+
+    with pytest.raises(ValueError, match="activity wrap options"):
+        wrap_activity(echo_activity, cast(Any, object()))
+    with pytest.raises(ValueError, match="workflow wrap options"):
+        wrap_workflow(echo_workflow, cast(Any, object()))
+    with pytest.raises(ValueError, match="activity name"):
+        wrap_activity(echo_activity, ActivityWrapOptions(name=" "))
+    with pytest.raises(ValueError, match="workflow name"):
+        wrap_workflow(echo_workflow, WorkflowWrapOptions(name=" "))
 
 
 def test_wrap_workflow_returns_distinct_classes_per_call() -> None:
     """Each wrap_workflow call must return a fresh class — Temporal requires
     distinct workflow types for distinct registrations."""
-    a = wrap_workflow(echo_workflow, name="A")
-    b = wrap_workflow(echo_workflow, name="B")
+    a = wrap_workflow(echo_workflow, WorkflowWrapOptions(name="A"))
+    b = wrap_workflow(echo_workflow, WorkflowWrapOptions(name="B"))
     assert a is not b
     assert a.__name__ == "A"
     assert b.__name__ == "B"
@@ -294,19 +305,25 @@ async def timeout_workflow(input_message: StringValue) -> StringValue:
     return StringValue(value="unexpected")
 
 
-wrapped_echo_activity = wrap_activity(echo_activity, name="echo_activity")
+wrapped_echo_activity = wrap_activity(echo_activity, ActivityWrapOptions(name="echo_activity"))
 # `nil_activity` and `nil_workflow` deliberately violate the Message-return
 # contract to exercise the runtime guard. Cast around the type checker.
-nil_result_activity = wrap_activity(cast(Any, nil_activity), name="nil_activity")
-fetch_price_activity = wrap_activity(fetch_price, name="fetch_price_activity")
-flaky_price_activity = wrap_activity(flaky_price, name="flaky_price_activity")
+nil_result_activity = wrap_activity(
+    cast(Any, nil_activity), ActivityWrapOptions(name="nil_activity")
+)
+fetch_price_activity = wrap_activity(fetch_price, ActivityWrapOptions(name="fetch_price_activity"))
+flaky_price_activity = wrap_activity(flaky_price, ActivityWrapOptions(name="flaky_price_activity"))
 
-async_fetch_price_activity = wrap_activity(async_fetch_price, name="async_fetch_price_activity")
+async_fetch_price_activity = wrap_activity(
+    async_fetch_price, ActivityWrapOptions(name="async_fetch_price_activity")
+)
 
-EchoWorkflow = wrap_workflow(echo_workflow, name="EchoWorkflow")
-NilWorkflow = wrap_workflow(cast(Any, nil_workflow), name="NilWorkflow")
-PriceWorkflow = wrap_workflow(price_workflow, name="PriceWorkflow")
-SleepWorkflow = wrap_workflow(sleep_workflow, name="SleepWorkflow")
-RetryWorkflow = wrap_workflow(retry_workflow, name="RetryWorkflow")
-TimeoutWorkflow = wrap_workflow(timeout_workflow, name="TimeoutWorkflow")
-AsyncActivityWorkflow = wrap_workflow(async_activity_workflow, name="AsyncActivityWorkflow")
+EchoWorkflow = wrap_workflow(echo_workflow, WorkflowWrapOptions(name="EchoWorkflow"))
+NilWorkflow = wrap_workflow(cast(Any, nil_workflow), WorkflowWrapOptions(name="NilWorkflow"))
+PriceWorkflow = wrap_workflow(price_workflow, WorkflowWrapOptions(name="PriceWorkflow"))
+SleepWorkflow = wrap_workflow(sleep_workflow, WorkflowWrapOptions(name="SleepWorkflow"))
+RetryWorkflow = wrap_workflow(retry_workflow, WorkflowWrapOptions(name="RetryWorkflow"))
+TimeoutWorkflow = wrap_workflow(timeout_workflow, WorkflowWrapOptions(name="TimeoutWorkflow"))
+AsyncActivityWorkflow = wrap_workflow(
+    async_activity_workflow, WorkflowWrapOptions(name="AsyncActivityWorkflow")
+)

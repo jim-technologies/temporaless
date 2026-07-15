@@ -203,27 +203,33 @@ func (key EventKey) Proto() *temporalessv1.EventKey {
 	}
 }
 
-// Storage paths are strict Hive partition style:
+// Storage paths use the flat v2 layout shared by every SDK:
 //
-//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb
-//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=activity/activity_id={aid}/record.binpb
-//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=timer/timer_id={tid}/record.binpb
-//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/event_id={eid}/record.binpb
-//	temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=claim/claim_id={cid}/record.binpb
+//	temporaless/v2/{namespace}/{workflow_id}/{run_id}/workflow.binpb
+//	temporaless/v2/{namespace}/{workflow_id}/{run_id}/activity/{activity_id}.binpb
+//	temporaless/v2/{namespace}/{workflow_id}/{run_id}/timer/{timer_id}.binpb
+//	temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb
+//	temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 //
-// Every directory level is a Hive partition column. Spark/Trino/DuckDB pointed
-// at temporaless/v1/ auto-discovers `namespace`, `workflow_id`, `run_id`,
-// `kind`, plus the per-kind id column.
-const StorageRootPrefix = "temporaless/v1"
+// Runtime code constructs these paths but never parses identity back out of
+// them. Listing code reads each protobuf payload and validates its embedded
+// key. The one-shot v1 migration tool is the only supported path parser.
+const StorageRootPrefix = "temporaless/v2"
 
 func runPrefix(namespace, workflowID, runID string) string {
-	return fmt.Sprintf(
-		"%s/namespace=%s/workflow_id=%s/run_id=%s",
-		StorageRootPrefix,
-		namespace,
-		workflowID,
-		runID,
-	)
+	return fmt.Sprintf("%s/%s/%s/%s", StorageRootPrefix, namespace, workflowID, runID)
+}
+
+func latestWorkflowRunPointerPath(namespace, workflowID string) (string, error) {
+	key := WorkflowKey{
+		Namespace:  namespace,
+		WorkflowID: workflowID,
+		RunID:      "placeholder",
+	}.withDefaults()
+	if err := key.Validate(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s/_latest/%s.binpb", StorageRootPrefix, key.Namespace, key.WorkflowID), nil
 }
 
 func (key WorkflowKey) Path() (string, error) {
@@ -231,7 +237,7 @@ func (key WorkflowKey) Path() (string, error) {
 	if err := key.Validate(); err != nil {
 		return "", err
 	}
-	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/kind=workflow/record.binpb", nil
+	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/workflow.binpb", nil
 }
 
 // DirPath returns the run's root partition (everything for this workflow run
@@ -251,7 +257,7 @@ func (key ActivityKey) Path() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%s/kind=activity/activity_id=%s/record.binpb",
+		"%s/activity/%s.binpb",
 		runPrefix(key.Namespace, key.WorkflowID, key.RunID),
 		key.ActivityID,
 	), nil
@@ -263,7 +269,7 @@ func (key TimerKey) Path() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%s/kind=timer/timer_id=%s/record.binpb",
+		"%s/timer/%s.binpb",
 		runPrefix(key.Namespace, key.WorkflowID, key.RunID),
 		key.TimerID,
 	), nil
@@ -275,7 +281,7 @@ func (key ClaimKey) Path() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%s/kind=claim/claim_id=%s/record.binpb",
+		"%s/claim/%s.binpb",
 		runPrefix(key.Namespace, key.WorkflowID, key.RunID),
 		key.ClaimID,
 	), nil
@@ -288,7 +294,7 @@ func (key ActivityKey) DirPath() (string, error) {
 	if err := key.Validate(); err != nil {
 		return "", err
 	}
-	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/kind=activity/", nil
+	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/activity/", nil
 }
 
 func (key TimerKey) DirPath() (string, error) {
@@ -296,7 +302,7 @@ func (key TimerKey) DirPath() (string, error) {
 	if err := key.Validate(); err != nil {
 		return "", err
 	}
-	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/kind=timer/", nil
+	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/timer/", nil
 }
 
 func (key ClaimKey) DirPath() (string, error) {
@@ -304,7 +310,7 @@ func (key ClaimKey) DirPath() (string, error) {
 	if err := key.Validate(); err != nil {
 		return "", err
 	}
-	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/kind=claim/", nil
+	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/claim/", nil
 }
 
 func (key EventKey) Path() (string, error) {
@@ -313,7 +319,7 @@ func (key EventKey) Path() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%s/kind=event/event_id=%s/record.binpb",
+		"%s/event/%s.binpb",
 		runPrefix(key.Namespace, key.WorkflowID, key.RunID),
 		key.EventID,
 	), nil
@@ -324,7 +330,7 @@ func (key EventKey) DirPath() (string, error) {
 	if err := key.Validate(); err != nil {
 		return "", err
 	}
-	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/kind=event/", nil
+	return runPrefix(key.Namespace, key.WorkflowID, key.RunID) + "/event/", nil
 }
 
 func (key WorkflowKey) Validate() error {

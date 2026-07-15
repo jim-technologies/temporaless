@@ -25,12 +25,13 @@ from temporaless import (
     Workflow,
     current_workflow,
     run,
-    wrap_workflow_method,
 )
 from temporaless.backfill import backfill
 from temporaless.dependencies import wait_for_workflow
 from temporaless.storage import OpenDALStore
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
+from temporaless_prefectcompat import WorkflowWrapOptions
 from temporaless_prefectcompat import wrap_workflow as prefect_wrap_workflow
 
 
@@ -67,7 +68,7 @@ async def test_backfill_drives_prefect_wrapped_flows(store: OpenDALStore) -> Non
             workflow_body,
         )
 
-    PrefectFlow = prefect_wrap_workflow(_flow_body, name="BackfillTargetFlow")
+    PrefectFlow = prefect_wrap_workflow(_flow_body, WorkflowWrapOptions(name="BackfillTargetFlow"))
 
     async def invoke(run_id: str) -> StringValue:
         return await PrefectFlow(StringValue(value=run_id))
@@ -120,7 +121,7 @@ async def test_wait_for_workflow_inside_prefect_wrapped_flow(store: OpenDALStore
         )
         return StringValue(value=f"downstream({upstream.value})")
 
-    DownstreamFlow = prefect_wrap_workflow(downstream, name="DownstreamFlow")
+    DownstreamFlow = prefect_wrap_workflow(downstream, WorkflowWrapOptions(name="DownstreamFlow"))
 
     result = await DownstreamFlow(StringValue(value="2026-05-04"))
     assert isinstance(result, StringValue)
@@ -142,13 +143,15 @@ async def test_canonical_grpc_handler_wrapped_as_prefect_flow(store: OpenDALStor
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="prices",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="prices",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
             async def vendor(req: StringValue) -> StringValue:
@@ -168,7 +171,9 @@ async def test_canonical_grpc_handler_wrapped_as_prefect_flow(store: OpenDALStor
     async def gRPC_handler_as_flow(req: StringValue) -> StringValue:
         return await service.fetch_prices(req)
 
-    PrefectFetchPrices = prefect_wrap_workflow(gRPC_handler_as_flow, name="PrefectFetchPrices")
+    PrefectFetchPrices = prefect_wrap_workflow(
+        gRPC_handler_as_flow, WorkflowWrapOptions(name="PrefectFetchPrices")
+    )
 
     first = await PrefectFetchPrices(StringValue(value="2026-05-04"))
     assert first.value == "vendor:2026-05-04"

@@ -11,6 +11,7 @@ import (
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/cronscheduler"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	"github.com/jim-technologies/temporaless/adapters/go/timerscanner"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
@@ -19,12 +20,23 @@ import (
 
 func newTestStore(t *testing.T) *storage.OpenDALStore {
 	t.Helper()
+	store, _ := newTestStoreAndQuery(t)
+	return store
+}
+
+func newTestStoreAndQuery(t *testing.T) (*storage.OpenDALStore, storage.WorkflowQueryStore) {
+	t.Helper()
 	op, err := opendal.NewOperator(fs.Scheme, opendal.OperatorOptions{"root": t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(op.Close)
-	return storage.NewOpenDALStore(op)
+	store := storage.NewOpenDALStore(op)
+	query, err := scanquery.New(op, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, query
 }
 
 func TestNoConfigStartIsNoop(t *testing.T) {
@@ -125,7 +137,7 @@ func TestTimerScannerLoopDispatches(t *testing.T) {
 
 func TestJanitorLoopSweeps(t *testing.T) {
 	ctx := context.Background()
-	store := newTestStore(t)
+	store, query := newTestStoreAndQuery(t)
 
 	old := timestamppb.New(time.Now().UTC().Add(-2 * time.Hour))
 	key := storage.WorkflowKey{Namespace: storage.DefaultNamespace, WorkflowID: "wf-old", RunID: "r"}
@@ -142,7 +154,8 @@ func TestJanitorLoopSweeps(t *testing.T) {
 	}
 
 	w, err := New(store, Config{
-		Janitor: &JanitorConfig{MaxAge: time.Hour, Interval: 50 * time.Millisecond},
+		Janitor:    &JanitorConfig{MaxAge: time.Hour, Interval: 50 * time.Millisecond},
+		QueryStore: query,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -219,6 +232,11 @@ func TestNewValidation(t *testing.T) {
 			name: "janitor missing MaxAge",
 			cfg:  Config{Janitor: &JanitorConfig{}},
 			want: "MaxAge",
+		},
+		{
+			name: "janitor missing QueryStore",
+			cfg:  Config{Janitor: &JanitorConfig{MaxAge: time.Hour}},
+			want: "QueryStore",
 		},
 	}
 	for _, tc := range tests {

@@ -6,7 +6,6 @@ Beyond the basic shape test, these exercise patterns that real users hit:
 - error propagation from activity → flow
 - nested-flow composition (a flow calling another flow)
 - Prefect's own retry semantics on the wrapped task
-- per-call task overrides via ``.with_options``
 
 If any of these break, real users break.
 """
@@ -18,7 +17,12 @@ import asyncio
 import pytest
 from google.protobuf.wrappers_pb2 import StringValue
 
-from temporaless_prefectcompat import wrap_activity, wrap_workflow
+from temporaless_prefectcompat import (
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
+    wrap_activity,
+    wrap_workflow,
+)
 
 # ---- parallel fan-out -------------------------------------------------------
 
@@ -27,7 +31,7 @@ async def _fetch_one(symbol: StringValue) -> StringValue:
     return StringValue(value=f"{symbol.value}:100.00")
 
 
-_fetch_one_task = wrap_activity(_fetch_one, name="fetch_one")
+_fetch_one_task = wrap_activity(_fetch_one, ActivityWrapOptions(name="fetch_one"))
 
 
 async def _fan_out_body(_request: StringValue) -> StringValue:
@@ -36,7 +40,7 @@ async def _fan_out_body(_request: StringValue) -> StringValue:
     return StringValue(value=",".join(r.value for r in results))
 
 
-_FanOutFlow = wrap_workflow(_fan_out_body, name="FanOutFlow")
+_FanOutFlow = wrap_workflow(_fan_out_body, WorkflowWrapOptions(name="FanOutFlow"))
 
 
 async def test_asyncio_gather_fan_out_works_inside_prefect_flow() -> None:
@@ -62,14 +66,14 @@ async def _flaky_fetch(symbol: StringValue) -> StringValue:
     return StringValue(value=f"{symbol.value}:ok")
 
 
-_flaky_fetch_task = wrap_activity(_flaky_fetch, name="flaky_fetch")
+_flaky_fetch_task = wrap_activity(_flaky_fetch, ActivityWrapOptions(name="flaky_fetch"))
 
 
 async def _error_propagation_body(request: StringValue) -> StringValue:
     return await _flaky_fetch_task(request)
 
 
-_ErrorFlow = wrap_workflow(_error_propagation_body, name="ErrorFlow")
+_ErrorFlow = wrap_workflow(_error_propagation_body, WorkflowWrapOptions(name="ErrorFlow"))
 
 
 async def test_activity_error_propagates_through_flow() -> None:
@@ -91,7 +95,7 @@ async def test_partial_failure_in_gather_propagates() -> None:
         )
         return StringValue(value=",".join(r.value for r in results))
 
-    flow = wrap_workflow(gather_body, name="PartialFailureFlow")
+    flow = wrap_workflow(gather_body, WorkflowWrapOptions(name="PartialFailureFlow"))
     with pytest.raises(_VendorBroke):
         await flow(StringValue(value="batch"))
 
@@ -109,9 +113,9 @@ async def _retry_eventually_succeeds(symbol: StringValue) -> StringValue:
     return StringValue(value=f"{symbol.value}:after-{_attempts[symbol.value]}")
 
 
-# Forward Prefect's retries kwarg through wrap_activity.
 _retry_task = wrap_activity(
-    _retry_eventually_succeeds, name="retry_eventually_succeeds", retries=2, retry_delay_seconds=0
+    _retry_eventually_succeeds,
+    ActivityWrapOptions(name="retry_eventually_succeeds", retries=2, retry_delay_seconds=0),
 )
 
 
@@ -119,10 +123,10 @@ async def _retry_workflow_body(request: StringValue) -> StringValue:
     return await _retry_task(request)
 
 
-_RetryFlow = wrap_workflow(_retry_workflow_body, name="RetryFlow")
+_RetryFlow = wrap_workflow(_retry_workflow_body, WorkflowWrapOptions(name="RetryFlow"))
 
 
-async def test_prefect_task_retries_via_forwarded_kwargs() -> None:
+async def test_prefect_task_retries_via_explicit_options() -> None:
     """retries=2 means up to 3 attempts (initial + 2 retries). The body
     succeeds on attempt 3 — Prefect's retry policy must honor that."""
     _attempts.clear()
@@ -138,7 +142,7 @@ async def _inner_body(request: StringValue) -> StringValue:
     return StringValue(value=f"inner({request.value})")
 
 
-_InnerFlow = wrap_workflow(_inner_body, name="InnerFlow")
+_InnerFlow = wrap_workflow(_inner_body, WorkflowWrapOptions(name="InnerFlow"))
 
 
 async def _outer_body(request: StringValue) -> StringValue:
@@ -147,7 +151,7 @@ async def _outer_body(request: StringValue) -> StringValue:
     return StringValue(value=f"outer({intermediate.value})")
 
 
-_OuterFlow = wrap_workflow(_outer_body, name="OuterFlow")
+_OuterFlow = wrap_workflow(_outer_body, WorkflowWrapOptions(name="OuterFlow"))
 
 
 async def test_nested_flows_compose() -> None:

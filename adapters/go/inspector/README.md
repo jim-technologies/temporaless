@@ -1,6 +1,7 @@
 # Inspector Adapter
 
-This is a decision adapter for read-only operator visibility into the OpenDAL-backed record tree.
+This is a decision adapter for operator visibility plus explicit point-reset
+helpers over the authoritative record store.
 
 ## Purpose
 
@@ -8,7 +9,10 @@ Temporaless does not ship a UI or control plane. The bundled "view" of system st
 
 ## Position
 
-Thin wrappers over `Store.ListWorkflows`, `Store.ListActivities`, and `Store.Delete*`. Backend-agnostic: works against any `storage.Store`, including a remote `connectstore.ClientStore`.
+Cross-run workflow views use `WorkflowQueryStore`. Run-scoped activity listing
+and reset helpers use the authoritative point `Store`. A remote
+`connectstore.ClientStore` can implement both when configured with both RPC
+services.
 
 ## Supported Behavior
 
@@ -17,9 +21,16 @@ Thin wrappers over `Store.ListWorkflows`, `Store.ListActivities`, and `Store.Del
 - reset (delete) a workflow record, activity record, or event record so the next invocation re-executes
 - returns the full proto records so callers can read failure codes, attempts, annotations
 
+Reset helpers are point deletes, not an execution fence. Quiesce the run. For
+a partial retry, validate and delete failed activities' paired retry timers,
+delete only the failed activity records, and delete the parent workflow record
+last; completed activity records remain checkpoints. See `docs/runbook.md`.
+
 ## Rejected Behavior
 
 - no per-activity listing (yet — easy to add when needed)
 - no claim listing (compose with the claim store directly)
-- no streaming: results are buffered in memory; not suited to multi-million-record trees without a SQL index
-- not a control plane: this adapter is read-only
+- no streaming: results are buffered in memory; use pagination directly on the
+  query adapter for very large result sets
+- not a control plane: reset helpers are explicit point deletes and provide no
+  workflow dispatch, transaction, or execution fence

@@ -6,8 +6,7 @@
 //   - /healthz and /readyz are reachable without auth
 //   - ConnectStore RPCs require a bearer token
 //   - Wrong token → 401 Unauthenticated
-//   - Right token → passes auth (handler may still 4xx/5xx — we test the
-//     auth layer specifically)
+//   - Right token → completes a real ConnectStore RPC
 //   - SIGTERM produces a clean exit within the grace window
 //
 // Mirrors core/py/tests/test_production_server.py — keeps Go + Python parity
@@ -15,17 +14,54 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type countingBody struct {
+	reads int
+}
+
+type sizedBody struct {
+	remaining int64
+}
+
+func (b *sizedBody) Read(buffer []byte) (int, error) {
+	if b.remaining == 0 {
+		return 0, io.EOF
+	}
+	count := int64(len(buffer))
+	if count > b.remaining {
+		count = b.remaining
+	}
+	b.remaining -= count
+	return int(count), nil
+}
+
+func (b *sizedBody) Close() error {
+	return nil
+}
+
+func (b *countingBody) Read(_ []byte) (int, error) {
+	b.reads++
+	return 0, io.EOF
+}
+
+func (b *countingBody) Close() error {
+	return nil
+}
 
 func freePort(t *testing.T) int {
 	t.Helper()
@@ -62,6 +98,8 @@ func startServer(t *testing.T, port int, token string) *exec.Cmd {
 	cmd.Env = append(cmd.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		fmt.Sprintf("AUTH_TOKEN=%s", token),
+		fmt.Sprintf("TEMPORALESS_STORAGE_ROOT=%s", t.TempDir()),
+		"TEMPORALESS_ALLOW_UNSAFE_FS=1",
 	)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -101,13 +139,13 @@ func httpGet(t *testing.T, url string) (int, string) {
 		t.Fatalf("GET %s: %v", url, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body)
+	responseBody, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(responseBody)
 }
 
-func httpPost(t *testing.T, url string, headers map[string]string) (int, string) {
+func httpPost(t *testing.T, url string, body []byte, headers map[string]string) (int, string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(""))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -120,8 +158,114 @@ func httpPost(t *testing.T, url string, headers map[string]string) (int, string)
 		t.Fatalf("POST %s: %v", url, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body)
+	responseBody, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(responseBody)
+}
+
+func TestRunRequiresExplicitProductionConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		token     string
+		root      string
+		allowFS   string
+		wantError string
+	}{
+		{name: "missing auth token", wantError: "AUTH_TOKEN"},
+		{name: "missing storage root", token: "test", wantError: "TEMPORALESS_STORAGE_ROOT"},
+		{
+			name:      "filesystem not acknowledged",
+			token:     "test",
+			root:      t.TempDir(),
+			wantError: "TEMPORALESS_ALLOW_UNSAFE_FS",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("AUTH_TOKEN", test.token)
+			t.Setenv("TEMPORALESS_STORAGE_ROOT", test.root)
+			t.Setenv("TEMPORALESS_ALLOW_UNSAFE_FS", test.allowFS)
+			err := run()
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("run() error = %v, want containing %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestBearerTokenAuthRejectsBeforeReadingOversizedBody(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization string
+	}{
+		{name: "missing bearer"},
+		{name: "wrong bearer", authorization: "Bearer wrong"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := &countingBody{}
+			req := httptest.NewRequest(http.MethodPost, "/rpc", nil)
+			req.Body = body
+			req.ContentLength = maxHTTPRequestBytes + 1
+			if test.authorization != "" {
+				req.Header.Set("authorization", test.authorization)
+			}
+
+			nextCalled := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				nextCalled = true
+			})
+			auth := &bearerTokenAuth{
+				token:  "expected",
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			response := httptest.NewRecorder()
+			http.MaxBytesHandler(auth.Wrap(next), maxHTTPRequestBytes).ServeHTTP(response, req)
+
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", response.Code)
+			}
+			if body.reads != 0 {
+				t.Fatalf("body reads = %d, want 0", body.reads)
+			}
+			if nextCalled {
+				t.Fatal("downstream handler was called")
+			}
+		})
+	}
+}
+
+func TestAuthorizedRequestBodyIsBounded(t *testing.T) {
+	body := &sizedBody{remaining: maxHTTPRequestBytes + 1}
+	req := httptest.NewRequest(http.MethodPost, "/rpc", nil)
+	req.Body = body
+	req.ContentLength = maxHTTPRequestBytes + 1
+	req.Header.Set("authorization", "Bearer expected")
+
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		nextCalled = true
+		_, err := io.Copy(io.Discard, req.Body)
+		var maxBytesErr *http.MaxBytesError
+		if !errors.As(err, &maxBytesErr) {
+			t.Errorf("body read error = %v, want *http.MaxBytesError", err)
+		}
+		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+	})
+	auth := &bearerTokenAuth{
+		token:  "expected",
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	response := httptest.NewRecorder()
+	http.MaxBytesHandler(auth.Wrap(next), maxHTTPRequestBytes).ServeHTTP(response, req)
+
+	if !nextCalled {
+		t.Fatal("authorized downstream handler was not called")
+	}
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", response.Code)
+	}
 }
 
 func TestProductionServerSmoke(t *testing.T) {
@@ -154,7 +298,7 @@ func TestProductionServerSmoke(t *testing.T) {
 	})
 
 	t.Run("RPC rejects missing bearer with 401", func(t *testing.T) {
-		status, body := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", nil)
+		status, body := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", nil, nil)
 		if status != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401; body = %s", status, body)
 		}
@@ -165,7 +309,7 @@ func TestProductionServerSmoke(t *testing.T) {
 	})
 
 	t.Run("RPC rejects wrong bearer with 401", func(t *testing.T) {
-		status, _ := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", map[string]string{
+		status, _ := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", nil, map[string]string{
 			"authorization": "Bearer wrong-token",
 		})
 		if status != http.StatusUnauthorized {
@@ -174,13 +318,14 @@ func TestProductionServerSmoke(t *testing.T) {
 	})
 
 	t.Run("RPC accepts correct bearer", func(t *testing.T) {
-		status, _ := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", map[string]string{
+		status, _ := httpPost(t, base+"/temporaless.v1.RecordStoreService/GetStoreCapabilities", nil, map[string]string{
 			"authorization": "Bearer " + token,
 		})
-		if status == http.StatusUnauthorized {
-			t.Fatalf("auth rejected the correct token")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
 		}
 	})
+
 }
 
 // setPgid is implemented per-OS in setpgid_unix.go so the test compiles on

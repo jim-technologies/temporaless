@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -459,9 +458,6 @@ func TestWorkflowExecutionClaimReleaseFailureIsSurfacedWithContextValues(t *test
 	}
 	if !errors.Is(err, ErrClaimRelease) {
 		t.Fatalf("error = %v, want ErrClaimRelease", err)
-	}
-	if code, _, ok := ErrorToConnectCode(err); !ok || code != connect.CodeInternal {
-		t.Fatalf("release error mapping = (%v, %v), want CodeInternal", code, ok)
 	}
 	if !claimStore.sawValue {
 		t.Fatal("claim release lost request-scoped context values")

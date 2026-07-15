@@ -1,8 +1,8 @@
 """Temporaless public API — convention over configuration.
 
 The top-level surface here is the **application-author** API: the things
-you import to write a workflow, run it, mount it as a gRPC service, and
-catch the errors users typically catch.
+you import to write and run a workflow and catch the errors users typically
+catch. Transport-specific handler wrappers live in adapters.
 
 Adapter authors and operators reach into submodules for finer-grained
 types (record schema versions, sub-Protocols, claim capabilities, custom
@@ -49,14 +49,13 @@ from temporaless.workflow import (
     Workflow,
     WorkflowDependencyFailedError,
     WorkflowDependencyPendingError,
+    WorkflowInfrastructureError,
     WorkflowWrapOptions,
     annotate,
     current_workflow,
     run,
-    workflow_error_to_connect_code,
     wrap_activity,
     wrap_workflow,
-    wrap_workflow_method,
 )
 
 __all__ = [
@@ -80,6 +79,7 @@ __all__ = [
     "Workflow",
     "WorkflowDependencyFailedError",
     "WorkflowDependencyPendingError",
+    "WorkflowInfrastructureError",
     "WorkflowKey",
     "WorkflowWrapOptions",
     "annotate",
@@ -87,8 +87,6 @@ __all__ = [
     "current_workflow",
     "run",
     "send_event",
-    "workflow_error_to_connect_code",
     "wrap_activity",
     "wrap_workflow",
-    "wrap_workflow_method",
 ]

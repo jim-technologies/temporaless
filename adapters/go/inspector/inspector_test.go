@@ -9,6 +9,7 @@ import (
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/inspector"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
@@ -161,6 +162,10 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 	}
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Run 1: completes.
 	if _, err := workflow.Run(
@@ -212,7 +217,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 		t.Fatal("expected failure")
 	}
 
-	inFlight, err := inspector.ListInFlightWorkflows(ctx, store)
+	inFlight, err := inspector.ListInFlightWorkflows(ctx, query)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +228,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 		t.Fatalf("in-flight workflow = %q", inFlight[0].GetKey().GetWorkflowId())
 	}
 
-	failed, err := inspector.ListFailedWorkflows(ctx, store)
+	failed, err := inspector.ListFailedWorkflows(ctx, query)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +244,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 
 	completed, err := inspector.ListWorkflowsByStatus(
 		ctx,
-		store,
+		query,
 		temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	)
 	if err != nil {

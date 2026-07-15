@@ -102,10 +102,14 @@ ORDER BY p95_attempts DESC;
 
 ## Retention
 
-Bucket-only deployments should prefer bucket lifecycle rules for age-based
-archive retention. If you need exact application-level deletion by workflow
-status, use a query index: it selects matching runs by indexed metadata, deletes
-the run prefixes from the bucket, and removes the index rows.
+Bucket-only deployments can use conservative lifecycle rules for age-based
+archive retention. Do not expire active run timer records or `_due` prepared records
+before the maximum timer horizon plus scheduler-outage/recovery grace; exempt
+them if timer durations are unbounded. If you need exact application-level
+deletion by workflow status, use a query index: it selects matching terminal
+runs by indexed metadata, deletes the run prefixes from the bucket, and removes
+the index rows. `_due` tombstone cleanup is a separate offline/quiescent
+maintenance operation; the generic ledger has no online compaction mode.
 
 ## Why This Boundary Exists
 

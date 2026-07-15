@@ -39,8 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Emit Rust constants for the reserved-name defaults.
     let mut reserved_rs = String::from(
-        "//! Auto-generated from `ReservedNames` field defaults in the\n\
-         //! canonical proto. Single source of truth — do not edit.\n\n",
+        "// Auto-generated from `ReservedNames` field defaults in the\n\
+         // canonical proto. Single source of truth — do not edit.\n\n",
     );
     for (name, value) in &reserved_defaults {
         reserved_rs.push_str(&format!(
@@ -81,6 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///   * Within `message ReservedNames { ... }`, multi-line fields that carry
 ///     `[features.field_presence = EXPLICIT, default = "..."]` collapse to
 ///     bare `string foo = N;` and the default is exported as a Rust const.
+///   * Edition-only defaults on other option messages collapse to their bare
+///     proto3 field. Rust is not a first-class runtime and does not consume
+///     those option defaults; this keeps its generated storage client wire
+///     compatible until prost supports editions directly.
 ///   * `import "buf/validate/validate.proto";` → deleted (Rust SDK doesn't
 ///     run protovalidate — validation happens in Go/Python at write time).
 ///   * Multi-line and inline `(buf.validate.field)` / `(buf.validate.message)`
@@ -105,6 +109,23 @@ fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) 
             continue;
         }
         if line.trim().starts_with("option features.field_presence") {
+            i += 1;
+            continue;
+        }
+
+        // Inline protovalidate annotations are edition/protoc options that
+        // protox cannot resolve after we remove the validation import. Keep
+        // the field declaration and discard the whole option block. This
+        // covers both one-line rules and multi-line rules whose opening `{`
+        // appears on the declaration line.
+        if let Some(option_start) = line.find("[(buf.validate.field)") {
+            output.push_str(line[..option_start].trim_end());
+            output.push_str(";\n");
+            if !line.trim_end().ends_with("];") {
+                while i < lines.len() && !lines[i].trim().ends_with("];") {
+                    i += 1;
+                }
+            }
             i += 1;
             continue;
         }
@@ -140,7 +161,8 @@ fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) 
         // Field declarations with a `[` block whose ONLY contents are
         // protovalidate options. Detect via lookahead.
         let trimmed = line.trim_start();
-        if (trimmed.starts_with("string ") || trimmed.starts_with("uint32 "))
+        if trimmed.contains(" = ")
+            && !trimmed.starts_with("option ")
             && trimmed.trim_end().ends_with('[')
         {
             // Peek ahead: is this a protovalidate-only block (and NOT a
@@ -161,14 +183,10 @@ fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) 
                 }
                 end += 1;
             }
-            if has_validate && !has_default && end < lines.len() {
-                // Strip the block; emit only `<type> <name> = N;`.
-                let (ty, rest) = trimmed.split_once(' ').unwrap();
-                let (name, number_with_bracket) = rest.split_once('=').unwrap();
-                let name = name.trim();
-                let number = number_with_bracket.trim().trim_end_matches('[').trim();
-                let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-                output.push_str(&format!("{indent}{ty} {name} = {number};\n"));
+            if (has_validate || has_default) && !in_reserved_names && end < lines.len() {
+                // Strip the block and preserve the declaration verbatim.
+                output.push_str(line.trim_end().trim_end_matches('[').trim_end());
+                output.push_str(";\n");
                 i = end + 1;
                 continue;
             }

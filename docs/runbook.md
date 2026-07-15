@@ -39,7 +39,53 @@ aws s3 ls s3://your-bucket/temporaless/v2/default/<wf_id>/<run_id>/
 - **Worker crashed while holding `workflow:execution`** — a create-only claim can remain after the process is gone. Confirm that no worker is still executing, then delete that exact key through `ClaimStore.delete_claim` / `DeleteClaim` before re-invoking. Its lease timestamp does not free it automatically.
 - **Activity claim retained after an ambiguous exit** — cancellation may have arrived after an external side effect, or storage may have failed after the activity returned. Confirm the old invocation is gone and reconcile the external side effect before deleting `activity:{activity_id}`. If the activity record is terminal or `RETRYING` with its timer present, normal cleanup should have released the claim; a retained claim then indicates cleanup failure.
 
-**If unrecoverable:** `inspector.reset_workflow(store, key)` deletes the workflow record so the next invocation starts fresh. It does not delete child or claim records; remove a verified-stale `workflow:execution` claim separately through the claim store.
+**If unrecoverable:** do not delete the parent workflow first. Follow the
+quiesced child-first reset procedure below. `inspector.reset_workflow(store,
+key)` deletes only the workflow record; it is not a recursive reset or an
+execution fence.
+
+## 1a. Retry only failed partitions or repair a durable retry
+
+**Symptom:** A batch workflow has successful activity checkpoints plus a small
+set of `FAILED` or `RETRYING` activities, and you want to preserve the
+successful results.
+
+First distinguish repair from reset:
+
+- For a valid `RETRYING` activity, re-invoke the same run before deleting
+  anything. Replay validates the stored retry policy and caller-supplied
+  `retry_timer_id`. It recreates a missing or older paired retry timer from the
+  persisted attempt schedule, and it honors a compatible newer timer left by
+  a timer-first crash. Do not hand-edit the activity or invent a timer
+  deadline; the prepared due record repairs an interrupted canonical write.
+- For a terminal `FAILED` activity that should consume a new retry budget, use
+  the reset sequence below. Also use it after preserving forensic copies of a
+  genuinely corrupt or conflicting activity/timer pair.
+
+The safe partial-reset order is:
+
+1. Stop every trigger, timer scanner, and worker that can invoke this exact
+   run. Confirm no workflow/activity claim owner is live; quiescence is part of
+   the operation because point deletes are not transactional.
+2. Read the failed `ActivityRecord`s and take their paired timer IDs only from
+   `retry_timer_id`. Validate that any existing `TimerRecord` has
+   `TIMER_KIND_ACTIVITY_RETRY` and the reciprocal `retry_activity_id`. Never
+   guess an ID or delete a timer owned by another activity.
+3. While the parent workflow is still terminal, delete each validated paired
+   retry timer through `Store.delete_timer` / `Store.DeleteTimer`, then delete
+   only the failed activity records through `reset_activity` /
+   `inspector.ResetActivity`. Leave completed activity records intact; they are
+   the successful checkpoints.
+4. Delete the parent workflow record **last** with `reset_workflow` /
+   `inspector.ResetWorkflow`. Remove only claims whose former owners you have
+   proved are gone.
+5. Invoke the run once, then re-enable normal scanner/trigger delivery.
+
+`DeleteTimer` writes a durable `CANCELED` prepared tombstone before removing the
+canonical retry timer, so its former wake is suppressed even after the parent
+workflow is reset. Keep using the public delete operation rather than removing
+the canonical object directly. Execution claims suppress cooperating overlap;
+activity idempotency is still required.
 
 ---
 
@@ -94,9 +140,23 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 **Recovery:**
 
-1. **The framework needs no manual intervention.** When the backend recovers, in-flight requests retry naturally; pending workflows stay `IN_PROGRESS` and resume on the next scanner tick.
-2. **If the bucket itself is gone:** restore from cross-region replication / versioning. The framework's records are append-only protobuf binaries — versioning gives you point-in-time recovery without bespoke logic.
-3. **If a record was corrupted:** delete the corrupted record's path; the next workflow invocation re-creates it (replay re-executes the boundary). Use `protoc --decode` to inspect a record before deleting if you're not sure it's actually corrupt.
+1. **A transient outage needs no record mutation.** When the backend recovers,
+   callers or queues must redeliver failed invocations. Nonterminal workflows
+   stay `IN_PROGRESS`; for scheduled waits, tick the scanner and let the
+   application-supplied dispatcher re-invoke each due run. The scanner does not
+   resume event-waiting or otherwise unscheduled workflows by itself.
+2. **If the bucket itself is gone:** restore a coherent point-in-time snapshot
+   from cross-region replication or object versioning. Workflow, activity, and
+   timer protobufs are overwritten as their state advances, and each timer has
+   a paired `_due` write-ahead record. Do not combine arbitrary object versions
+   from different times.
+3. **If one record is corrupt:** quiesce writers/scanners, preserve the bytes for
+   diagnosis, and restore a known-good object version when possible. Do not
+   blindly delete an authoritative terminal/checkpoint record. Reset an
+   activity together with its retry timer; reset a workflow only after applying
+   the documented child-first reset procedure; repair a timer through the
+   upgraded `PutTimer` / `put_timer` API so its canonical and `_due` records are
+   republished together.
 
 ---
 
@@ -110,10 +170,18 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 - Confirm via your secret manager (Vault / SSM / Secret Manager / env var) that the server-side token matches what clients have.
 - Rotate clients to the new token (push via your config-management tool).
-- For graceful rotation in the future: support two valid tokens during a window. Update `BearerTokenAuth` in `examples/{go,py}/production_server.py` to accept a list:
+- For graceful rotation in the future: support two valid tokens during a
+  window. Adapt `BearerTokenAuth` in `examples/py/production_server.py` and
+  `bearerTokenAuth` in `examples/go/production-server/main.go` to accept a
+  list:
 
   ```python
-  if authz[len("Bearer "):] not in self._valid_tokens:
+  import hmac
+
+  if not any(
+      hmac.compare_digest(authz, f"Bearer {token}")
+      for token in self._valid_tokens
+  ):
       raise ConnectError(Code.UNAUTHENTICATED, ...)
   ```
 
@@ -142,7 +210,9 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 **Fix:**
 
-- For sleeps: ensure the timer-scanner is running (`scheduler.tick()` invoked by your CronJob).
+- For sleeps: ensure a timer-scanner tick is calling `due_timers` / `DueTimers`
+  and dispatching every returned wake to the application workflow handler.
+  The ConnectStore production server does not do this itself.
 - For events: trace the workflow body to find the event_id it's waiting on, deliver it.
 - For upstream deps: backfill the upstream pipeline first, then re-run the dependent backfill. Backfill is idempotent — re-running the same set is free for already-`SUCCEEDED` entries.
 
@@ -166,7 +236,12 @@ Read the previous-instance logs (Lambda → CloudWatch, Cloud Run → Logging, s
 
 **Common causes:**
 
-- **Storage backend init failed at startup.** OpenDAL operator construction errored (bad credentials, region misconfigured). The process was alive but `/healthz` returned 500. Fix the config, redeploy.
+- **Required configuration or storage initialization failed at startup.** The
+  production examples exit before listening when auth/storage configuration is
+  missing, malformed, or unsafe (`fs` without explicit acknowledgement), or
+  when OpenDAL construction fails. Fix the startup log's `config.*` /
+  `storage.init_failed` error and redeploy. Once the server is listening,
+  `/healthz` is liveness-only and does not probe the backend.
 - **Out-of-memory.** Per-RPC overhead is small but per-workflow with large protobuf messages can grow. Bump the platform's memory limit (Lambda memory, Cloud Run memory, container limits).
 - **Stuck event loop.** Rare; usually indicates a sync function called from an async context. The framework rejects sync workflow bodies at wrap time, but an activity body that calls a blocking C extension can still cause this. Profile with `py-spy dump --pid <pid>` to see the stuck frame.
 

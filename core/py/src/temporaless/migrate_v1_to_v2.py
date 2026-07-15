@@ -126,7 +126,7 @@ async def _run(args: argparse.Namespace) -> None:
     source = opendal.AsyncOperator("fs", root=args.source_fs_root)
     dest_operator = opendal.AsyncOperator("fs", root=args.dest_fs_root)
     run_id_formats = tuple(args.run_id_format) or _DEFAULT_RUN_ID_FORMATS
-    dest_store: Store = OpenDALStore(dest_operator, latest_run_id_formats=run_id_formats)
+    dest_store: Store = OpenDALStore(dest_operator)
     if args.index_sqlite:
         try:
             from temporaless_indexstore import IndexedStore
@@ -158,7 +158,12 @@ async def _run(args: argparse.Namespace) -> None:
                 counts.skipped += 1
             elif selected:
                 try:
-                    dest_path = await _write_v2_record(dest_operator, dest_store, source_record)
+                    dest_path = await _write_v2_record(
+                        dest_operator,
+                        dest_store,
+                        source_record,
+                        run_id_formats,
+                    )
                 except (ValueError, ValidationError) as exc:
                     dest_path = ""
                     selected = False
@@ -277,13 +282,20 @@ async def _write_v2_record(
     dest_operator: opendal.AsyncOperator,
     dest_store: Store,
     source_record: _SourceRecord,
+    run_id_formats: tuple[str, ...],
 ) -> str:
     record = source_record.record
     if record is None:
         raise ValueError("source record could not be decoded")
     if source_record.kind == "workflow":
-        key = workflow_key_from_proto(record.key)
-        await dest_store.put_workflow(record)
+        workflow = temporaless_pb2.WorkflowRecord()
+        workflow.CopyFrom(record)
+        key = workflow_key_from_proto(workflow.key)
+        if not workflow.HasField("run_order_time"):
+            fire_time = _parse_run_id_fire_time(key.run_id, run_id_formats)
+            if fire_time is not None:
+                workflow.run_order_time.FromDatetime(fire_time)
+        await dest_store.put_workflow(workflow)
         return key.path()
     if source_record.kind == "activity":
         key = activity_key_from_proto(record.key)

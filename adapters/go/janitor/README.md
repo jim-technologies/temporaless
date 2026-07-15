@@ -8,7 +8,11 @@ Records persist forever by default. The janitor is the simplest workable retenti
 
 ## Position
 
-Thin wrapper over `Store.ListWorkflows(COMPLETED)` plus bounded run deletion. It accepts the generated `SweepRequest` and an optional explicit `ClaimStore`; pass the deployment's separate claim backend when claims do not live on the record store. Remote `connectstore.ClientStore` instances auto-detect their service-backed claim surface.
+The janitor takes a `WorkflowQueryStore` for cross-run COMPLETED candidates, an
+authoritative point `Store` for run-scoped snapshots/deletes, and an optional
+explicit `ClaimStore`. Core bucket stores never provide the candidate query.
+Use an indexed adapter in production or `scanquery` only for offline/small
+development buckets.
 
 ## Supported Behavior
 
@@ -19,6 +23,11 @@ Thin wrapper over `Store.ListWorkflows(COMPLETED)` plus bounded run deletion. It
 - idempotent: re-sweeping after a partial failure is safe
 
 Sweep is not an execution fence or transaction. Externally quiesce eligible runs while it executes; a concurrent record or claim created after the snapshot is outside the cleanup guarantee.
+
+Bucket lifecycle rules must not expire active run timer records or `_due`
+prepared objects before the maximum timer horizon plus scheduler
+outage/recovery grace. The janitor intentionally selects terminal runs;
+due-ledger tombstone cleanup is a separate offline/quiescent operation.
 
 ## Rejected Behavior
 

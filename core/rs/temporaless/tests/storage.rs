@@ -4,15 +4,19 @@
 
 use std::time::{Duration, SystemTime};
 
-use opendal::{services::Fs, Operator};
+use opendal::{Operator, services::Fs};
+use prost::Message;
 use tempfile::TempDir;
-use temporaless::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, WorkflowKey};
+use temporaless::storage::{
+    ActivityKey, ClaimKey, EventKey, OpenDALStore, Store, StoreError, TimerKey, WorkflowKey,
+    proto_timestamp,
+};
 use temporaless::v1;
 
 fn new_store() -> (TempDir, OpenDALStore) {
     let tmp = TempDir::new().unwrap();
     let builder = Fs::default().root(tmp.path().to_str().unwrap());
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     (tmp, OpenDALStore::new(op))
 }
 
@@ -45,6 +49,7 @@ fn mk_workflow_record(
             None
         },
         annotations: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -59,6 +64,166 @@ async fn workflow_roundtrip() {
     assert_eq!(got.workflow_type, record.workflow_type);
     assert_eq!(got.code_version, record.code_version);
     assert_eq!(got.status, v1::WorkflowStatus::Completed as i32);
+}
+
+#[tokio::test]
+async fn every_record_kind_uses_the_canonical_v2_path() {
+    let (tmp, store) = new_store();
+    let activity = v1::ActivityRecord {
+        schema_version: v1::RecordSchemaVersion::Activity as i32,
+        key: Some(ActivityKey::new("wf", "run", "activity:1").to_proto()),
+        ..Default::default()
+    };
+    let timer = v1::TimerRecord {
+        schema_version: v1::RecordSchemaVersion::Timer as i32,
+        key: Some(TimerKey::new("wf", "run", "timer:1").to_proto()),
+        ..Default::default()
+    };
+    let event = v1::EventRecord {
+        schema_version: v1::RecordSchemaVersion::Event as i32,
+        key: Some(EventKey::new("wf", "run", "event:1").to_proto()),
+        ..Default::default()
+    };
+    let claim = v1::ClaimRecord {
+        schema_version: v1::RecordSchemaVersion::Claim as i32,
+        key: Some(ClaimKey::new("wf", "run", "claim:1").to_proto()),
+        ..Default::default()
+    };
+
+    store
+        .put_workflow(&mk_workflow_record(
+            "wf",
+            "run",
+            v1::WorkflowStatus::InProgress,
+        ))
+        .await
+        .unwrap();
+    store.put_activity(&activity).await.unwrap();
+    store.put_timer(&timer).await.unwrap();
+    store.put_event(&event).await.unwrap();
+    assert!(store.try_create_claim(&claim).await.unwrap());
+
+    for relative_path in [
+        "temporaless/v2/default/wf/run/workflow.binpb",
+        "temporaless/v2/default/wf/run/activity/activity:1.binpb",
+        "temporaless/v2/default/wf/run/timer/timer:1.binpb",
+        "temporaless/v2/default/wf/run/event/event:1.binpb",
+        "temporaless/v2/default/wf/run/claim/claim:1.binpb",
+    ] {
+        assert!(
+            tmp.path().join(relative_path).exists(),
+            "missing canonical object {relative_path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn storage_rejects_unsafe_or_reserved_keys() {
+    let (_tmp, store) = new_store();
+    let cases = [
+        (
+            "reserved namespace",
+            WorkflowKey {
+                namespace: "_due".into(),
+                workflow_id: "wf".into(),
+                run_id: "run".into(),
+            },
+        ),
+        ("reserved workflow", WorkflowKey::new("_latest", "run")),
+        ("slash", WorkflowKey::new("wf/escape", "run")),
+        ("dot path", WorkflowKey::new("wf", "..")),
+        ("non-ASCII", WorkflowKey::new("café", "run")),
+    ];
+
+    for (name, key) in cases {
+        let error = store.get_workflow(&key).await.unwrap_err();
+        assert!(
+            matches!(error, StoreError::InvalidKey(_)),
+            "{name}: {error}"
+        );
+    }
+
+    let framework_claim = v1::ClaimRecord {
+        schema_version: v1::RecordSchemaVersion::Claim as i32,
+        key: Some(
+            ClaimKey::new(
+                temporaless::reserved_names::CONCURRENCY_WORKFLOW_ID,
+                "_vendor-limit",
+                "_slot:0",
+            )
+            .to_proto(),
+        ),
+        ..Default::default()
+    };
+    assert!(store.try_create_claim(&framework_claim).await.unwrap());
+    assert!(
+        store
+            .get_activity(&ActivityKey::new("wf", "_run", "_activity"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_timer(&TimerKey::new("wf", "_run", "_timer"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_event(&EventKey::new("wf", "_run", "_event"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn point_reads_reject_wrong_schema() {
+    let (tmp, store) = new_store();
+    let mut record = mk_workflow_record("wf", "run", v1::WorkflowStatus::Completed);
+    record.schema_version = v1::RecordSchemaVersion::Activity as i32;
+    let path = tmp
+        .path()
+        .join("temporaless/v2/default/wf/run/workflow.binpb");
+    tokio::fs::create_dir_all(path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&path, record.encode_to_vec())
+        .await
+        .unwrap();
+
+    let error = store
+        .get_workflow(&WorkflowKey::new("wf", "run"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StoreError::CorruptRecord(_)));
+}
+
+#[tokio::test]
+async fn run_listing_validates_payload_identity_instead_of_parsing_the_path() {
+    let (tmp, store) = new_store();
+    let record = v1::ActivityRecord {
+        schema_version: v1::RecordSchemaVersion::Activity as i32,
+        key: Some(ActivityKey::new("wf", "run", "embedded-id").to_proto()),
+        ..Default::default()
+    };
+    let misplaced_path = tmp
+        .path()
+        .join("temporaless/v2/default/wf/run/activity/object-name.binpb");
+    tokio::fs::create_dir_all(misplaced_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&misplaced_path, record.encode_to_vec())
+        .await
+        .unwrap();
+
+    let error = store
+        .list_activities(&WorkflowKey::new("wf", "run"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StoreError::CorruptRecord(_)));
 }
 
 #[tokio::test]
@@ -91,6 +256,16 @@ async fn list_workflows_filters_by_status() {
             "r1",
             v1::WorkflowStatus::Completed,
         ))
+        .await
+        .unwrap();
+    // A valid child ID may equal the workflow record filename. It must not be
+    // mistaken for a workflow object during a recursive cross-run scan.
+    store
+        .put_activity(&v1::ActivityRecord {
+            schema_version: v1::RecordSchemaVersion::Activity as i32,
+            key: Some(ActivityKey::new("wf-a", "r1", "workflow").to_proto()),
+            ..Default::default()
+        })
         .await
         .unwrap();
     store
@@ -133,6 +308,7 @@ async fn activity_roundtrip() {
         attempts: vec![],
         annotations: Default::default(),
         next_attempt_at: None,
+        ..Default::default()
     };
     store.put_activity(&record).await.unwrap();
 
@@ -165,6 +341,7 @@ async fn list_activities_returns_all_under_run() {
                 attempts: vec![],
                 annotations: Default::default(),
                 next_attempt_at: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -184,6 +361,12 @@ async fn sweep_removes_old_completed_runs() {
     let past = SystemTime::now() - Duration::from_secs(2 * 3600);
     old.completed_at = Some(proto_timestamp(past));
     store.put_workflow(&old).await.unwrap();
+    let old_claim = v1::ClaimRecord {
+        schema_version: v1::RecordSchemaVersion::Claim as i32,
+        key: Some(ClaimKey::new("wf-old", "r1", "claim:old").to_proto()),
+        ..Default::default()
+    };
+    assert!(store.try_create_claim(&old_claim).await.unwrap());
 
     store
         .put_workflow(&mk_workflow_record(
@@ -200,16 +383,27 @@ async fn sweep_removes_old_completed_runs() {
         .unwrap();
     assert_eq!(deleted, 1);
 
-    assert!(store
-        .get_workflow(&WorkflowKey::new("wf-old", "r1"))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(store
-        .get_workflow(&WorkflowKey::new("wf-new", "r2"))
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .get_workflow(&WorkflowKey::new("wf-old", "r1"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_claim(&ClaimKey::new("wf-old", "r1", "claim:old"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_workflow(&WorkflowKey::new("wf-new", "r2"))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -225,7 +419,6 @@ async fn due_timers_returns_only_scheduled_under_in_progress() {
         .await
         .unwrap();
 
-    use temporaless::storage::TimerKey;
     let past = proto_timestamp(SystemTime::now() - Duration::from_secs(60));
     store
         .put_timer(&v1::TimerRecord {
@@ -238,6 +431,7 @@ async fn due_timers_returns_only_scheduled_under_in_progress() {
             fire_at: Some(past),
             created_at: Some(now_ts()),
             fired_at: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -250,7 +444,6 @@ async fn due_timers_returns_only_scheduled_under_in_progress() {
 #[tokio::test]
 async fn claim_create_only_semantics() {
     let (_tmp, store) = new_store();
-    use temporaless::storage::ClaimKey;
     let claim = v1::ClaimRecord {
         schema_version: v1::RecordSchemaVersion::Claim as i32,
         key: Some(ClaimKey::new("wf", "r", "claim:1").to_proto()),
@@ -264,9 +457,11 @@ async fn claim_create_only_semantics() {
     };
     assert!(store.try_create_claim(&claim).await.unwrap());
     assert!(!store.try_create_claim(&claim).await.unwrap()); // already exists
-    assert!(store
-        .delete_claim(&ClaimKey::new("wf", "r", "claim:1"))
-        .await
-        .unwrap());
+    assert!(
+        store
+            .delete_claim(&ClaimKey::new("wf", "r", "claim:1"))
+            .await
+            .unwrap()
+    );
     assert!(store.try_create_claim(&claim).await.unwrap()); // can re-create after delete
 }

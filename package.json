@@ -1,6 +1,7 @@
 {
   "name": "@jim-technologies/temporaless",
-  "version": "0.4.0",
+  "version": "0.5.0",
+  "private": true,
   "description": "TypeScript SDK for Temporaless protobuf, ConnectRPC, and Invariant Protocol projections.",
   "license": "Apache-2.0",
   "type": "module",
@@ -25,11 +26,12 @@
     "core/ts/dist",
     "core/ts/README.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "VERSION"
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc -p core/ts/tsconfig.json && node core/ts/scripts/copy-assets.mjs",
@@ -40,11 +42,11 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.1",
     "@connectrpc/connect": "^2.1.2",
-    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#a54e5de1ef4021aa65cee44526b2b61567643a27"
+    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#1cee3adb3c61e695059abf559d4ca3c330eab141"
   },
   "peerDependencies": {
-    "@connectrpc/connect-node": ">=2.0.0",
-    "@connectrpc/connect-web": ">=2.0.0"
+    "@connectrpc/connect-node": ">=2.1.2",
+    "@connectrpc/connect-web": ">=2.1.2"
   },
   "peerDependenciesMeta": {
     "@connectrpc/connect-node": {
@@ -55,12 +57,12 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
-    "typescript": "^6.0.3",
+    "@types/node": "^24.13.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "github:jim-technologies/invariantprotocol#a54e5de1ef4021aa65cee44526b2b61567643a27": true,
+    "github:jim-technologies/invariantprotocol#1cee3adb3c61e695059abf559d4ca3c330eab141": true,
     "protobufjs": false
   }
 }

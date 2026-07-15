@@ -2,23 +2,23 @@
 //! workflow_test.go`) and Python (`core/py/tests/test_workflow.py`) suites
 //! so we can confirm parity on the branches that ship in Rust today.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use opendal::{services::Fs, Operator};
+use opendal::{Operator, services::Fs};
 use prost::{Message, Name};
 use tempfile::TempDir;
 use temporaless::storage::OpenDALStore;
 use temporaless::workflow::{
-    activity, annotate, current, default_retry_policy, execute_activity, run, ActivityError,
-    ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions,
+    ActivityError, ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions, annotate,
+    current, execute_activity, run,
 };
 
 fn new_store() -> (TempDir, Arc<OpenDALStore>) {
     let tmp = TempDir::new().unwrap();
     let builder = Fs::default().root(tmp.path().to_str().unwrap());
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     (tmp, Arc::new(OpenDALStore::new(op)))
 }
 
@@ -442,49 +442,4 @@ async fn current_workflow_accessor_works_from_activity_body() {
     })
     .await
     .unwrap();
-}
-
-#[tokio::test]
-async fn activity_helper_auto_infers_id_and_applies_default_retry() {
-    let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf-auto", "r-1").with_code_version("test");
-    let attempts = Arc::new(AtomicUsize::new(0));
-
-    // Helper picks up retries from default_retry_policy(), so a single
-    // transient failure should still succeed.
-    let result: StringValue = run(store, options, s("x"), {
-        let attempts = attempts.clone();
-        move |_w, input| {
-            let attempts = attempts.clone();
-            async move {
-                let resp: StringValue = activity(input, |req: StringValue| {
-                    let attempts = attempts.clone();
-                    async move {
-                        let n = attempts.fetch_add(1, Ordering::SeqCst) + 1;
-                        if n == 1 {
-                            Err(ActivityError::new("transient", "first call fails"))
-                        } else {
-                            Ok(s(&format!("ok:{}", req.value)))
-                        }
-                    }
-                })
-                .await?;
-                Ok(resp)
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(result.value, "ok:x");
-    assert_eq!(
-        attempts.load(Ordering::SeqCst),
-        2,
-        "default retry policy should give a second attempt"
-    );
-
-    // Verify default policy is the documented shape.
-    let p = default_retry_policy();
-    assert_eq!(p.maximum_attempts, 3);
-    assert_eq!(p.initial_interval, Duration::from_secs(1));
-    assert_eq!(p.maximum_interval, Duration::from_secs(30));
 }

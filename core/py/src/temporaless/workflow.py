@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import logging
+import math
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -14,7 +16,7 @@ from google.protobuf.any_pb2 import Any
 from google.protobuf.duration_pb2 import Duration
 from google.protobuf.message import Message
 from google.protobuf.timestamp_pb2 import Timestamp
-from protovalidate import validate
+from protovalidate import ValidationError, validate
 
 from temporaless._cache import RunScopedCache
 from temporaless.storage import (
@@ -28,11 +30,14 @@ from temporaless.storage import (
     ClaimKey,
     ClaimStore,
     EventKey,
+    RunRecordValidationError,
     Store,
     TimerKey,
     WorkflowKey,
 )
 from temporaless.v1 import temporaless_pb2
+
+_LOGGER = logging.getLogger(__name__)
 
 RequestT = TypeVar("RequestT", bound=Message)
 ResultT = TypeVar("ResultT", bound=Message)
@@ -50,10 +55,6 @@ _RESERVED_NAMES = temporaless_pb2.ReservedNames()
 _RUNTIME_DEFAULTS = temporaless_pb2.RuntimeDefaults()
 DEFAULT_CLAIM_LEASE_DURATION = timedelta(seconds=_RUNTIME_DEFAULTS.claim_lease_duration_seconds)
 
-# Marks timer records owned by the runtime's durable retry path. User code
-# passing this prefix to ``Workflow.sleep`` is rejected so framework-managed
-# retry timers don't collide with user timers.
-ACTIVITY_RETRY_TIMER_ID_PREFIX = _RESERVED_NAMES.activity_retry_timer_id_prefix
 ACTIVITY_CLAIM_ID_PREFIX = _RESERVED_NAMES.activity_claim_id_prefix
 
 # Deterministic claim_id used to serialize live invocations of one workflow
@@ -83,13 +84,6 @@ async def _await_task_to_completion(
             if current is not None:
                 current.uncancel()
     return task.result(), cancellation
-
-
-def _activity_retry_timer_id(activity_id: str) -> str:
-    """Deterministic timer_id that pairs an ActivityRecord with its durable
-    retry timer. Stable per activity_id; later retries overwrite the record
-    with a new fire_at."""
-    return f"{ACTIVITY_RETRY_TIMER_ID_PREFIX}{activity_id}"
 
 
 async def _acquire_concurrency_slot(
@@ -227,30 +221,6 @@ def default_retry_policy() -> RetryPolicy:
     return policy
 
 
-def _infer_activity_id(func: Callable[..., object]) -> str:
-    """Use ``func.__qualname__`` as the activity_id default. Stable for
-    module-level functions and class methods; varies for closures (rare in
-    workflow bodies)."""
-    import re
-
-    qualname = getattr(func, "__qualname__", None)
-    if not qualname:
-        raise ValueError(
-            "cannot infer activity_id: function has no __qualname__; pass activity_id= explicitly"
-        )
-    # Python's qualname inserts ``<locals>`` for nested functions; that's a
-    # marker, not part of any meaningful identity, and contains characters
-    # the framework's ID regex rejects.
-    qualname = qualname.replace("<locals>.", "")
-    if not re.match(r"^[A-Za-z0-9._:-]+$", qualname):
-        raise ValueError(
-            f"cannot infer activity_id from __qualname__ {qualname!r}: contains "
-            "characters disallowed in framework IDs (allowed: [A-Za-z0-9._:-]). "
-            "Pass activity_id= explicitly."
-        )
-    return qualname
-
-
 def _infer_result_type(func: Callable[..., object]) -> type:
     """Pull the result type out of ``func``'s return annotation. Expects
     ``async def fn(req) -> ResultMessage`` shape; the return annotation is
@@ -312,7 +282,7 @@ class ConcurrencyBusyError(RuntimeError):
 
     The workflow body did NOT execute and no IN_PROGRESS record was written —
     callers retry the same ``workflow.run`` when capacity is available. Maps
-    to gRPC code RESOURCE_EXHAUSTED via :func:`workflow_error_to_connect_code`.
+    to a transport-specific retry signal by an adapter.
     """
 
     def __init__(self, key: str, limit: int) -> None:
@@ -384,6 +354,38 @@ class TimerPendingError(RuntimeError):
         self.wake_at = wake_at
 
 
+class WorkflowInfrastructureError(RuntimeError):
+    """A retryable framework storage/coordination failure inside a workflow.
+
+    ``run`` leaves the parent record ``IN_PROGRESS`` when this escapes a
+    Temporaless primitive. Activity bodies remain application boundaries: an
+    activity that returns this exception is recorded and retried like any
+    other business failure.
+    """
+
+    def __init__(self, operation: str, cause: BaseException) -> None:
+        super().__init__(f"workflow infrastructure operation {operation!r} failed: {cause}")
+        self.operation = operation
+        self.__cause__ = cause
+
+
+async def _await_workflow_infrastructure(
+    operation: str,
+    awaitable: Awaitable[TaskResultT],
+) -> TaskResultT:
+    try:
+        return await awaitable
+    except RunRecordValidationError, ValidationError:
+        # Corrupt records and invalid framework writes are durable invariant
+        # violations, not transient outages. The caller's conflict/terminal
+        # path must expose them rather than retrying forever.
+        raise
+    except WorkflowInfrastructureError:
+        raise
+    except Exception as exc:
+        raise WorkflowInfrastructureError(operation, exc) from exc
+
+
 class EventPendingError(RuntimeError):
     def __init__(self, event_id: str) -> None:
         super().__init__(f"event {event_id!r} is pending")
@@ -412,53 +414,6 @@ class WorkflowDependencyFailedError(RuntimeError):
         self.workflow_id = workflow_id
         self.run_id = run_id
         self.status = status
-
-
-def workflow_error_to_connect_code(exc: BaseException) -> tuple[object, str] | None:
-    """Map a workflow exception to a ``(connectrpc.code.Code, message)`` pair.
-
-    Useful in ConnectRPC handlers that wrap workflows: the body raises one of
-    our typed errors, the handler catches and re-raises as ``ConnectError``.
-    Returns ``None`` for unknown exception types so callers can decide between
-    re-raising as ``Internal`` or letting the exception propagate.
-
-    Standard mapping (mirrors ``docs/deployment.md``):
-
-    - ``TimerPendingError``, ``EventPendingError``,
-      ``WorkflowDependencyPendingError`` → ``UNAVAILABLE``
-      (caller should retry later — workflow stays IN_PROGRESS).
-    - ``ClaimBusyError`` → ``ALREADY_EXISTS`` (another worker holds the claim).
-    - ``ClaimReleaseError`` → ``INTERNAL`` (cleanup failed and retry may stay busy).
-    - ``ClaimCapabilityError`` → ``FAILED_PRECONDITION`` (the store cannot
-      provide coordination requested by the workflow options).
-    - ``WorkflowConflictError``, ``ActivityConflictError``, ``TimerConflictError``
-      → ``FAILED_PRECONDITION`` (stored record's workflow_type / activity_type
-      / timer kind / code_version is incompatible with the current call).
-    - ``ActivityError``, ``WorkflowDependencyFailedError`` → ``INTERNAL`` (the
-      upstream pipeline produced a terminal failure that this workflow can't
-      recover from).
-
-    Lazy import of ``connectrpc.code.Code`` — the helper is in core/workflow.py
-    so workflow.py stays usable without a connectrpc dependency for non-RPC
-    callers.
-    """
-    from connectrpc.code import Code
-
-    if isinstance(exc, ClaimReleaseError):
-        return (Code.INTERNAL, str(exc))
-    if isinstance(exc, (TimerPendingError, EventPendingError, WorkflowDependencyPendingError)):
-        return (Code.UNAVAILABLE, str(exc))
-    if isinstance(exc, ClaimBusyError):
-        return (Code.ALREADY_EXISTS, str(exc))
-    if isinstance(exc, ConcurrencyBusyError):
-        return (Code.RESOURCE_EXHAUSTED, str(exc))
-    if isinstance(exc, ClaimCapabilityError):
-        return (Code.FAILED_PRECONDITION, str(exc))
-    if isinstance(exc, (WorkflowConflictError, ActivityConflictError, TimerConflictError)):
-        return (Code.FAILED_PRECONDITION, str(exc))
-    if isinstance(exc, (ActivityError, WorkflowDependencyFailedError)):
-        return (Code.INTERNAL, str(exc))
-    return None
 
 
 @dataclass
@@ -493,10 +448,9 @@ def annotate(key: str, value: str) -> None:
 def current_workflow() -> Workflow:
     """Return the ``Workflow`` of the in-flight ``run`` invocation.
 
-    Use inside a ConnectRPC handler that's been decorated with
-    ``wrap_workflow_method``: the handler doesn't see a ``Workflow`` argument,
-    but can reach it through this context-local accessor to call
-    ``execute_activity``, ``sleep``, ``wait_event``, etc.
+    Use inside a workflow body that does not receive a ``Workflow`` argument:
+    the body can reach it through this context-local accessor to call
+    ``execute_activity``, ``sleep``, ``wait_event``, and related primitives.
 
     Raises ``RuntimeError`` if called outside a workflow body — that's a
     programming error and should fail fast.
@@ -505,7 +459,7 @@ def current_workflow() -> Workflow:
     if workflow is None:
         raise RuntimeError(
             "current_workflow() called outside a workflow body — wrap your handler "
-            "with wrap_workflow / wrap_workflow_method, or use temporaless.workflow.run."
+            "with a workflow adapter, or use temporaless.workflow.run."
         )
     return workflow
 
@@ -538,6 +492,11 @@ class Workflow:
         self._run_id = options.run_id
         self._code_version = options.code_version
         self._claim_owner = options.claim_owner_id or None
+        # A due sleep has been observed by this invocation, but its wakeup is
+        # not consumed until the workflow reaches another durable wakeup or a
+        # terminal workflow record. Keeping the timer scheduled across the
+        # ambiguous body window makes a crash redeliverable.
+        self._due_sleep_timer_ids: set[str] = set()
 
     @property
     def workflow_id(self) -> str:
@@ -559,11 +518,21 @@ class Workflow:
         result_factory: Callable[[], ResultT],
         execute: Callable[[], Awaitable[ResultT]],
         retry_policy: RetryPolicy | None = None,
+        retry_timer_id: str = "",
     ) -> ResultT:
-        validate(ActivityOptions(activity_id=activity_id))
+        # Normalize and validate policy semantics first so malformed policies
+        # are reported directly instead of being masked by the conditional
+        # durable retry_timer_id requirement.
+        plan = _plan_retries(retry_policy)
+        activity_options = ActivityOptions(
+            activity_id=activity_id,
+            retry_timer_id=retry_timer_id,
+        )
+        if retry_policy is not None:
+            activity_options.retry_policy.CopyFrom(retry_policy)
+        validate(activity_options)
         if not activity_type:
             raise ValueError("activity type is required")
-        plan = _plan_retries(retry_policy)
 
         key = ActivityKey(
             workflow_id=self._workflow_id,
@@ -574,7 +543,7 @@ class Workflow:
         def inspect_record(
             stored: temporaless_pb2.ActivityRecord | None,
         ) -> tuple[
-            ResultT | None,
+            temporaless_pb2.ActivityRecord | None,
             list[temporaless_pb2.ActivityAttempt],
             dict[str, str],
             datetime | None,
@@ -585,26 +554,278 @@ class Workflow:
                 temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                 temporaless_pb2.ACTIVITY_STATUS_FAILED,
             ):
-                return (
-                    _replay_record(stored, activity_type, self._code_version, result_factory),
-                    [],
-                    {},
-                    None,
-                )
+                return stored, [], {}, None
             if stored.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING:
                 raise ActivityConflictError("stored activity has unknown status")
             _assert_activity_identity(stored, activity_type, self._code_version)
+            _assert_activity_retry_policy(stored, plan.record_policy)
+            if stored.retry_timer_id != retry_timer_id:
+                raise ActivityConflictError(
+                    "activity retry timer ID changed while activity is RETRYING"
+                )
+            attempts = _validate_retrying_activity(stored, plan)
             wake_at = None
             if stored.HasField("next_attempt_at"):
-                wake_at = stored.next_attempt_at.ToDatetime().replace(tzinfo=UTC)
-            return None, list(stored.attempts), dict(stored.annotations), wake_at
+                try:
+                    wake_at = stored.next_attempt_at.ToDatetime().replace(tzinfo=UTC)
+                except (OverflowError, ValueError) as exc:
+                    raise ActivityConflictError(
+                        "stored RETRYING activity has invalid next_attempt_at"
+                    ) from exc
+            return None, attempts, dict(stored.annotations), wake_at
 
-        record = await self._store.get_activity(key)
-        replayed, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
-        if replayed is not None:
-            return replayed
+        async def reconcile_terminal_retry_timer(
+            stored: temporaless_pb2.ActivityRecord,
+        ) -> None:
+            # A process can die after persisting the terminal activity record
+            # but before consuming the durable retry timer. Heal that partial
+            # boundary before returning the authoritative outcome.
+            # One-attempt activities cannot have an outstanding retry timer,
+            # so avoid an unnecessary point read on their hot replay path.
+            if stored.retry_timer_id:
+                try:
+                    await self._mark_activity_retry_timer_fired(
+                        stored.key.activity_id,
+                        stored.retry_timer_id,
+                    )
+                except Exception:
+                    # The ActivityRecord is already authoritative. Timer cleanup
+                    # must not replace a completed result or terminal failure;
+                    # its scheduled ledger remains a safe retry path, terminal
+                    # replay tries again, and DueTimers prunes it after the
+                    # parent workflow becomes terminal.
+                    _LOGGER.warning(
+                        "failed to reconcile retry timer for terminal activity %s/%s/%s",
+                        self._workflow_id,
+                        self._run_id,
+                        activity_id,
+                        exc_info=True,
+                    )
+
+        async def ensure_retry_timer(
+            stored: temporaless_pb2.ActivityRecord | None,
+            stored_attempts: list[temporaless_pb2.ActivityAttempt],
+            wake_at: datetime | None,
+            *,
+            authoritative: bool = False,
+        ) -> datetime | None:
+            """Repair or honor the non-transactional timer/retry boundary.
+
+            Durable retries publish their timer first. A missing/older timer
+            means an older record-first writer or failed overwrite and is
+            repaired. A later scheduled timer means a timer-first writer died
+            before advancing ActivityRecord; it is honored without regression.
+            """
+            if plan.durable_threshold <= timedelta(0) or not retry_timer_id:
+                return wake_at
+
+            timer_key = TimerKey(
+                workflow_id=self._workflow_id,
+                run_id=self._run_id,
+                timer_id=retry_timer_id,
+            )
+            if authoritative and isinstance(self._store, RunScopedCache):
+                timer = await _await_workflow_infrastructure(
+                    "refresh activity retry timer",
+                    self._store.refresh_timer(timer_key),
+                )
+            else:
+                timer = await _await_workflow_infrastructure(
+                    "read activity retry timer",
+                    self._store.get_timer(timer_key),
+                )
+            timer_fire_at: datetime | None = None
+            timer_duration: timedelta | None = None
+            if timer is not None:
+                if timer.key != timer_key.to_proto():
+                    raise ActivityConflictError(
+                        "stored activity retry timer key does not match its storage key"
+                    )
+                if timer.timer_kind != temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY:
+                    raise ActivityConflictError(
+                        "stored activity retry timer collides with another timer kind"
+                    )
+                if timer.retry_activity_id != activity_id:
+                    raise ActivityConflictError(
+                        "stored activity retry timer belongs to another activity"
+                    )
+                if timer.code_version != self._code_version:
+                    raise ActivityConflictError("stored activity retry timer code version changed")
+                if timer.schema_version != TIMER_RECORD_SCHEMA_VERSION:
+                    raise ActivityConflictError(
+                        "stored activity retry timer schema version changed"
+                    )
+                if not timer.HasField("fire_at"):
+                    raise ActivityConflictError("stored activity retry timer has no fire_at")
+                try:
+                    timer_fire_at = _validated_proto_timestamp(
+                        timer.fire_at, "persisted activity retry timer fire_at"
+                    )
+                except (OverflowError, ValueError) as exc:
+                    raise ActivityConflictError(
+                        "stored activity retry timer has invalid fire_at"
+                    ) from exc
+                if not timer.HasField("duration"):
+                    raise ActivityConflictError("stored activity retry timer has no duration")
+                try:
+                    timer_duration = _validated_proto_duration(
+                        timer.duration, "persisted activity retry timer duration"
+                    )
+                except (OverflowError, ValueError) as exc:
+                    raise ActivityConflictError(
+                        "stored activity retry timer has invalid duration"
+                    ) from exc
+                if timer_duration < timedelta(0):
+                    raise ActivityConflictError("stored activity retry timer has negative duration")
+                if not timer.HasField("created_at"):
+                    raise ActivityConflictError("stored activity retry timer has no created_at")
+                try:
+                    _validated_proto_timestamp(
+                        timer.created_at, "persisted activity retry timer created_at"
+                    )
+                except (OverflowError, ValueError) as exc:
+                    raise ActivityConflictError(
+                        "stored activity retry timer has invalid created_at"
+                    ) from exc
+                if timer.status == temporaless_pb2.TIMER_STATUS_CANCELED:
+                    raise ActivityConflictError("stored activity retry timer was canceled")
+                if timer.status not in (
+                    temporaless_pb2.TIMER_STATUS_SCHEDULED,
+                    temporaless_pb2.TIMER_STATUS_FIRED,
+                ):
+                    raise ActivityConflictError("stored activity retry timer has unknown status")
+                if timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                    if timer.HasField("fired_at"):
+                        raise ActivityConflictError(
+                            "stored SCHEDULED activity retry timer has fired_at"
+                        )
+                else:
+                    if not timer.HasField("fired_at"):
+                        raise ActivityConflictError(
+                            "stored FIRED activity retry timer has no fired_at"
+                        )
+                    try:
+                        _validated_proto_timestamp(
+                            timer.fired_at, "persisted activity retry timer fired_at"
+                        )
+                    except (OverflowError, ValueError) as exc:
+                        raise ActivityConflictError(
+                            "stored FIRED activity retry timer has invalid fired_at"
+                        ) from exc
+
+            if stored is None or wake_at is None:
+                # Timer-first publication can survive while its ActivityRecord
+                # write is missing or still reflects an earlier in-process
+                # retry. Respect the caller-owned timer's future wake before
+                # repeating the ambiguous attempt. Once due, at-least-once
+                # execution resumes and the scheduled timer remains a wake
+                # until a later durable boundary.
+                if timer is None:
+                    return wake_at
+                assert timer_fire_at is not None
+                assert timer_duration is not None
+                prepared_after_attempt = 1
+                if stored is not None:
+                    prepared_after_attempt = len(stored_attempts) + 1
+                if prepared_after_attempt >= plan.maximum_attempts:
+                    raise ActivityConflictError(
+                        "stored prepared retry timer would follow the terminal attempt"
+                    )
+                minimum_interval = _retry_interval_after_failed_attempt(
+                    plan, prepared_after_attempt
+                )
+                if timer_duration < minimum_interval or timer_duration < plan.durable_threshold:
+                    raise ActivityConflictError(
+                        "stored prepared retry timer duration is below its required retry interval"
+                    )
+                if timer.status == temporaless_pb2.TIMER_STATUS_FIRED:
+                    await self._put_activity_retry_timer(
+                        activity_id,
+                        retry_timer_id,
+                        timer_duration,
+                        timer_fire_at,
+                    )
+                await self._reconcile_due_sleep_timers()
+                return timer_fire_at
+
+            retry_interval = _retry_interval_after_failed_attempt(plan, len(stored_attempts))
+            retry_after = stored_attempts[-1].failure.retry_after
+            if stored_attempts[-1].failure.HasField("retry_after"):
+                persisted_retry_after = _validated_proto_duration(
+                    retry_after, "persisted retry_after"
+                )
+                if persisted_retry_after < timedelta(0):
+                    raise ActivityConflictError("stored RETRYING activity has negative retry_after")
+                retry_interval = max(retry_interval, persisted_retry_after)
+
+            if timer is None:
+                await self._put_activity_retry_timer(
+                    activity_id, retry_timer_id, retry_interval, wake_at
+                )
+                await self._reconcile_due_sleep_timers()
+                return wake_at
+
+            assert timer_fire_at is not None
+            assert timer_duration is not None
+
+            if timer_fire_at == wake_at and timer_duration != retry_interval:
+                raise ActivityConflictError(
+                    "stored activity retry timer duration does not match its retry policy"
+                )
+            if timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED and timer_fire_at == wake_at:
+                # The verified retry timer is a durable successor for any
+                # ordinary sleep crossed earlier in this invocation.
+                await self._reconcile_due_sleep_timers()
+                return wake_at
+            if timer_fire_at > wake_at:
+                # A timer-first writer published a later retry but died before
+                # advancing ActivityRecord. Wait for that wake, then retry from
+                # the older authoritative attempt history at-least-once.
+                prepared_after_attempt = len(stored_attempts) + 1
+                if prepared_after_attempt >= plan.maximum_attempts:
+                    raise ActivityConflictError(
+                        "stored newer retry timer would follow the terminal attempt"
+                    )
+                minimum_interval = _retry_interval_after_failed_attempt(
+                    plan, prepared_after_attempt
+                )
+                if timer_duration < minimum_interval or timer_duration < plan.durable_threshold:
+                    raise ActivityConflictError(
+                        "stored newer retry timer duration is below its required retry interval"
+                    )
+                if timer.status == temporaless_pb2.TIMER_STATUS_FIRED:
+                    await self._put_activity_retry_timer(
+                        activity_id,
+                        retry_timer_id,
+                        timer_duration,
+                        timer_fire_at,
+                    )
+                await self._reconcile_due_sleep_timers()
+                return timer_fire_at
+
+            # Missing the latest overwrite is the expected partial-write case;
+            # a same/older FIRED timer is likewise safe to restore because the
+            # ActivityRecord is still explicitly RETRYING.
+            await self._put_activity_retry_timer(
+                activity_id, retry_timer_id, retry_interval, wake_at
+            )
+            await self._reconcile_due_sleep_timers()
+            return wake_at
+
+        async def replay_terminal(stored: temporaless_pb2.ActivityRecord) -> ResultT:
+            await reconcile_terminal_retry_timer(stored)
+            return _replay_record(stored, activity_type, self._code_version, result_factory)
+
+        record = await _await_workflow_infrastructure(
+            "read activity",
+            self._store.get_activity(key),
+        )
+        terminal, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
+        if terminal is not None:
+            return await replay_terminal(terminal)
+        retry_wake_at = await ensure_retry_timer(record, attempts, retry_wake_at)
         if retry_wake_at is not None and datetime.now(UTC) < retry_wake_at:
-            raise TimerPendingError(_activity_retry_timer_id(activity_id), retry_wake_at)
+            raise TimerPendingError(retry_timer_id, retry_wake_at)
 
         activity_claim_key: ClaimKey | None = None
         activity_claim_acquired = False
@@ -614,7 +835,10 @@ class Workflow:
                 if self._claim_store is None:
                     raise ValueError("claim store is required when claim owner is provided")
                 if self._claim_capability is None:
-                    self._claim_capability = await self._claim_store.claim_capability()
+                    self._claim_capability = await _await_workflow_infrastructure(
+                        "read activity claim capability",
+                        self._claim_store.claim_capability(),
+                    )
                 if self._claim_capability not in (
                     temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
                     temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
@@ -644,9 +868,23 @@ class Workflow:
                         heartbeat_at=created_at,
                     )
                     create_task = asyncio.create_task(self._claim_store.try_create_claim(claim))
-                    created, acquisition_cancelled = await _await_task_to_completion(create_task)
+                    try:
+                        created, acquisition_cancelled = await _await_task_to_completion(
+                            create_task
+                        )
+                    except RunRecordValidationError, ValidationError:
+                        raise
+                    except Exception as exc:
+                        raise WorkflowInfrastructureError("create activity claim", exc) from exc
                     if acquisition_cancelled is not None:
                         activity_claim_acquired = created
+                        # The conditional create has completed and told us
+                        # exactly whether this invocation owns the claim. The
+                        # activity body has not started, so a successfully
+                        # acquired claim is safe—and necessary—to release. A
+                        # cancellation here must not permanently strand a
+                        # create-only claim whose lease cannot be taken over.
+                        release_activity_claim = created
                         raise acquisition_cancelled
                     if created:
                         activity_claim_acquired = True
@@ -656,21 +894,30 @@ class Workflow:
                     # negative read and failed conditional create. Bypass the
                     # normal replay cache and update it with authoritative state.
                     if isinstance(self._store, RunScopedCache):
-                        fresh = await self._store.refresh_activity(key)
+                        fresh = await _await_workflow_infrastructure(
+                            "refresh activity after claim race",
+                            self._store.refresh_activity(key),
+                        )
                     else:
-                        fresh = await self._store.get_activity(key)
+                        fresh = await _await_workflow_infrastructure(
+                            "refresh activity after claim race",
+                            self._store.get_activity(key),
+                        )
+                    if fresh is not None and fresh.status in (
+                        temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+                        temporaless_pb2.ACTIVITY_STATUS_FAILED,
+                    ):
+                        return await replay_terminal(fresh)
                     if (
                         fresh is not None
                         and fresh.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING
                     ):
-                        return _replay_record(
-                            fresh,
-                            activity_type,
-                            self._code_version,
-                            result_factory,
-                        )
+                        raise ActivityConflictError("stored activity has unknown status")
 
-                    existing = await self._claim_store.get_claim(activity_claim_key)
+                    existing = await _await_workflow_infrastructure(
+                        "read competing activity claim",
+                        self._claim_store.get_claim(activity_claim_key),
+                    )
                     if existing is not None or claim_attempt == 1:
                         owner_id = None
                         lease_expires_at = None
@@ -695,27 +942,31 @@ class Workflow:
                 # own the claim and derive all retry state from that record.
                 release_activity_claim = True
                 if isinstance(self._store, RunScopedCache):
-                    record = await self._store.refresh_activity(key)
+                    record = await _await_workflow_infrastructure(
+                        "refresh activity after claim acquisition",
+                        self._store.refresh_activity(key),
+                    )
                 else:
-                    record = await self._store.get_activity(key)
-                replayed, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
-                if replayed is not None:
-                    return replayed
+                    record = await _await_workflow_infrastructure(
+                        "refresh activity after claim acquisition",
+                        self._store.get_activity(key),
+                    )
+                terminal, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
+                if terminal is not None:
+                    return await replay_terminal(terminal)
+                retry_wake_at = await ensure_retry_timer(
+                    record,
+                    attempts,
+                    retry_wake_at,
+                    authoritative=True,
+                )
                 if retry_wake_at is not None and datetime.now(UTC) < retry_wake_at:
-                    raise TimerPendingError(_activity_retry_timer_id(activity_id), retry_wake_at)
-                # From this point through the activity body, an exception may
-                # mean a side effect or storage write had an ambiguous outcome.
-                release_activity_claim = False
-
-            # Only consume a due retry timer after claim arbitration. A busy
-            # activity leaves the timer scheduled so the scanner can try again.
-            if retry_wake_at is not None:
-                await self._mark_activity_retry_timer_fired(activity_id)
+                    raise TimerPendingError(retry_timer_id, retry_wake_at)
 
             input_any = Any()
             input_any.Pack(input_message)
 
-            interval = plan.initial_interval
+            policy_interval = _retry_interval_after_attempts(plan, attempts)
             attempt_idx = len(attempts)
             activity_annotations = _AnnotationsBag(data=dict(seeded_annotations))
             annotations_token = _annotations_var.set(activity_annotations)
@@ -745,10 +996,11 @@ class Workflow:
                         attempt_record.completed_at.FromDatetime(completed_at)
                         attempts.append(attempt_record)
 
+                        retry_interval = policy_interval
                         if failure.HasField("retry_after"):
                             retry_after = failure.retry_after.ToTimedelta()
-                            if retry_after > interval:
-                                interval = retry_after
+                            if retry_after > retry_interval:
+                                retry_interval = retry_after
 
                         non_retryable = failure.code in plan.non_retryable_codes
                         if attempt_idx >= plan.maximum_attempts or non_retryable:
@@ -762,13 +1014,20 @@ class Workflow:
                                 failure=failure,
                                 attempts=attempts,
                                 annotations=activity_annotations.snapshot(),
+                                retry_timer_id=retry_timer_id,
                             )
                             failed_record.created_at.FromDatetime(
                                 attempts[0].started_at.ToDatetime()
                             )
                             failed_record.completed_at.FromDatetime(completed_at)
-                            await self._store.put_activity(failed_record)
+                            if plan.record_policy is not None:
+                                failed_record.retry_policy.CopyFrom(plan.record_policy)
+                            await _await_workflow_infrastructure(
+                                "persist failed activity",
+                                self._store.put_activity(failed_record),
+                            )
                             release_activity_claim = True
+                            await reconcile_terminal_retry_timer(failed_record)
                             raise ActivityError(failure.code, failure.message, run_err) from run_err
 
                         retrying_record = temporaless_pb2.ActivityRecord(
@@ -781,30 +1040,61 @@ class Workflow:
                             failure=failure,
                             attempts=attempts,
                             annotations=activity_annotations.snapshot(),
+                            retry_timer_id=retry_timer_id,
                         )
                         retrying_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
+                        if plan.record_policy is not None:
+                            retrying_record.retry_policy.CopyFrom(plan.record_policy)
 
                         if (
                             plan.durable_threshold > timedelta(0)
-                            and interval >= plan.durable_threshold
+                            and retry_interval >= plan.durable_threshold
                         ):
-                            next_attempt_at = datetime.now(UTC) + interval
+                            next_attempt_at = datetime.now(UTC) + retry_interval
                             next_at_ts = Timestamp()
                             next_at_ts.FromDatetime(next_attempt_at)
                             retrying_record.next_attempt_at.CopyFrom(next_at_ts)
-                            await self._store.put_activity(retrying_record)
-                            await self._put_activity_retry_timer(
-                                activity_id, interval, next_attempt_at
-                            )
-                            release_activity_claim = True
-                            raise TimerPendingError(
-                                _activity_retry_timer_id(activity_id), next_attempt_at
-                            ) from None
+                            pending = TimerPendingError(retry_timer_id, next_attempt_at)
+                            try:
+                                # Publish the wake before replay state. A crash
+                                # between these writes may repeat a known-failed
+                                # attempt, but cannot strand the workflow.
+                                timer_task = asyncio.create_task(
+                                    self._put_activity_retry_timer(
+                                        activity_id,
+                                        retry_timer_id,
+                                        retry_interval,
+                                        next_attempt_at,
+                                    )
+                                )
+                                _, timer_cancelled = await _await_task_to_completion(timer_task)
+                                # From this point the failed activity has a
+                                # durable/redeliverable successor. Release its
+                                # claim even if cancellation or a later write
+                                # interrupts this boundary.
+                                release_activity_claim = True
+                                if timer_cancelled is not None:
+                                    raise timer_cancelled
+                                await self._reconcile_due_sleep_timers()
+                                await _await_workflow_infrastructure(
+                                    "persist durable retrying activity",
+                                    self._store.put_activity(retrying_record),
+                                )
+                            except Exception as persistence_error:
+                                release_activity_claim = True
+                                # Infrastructure failures must not become a
+                                # terminal workflow failure. Preserve the typed
+                                # pending outcome and chain the storage cause.
+                                raise pending from persistence_error
+                            raise pending from None
 
-                        await self._store.put_activity(retrying_record)
+                        await _await_workflow_infrastructure(
+                            "persist retrying activity",
+                            self._store.put_activity(retrying_record),
+                        )
                         release_activity_claim = True
-                        await asyncio.sleep(interval.total_seconds())
-                        interval = _next_interval(interval, plan)
+                        await asyncio.sleep(retry_interval.total_seconds())
+                        policy_interval = _next_interval(policy_interval, plan)
                         continue
 
                     completed_at = datetime.now(UTC)
@@ -825,11 +1115,18 @@ class Workflow:
                         result=result_any,
                         attempts=attempts,
                         annotations=activity_annotations.snapshot(),
+                        retry_timer_id=retry_timer_id,
                     )
                     completed_record.created_at.FromDatetime(attempts[0].started_at.ToDatetime())
                     completed_record.completed_at.FromDatetime(completed_at)
-                    await self._store.put_activity(completed_record)
+                    if plan.record_policy is not None:
+                        completed_record.retry_policy.CopyFrom(plan.record_policy)
+                    await _await_workflow_infrastructure(
+                        "persist completed activity",
+                        self._store.put_activity(completed_record),
+                    )
                     release_activity_claim = True
+                    await reconcile_terminal_retry_timer(completed_record)
                     return result
 
                 raise RuntimeError(f"activity {activity_id!r} exhausted retry plan")
@@ -872,6 +1169,7 @@ class Workflow:
             result_factory,
             adapter,
             options.retry_policy if options.HasField("retry_policy") else None,
+            options.retry_timer_id,
         )
 
     async def activity(
@@ -879,35 +1177,29 @@ class Workflow:
         func: Callable[[RequestT], Awaitable[ResultT]],
         input_message: RequestT,
         *,
-        activity_id: str | None = None,
+        activity_id: str,
+        retry_timer_id: str = "",
         retry_policy: RetryPolicy | None = None,
         result_type: type[ResultT] | None = None,
     ) -> ResultT:
-        """Ergonomic shortcut over :meth:`execute_activity`. Defaults reduce
-        the per-call boilerplate to the bare minimum a normal Python function
-        call already requires (the function and its argument).
+        """Ergonomic shortcut over :meth:`execute_activity`.
 
         Defaults applied unless overridden:
 
-        - ``activity_id`` ← ``func.__qualname__`` (e.g. ``"Service.fetch_quote"``).
-          Override when two activity callsites share the same function but
-          should have distinct records (e.g. ``"fetch:aapl"`` vs ``"fetch:msft"``).
+        - ``activity_id`` is always caller-supplied and stable across replay.
+        - ``retry_timer_id`` is caller-supplied and required when the retry
+          policy enables durable backoff.
         - ``retry_policy`` ← :func:`default_retry_policy` (3 attempts, 1s
           initial, 2x backoff, 30s max interval, 30s durable threshold) —
           sensible for the framework's stated workloads (LLM / vendor /
-          quant). Pass ``RetryPolicy()`` explicitly for single-attempt.
+          quant). Pass ``RetryPolicy(maximum_attempts=1)`` explicitly for a
+          single attempt.
         - ``result_type`` ← inferred from ``func``'s return annotation
           (``Awaitable[X]`` ⇒ ``X``). Required only when the annotation is
           missing or not introspectable.
 
-        Caveat: auto-inferred ``activity_id`` is stable across runs only if
-        ``func.__qualname__`` is stable. Renaming the function invalidates
-        stored activity records (treated as a new activity_id). Use the
-        explicit ``activity_id`` override when refactor-stability matters
-        more than terseness.
+        Temporaless never derives either ID from a callable name.
         """
-        if activity_id is None:
-            activity_id = _infer_activity_id(func)
         if retry_policy is None:
             retry_policy = default_retry_policy()
         if result_type is None:
@@ -915,7 +1207,11 @@ class Workflow:
             # typing.get_type_hints); cast back to `type[ResultT]` so static
             # checkers can see the parameterized result type.
             result_type = cast("type[ResultT]", _infer_result_type(func))
-        options = ActivityOptions(activity_id=activity_id, retry_policy=retry_policy)
+        options = ActivityOptions(
+            activity_id=activity_id,
+            retry_policy=retry_policy,
+            retry_timer_id=retry_timer_id,
+        )
         return await self.execute_activity(options, input_message, result_type, func)
 
     async def wait_event(
@@ -928,7 +1224,10 @@ class Workflow:
             run_id=self._run_id,
             event_id=event_id,
         )
-        record = await self._store.get_event(key)
+        record = await _await_workflow_infrastructure(
+            "read workflow event",
+            self._store.get_event(key),
+        )
         if record is None:
             raise EventPendingError(event_id)
         payload = payload_factory()
@@ -946,11 +1245,9 @@ class Workflow:
         return self._store
 
     async def sleep(self, timer_id: str, duration: timedelta) -> None:
-        if timer_id.startswith(ACTIVITY_RETRY_TIMER_ID_PREFIX):
-            raise ValueError(
-                f"timer_id {timer_id!r} uses the framework-reserved "
-                f"{ACTIVITY_RETRY_TIMER_ID_PREFIX!r} prefix; choose another"
-            )
+        if duration < timedelta(0):
+            raise ValueError("sleep duration must not be negative")
+
         timer_kind = SLEEP_TIMER_KIND
         key = TimerKey(
             workflow_id=self._workflow_id,
@@ -959,39 +1256,90 @@ class Workflow:
         )
         now = datetime.now(UTC)
 
-        record = await self._store.get_timer(key)
-        if record is not None:
-            if record.timer_kind != timer_kind:
+        def inspect_sleep_timer(
+            stored: temporaless_pb2.TimerRecord,
+        ) -> tuple[datetime, temporaless_pb2.TimerStatus]:
+            if stored.timer_kind != timer_kind:
                 raise TimerConflictError(
-                    f"timer kind changed from {record.timer_kind!r} to {timer_kind!r}"
+                    f"timer kind changed from {stored.timer_kind!r} to {timer_kind!r}"
                 )
-            if record.code_version != self._code_version:
+            if stored.code_version != self._code_version:
                 raise TimerConflictError(
-                    f"code version changed from {record.code_version!r} to {self._code_version!r}"
+                    f"code version changed from {stored.code_version!r} to {self._code_version!r}"
                 )
-            stored_duration = record.duration.ToTimedelta()
+            if stored.retry_activity_id:
+                raise TimerConflictError("stored sleep timer belongs to an activity retry")
+            if not stored.HasField("duration"):
+                raise TimerConflictError("stored sleep timer has no duration")
+            try:
+                stored_duration = _validated_proto_duration(
+                    stored.duration, "persisted sleep timer duration"
+                )
+            except (OverflowError, ValueError) as exc:
+                raise TimerConflictError("stored sleep timer has invalid duration") from exc
+            if stored_duration < timedelta(0):
+                raise TimerConflictError("stored sleep timer has negative duration")
             if stored_duration != duration:
                 raise TimerConflictError(
                     f"timer duration changed from {stored_duration} to {duration}"
                 )
-            if record.status == temporaless_pb2.TIMER_STATUS_FIRED:
-                return
-            if record.status == temporaless_pb2.TIMER_STATUS_CANCELED:
+            if not stored.HasField("fire_at"):
+                raise TimerConflictError("stored sleep timer has no fire_at")
+            if not stored.HasField("created_at"):
+                raise TimerConflictError("stored sleep timer has no created_at")
+            try:
+                fire_at = _validated_proto_timestamp(
+                    stored.fire_at, "persisted sleep timer fire_at"
+                )
+                _validated_proto_timestamp(stored.created_at, "persisted sleep timer created_at")
+            except (OverflowError, ValueError) as exc:
+                raise TimerConflictError("stored sleep timer has an invalid timestamp") from exc
+
+            if stored.status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                if stored.HasField("fired_at"):
+                    raise TimerConflictError("stored SCHEDULED sleep timer has fired_at")
+                return fire_at, stored.status
+            if stored.status == temporaless_pb2.TIMER_STATUS_FIRED:
+                if not stored.HasField("fired_at"):
+                    raise TimerConflictError("stored FIRED sleep timer has no fired_at")
+                try:
+                    _validated_proto_timestamp(stored.fired_at, "persisted sleep timer fired_at")
+                except (OverflowError, ValueError) as exc:
+                    raise TimerConflictError(
+                        "stored FIRED sleep timer has invalid fired_at"
+                    ) from exc
+                return fire_at, stored.status
+            if stored.status == temporaless_pb2.TIMER_STATUS_CANCELED:
+                if stored.HasField("fired_at"):
+                    raise TimerConflictError("stored CANCELED sleep timer has fired_at")
                 raise TimerConflictError("timer was canceled")
-            fire_at = record.fire_at.ToDatetime().replace(tzinfo=UTC)
-            if now < fire_at:
-                raise TimerPendingError(timer_id, fire_at)
-            record.status = temporaless_pb2.TIMER_STATUS_FIRED
-            record.fired_at.GetCurrentTime()
-            await self._store.put_timer(record)
+            raise TimerConflictError("stored sleep timer has unknown status")
+
+        record = await _await_workflow_infrastructure(
+            "read sleep timer",
+            self._store.get_timer(key),
+        )
+        if record is not None:
+            fire_at, status = inspect_sleep_timer(record)
+            if status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                if now < fire_at:
+                    # This future timer is the durable successor for any earlier
+                    # due sleeps traversed by the replay.
+                    await self._reconcile_due_sleep_timers()
+                    raise TimerPendingError(timer_id, fire_at)
+                self._due_sleep_timer_ids.add(timer_id)
             return
 
-        fire_at = now + duration
-        status = temporaless_pb2.TIMER_STATUS_SCHEDULED
-        if now >= fire_at:
-            status = temporaless_pb2.TIMER_STATUS_FIRED
+        try:
+            fire_at = now + duration
+        except OverflowError as exc:
+            raise ValueError("sleep duration is outside the supported range") from exc
         duration_message = Duration()
-        duration_message.FromTimedelta(duration)
+        try:
+            duration_message.FromTimedelta(duration)
+            _validated_proto_duration(duration_message, "sleep duration")
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("sleep duration is outside the protobuf range") from exc
         fire_at_message = Timestamp()
         fire_at_message.FromDatetime(fire_at)
         created_at = Timestamp()
@@ -1003,29 +1351,119 @@ class Workflow:
             timer_kind=timer_kind,
             code_version=self._code_version,
             duration=duration_message,
-            status=status,
+            # Even an immediately due timer stays scheduled until the body
+            # crosses a later durable boundary. Otherwise a process death
+            # immediately after this write would consume its only wakeup.
+            status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_message,
             created_at=created_at,
         )
-        if status == temporaless_pb2.TIMER_STATUS_FIRED:
-            record.fired_at.GetCurrentTime()
-        await self._store.put_timer(record)
-        if status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
-            raise TimerPendingError(timer_id, fire_at)
+        try:
+            await _await_workflow_infrastructure(
+                "persist sleep timer",
+                self._store.put_timer(record),
+            )
+        except WorkflowInfrastructureError as write_error:
+            # A remote point write may commit and then lose its response. Read
+            # through the cache to the authoritative store before deciding
+            # whether the caller alone must retry or a scanner wake is durable.
+            try:
+                if isinstance(self._store, RunScopedCache):
+                    verified = await _await_workflow_infrastructure(
+                        "verify ambiguous sleep timer write",
+                        self._store.refresh_timer(key),
+                    )
+                else:
+                    verified = await _await_workflow_infrastructure(
+                        "verify ambiguous sleep timer write",
+                        self._store.get_timer(key),
+                    )
+            except WorkflowInfrastructureError as verify_error:
+                causes = ExceptionGroup(
+                    "sleep timer write and verification failed",
+                    [write_error, verify_error],
+                )
+                raise WorkflowInfrastructureError(
+                    "persist and verify sleep timer",
+                    causes,
+                ) from verify_error
+            if verified is None:
+                # Definitive before-commit failure: no scheduler wake exists,
+                # so UNAVAILABLE tells the requester to invoke this run again.
+                raise
+            verified_fire_at, verified_status = inspect_sleep_timer(verified)
+            if verified_status == temporaless_pb2.TIMER_STATUS_FIRED:
+                return
+            # Stop even when the verified wake is already due. The scheduled
+            # timer makes this invocation independently redeliverable and the
+            # parent must remain IN_PROGRESS after the ambiguous response.
+            raise TimerPendingError(timer_id, verified_fire_at) from write_error
+        if now >= fire_at:
+            self._due_sleep_timer_ids.add(timer_id)
+            return
+        # Persist the successor before consuming any prior due wakeups. A
+        # cleanup failure leaves duplicate delivery, not a lost workflow.
+        await self._reconcile_due_sleep_timers()
+        raise TimerPendingError(timer_id, fire_at)
+
+    async def _reconcile_due_sleep_timers(self) -> None:
+        """Best-effort acknowledgement after a durable successor boundary.
+
+        The caller must persist that boundary before invoking this method.
+        Failed acknowledgements intentionally remain scheduled so a scanner
+        can safely redeliver the workflow.
+        """
+        for timer_id in tuple(self._due_sleep_timer_ids):
+            key = TimerKey(
+                workflow_id=self._workflow_id,
+                run_id=self._run_id,
+                timer_id=timer_id,
+            )
+            try:
+                record = await self._store.get_timer(key)
+                if record is None or record.status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                    self._due_sleep_timer_ids.discard(timer_id)
+                    continue
+                if (
+                    record.timer_kind != SLEEP_TIMER_KIND
+                    or record.code_version != self._code_version
+                ):
+                    _LOGGER.warning(
+                        "refusing to reconcile changed sleep timer %s/%s/%s",
+                        self._workflow_id,
+                        self._run_id,
+                        timer_id,
+                    )
+                    continue
+                fired = temporaless_pb2.TimerRecord()
+                fired.CopyFrom(record)
+                fired.status = temporaless_pb2.TIMER_STATUS_FIRED
+                fired.fired_at.GetCurrentTime()
+                await self._store.put_timer(fired)
+                self._due_sleep_timer_ids.discard(timer_id)
+            except Exception:
+                _LOGGER.warning(
+                    "failed to reconcile due sleep timer %s/%s/%s",
+                    self._workflow_id,
+                    self._run_id,
+                    timer_id,
+                    exc_info=True,
+                )
 
     async def _put_activity_retry_timer(
         self,
         activity_id: str,
+        retry_timer_id: str,
         duration: timedelta,
         fire_at: datetime,
     ) -> None:
         """Write (or overwrite) the TIMER_KIND_ACTIVITY_RETRY timer paired
-        with an activity's durable retry. Stable per activity_id so later
-        retries naturally overwrite earlier scheduled state."""
+        with an activity's durable retry. The caller-supplied ID is stable so
+        later retries naturally overwrite earlier scheduled state."""
         key = TimerKey(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
-            timer_id=_activity_retry_timer_id(activity_id),
+            timer_id=retry_timer_id,
         )
         timer_kind = temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY
         duration_message = Duration()
@@ -1043,25 +1481,64 @@ class Workflow:
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_message,
             created_at=created_at,
+            retry_activity_id=activity_id,
         )
-        await self._store.put_timer(record)
+        await _await_workflow_infrastructure(
+            "persist activity retry timer",
+            self._store.put_timer(record),
+        )
 
-    async def _mark_activity_retry_timer_fired(self, activity_id: str) -> None:
-        """Transition the paired retry timer to FIRED so the timer scanner
-        stops returning it while the activity body executes the resumed
-        attempt. No-op when the timer is absent (legacy path) or already
-        FIRED."""
+    async def _mark_activity_retry_timer_fired(
+        self,
+        activity_id: str,
+        retry_timer_id: str,
+    ) -> None:
+        """Transition a paired retry timer after its activity is terminal."""
         key = TimerKey(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
-            timer_id=_activity_retry_timer_id(activity_id),
+            timer_id=retry_timer_id,
         )
-        record = await self._store.get_timer(key)
-        if record is None or record.status == temporaless_pb2.TIMER_STATUS_FIRED:
+        record = await _await_workflow_infrastructure(
+            "read terminal activity retry timer",
+            self._store.get_timer(key),
+        )
+        if record is None:
             return
-        record.status = temporaless_pb2.TIMER_STATUS_FIRED
-        record.fired_at.GetCurrentTime()
-        await self._store.put_timer(record)
+        if record.key != key.to_proto():
+            raise ActivityConflictError(
+                "stored activity retry timer key does not match its storage key"
+            )
+        if record.timer_kind != temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY:
+            raise ActivityConflictError(
+                "stored activity retry timer collides with another timer kind"
+            )
+        if record.retry_activity_id != activity_id:
+            raise ActivityConflictError("stored activity retry timer belongs to another activity")
+        if record.code_version != self._code_version:
+            raise ActivityConflictError("stored activity retry timer code version changed")
+        if record.schema_version != TIMER_RECORD_SCHEMA_VERSION:
+            raise ActivityConflictError("stored activity retry timer schema version changed")
+        if record.status == temporaless_pb2.TIMER_STATUS_FIRED:
+            return
+        if record.status == temporaless_pb2.TIMER_STATUS_CANCELED:
+            raise ActivityConflictError("stored activity retry timer was canceled")
+        if record.status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
+            raise ActivityConflictError("stored activity retry timer has unknown status")
+        if not record.HasField("fire_at"):
+            raise ActivityConflictError("stored activity retry timer has no fire_at")
+        try:
+            record.fire_at.ToJsonString()
+        except (OverflowError, ValueError) as exc:
+            raise ActivityConflictError("stored activity retry timer has invalid fire_at") from exc
+        fired = temporaless_pb2.TimerRecord()
+        fired.CopyFrom(record)
+        fired.status = temporaless_pb2.TIMER_STATUS_FIRED
+        fired.fired_at.GetCurrentTime()
+        await _await_workflow_infrastructure(
+            "acknowledge terminal activity retry timer",
+            self._store.put_timer(fired),
+        )
 
 
 @dataclass(frozen=True)
@@ -1103,12 +1580,21 @@ async def run(
         ):
             return (
                 _replay_workflow_record(
-                    record, workflow_type, options.code_version, result_factory
+                    record,
+                    workflow_type,
+                    options.code_version,
+                    options.run_order_time if options.HasField("run_order_time") else None,
+                    result_factory,
                 ),
                 None,
             )
         if record.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS:
-            _assert_workflow_identity(record, workflow_type, options.code_version)
+            _assert_workflow_identity(
+                record,
+                workflow_type,
+                options.code_version,
+                options.run_order_time if options.HasField("run_order_time") else None,
+            )
             created_at = Timestamp()
             created_at.CopyFrom(record.created_at)
             return None, created_at
@@ -1266,6 +1752,8 @@ async def run(
                 status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
                 created_at=created_at,
             )
+            if options.HasField("run_order_time"):
+                in_progress.run_order_time.CopyFrom(options.run_order_time)
             await store.put_workflow(in_progress)
 
         workflow = Workflow(
@@ -1285,6 +1773,7 @@ async def run(
                 ClaimReleaseError,
                 EventPendingError,
                 WorkflowDependencyPendingError,
+                WorkflowInfrastructureError,
             ):
                 raise
             except asyncio.CancelledError:
@@ -1306,7 +1795,12 @@ async def run(
                     completed_at=completed_at,
                     annotations=workflow_annotations.snapshot(),
                 )
+                if options.HasField("run_order_time"):
+                    failed.run_order_time.CopyFrom(options.run_order_time)
                 await store.put_workflow(failed)
+                # The terminal record is authoritative. Only now is it safe
+                # to consume sleep wakeups traversed by this invocation.
+                await workflow._reconcile_due_sleep_timers()
                 raise
 
             result_any = Any()
@@ -1325,7 +1819,10 @@ async def run(
                 completed_at=completed_at,
                 annotations=workflow_annotations.snapshot(),
             )
+            if options.HasField("run_order_time"):
+                completed.run_order_time.CopyFrom(options.run_order_time)
             await store.put_workflow(completed)
+            await workflow._reconcile_due_sleep_timers()
             return result
         finally:
             _workflow_var.reset(workflow_token)
@@ -1434,6 +1931,11 @@ def normalized_workflow_options(options: Options) -> Options:
     if not normalized.code_version:
         normalized.code_version = os.environ.get("TEMPORALESS_CODE_VERSION") or "dev"
     validate(normalized)
+    if normalized.HasField("run_order_time"):
+        try:
+            normalized.run_order_time.ToDatetime(tzinfo=UTC)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("run_order_time must be a valid protobuf timestamp") from exc
     return normalized
 
 
@@ -1464,6 +1966,26 @@ def _assert_activity_identity(
         )
 
 
+def _assert_activity_retry_policy(
+    record: temporaless_pb2.ActivityRecord,
+    current: RetryPolicy | None,
+) -> None:
+    """Reject retry-plan drift while an activity is resumable.
+
+    An absent stored policy means single-attempt execution and therefore can
+    never validly describe a RETRYING record. Terminal records deliberately do
+    not use this check: their persisted outcome remains authoritative.
+    """
+    if not record.HasField("retry_policy"):
+        if current is None:
+            raise ActivityConflictError("stored RETRYING activity has no retry policy")
+        raise ActivityConflictError("activity retry policy changed from single-attempt execution")
+    if current is None:
+        raise ActivityConflictError("activity retry policy changed to single-attempt execution")
+    if record.retry_policy != current:
+        raise ActivityConflictError("activity retry policy changed while activity is RETRYING")
+
+
 def _replay_record(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
@@ -1480,6 +2002,8 @@ def _replay_record(
             )
         return result
     if record.status == temporaless_pb2.ACTIVITY_STATUS_FAILED:
+        if not record.HasField("failure"):
+            raise ActivityConflictError("stored FAILED activity has no failure")
         raise ActivityError(record.failure.code, record.failure.message)
     raise ActivityConflictError("stored activity has unknown status")
 
@@ -1492,6 +2016,89 @@ class _RetryPlan:
     maximum_interval: timedelta
     durable_threshold: timedelta
     non_retryable_codes: frozenset[str]
+    record_policy: RetryPolicy | None
+
+
+def _validate_retrying_activity(
+    record: temporaless_pb2.ActivityRecord,
+    plan: _RetryPlan,
+) -> list[temporaless_pb2.ActivityAttempt]:
+    attempts = list(record.attempts)
+    if not attempts:
+        raise ActivityConflictError("stored RETRYING activity has no attempts")
+    if len(attempts) >= plan.maximum_attempts:
+        raise ActivityConflictError(
+            "stored RETRYING activity has exhausted its retry policy "
+            f"({len(attempts)} attempts under a {plan.maximum_attempts}-attempt policy)"
+        )
+    for ordinal, attempt in enumerate(attempts, start=1):
+        if attempt.attempt != ordinal:
+            raise ActivityConflictError(
+                f"stored RETRYING activity attempt {ordinal} is out of sequence"
+            )
+        if not attempt.HasField("failure"):
+            raise ActivityConflictError(
+                f"stored RETRYING activity attempt {ordinal} has no failure"
+            )
+        if attempt.failure.HasField("retry_after"):
+            try:
+                # ToTimedelta accepts values outside the protobuf Duration
+                # range; the public JSON conversion performs the canonical
+                # protobuf validity check first.
+                retry_after = _validated_proto_duration(
+                    attempt.failure.retry_after, "persisted retry_after"
+                )
+            except (OverflowError, ValueError) as exc:
+                raise ActivityConflictError(
+                    f"stored RETRYING activity attempt {ordinal} has invalid retry_after"
+                ) from exc
+            if retry_after < timedelta(0):
+                raise ActivityConflictError(
+                    f"stored RETRYING activity attempt {ordinal} has negative retry_after"
+                )
+    last_failure = attempts[-1].failure
+    if last_failure.code in plan.non_retryable_codes:
+        raise ActivityConflictError("stored RETRYING activity ends with a non-retryable failure")
+    if not record.HasField("failure") or record.failure != last_failure:
+        raise ActivityConflictError(
+            "stored RETRYING activity failure does not match its latest attempt"
+        )
+
+    retry_interval = _retry_interval_after_failed_attempt(plan, len(attempts))
+    if last_failure.HasField("retry_after"):
+        retry_interval = max(
+            retry_interval,
+            _validated_proto_duration(last_failure.retry_after, "persisted retry_after"),
+        )
+    requires_durable_wait = (
+        plan.durable_threshold > timedelta(0) and retry_interval >= plan.durable_threshold
+    )
+    if record.HasField("next_attempt_at") != requires_durable_wait:
+        expected = "present" if requires_durable_wait else "absent"
+        raise ActivityConflictError(
+            f"stored RETRYING activity next_attempt_at must be {expected} for its retry policy"
+        )
+    return attempts
+
+
+def _validated_proto_duration(value: Duration, name: str) -> timedelta:
+    try:
+        # ToJsonString enforces the protobuf Duration range and canonical
+        # seconds/nanos sign rules that ToTimedelta alone accepts loosely.
+        value.ToJsonString()
+        return value.ToTimedelta()
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"retry policy {name} is invalid") from exc
+
+
+def _validated_proto_timestamp(value: Timestamp, name: str) -> datetime:
+    try:
+        # ToJsonString enforces the protobuf Timestamp range. ToDatetime then
+        # gives a timezone-aware UTC value for direct wall-clock comparison.
+        value.ToJsonString()
+        return value.ToDatetime(tzinfo=UTC)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{name} is invalid") from exc
 
 
 def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
@@ -1503,32 +2110,102 @@ def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
             maximum_interval=timedelta(0),
             durable_threshold=timedelta(0),
             non_retryable_codes=frozenset(),
+            record_policy=None,
         )
     maximum_attempts = policy.maximum_attempts
     if maximum_attempts == 0:
         raise ValueError("retry policy maximum_attempts must be > 0")
-    initial_interval = policy.initial_interval.ToTimedelta()
+    initial_interval = _validated_proto_duration(policy.initial_interval, "initial_interval")
+    if initial_interval < timedelta(0):
+        raise ValueError("retry policy initial_interval must be >= 0")
     if maximum_attempts > 1 and initial_interval <= timedelta(0):
         raise ValueError("retry policy initial_interval must be > 0 when maximum_attempts > 1")
     backoff_coefficient = policy.backoff_coefficient or 1.0
-    durable_threshold = policy.durable_backoff_threshold.ToTimedelta()
+    if not math.isfinite(backoff_coefficient) or backoff_coefficient <= 0:
+        raise ValueError("retry policy backoff_coefficient must be finite and > 0")
+    maximum_interval = _validated_proto_duration(policy.maximum_interval, "maximum_interval")
+    if maximum_interval < timedelta(0):
+        raise ValueError("retry policy maximum_interval must be >= 0")
+    if maximum_interval > timedelta(0) and initial_interval > maximum_interval:
+        raise ValueError("retry policy maximum_interval must be >= initial_interval")
+    durable_threshold = _validated_proto_duration(
+        policy.durable_backoff_threshold, "durable_backoff_threshold"
+    )
     if durable_threshold < timedelta(0):
         raise ValueError("retry policy durable_backoff_threshold must be >= 0")
+    non_retryable_codes = frozenset(policy.non_retryable_error_codes)
+    record_policy = RetryPolicy(
+        maximum_attempts=maximum_attempts,
+        backoff_coefficient=backoff_coefficient,
+        non_retryable_error_codes=sorted(non_retryable_codes),
+    )
+    if initial_interval != timedelta(0):
+        record_policy.initial_interval.FromTimedelta(initial_interval)
+    if maximum_interval != timedelta(0):
+        record_policy.maximum_interval.FromTimedelta(maximum_interval)
+    if durable_threshold != timedelta(0):
+        record_policy.durable_backoff_threshold.FromTimedelta(durable_threshold)
     return _RetryPlan(
         maximum_attempts=maximum_attempts,
         initial_interval=initial_interval,
         backoff_coefficient=backoff_coefficient,
-        maximum_interval=policy.maximum_interval.ToTimedelta(),
+        maximum_interval=maximum_interval,
         durable_threshold=durable_threshold,
-        non_retryable_codes=frozenset(policy.non_retryable_error_codes),
+        non_retryable_codes=non_retryable_codes,
+        record_policy=record_policy,
     )
 
 
 def _next_interval(prev: timedelta, plan: _RetryPlan) -> timedelta:
-    next_interval = timedelta(seconds=prev.total_seconds() * plan.backoff_coefficient)
-    if plan.maximum_interval > timedelta(0) and next_interval > plan.maximum_interval:
+    next_seconds = prev.total_seconds() * plan.backoff_coefficient
+    if (
+        plan.maximum_interval > timedelta(0)
+        and next_seconds >= plan.maximum_interval.total_seconds()
+    ):
         return plan.maximum_interval
-    return next_interval
+    if not math.isfinite(next_seconds):
+        raise ValueError("retry policy produced a non-finite backoff interval")
+    try:
+        result = timedelta(seconds=next_seconds)
+    except OverflowError as exc:
+        raise ValueError("retry policy produced an out-of-range backoff interval") from exc
+    if prev > timedelta(0) and result <= timedelta(0):
+        raise ValueError("retry policy produced a non-positive backoff interval")
+    return result
+
+
+def _retry_interval_after_failed_attempt(
+    plan: _RetryPlan,
+    attempt: int,
+) -> timedelta:
+    if attempt <= 0:
+        raise ActivityConflictError("stored RETRYING activity has no failed attempt")
+    interval = plan.initial_interval
+    for _ in range(1, attempt):
+        interval = _next_interval(interval, plan)
+    return interval
+
+
+def _retry_interval_after_attempts(
+    plan: _RetryPlan,
+    attempts: list[temporaless_pb2.ActivityAttempt],
+) -> timedelta:
+    """Rebuild the exponential schedule at a RETRYING replay boundary.
+
+    The normalized policy is stored on ActivityRecord and checked before this
+    reconstruction. Advancing its exponential schedule once per persisted
+    failed attempt produces the same interval the uninterrupted loop would use
+    after the next attempt. A prior attempt's Retry-After affects only that
+    attempt's wait; it must not become the base for later exponential growth.
+    """
+    if not attempts:
+        return plan.initial_interval
+    if not attempts[-1].HasField("failure"):
+        raise ActivityConflictError("stored RETRYING activity attempt has no failure")
+    return _next_interval(
+        _retry_interval_after_failed_attempt(plan, len(attempts)),
+        plan,
+    )
 
 
 def _failure_from_exception(exc: BaseException) -> temporaless_pb2.ActivityFailure:
@@ -1544,9 +2221,10 @@ def _replay_workflow_record(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
     code_version: str,
+    run_order_time: Timestamp | None,
     result_factory: Callable[[], ResultT],
 ) -> ResultT:
-    _assert_workflow_identity(record, workflow_type, code_version)
+    _assert_workflow_identity(record, workflow_type, code_version, run_order_time)
     if record.status == temporaless_pb2.WORKFLOW_STATUS_COMPLETED:
         result = result_factory()
         if not record.result.Unpack(result):
@@ -1555,6 +2233,8 @@ def _replay_workflow_record(
             )
         return result
     if record.status == temporaless_pb2.WORKFLOW_STATUS_FAILED:
+        if not record.HasField("failure"):
+            raise WorkflowConflictError("stored FAILED workflow has no failure")
         raise ActivityError(record.failure.code, record.failure.message)
     raise WorkflowConflictError("stored workflow has unknown status")
 
@@ -1563,6 +2243,7 @@ def _assert_workflow_identity(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
     code_version: str,
+    run_order_time: Timestamp | None,
 ) -> None:
     """See :func:`_assert_activity_identity` for the de-duplication contract."""
     if record.workflow_type != workflow_type:
@@ -1573,89 +2254,7 @@ def _assert_workflow_identity(
         raise WorkflowConflictError(
             f"code version changed from {record.code_version!r} to {code_version!r}"
         )
-
-
-def wrap_workflow_method[RequestT: Message, ResultT: Message](
-    *,
-    store: Callable[[object], Store],
-    result_type: type[ResultT],
-    options_for: Callable[[object, RequestT], Options],
-) -> Callable[
-    [Callable[..., Awaitable[ResultT]]],
-    Callable[..., Awaitable[ResultT]],
-]:
-    """Decorate a ConnectRPC unary method as a Temporaless workflow.
-
-    The wrapped method has the standard ConnectRPC handler shape
-    ``async def m(self, request, ctx) -> Response``. Each invocation routes
-    through ``workflow.run``: the body becomes the workflow body, replays
-    short-circuit via stored records, and the in-flight ``Workflow`` is
-    available inside the body via :func:`current_workflow`.
-
-    Args:
-        store: extracts the ``Store`` from ``self`` (e.g. ``lambda s: s._store``).
-        result_type: the protobuf response class (callable as a no-arg factory).
-        options_for: builds ``Options`` from ``(self, request)``.
-
-    Example:
-
-        class PriceService:
-            def __init__(self, store: Store) -> None:
-                self._store = store
-
-            @wrap_workflow_method(
-                store=lambda s: s._store,
-                result_type=FetchResponse,
-                options_for=lambda s, r: Options(
-                    workflow_id=f"prices:{r.symbol}",
-                    run_id=r.run_id,
-                    code_version="v1",
-                ),
-            )
-            async def fetch_prices(self, request: FetchRequest, ctx) -> FetchResponse:
-                # Normal gRPC body. Calls below replay from storage on retry.
-                price = await current_workflow().execute_activity(
-                    ActivityOptions(activity_id=f"vendor:{request.symbol}"),
-                    request,
-                    FetchResponse,
-                    _vendor_fetch,
-                )
-                return price
-
-    Mount the service on a ConnectRPC ASGI app as usual; every invocation now
-    has workflow replay semantics without changing the gRPC interface.
-
-    Error mapping is applied automatically: framework typed errors (timer
-    pending, event pending, claim busy, conflicts, activity errors) are
-    re-raised as ``ConnectError`` with the appropriate code so Connect clients
-    see correct gRPC status codes. Unknown exceptions propagate unchanged.
-    """
-
-    def decorator(
-        method: Callable[..., Awaitable[ResultT]],
-    ) -> Callable[..., Awaitable[ResultT]]:
-        if not inspect.iscoroutinefunction(method):
-            raise ValueError("workflow method must be async (define it with `async def`)")
-
-        @wraps(method)
-        async def wrapped(self_: object, request: RequestT, ctx: object = None) -> ResultT:
-            store_instance = store(self_)
-            opts = options_for(self_, request)
-
-            async def body(_workflow: Workflow, req: RequestT) -> ResultT:
-                return await method(self_, req, ctx)
-
-            try:
-                return await run(store_instance, opts, request, result_type, body)
-            except Exception as exc:
-                mapping = workflow_error_to_connect_code(exc)
-                if mapping is None:
-                    raise
-                from connectrpc.errors import ConnectError
-
-                code, message = mapping
-                raise ConnectError(code, message) from exc  # ty: ignore[invalid-argument-type]
-
-        return wrapped
-
-    return decorator
+    if record.HasField("run_order_time") != (run_order_time is not None):
+        raise WorkflowConflictError("run_order_time changed for an existing workflow run")
+    if run_order_time is not None and record.run_order_time != run_order_time:
+        raise WorkflowConflictError("run_order_time changed for an existing workflow run")

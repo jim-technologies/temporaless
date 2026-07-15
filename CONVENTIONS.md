@@ -6,19 +6,20 @@ Strict audit of this repo against the agreed conventions (source of truth:
 **Conforms** / **Fixed** / **Intentional deviation** (+ one-line rationale).
 
 The gate (`flox activate -- make check`) is the Go-focused fast gate; the full
-cross-language superset is `flox activate -- scripts/check` (adds buf + Rust +
-Python/uv). Both stay green.
+local superset is `flox activate -- scripts/check` (Buf, TypeScript, Go,
+Python/uv, plus Rust when installed). CI always runs the separately pinned Rust
+1.97 job. Both paths stay green.
 
 | # | Convention | Status | Notes |
 |---|------------|--------|-------|
-| 1 | Deps via Flox: `.flox/env/manifest.toml` installs the toolchain (`go`, `python313`, `uv`, `buf`, `golangci-lint`, plus `libffi` + `gcc-unwrapped` lib for cgo/OpenDAL); thin manifest, language libs live in `go.mod`/`uv.lock`/`Cargo.toml`/`buf.gen.yaml`. | **Conforms** | `golangci-lint` is a CLI (not importable) so it correctly lives in Flox, with an inline rationale comment. |
+| 1 | Deps via Flox: `.flox/env/manifest.toml` installs `go`, `python314`, `uv`, `buf`, `libffi`, and the `gcc-unwrapped` lib output; language libraries live in `go.mod`/uv locks/`Cargo.lock`/`package-lock.json`. | **Conforms** | golangci-lint runs as a pinned Go module; experimental Rust uses `rust-toolchain.toml` plus a separate CI job. Flox stays the thin first-class Go/Python environment. |
 | 2 | `flox activate -- make check` clean. | **Conforms** | Verified green: golangci-lint `0 issues`, `go vet` clean, `go test -race ./...` all `ok`. |
 | 3 | ONE `make check` = gofmt-check + `go vet` + golangci-lint + `go test -race`. | **Conforms** | `Makefile` `check: fmt-check vet lint test`; `test` uses `-race`. |
 | 3a | "gofumpt-check" in the brief. | **Intentional deviation** | Repo formats with `gofmt` only (manifest + `.golangci.yml` `formatters: [gofmt]`); gofumpt is not installed and adding it would reformat sources (a change). gofmt + golangci-lint is the agreed Google-Go gate here. |
 | 4 | Idiomatic error wrapping with `%w`. | **Conforms** | No `fmt.Errorf` wraps an existing `err` without `%w`. Bare `fmt.Errorf("…")` cases are sentinel/validation messages (no error to wrap) — correct usage. |
 | 5 | Doc comments on exported symbols (Google Go style). | **Intentional deviation** | Non-obvious exported symbols (e.g. `storage.DueTimer`, `Store.Sweep`, `Store.DueTimers`, `ClaimStore.DeleteClaim`, `WorkflowStore.ListWorkflows`) carry doc comments; self-evident CRUD interface methods and plain data-holder structs (`WorkflowKey`, `ActivityKey`, …) are intentionally left bare to avoid restating the obvious — consistent with AGENTS.md "keep functions direct / behavior obvious". Not linter-enforced (no `revive`/`godot`), so the gate is unaffected. |
 | 6 | golangci-lint config is conservative + excludes generated proto. | **Conforms** | `.golangci.yml` v2: `standard` + `bodyclose`/`errorlint`/`misspell`/`unconvert`; `core/go/gen` excluded from linters and formatters; best-effort `Close`/`Fprint*` excluded from errcheck with rationale. |
-| 7 | CI runs `flox activate -- make check`. | **Conforms** | `.github/workflows/ci.yml` `go-check` job runs `flox activate -- make check`; `full-gate` runs `flox activate -- scripts/check` (cross-language superset); `go-build` is a fast no-flox build/vet smoke. |
+| 7 | CI runs `flox activate -- make check`. | **Conforms** | `.github/workflows/ci.yml` `go-check` runs `flox activate -- make check`; `full-gate` runs `scripts/check`; `go-build` uses the same Flox Go/libffi environment; Rust has its own pinned job. |
 | 8 | Point-in-time / leakage-guard semantics + documented caller responsibilities are stated clearly. | **Conforms** | Replay identity guards stamp `TEMPORALESS_CODE_VERSION` onto every record so replay rejects code drift; caller-provided IDs (workflow/run/activity/timer/claim-owner) and storage-safe-char validation are documented in `AGENTS.md` (Storage, Claims). Caller owns retention cadence/threshold (`Store.Sweep`, `decision.md` D10). |
 | 9 | Two-tier tests where relevant (always-run unit + gated live integration). | **Conforms** | Go tests are hermetic (OpenDAL `fs` + `t.TempDir`, no external services), so no env gate is needed; the subprocess smoke test self-gates on `testing.Short()`. The live/integration tier lives in the Python adapters that talk to real Temporal/Prefect SDKs (run via `scripts/check`). |
 | 10 | Tests use OpenDAL `fs` + temp dir, not memory stores. | **Conforms** | Go `*_test.go` use OpenDAL `fs` over `t.TempDir()`; no in-memory framework stores. |
@@ -28,13 +29,15 @@ Python/uv). Both stay green.
 
 ## Audit outcome
 
-- **Fixes applied this pass:** none. The prior "Production hardening" commit
-  (`ea66c5c`) already brought the repo into conformance; this audit verified it
-  and recorded the result here.
+- **Fixes applied this pass:** exact timer write-ahead recovery, retry/claim
+  race hardening, authoritative query/index validation, bounded production
+  request handling, latest stable dependency/toolchain pins, immutable CI and
+  container inputs, and mandatory cross-language gates.
 - **Documented intentional deviations:** rows 3a (gofmt-only, no gofumpt) and 5
   (doc comments on non-obvious exported symbols only) — both deliberate, neither
   linter-enforced, neither a behavior/API/wire change.
-- **Skipped (risky) items:** none required code changes. Concurrency / durable
-  replay paths were read-only audited (replay identity guard, dispatch
-  wait-group, claim CAS) and left untouched per the conservative mandate.
-- **Gate:** `flox activate -- make check` is GREEN, including `-race`.
+- **Skipped (risky) items:** none within the first-class Go/Python scope. CAS
+  claim takeover and full Rust parity remain explicitly outside the current
+  core contract rather than being implied as complete.
+- **Gate:** `flox activate -- scripts/check` is GREEN; the independent Rust
+  1.97 format/Clippy/test gate and digest-pinned container build are also green.

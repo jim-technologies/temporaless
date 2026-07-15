@@ -43,6 +43,7 @@ func TestRetryAfter_LongerThanComputedIntervalWins(t *testing.T) {
 		ctx, wf, "act:retry-after",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		policy,
+		testRetryTimerID("act:retry-after"),
 		wrapperspb.String("x"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -109,6 +110,7 @@ func TestRetryAfter_ShorterThanComputedIntervalIgnored(t *testing.T) {
 		ctx, wf, "act:short-ra",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		policy,
+		testRetryTimerID("act:short-ra"),
 		wrapperspb.String("x"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -154,6 +156,7 @@ func TestRetryAfter_TurnsShortPolicyIntoDurableWait(t *testing.T) {
 		ctx, wf, "act:promote",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		policy,
+		testRetryTimerID("act:promote"),
 		wrapperspb.String("x"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -167,7 +170,7 @@ func TestRetryAfter_TurnsShortPolicyIntoDurableWait(t *testing.T) {
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: wf.workflowID,
 		RunID:      wf.runID,
-		TimerID:    activityRetryTimerID("act:promote"),
+		TimerID:    testRetryTimerID("act:promote"),
 	}
 	timer, found, err := store.GetTimer(ctx, timerKey)
 	if err != nil || !found {

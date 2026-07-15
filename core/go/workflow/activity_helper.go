@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"regexp"
-	"runtime"
-	"strings"
 	"time"
 
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
@@ -36,19 +33,24 @@ func DefaultRetryPolicy() *temporalessv1.RetryPolicy {
 }
 
 type activityConfig struct {
-	activityID  string
-	retryPolicy *temporalessv1.RetryPolicy
+	activityID   string
+	retryTimerID string
+	retryPolicy  *temporalessv1.RetryPolicy
 }
 
 // ActivityOption overrides one of Activity()'s defaults. Use sparingly —
 // the default behavior is intentionally sufficient for most callsites.
 type ActivityOption func(*activityConfig)
 
-// WithActivityID overrides the auto-inferred activity_id. Use when two
-// callsites share the same function but should produce distinct activity
-// records (e.g. `fetch:aapl` vs `fetch:msft` over the same handler).
+// WithActivityID supplies the stable application-owned activity_id.
 func WithActivityID(id string) ActivityOption {
 	return func(c *activityConfig) { c.activityID = id }
+}
+
+// WithRetryTimerID supplies the stable application-owned timer_id used when
+// the retry policy crosses its durable backoff threshold.
+func WithRetryTimerID(id string) ActivityOption {
+	return func(c *activityConfig) { c.retryTimerID = id }
 }
 
 // WithRetryPolicy overrides DefaultRetryPolicy(). Pass `&temporalessv1.RetryPolicy{MaximumAttempts: 1}`
@@ -57,24 +59,22 @@ func WithRetryPolicy(policy *temporalessv1.RetryPolicy) ActivityOption {
 	return func(c *activityConfig) { c.retryPolicy = policy }
 }
 
-// Activity is the ergonomic shortcut over ExecuteActivity. Defaults reduce
-// the per-call boilerplate to roughly what a plain function call already
-// requires: pass the function and its argument.
+// Activity is the ergonomic shortcut over ExecuteActivity. IDs remain
+// explicit and application-owned; the framework never derives them from a
+// function name or generates them.
 //
-//	resp, err := workflow.Activity(ctx, fetchPrices, &FetchRequest{Symbol: "AAPL"})
+//	resp, err := workflow.Activity(
+//	    ctx,
+//	    fetchPrices,
+//	    &FetchRequest{Symbol: "AAPL"},
+//	    workflow.WithActivityID("fetch:aapl"),
+//	    workflow.WithRetryTimerID("retry:fetch:aapl"),
+//	)
 //
 // Defaults applied unless overridden via opts:
 //
-//   - activity_id ← qualified function name (e.g. "examples/go/fetch-prices.FetchPrices").
-//     Override via WithActivityID when two callsites share the same function
-//     but should produce distinct activity records.
 //   - retry_policy ← DefaultRetryPolicy() (3 attempts, 1s, 2x, 30s max, 30s
 //     durable threshold). Override via WithRetryPolicy.
-//
-// Caveat: auto-inferred activity_id is stable across builds for package-level
-// functions and methods. Closures (function literals) may produce names like
-// "pkg.func1" that aren't stable across edits — pass WithActivityID() for
-// long-lived closure-based activities.
 func Activity[Req proto.Message, Resp proto.Message](
 	ctx context.Context,
 	fn func(context.Context, Req) (Resp, error),
@@ -87,60 +87,21 @@ func Activity[Req proto.Message, Resp proto.Message](
 		o(&cfg)
 	}
 	if cfg.activityID == "" {
-		id, err := InferActivityID(fn)
-		if err != nil {
-			return zero, err
-		}
-		cfg.activityID = id
+		return zero, fmt.Errorf("activity_id is required; pass WithActivityID")
 	}
 	if cfg.retryPolicy == nil {
 		cfg.retryPolicy = DefaultRetryPolicy()
 	}
 	return ExecuteActivity(ctx,
 		&temporalessv1.ActivityOptions{
-			ActivityId:  cfg.activityID,
-			RetryPolicy: cfg.retryPolicy,
+			ActivityId:   cfg.activityID,
+			RetryPolicy:  cfg.retryPolicy,
+			RetryTimerId: cfg.retryTimerID,
 		},
 		input,
 		func() Resp { return newProtoMessage[Resp]() },
 		fn,
 	)
-}
-
-var activityIDRegex = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
-
-// InferActivityID extracts a path-safe identifier from a function reference.
-// Strategy:
-//
-//  1. Get the fully-qualified Go function name via runtime.FuncForPC.
-//  2. Drop everything up to and including the last `/` (the import path).
-//  3. Strip method-receiver markers (`(*` and `)`) — Go reports methods as
-//     `pkg.(*Type).Method`; the parens aren't in the framework's ID regex.
-//  4. Validate against the framework's ID regex; reject closures whose
-//     generated names contain characters we can't represent in storage paths.
-func InferActivityID(fn any) (string, error) {
-	rv := reflect.ValueOf(fn)
-	if rv.Kind() != reflect.Func {
-		return "", fmt.Errorf("InferActivityID: argument is not a function")
-	}
-	pc := rv.Pointer()
-	rf := runtime.FuncForPC(pc)
-	if rf == nil {
-		return "", fmt.Errorf("InferActivityID: no runtime function for PC")
-	}
-	name := rf.Name()
-	if idx := strings.LastIndex(name, "/"); idx >= 0 {
-		name = name[idx+1:]
-	}
-	name = strings.NewReplacer("(*", "", ")", "").Replace(name)
-	if !activityIDRegex.MatchString(name) {
-		return "", fmt.Errorf(
-			"cannot infer activity_id from function name %q (contains characters "+
-				"disallowed in framework IDs); use WithActivityID() to set one explicitly",
-			name,
-		)
-	}
-	return name, nil
 }
 
 // newProtoMessage constructs a fresh instance of a proto.Message type

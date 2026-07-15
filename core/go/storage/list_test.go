@@ -9,6 +9,7 @@ import (
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -37,46 +38,6 @@ func putWorkflow(t *testing.T, store *storage.OpenDALStore, namespace, workflowI
 		Status:       status,
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestListWorkflowsFilters(t *testing.T) {
-	ctx := context.Background()
-	store := newStore(t)
-
-	putWorkflow(t, store, "default", "prices:aapl", "2026-05-04", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
-	putWorkflow(t, store, "default", "prices:aapl", "2026-05-05", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED)
-	putWorkflow(t, store, "default", "prices:msft", "2026-05-04", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
-	putWorkflow(t, store, "tenant-b", "prices:aapl", "2026-05-04", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
-
-	tests := []struct {
-		name       string
-		namespace  string
-		workflowID string
-		status     temporalessv1.WorkflowStatus
-		wantCount  int
-	}{
-		{"no filters", "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 4},
-		{"namespace only", "default", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 3},
-		{"namespace + workflow id", "default", "prices:aapl", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 2},
-		{"status only", "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED, 3},
-		{"namespace + status", "default", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED, 1},
-		{"namespace + workflow id + status", "default", "prices:aapl", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED, 1},
-		{"empty namespace + workflow id falls back to client filter", "", "prices:msft", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 1},
-		{"unknown namespace returns empty", "missing", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 0},
-		{"unknown workflow id returns empty", "default", "prices:tsla", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED, 0},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			records, err := store.ListWorkflows(ctx, test.namespace, test.workflowID, test.status)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := len(records); got != test.wantCount {
-				t.Fatalf("count = %d, want %d", got, test.wantCount)
-			}
-		})
 	}
 }
 
@@ -217,6 +178,7 @@ func putTimer(t *testing.T, store *storage.OpenDALStore, wf storage.WorkflowKey,
 		TimerKind:   storage.SleepTimerKind,
 		CodeVersion: "v1",
 		Status:      status,
+		FireAt:      timestamppb.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +288,6 @@ func TestStoreOperationsRespectCancelledContext(t *testing.T) {
 	}
 	if err := store.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{Key: wf.Proto()}); err == nil {
 		t.Fatal("expected ctx error from PutWorkflow")
-	}
-	if _, err := store.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED); err == nil {
-		t.Fatal("expected ctx error from ListWorkflows")
 	}
 }
 

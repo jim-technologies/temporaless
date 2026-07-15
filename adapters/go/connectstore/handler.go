@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"net/http"
 
+	"buf.build/go/protovalidate"
 	"connectrpc.com/connect"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/temporalessv1connect"
 	"github.com/jim-technologies/temporaless/core/go/storage"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/proto"
 )
 
 type Handler struct {
@@ -19,12 +20,10 @@ type Handler struct {
 	ClaimStore storage.ClaimStore
 }
 
-// QueryHandler adapts a plain storage.Store into RecordQueryService for local
-// and development use. It is not an indexed production query path: ordering and
-// pagination are rejected, and broad activity listing walks workflow runs.
+// QueryHandler adapts an explicit storage.QueryStore into RecordQueryService.
+// Core point stores do not implement cross-run queries.
 type QueryHandler struct {
-	Store      storage.Store
-	ClaimStore storage.ClaimStore
+	Query storage.QueryStore
 }
 
 var _ temporalessv1connect.RecordStoreServiceClient = (*Handler)(nil)
@@ -42,16 +41,8 @@ func NewHandlerWithClaims(store storage.Store, claimStore storage.ClaimStore) *H
 	return &Handler{Store: store, ClaimStore: claimStore}
 }
 
-func NewQueryHandler(store storage.Store) *QueryHandler {
-	handler := &QueryHandler{Store: store}
-	if claimStore, ok := store.(storage.ClaimStore); ok {
-		handler.ClaimStore = claimStore
-	}
-	return handler
-}
-
-func NewQueryHandlerWithClaims(store storage.Store, claimStore storage.ClaimStore) *QueryHandler {
-	return &QueryHandler{Store: store, ClaimStore: claimStore}
+func NewQueryHandler(query storage.QueryStore) *QueryHandler {
+	return &QueryHandler{Query: query}
 }
 
 // NewHTTPHandler mounts only RecordStoreService.
@@ -78,18 +69,16 @@ func NewHTTPHandlerWithClaimsAndQuery(store storage.Store, claimStore storage.Cl
 	return newCombinedHTTPHandler(NewHandlerWithClaims(store, claimStore), query, opts...)
 }
 
-// NewHTTPHandlerWithLocalQuery mounts RecordStoreService plus the local/dev
-// RecordQueryService fallback. Production search, inspectors, and exact
-// retention should pass an indexed query handler to NewHTTPHandlerWithQuery
-// instead.
-func NewHTTPHandlerWithLocalQuery(store storage.Store, opts ...connect.HandlerOption) (string, http.Handler) {
-	return NewHTTPHandlerWithQuery(store, NewQueryHandler(store), opts...)
+// NewHTTPHandlerWithLocalQuery mounts RecordStoreService plus an explicit
+// local QueryStore such as the offline/development scanquery adapter.
+func NewHTTPHandlerWithLocalQuery(store storage.Store, query storage.QueryStore, opts ...connect.HandlerOption) (string, http.Handler) {
+	return NewHTTPHandlerWithQuery(store, NewQueryHandler(query), opts...)
 }
 
 // NewHTTPHandlerWithClaimsAndLocalQuery mounts RecordStoreService with an
-// explicit claim store plus the local/dev RecordQueryService fallback.
-func NewHTTPHandlerWithClaimsAndLocalQuery(store storage.Store, claimStore storage.ClaimStore, opts ...connect.HandlerOption) (string, http.Handler) {
-	return NewHTTPHandlerWithClaimsAndQuery(store, claimStore, NewQueryHandlerWithClaims(store, claimStore), opts...)
+// explicit claim store plus an explicit local QueryStore.
+func NewHTTPHandlerWithClaimsAndLocalQuery(store storage.Store, claimStore storage.ClaimStore, query storage.QueryStore, opts ...connect.HandlerOption) (string, http.Handler) {
+	return NewHTTPHandlerWithClaimsAndQuery(store, claimStore, NewQueryHandler(query), opts...)
 }
 
 func newCombinedHTTPHandler(store temporalessv1connect.RecordStoreServiceHandler, query temporalessv1connect.RecordQueryServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
@@ -116,9 +105,21 @@ func (handler *Handler) GetStoreCapabilities(ctx context.Context, _ *connect.Req
 }
 
 func (handler *Handler) GetWorkflow(ctx context.Context, req *connect.Request[temporalessv1.GetWorkflowRequest]) (*connect.Response[temporalessv1.GetWorkflowResponse], error) {
-	record, found, err := handler.Store.GetWorkflow(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
+	record, found, err := handler.Store.GetWorkflow(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	if err := validateFoundPayload("workflow", found, record != nil); err != nil {
+		return nil, dataLossError(err)
+	}
+	if found {
+		if err := storage.ValidateWorkflowRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
 
 	return connect.NewResponse(&temporalessv1.GetWorkflowResponse{
@@ -128,6 +129,12 @@ func (handler *Handler) GetWorkflow(ctx context.Context, req *connect.Request[te
 }
 
 func (handler *Handler) PutWorkflow(ctx context.Context, req *connect.Request[temporalessv1.PutWorkflowRequest]) (*connect.Response[temporalessv1.PutWorkflowResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateWorkflowRecord(req.Msg.GetRecord(), storage.WorkflowKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if err := handler.Store.PutWorkflow(ctx, req.Msg.GetRecord()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -138,43 +145,67 @@ func (handler *Handler) GetLatestWorkflowRun(ctx context.Context, req *connect.R
 	if req.Msg.GetWorkflowId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
 	}
-	records, err := handler.Store.ListWorkflows(ctx, req.Msg.GetNamespace(), req.Msg.GetWorkflowId(), temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED)
+	requested := storage.WorkflowKey{
+		Namespace:  req.Msg.GetNamespace(),
+		WorkflowID: req.Msg.GetWorkflowId(),
+		RunID:      "validation",
+	}
+	if err := requested.Validate(); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	pointer, found, err := handler.Store.GetLatestWorkflowRun(
+		ctx,
+		req.Msg.GetNamespace(),
+		req.Msg.GetWorkflowId(),
+	)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
-
-	var latest *temporalessv1.WorkflowRecord
-	var latestRecordTime *timestamppb.Timestamp
-	for _, record := range records {
-		recordTime := workflowPointerRecordTime(record)
-		if latest == nil {
-			latest = record
-			latestRecordTime = recordTime
-			continue
+	if !found {
+		if pointer != nil {
+			return nil, dataLossError(fmt.Errorf("latest workflow pointer returned found=false with a payload"))
 		}
-		if recordTime != nil && (latestRecordTime == nil || recordTime.AsTime().After(latestRecordTime.AsTime())) {
-			latest = record
-			latestRecordTime = recordTime
-		}
-	}
-	if latest == nil {
 		return connect.NewResponse(&temporalessv1.GetLatestWorkflowRunResponse{}), nil
 	}
+	if err := storage.ValidateLatestWorkflowRunPointer(pointer, req.Msg.GetNamespace(), req.Msg.GetWorkflowId()); err != nil {
+		return nil, dataLossError(err)
+	}
+	referencedKey := storage.WorkflowKeyFromProto(pointer.GetKey())
+	workflow, workflowFound, err := handler.Store.GetWorkflow(ctx, referencedKey)
+	if err != nil {
+		return nil, storeConnectError(err)
+	}
+	if !workflowFound {
+		return connect.NewResponse(&temporalessv1.GetLatestWorkflowRunResponse{}), nil
+	}
+	if err := storage.ValidateLatestWorkflowRunReference(pointer, workflow); err != nil {
+		if errors.Is(err, storage.ErrStaleLatestPointer) {
+			return connect.NewResponse(&temporalessv1.GetLatestWorkflowRunResponse{}), nil
+		}
+		return nil, dataLossError(err)
+	}
 	return connect.NewResponse(&temporalessv1.GetLatestWorkflowRunResponse{
-		Found: true,
-		Pointer: &temporalessv1.LatestWorkflowRunPointer{
-			Key:        latest.GetKey(),
-			Status:     latest.GetStatus(),
-			RecordTime: latestRecordTime,
-			UpdatedAt:  timestamppb.Now(),
-		},
+		Found:   true,
+		Pointer: pointer,
 	}), nil
 }
 
 func (handler *Handler) GetTimer(ctx context.Context, req *connect.Request[temporalessv1.GetTimerRequest]) (*connect.Response[temporalessv1.GetTimerResponse], error) {
-	record, found, err := handler.Store.GetTimer(ctx, storage.TimerKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.TimerKeyFromProto(req.Msg.GetKey())
+	record, found, err := handler.Store.GetTimer(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	if err := validateFoundPayload("timer", found, record != nil); err != nil {
+		return nil, dataLossError(err)
+	}
+	if found {
+		if err := storage.ValidateTimerRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
 
 	return connect.NewResponse(&temporalessv1.GetTimerResponse{
@@ -184,6 +215,12 @@ func (handler *Handler) GetTimer(ctx context.Context, req *connect.Request[tempo
 }
 
 func (handler *Handler) PutTimer(ctx context.Context, req *connect.Request[temporalessv1.PutTimerRequest]) (*connect.Response[temporalessv1.PutTimerResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateTimerRecord(req.Msg.GetRecord(), storage.TimerKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if err := handler.Store.PutTimer(ctx, req.Msg.GetRecord()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -191,9 +228,21 @@ func (handler *Handler) PutTimer(ctx context.Context, req *connect.Request[tempo
 }
 
 func (handler *Handler) GetActivity(ctx context.Context, req *connect.Request[temporalessv1.GetActivityRequest]) (*connect.Response[temporalessv1.GetActivityResponse], error) {
-	record, found, err := handler.Store.GetActivity(ctx, storage.ActivityKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.ActivityKeyFromProto(req.Msg.GetKey())
+	record, found, err := handler.Store.GetActivity(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	if err := validateFoundPayload("activity", found, record != nil); err != nil {
+		return nil, dataLossError(err)
+	}
+	if found {
+		if err := storage.ValidateActivityRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
 
 	return connect.NewResponse(&temporalessv1.GetActivityResponse{
@@ -203,6 +252,12 @@ func (handler *Handler) GetActivity(ctx context.Context, req *connect.Request[te
 }
 
 func (handler *Handler) PutActivity(ctx context.Context, req *connect.Request[temporalessv1.PutActivityRequest]) (*connect.Response[temporalessv1.PutActivityResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateActivityRecord(req.Msg.GetRecord(), storage.ActivityKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if err := handler.Store.PutActivity(ctx, req.Msg.GetRecord()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -210,9 +265,21 @@ func (handler *Handler) PutActivity(ctx context.Context, req *connect.Request[te
 }
 
 func (handler *Handler) GetEvent(ctx context.Context, req *connect.Request[temporalessv1.GetEventRequest]) (*connect.Response[temporalessv1.GetEventResponse], error) {
-	record, found, err := handler.Store.GetEvent(ctx, storage.EventKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.EventKeyFromProto(req.Msg.GetKey())
+	record, found, err := handler.Store.GetEvent(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	if err := validateFoundPayload("event", found, record != nil); err != nil {
+		return nil, dataLossError(err)
+	}
+	if found {
+		if err := storage.ValidateEventRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
 
 	return connect.NewResponse(&temporalessv1.GetEventResponse{
@@ -222,45 +289,88 @@ func (handler *Handler) GetEvent(ctx context.Context, req *connect.Request[tempo
 }
 
 func (handler *Handler) PutEvent(ctx context.Context, req *connect.Request[temporalessv1.PutEventRequest]) (*connect.Response[temporalessv1.PutEventResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateEventRecord(req.Msg.GetRecord(), storage.EventKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	if err := handler.Store.PutEvent(ctx, req.Msg.GetRecord()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&temporalessv1.PutEventResponse{}), nil
 }
 
-func (handler *Handler) ListWorkflows(ctx context.Context, req *connect.Request[temporalessv1.ListWorkflowsRequest]) (*connect.Response[temporalessv1.ListWorkflowsResponse], error) {
-	records, err := handler.Store.ListWorkflows(ctx, req.Msg.GetNamespace(), req.Msg.GetWorkflowId(), req.Msg.GetStatus())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	return connect.NewResponse(&temporalessv1.ListWorkflowsResponse{Records: records}), nil
-}
-
 func (handler *Handler) ListActivities(ctx context.Context, req *connect.Request[temporalessv1.ListActivitiesRequest]) (*connect.Response[temporalessv1.ListActivitiesResponse], error) {
-	records, err := handler.Store.ListActivities(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
+	records, err := handler.Store.ListActivities(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	for _, record := range records {
+		recordKey := storage.ActivityKeyFromProto(record.GetKey())
+		if err := storage.ValidateActivityRecord(record, recordKey); err != nil {
+			return nil, dataLossError(err)
+		}
+		if !sameWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return nil, dataLossError(fmt.Errorf("activity list payload crosses the requested workflow run"))
+		}
 	}
 	return connect.NewResponse(&temporalessv1.ListActivitiesResponse{Records: records}), nil
 }
 
 func (handler *Handler) ListTimers(ctx context.Context, req *connect.Request[temporalessv1.ListTimersRequest]) (*connect.Response[temporalessv1.ListTimersResponse], error) {
-	records, err := handler.Store.ListTimers(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()), req.Msg.GetStatus())
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
+	records, err := handler.Store.ListTimers(ctx, key, req.Msg.GetStatus())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	for _, record := range records {
+		recordKey := storage.TimerKeyFromProto(record.GetKey())
+		if err := storage.ValidateTimerRecord(record, recordKey); err != nil {
+			return nil, dataLossError(err)
+		}
+		if !sameWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return nil, dataLossError(fmt.Errorf("timer list payload crosses the requested workflow run"))
+		}
+		if req.Msg.GetStatus() != temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED && record.GetStatus() != req.Msg.GetStatus() {
+			return nil, dataLossError(fmt.Errorf("timer list payload does not match the requested status"))
+		}
 	}
 	return connect.NewResponse(&temporalessv1.ListTimersResponse{Records: records}), nil
 }
 
 func (handler *Handler) ListEvents(ctx context.Context, req *connect.Request[temporalessv1.ListEventsRequest]) (*connect.Response[temporalessv1.ListEventsResponse], error) {
-	records, err := handler.Store.ListEvents(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
+	records, err := handler.Store.ListEvents(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	for _, record := range records {
+		recordKey := storage.EventKeyFromProto(record.GetKey())
+		if err := storage.ValidateEventRecord(record, recordKey); err != nil {
+			return nil, dataLossError(err)
+		}
+		if !sameWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return nil, dataLossError(fmt.Errorf("event list payload crosses the requested workflow run"))
+		}
 	}
 	return connect.NewResponse(&temporalessv1.ListEventsResponse{Records: records}), nil
 }
 
 func (handler *Handler) ListClaims(ctx context.Context, req *connect.Request[temporalessv1.ListClaimsRequest]) (*connect.Response[temporalessv1.ListClaimsResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	records, err := handler.listClaimsForRun(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
 		return nil, err
@@ -269,6 +379,9 @@ func (handler *Handler) ListClaims(ctx context.Context, req *connect.Request[tem
 }
 
 func (handler *Handler) DeleteWorkflow(ctx context.Context, req *connect.Request[temporalessv1.DeleteWorkflowRequest]) (*connect.Response[temporalessv1.DeleteWorkflowResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	deleted, err := handler.Store.DeleteWorkflow(ctx, storage.WorkflowKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -277,6 +390,9 @@ func (handler *Handler) DeleteWorkflow(ctx context.Context, req *connect.Request
 }
 
 func (handler *Handler) DeleteActivity(ctx context.Context, req *connect.Request[temporalessv1.DeleteActivityRequest]) (*connect.Response[temporalessv1.DeleteActivityResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	deleted, err := handler.Store.DeleteActivity(ctx, storage.ActivityKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -285,14 +401,20 @@ func (handler *Handler) DeleteActivity(ctx context.Context, req *connect.Request
 }
 
 func (handler *Handler) DeleteTimer(ctx context.Context, req *connect.Request[temporalessv1.DeleteTimerRequest]) (*connect.Response[temporalessv1.DeleteTimerResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	deleted, err := handler.Store.DeleteTimer(ctx, storage.TimerKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 	return connect.NewResponse(&temporalessv1.DeleteTimerResponse{Deleted: deleted}), nil
 }
 
 func (handler *Handler) DeleteEvent(ctx context.Context, req *connect.Request[temporalessv1.DeleteEventRequest]) (*connect.Response[temporalessv1.DeleteEventResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	deleted, err := handler.Store.DeleteEvent(ctx, storage.EventKeyFromProto(req.Msg.GetKey()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -305,6 +427,9 @@ func (handler *Handler) DeleteEvent(ctx context.Context, req *connect.Request[te
 // must ensure no worker can create claims or write records for the run while
 // deletion is in progress.
 func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temporalessv1.DeleteRunRequest]) (*connect.Response[temporalessv1.DeleteRunResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 	key := storage.WorkflowKeyFromProto(req.Msg.GetKey())
 	var deleted uint32
 
@@ -318,19 +443,22 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 	}
 	activities, err := handler.Store.ListActivities(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 	timers, err := handler.Store.ListTimers(ctx, key, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 	events, err := handler.Store.ListEvents(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 
 	for _, activity := range activities {
 		activityKey := storage.ActivityKeyFromProto(activity.GetKey())
+		if err := storage.ValidateActivityRecord(activity, activityKey); err != nil {
+			return nil, dataLossError(err)
+		}
 		if err := validateListedRunRecordKey(
 			"activity",
 			key,
@@ -344,6 +472,9 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 	}
 	for _, timer := range timers {
 		timerKey := storage.TimerKeyFromProto(timer.GetKey())
+		if err := storage.ValidateTimerRecord(timer, timerKey); err != nil {
+			return nil, dataLossError(err)
+		}
 		if err := validateListedRunRecordKey(
 			"timer",
 			key,
@@ -357,6 +488,9 @@ func (handler *Handler) DeleteRun(ctx context.Context, req *connect.Request[temp
 	}
 	for _, event := range events {
 		eventKey := storage.EventKeyFromProto(event.GetKey())
+		if err := storage.ValidateEventRecord(event, eventKey); err != nil {
+			return nil, dataLossError(err)
+		}
 		if err := validateListedRunRecordKey(
 			"event",
 			key,
@@ -468,7 +602,7 @@ func (handler *Handler) listClaimsForRun(ctx context.Context, key storage.Workfl
 	}
 	records, err := claimRunStore.ListClaims(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 
 	// Validate the complete snapshot before DeleteRun removes any claim. A
@@ -476,6 +610,9 @@ func (handler *Handler) listClaimsForRun(ctx context.Context, key storage.Workfl
 	// another run merely because its embedded key says so.
 	for _, record := range records {
 		claimKey := storage.ClaimKeyFromProto(record.GetKey())
+		if err := storage.ValidateClaimRecord(record, claimKey); err != nil {
+			return nil, dataLossError(err)
+		}
 		if err := validateListedRunRecordKey(
 			"claim",
 			key,
@@ -494,10 +631,22 @@ func (handler *Handler) GetClaim(ctx context.Context, req *connect.Request[tempo
 	if handler.ClaimStore == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store is required"))
 	}
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 
-	record, found, err := handler.ClaimStore.GetClaim(ctx, storage.ClaimKeyFromProto(req.Msg.GetKey()))
+	key := storage.ClaimKeyFromProto(req.Msg.GetKey())
+	record, found, err := handler.ClaimStore.GetClaim(ctx, key)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
+	}
+	if err := validateFoundPayload("claim", found, record != nil); err != nil {
+		return nil, dataLossError(err)
+	}
+	if found {
+		if err := storage.ValidateClaimRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
 
 	return connect.NewResponse(&temporalessv1.GetClaimResponse{
@@ -509,6 +658,12 @@ func (handler *Handler) GetClaim(ctx context.Context, req *connect.Request[tempo
 func (handler *Handler) TryCreateClaim(ctx context.Context, req *connect.Request[temporalessv1.TryCreateClaimRequest]) (*connect.Response[temporalessv1.TryCreateClaimResponse], error) {
 	if handler.ClaimStore == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store is required"))
+	}
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	if err := storage.ValidateClaimRecord(req.Msg.GetRecord(), storage.ClaimKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	created, err := handler.ClaimStore.TryCreateClaim(ctx, req.Msg.GetRecord())
@@ -525,6 +680,9 @@ func (handler *Handler) DeleteClaim(ctx context.Context, req *connect.Request[te
 	if handler.ClaimStore == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store is required"))
 	}
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
 
 	key := storage.ClaimKeyFromProto(req.Msg.GetKey())
 	deleted, err := handler.ClaimStore.DeleteClaim(ctx, key)
@@ -537,23 +695,22 @@ func (handler *Handler) DeleteClaim(ctx context.Context, req *connect.Request[te
 	}), nil
 }
 
-func (handler *Handler) Sweep(ctx context.Context, req *connect.Request[temporalessv1.SweepRequest]) (*connect.Response[temporalessv1.SweepResponse], error) {
-	deleted, err := janitor.Sweep(ctx, handler.Store, handler.ClaimStore, req.Msg)
-	if err != nil {
-		return nil, sweepConnectError(err)
-	}
-	return connect.NewResponse(&temporalessv1.SweepResponse{Deleted: deleted}), nil
-}
-
 func (handler *Handler) DueTimers(ctx context.Context, req *connect.Request[temporalessv1.DueTimersRequest]) (*connect.Response[temporalessv1.DueTimersResponse], error) {
-	due, err := handler.Store.DueTimers(ctx, req.Msg.GetNamespace(), req.Msg.GetNow().AsTime())
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	now := req.Msg.GetNow().AsTime()
+	due, err := handler.Store.DueTimers(ctx, req.Msg.GetNamespace(), now)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, storeConnectError(err)
 	}
 	resp := &temporalessv1.DueTimersResponse{
 		Due: make([]*temporalessv1.DueTimer, 0, len(due)),
 	}
 	for _, entry := range due {
+		if err := storage.ValidateDueTimer(entry, req.Msg.GetNamespace(), now); err != nil {
+			return nil, dataLossError(err)
+		}
 		resp.Due = append(resp.Due, &temporalessv1.DueTimer{
 			Key:      entry.Key.Proto(),
 			Record:   entry.Record,
@@ -563,84 +720,73 @@ func (handler *Handler) DueTimers(ctx context.Context, req *connect.Request[temp
 	return connect.NewResponse(resp), nil
 }
 
-func workflowPointerRecordTime(record *temporalessv1.WorkflowRecord) *timestamppb.Timestamp {
-	if record.GetCompletedAt() != nil {
-		return record.GetCompletedAt()
-	}
-	return record.GetCreatedAt()
-}
-
 func (handler *QueryHandler) ListWorkflows(ctx context.Context, req *connect.Request[temporalessv1.ListWorkflowsRequest]) (*connect.Response[temporalessv1.ListWorkflowsResponse], error) {
-	if err := rejectUnsupportedQueryOptions(req.Msg.GetOrderBy(), req.Msg.GetPageSize(), req.Msg.GetPageToken()); err != nil {
-		return nil, err
-	}
-	records, err := handler.Store.ListWorkflows(ctx, req.Msg.GetNamespace(), req.Msg.GetWorkflowId(), req.Msg.GetStatus())
+	response, err := handler.Query.ListWorkflows(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, queryConnectError(err)
 	}
-	return connect.NewResponse(&temporalessv1.ListWorkflowsResponse{Records: records}), nil
+	for _, record := range response.GetRecords() {
+		key := storage.WorkflowKeyFromProto(record.GetKey())
+		if err := storage.ValidateWorkflowRecord(record, key); err != nil {
+			return nil, dataLossError(err)
+		}
+		if req.Msg.GetNamespace() != "" && namespaceOrDefault(key.Namespace) != req.Msg.GetNamespace() {
+			return nil, dataLossError(fmt.Errorf("workflow query payload crosses the requested namespace"))
+		}
+		if req.Msg.GetWorkflowId() != "" && key.WorkflowID != req.Msg.GetWorkflowId() {
+			return nil, dataLossError(fmt.Errorf("workflow query payload crosses the requested workflow_id"))
+		}
+		if req.Msg.GetStatus() != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED && record.GetStatus() != req.Msg.GetStatus() {
+			return nil, dataLossError(fmt.Errorf("workflow query payload does not match the requested status"))
+		}
+	}
+	return connect.NewResponse(response), nil
 }
 
 func (handler *QueryHandler) ListActivities(ctx context.Context, req *connect.Request[temporalessv1.RecordQueryServiceListActivitiesRequest]) (*connect.Response[temporalessv1.RecordQueryServiceListActivitiesResponse], error) {
-	if err := rejectUnsupportedQueryOptions(req.Msg.GetOrderBy(), req.Msg.GetPageSize(), req.Msg.GetPageToken()); err != nil {
-		return nil, err
-	}
-	workflowID := req.Msg.GetWorkflowId()
-	runID := req.Msg.GetRunId()
-	status := req.Msg.GetStatus()
-
-	var records []*temporalessv1.ActivityRecord
-	if runID != "" {
-		if workflowID == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required when run_id is set"))
-		}
-		activities, err := handler.Store.ListActivities(ctx, storage.WorkflowKey{
-			Namespace:  req.Msg.GetNamespace(),
-			WorkflowID: workflowID,
-			RunID:      runID,
-		})
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		for _, activity := range activities {
-			if status == temporalessv1.ActivityStatus_ACTIVITY_STATUS_UNSPECIFIED || activity.GetStatus() == status {
-				records = append(records, activity)
-			}
-		}
-		return connect.NewResponse(&temporalessv1.RecordQueryServiceListActivitiesResponse{Records: records}), nil
-	}
-
-	workflows, err := handler.Store.ListWorkflows(ctx, req.Msg.GetNamespace(), workflowID, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED)
+	response, err := handler.Query.ListActivitiesQuery(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, queryConnectError(err)
 	}
-	for _, workflow := range workflows {
-		activities, err := handler.Store.ListActivities(ctx, storage.WorkflowKeyFromProto(workflow.GetKey()))
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
+	for _, record := range response.GetRecords() {
+		key := storage.ActivityKeyFromProto(record.GetKey())
+		if err := storage.ValidateActivityRecord(record, key); err != nil {
+			return nil, dataLossError(err)
 		}
-		for _, activity := range activities {
-			if status == temporalessv1.ActivityStatus_ACTIVITY_STATUS_UNSPECIFIED || activity.GetStatus() == status {
-				records = append(records, activity)
-			}
+		if req.Msg.GetNamespace() != "" && namespaceOrDefault(key.Namespace) != req.Msg.GetNamespace() {
+			return nil, dataLossError(fmt.Errorf("activity query payload crosses the requested namespace"))
+		}
+		if req.Msg.GetWorkflowId() != "" && key.WorkflowID != req.Msg.GetWorkflowId() {
+			return nil, dataLossError(fmt.Errorf("activity query payload crosses the requested workflow_id"))
+		}
+		if req.Msg.GetRunId() != "" && key.RunID != req.Msg.GetRunId() {
+			return nil, dataLossError(fmt.Errorf("activity query payload crosses the requested run_id"))
+		}
+		if req.Msg.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_UNSPECIFIED && record.GetStatus() != req.Msg.GetStatus() {
+			return nil, dataLossError(fmt.Errorf("activity query payload does not match the requested status"))
 		}
 	}
-	return connect.NewResponse(&temporalessv1.RecordQueryServiceListActivitiesResponse{Records: records}), nil
+	return connect.NewResponse(response), nil
 }
 
 func (handler *QueryHandler) Sweep(ctx context.Context, req *connect.Request[temporalessv1.SweepRequest]) (*connect.Response[temporalessv1.SweepResponse], error) {
-	deleted, err := janitor.Sweep(ctx, handler.Store, handler.ClaimStore, req.Msg)
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	response, err := handler.Query.Sweep(ctx, req.Msg)
 	if err != nil {
 		return nil, sweepConnectError(err)
 	}
-	return connect.NewResponse(&temporalessv1.SweepResponse{Deleted: deleted}), nil
+	return connect.NewResponse(response), nil
 }
 
 func sweepConnectError(err error) error {
 	switch {
+	case errors.Is(err, storage.ErrInvalidQuery):
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, janitor.ErrClaimRunListingUnsupported):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
-	case errors.Is(err, janitor.ErrRunListingDataLoss):
+	case errors.Is(err, janitor.ErrRunListingDataLoss), errors.Is(err, storage.ErrCorruptRecord):
 		return connect.NewError(connect.CodeDataLoss, err)
 	default:
 		return connect.NewError(connect.CodeInternal, err)
@@ -648,26 +794,45 @@ func sweepConnectError(err error) error {
 }
 
 func (handler *QueryHandler) DueTimers(ctx context.Context, req *connect.Request[temporalessv1.RecordQueryServiceDueTimersRequest]) (*connect.Response[temporalessv1.RecordQueryServiceDueTimersResponse], error) {
-	due, err := handler.Store.DueTimers(ctx, req.Msg.GetNamespace(), req.Msg.GetNow().AsTime())
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	response, err := handler.Query.DueTimersQuery(ctx, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, queryConnectError(err)
 	}
-	resp := &temporalessv1.RecordQueryServiceDueTimersResponse{
-		Due: make([]*temporalessv1.DueTimer, 0, len(due)),
+	for _, entry := range response.GetDue() {
+		if _, err := validateDueTimerEntry(entry, req.Msg.GetNamespace(), req.Msg.GetNow().AsTime()); err != nil {
+			return nil, dataLossError(err)
+		}
 	}
-	for _, entry := range due {
-		resp.Due = append(resp.Due, &temporalessv1.DueTimer{
-			Key:      entry.Key.Proto(),
-			Record:   entry.Record,
-			Workflow: entry.Workflow,
-		})
-	}
-	return connect.NewResponse(resp), nil
+	return connect.NewResponse(response), nil
 }
 
-func rejectUnsupportedQueryOptions(orderBy string, pageSize int32, pageToken string) error {
-	if orderBy != "" || pageSize != 0 || pageToken != "" {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local storage query handler does not support order_by or pagination"))
+func queryConnectError(err error) error {
+	if errors.Is(err, storage.ErrInvalidQuery) {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if errors.Is(err, storage.ErrCorruptRecord) {
+		return connect.NewError(connect.CodeDataLoss, err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
+}
+
+func validateRPCRequest(message proto.Message) error {
+	if err := protovalidate.Validate(message); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return nil
+}
+
+func dataLossError(err error) error {
+	return connect.NewError(connect.CodeDataLoss, err)
+}
+
+func storeConnectError(err error) error {
+	if errors.Is(err, storage.ErrCorruptRecord) {
+		return dataLossError(err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
 }

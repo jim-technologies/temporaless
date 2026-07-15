@@ -5,26 +5,22 @@ import (
 	"fmt"
 	"time"
 
-	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 )
 
-// LastFireFromRuns scans existing workflow records for `scheduleID` and
-// returns the most recent fire time, parsed from run_ids using `runIDLayout`
-// (e.g. `time.RFC3339`).
+// LastFireFromRuns point-reads the latest-run pointer for scheduleID and
+// returns its protobuf run_order_time.
 //
-// This is the recommended path to seed the scheduler statelessly: when run_ids
-// embed the schedule fire time, the storage tree already carries the
-// scheduler's "memory". No separate persistence needed.
+// Schedule dispatchers set WorkflowOptions.run_order_time to the fire time.
+// The pointer persists that timestamp, so SDKs never parse opaque caller-owned
+// run IDs or depend on language-specific date formats.
 //
-// Returns the zero `time.Time` and ok=false when no parseable runs exist yet.
-// Run records whose IDs do not parse with `runIDLayout` are skipped.
+// Returns the zero time and ok=false when no valid referenced run exists yet.
 func LastFireFromRuns(
 	ctx context.Context,
 	store storage.Store,
 	namespace string,
 	scheduleID string,
-	runIDLayout string,
 ) (time.Time, bool, error) {
 	if store == nil {
 		return time.Time{}, false, fmt.Errorf("store is required")
@@ -32,30 +28,20 @@ func LastFireFromRuns(
 	if scheduleID == "" {
 		return time.Time{}, false, fmt.Errorf("scheduleID is required")
 	}
-	if runIDLayout == "" {
-		return time.Time{}, false, fmt.Errorf("runIDLayout is required (e.g. time.RFC3339)")
-	}
-
-	// Use the workflow_id filter so the storage walk is scoped to this
-	// schedule's runs only — O(runs) instead of O(all workflows).
-	records, err := store.ListWorkflows(ctx, namespace, scheduleID, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED)
+	pointer, found, err := store.GetLatestWorkflowRun(ctx, namespace, scheduleID)
 	if err != nil {
 		return time.Time{}, false, err
 	}
-
-	var latest time.Time
-	found := false
-	for _, record := range records {
-		fireTime, err := time.Parse(runIDLayout, record.GetKey().GetRunId())
-		if err != nil {
-			continue
-		}
-		if !found || fireTime.After(latest) {
-			latest = fireTime
-			found = true
-		}
+	if !found {
+		return time.Time{}, false, nil
 	}
-	return latest, found, nil
+	if pointer.GetRunOrderTime() == nil {
+		return time.Time{}, false, nil
+	}
+	if err := pointer.GetRunOrderTime().CheckValid(); err != nil {
+		return time.Time{}, false, fmt.Errorf("latest run_order_time: %w", err)
+	}
+	return pointer.GetRunOrderTime().AsTime(), true, nil
 }
 
 // LastFiresFromRuns is a multi-schedule convenience that calls LastFireFromRuns
@@ -65,11 +51,10 @@ func LastFiresFromRuns(
 	store storage.Store,
 	namespace string,
 	scheduleIDs []string,
-	runIDLayout string,
 ) (map[string]time.Time, error) {
 	out := make(map[string]time.Time, len(scheduleIDs))
 	for _, id := range scheduleIDs {
-		t, ok, err := LastFireFromRuns(ctx, store, namespace, id, runIDLayout)
+		t, ok, err := LastFireFromRuns(ctx, store, namespace, id)
 		if err != nil {
 			return nil, err
 		}

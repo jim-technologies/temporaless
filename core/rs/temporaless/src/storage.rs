@@ -1,19 +1,23 @@
 //! OpenDAL-backed storage for temporaless records (Rust SDK).
 //!
-//! Mirrors `core/go/storage/opendal.go` and
-//! `core/py/src/temporaless/storage.py` — same Hive-partitioned paths, same
-//! protobuf records, same on-disk bytes. Workflows written by the Go or
-//! Python SDK are fully readable here and vice-versa.
+//! Uses the same flat v2 paths, protobuf records, and on-disk bytes as Go and
+//! Python, so Rust can read their canonical records and its workflow/activity
+//! records are readable by the first-class runtimes. Rust workflow writes do
+//! not yet update the `_latest` pointer, its timer writes do not maintain the
+//! required `_due` write-ahead record, and its claim writes do not implement
+//! create-if-absent coordination. Do not treat these low-level point writers as
+//! substitutes for the first-class derived/conditional storage boundaries.
 //!
-//! Path layout (strict Hive partitioning — every directory level is
-//! `key=value`):
+//! Paths are constructed from validated protobuf key fields. Runtime code
+//! never parses identity back out of an object path; list operations fetch
+//! each protobuf payload and validate its embedded key and schema.
 //!
 //! ```text
-//! temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb
-//! temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=activity/activity_id={aid}/record.binpb
-//! temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=timer/timer_id={tid}/record.binpb
-//! temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/event_id={eid}/record.binpb
-//! temporaless/v1/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=claim/claim_id={cid}/record.binpb
+//! temporaless/v2/{namespace}/{workflow_id}/{run_id}/workflow.binpb
+//! temporaless/v2/{namespace}/{workflow_id}/{run_id}/activity/{activity_id}.binpb
+//! temporaless/v2/{namespace}/{workflow_id}/{run_id}/timer/{timer_id}.binpb
+//! temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb
+//! temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 //! ```
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,10 +26,10 @@ use opendal::Operator;
 use prost::Message;
 use thiserror::Error;
 
-use crate::v1;
+use crate::{reserved_names, v1};
 
 pub const DEFAULT_NAMESPACE: &str = "default";
-pub const STORAGE_ROOT_PREFIX: &str = "temporaless/v1";
+pub const STORAGE_ROOT_PREFIX: &str = "temporaless/v2";
 
 /// All errors the storage layer can surface to callers. The opendal /
 /// prost errors are flattened so application code never has to depend on
@@ -40,6 +44,48 @@ pub enum StoreError {
     Encode(#[from] prost::EncodeError),
     #[error("invalid key: {0}")]
     InvalidKey(String),
+    #[error("corrupt storage record: {0}")]
+    CorruptRecord(String),
+}
+
+fn validate_component(
+    name: &str,
+    value: &str,
+    reserve_system_prefix: bool,
+) -> Result<(), StoreError> {
+    if value.is_empty() {
+        return Err(StoreError::InvalidKey(format!("{name} must not be empty")));
+    }
+    if value == "." || value == ".." {
+        return Err(StoreError::InvalidKey(format!(
+            "{name} must not be {value}"
+        )));
+    }
+    if !value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'=')
+    }) {
+        return Err(StoreError::InvalidKey(format!(
+            "{name} must contain only ASCII letters, numbers, '.', '_', '-', ':', or '='"
+        )));
+    }
+    if reserve_system_prefix && value.starts_with('_') {
+        return Err(StoreError::InvalidKey(format!(
+            "{name} values beginning with '_' are reserved"
+        )));
+    }
+    Ok(())
+}
+
+fn normalized_namespace(namespace: &str) -> &str {
+    if namespace.is_empty() {
+        DEFAULT_NAMESPACE
+    } else {
+        namespace
+    }
+}
+
+fn run_prefix(namespace: &str, workflow_id: &str, run_id: &str) -> String {
+    format!("{STORAGE_ROOT_PREFIX}/{namespace}/{workflow_id}/{run_id}")
 }
 
 /// `workflow_id + run_id` addresses one workflow execution.
@@ -59,19 +105,27 @@ impl WorkflowKey {
         }
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=workflow/record.binpb",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-        )
+    fn validate(&self) -> Result<(), StoreError> {
+        validate_component("namespace", normalized_namespace(&self.namespace), true)?;
+        validate_component("workflow_id", &self.workflow_id, true)?;
+        validate_component("run_id", &self.run_id, false)
+    }
+
+    fn path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/workflow.binpb",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            )
+        ))
     }
 
     pub fn to_proto(&self) -> v1::WorkflowKey {
         v1::WorkflowKey {
-            namespace: self.namespace.clone(),
+            namespace: normalized_namespace(&self.namespace).to_string(),
             workflow_id: self.workflow_id.clone(),
             run_id: self.run_id.clone(),
         }
@@ -100,30 +154,41 @@ impl ActivityKey {
         }
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=activity/activity_id={aid}/record.binpb",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-            aid = self.activity_id,
-        )
+    fn validate(&self) -> Result<(), StoreError> {
+        validate_component("namespace", normalized_namespace(&self.namespace), true)?;
+        validate_component("workflow_id", &self.workflow_id, true)?;
+        validate_component("run_id", &self.run_id, false)?;
+        validate_component("activity_id", &self.activity_id, false)
     }
 
-    fn dir_path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=activity/",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-        )
+    fn path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/activity/{}.binpb",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            ),
+            self.activity_id
+        ))
+    }
+
+    fn dir_path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/activity/",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            )
+        ))
     }
 
     pub fn to_proto(&self) -> v1::ActivityKey {
         v1::ActivityKey {
-            namespace: self.namespace.clone(),
+            namespace: normalized_namespace(&self.namespace).to_string(),
             workflow_id: self.workflow_id.clone(),
             run_id: self.run_id.clone(),
             activity_id: self.activity_id.clone(),
@@ -153,30 +218,41 @@ impl TimerKey {
         }
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=timer/timer_id={tid}/record.binpb",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-            tid = self.timer_id,
-        )
+    fn validate(&self) -> Result<(), StoreError> {
+        validate_component("namespace", normalized_namespace(&self.namespace), true)?;
+        validate_component("workflow_id", &self.workflow_id, true)?;
+        validate_component("run_id", &self.run_id, false)?;
+        validate_component("timer_id", &self.timer_id, false)
     }
 
-    fn dir_path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=timer/",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-        )
+    fn path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/timer/{}.binpb",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            ),
+            self.timer_id
+        ))
+    }
+
+    fn dir_path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/timer/",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            )
+        ))
     }
 
     pub fn to_proto(&self) -> v1::TimerKey {
         v1::TimerKey {
-            namespace: self.namespace.clone(),
+            namespace: normalized_namespace(&self.namespace).to_string(),
             workflow_id: self.workflow_id.clone(),
             run_id: self.run_id.clone(),
             timer_id: self.timer_id.clone(),
@@ -206,30 +282,41 @@ impl EventKey {
         }
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/event_id={eid}/record.binpb",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-            eid = self.event_id,
-        )
+    fn validate(&self) -> Result<(), StoreError> {
+        validate_component("namespace", normalized_namespace(&self.namespace), true)?;
+        validate_component("workflow_id", &self.workflow_id, true)?;
+        validate_component("run_id", &self.run_id, false)?;
+        validate_component("event_id", &self.event_id, false)
     }
 
-    fn dir_path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=event/",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-        )
+    fn path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/event/{}.binpb",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            ),
+            self.event_id
+        ))
+    }
+
+    fn dir_path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/event/",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            )
+        ))
     }
 
     pub fn to_proto(&self) -> v1::EventKey {
         v1::EventKey {
-            namespace: self.namespace.clone(),
+            namespace: normalized_namespace(&self.namespace).to_string(),
             workflow_id: self.workflow_id.clone(),
             run_id: self.run_id.clone(),
             event_id: self.event_id.clone(),
@@ -259,20 +346,48 @@ impl ClaimKey {
         }
     }
 
-    fn path(&self) -> String {
-        format!(
-            "{prefix}/namespace={ns}/workflow_id={wf}/run_id={rid}/kind=claim/claim_id={cid}/record.binpb",
-            prefix = STORAGE_ROOT_PREFIX,
-            ns = self.namespace,
-            wf = self.workflow_id,
-            rid = self.run_id,
-            cid = self.claim_id,
-        )
+    fn validate(&self) -> Result<(), StoreError> {
+        validate_component("namespace", normalized_namespace(&self.namespace), true)?;
+        validate_component("workflow_id", &self.workflow_id, false)?;
+        if self.workflow_id.starts_with('_')
+            && self.workflow_id != reserved_names::CONCURRENCY_WORKFLOW_ID
+        {
+            return Err(StoreError::InvalidKey(
+                "workflow_id values beginning with '_' are reserved".into(),
+            ));
+        }
+        validate_component("run_id", &self.run_id, false)?;
+        validate_component("claim_id", &self.claim_id, false)
+    }
+
+    fn path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/claim/{}.binpb",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            ),
+            self.claim_id
+        ))
+    }
+
+    fn dir_path(&self) -> Result<String, StoreError> {
+        self.validate()?;
+        Ok(format!(
+            "{}/claim/",
+            run_prefix(
+                normalized_namespace(&self.namespace),
+                &self.workflow_id,
+                &self.run_id
+            )
+        ))
     }
 
     pub fn to_proto(&self) -> v1::ClaimKey {
         v1::ClaimKey {
-            namespace: self.namespace.clone(),
+            namespace: normalized_namespace(&self.namespace).to_string(),
             workflow_id: self.workflow_id.clone(),
             run_id: self.run_id.clone(),
             claim_id: self.claim_id.clone(),
@@ -362,6 +477,40 @@ impl OpenDALStore {
     pub fn new(op: Operator) -> Self {
         Self { op }
     }
+
+    async fn list_claims_for_run(
+        &self,
+        key: &WorkflowKey,
+    ) -> Result<Vec<v1::ClaimRecord>, StoreError> {
+        key.validate()?;
+        let dir = ClaimKey {
+            namespace: key.namespace.clone(),
+            workflow_id: key.workflow_id.clone(),
+            run_id: key.run_id.clone(),
+            claim_id: "placeholder".into(),
+        }
+        .dir_path()?;
+        let paths = walk_binpb(&self.op, &dir).await?;
+        let mut out = Vec::new();
+        for path in paths {
+            let Some(bytes) = read_optional(&self.op, &path).await? else {
+                continue;
+            };
+            let record = v1::ClaimRecord::decode(bytes)
+                .map_err(|error| corrupt_decode("claim", &path, error))?;
+            let actual = claim_record_key(&record)?;
+            let actual_run = WorkflowKey {
+                namespace: actual.namespace.clone(),
+                workflow_id: actual.workflow_id.clone(),
+                run_id: actual.run_id.clone(),
+            };
+            ensure_workflow_key("claim", &actual_run, key)?;
+            let expected_path = actual.path().map_err(|error| corrupt_key("claim", error))?;
+            ensure_path("claim", expected_path, &path)?;
+            out.push(record);
+        }
+        Ok(out)
+    }
 }
 
 /// Single-read path: try to read, treat NotFound as absent. Same pattern
@@ -401,11 +550,197 @@ async fn walk_binpb(op: &Operator, root: &str) -> Result<Vec<String>, StoreError
         Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
-    Ok(entries
+    let mut paths: Vec<String> = entries
         .into_iter()
         .map(|e| e.path().to_string())
         .filter(|p| p.ends_with(".binpb"))
-        .collect())
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+fn is_workflow_object(path: &str) -> bool {
+    path.starts_with(&format!("{STORAGE_ROOT_PREFIX}/"))
+        && path.ends_with("/workflow.binpb")
+        // The three variable segments are namespace, workflow_id, and run_id.
+        // This recognizes the record kind without reading any segment as
+        // identity; the decoded protobuf key remains authoritative.
+        && path.split('/').count() == 6
+}
+
+fn corrupt_key(record_kind: &str, error: StoreError) -> StoreError {
+    StoreError::CorruptRecord(format!("{record_kind} payload has invalid key: {error}"))
+}
+
+fn corrupt_decode(record_kind: &str, path: &str, error: prost::DecodeError) -> StoreError {
+    StoreError::CorruptRecord(format!("decode {record_kind} payload at {path}: {error}"))
+}
+
+fn ensure_path(record_kind: &str, actual: String, expected: &str) -> Result<(), StoreError> {
+    if actual != expected {
+        return Err(StoreError::CorruptRecord(format!(
+            "{record_kind} payload key does not match its object location"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_workflow_key(
+    record_kind: &str,
+    actual: &WorkflowKey,
+    expected: &WorkflowKey,
+) -> Result<(), StoreError> {
+    if normalized_namespace(&actual.namespace) != normalized_namespace(&expected.namespace)
+        || actual.workflow_id != expected.workflow_id
+        || actual.run_id != expected.run_id
+    {
+        return Err(StoreError::CorruptRecord(format!(
+            "{record_kind} payload key does not match requested key"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_activity_key(actual: &ActivityKey, expected: &ActivityKey) -> Result<(), StoreError> {
+    if normalized_namespace(&actual.namespace) != normalized_namespace(&expected.namespace)
+        || actual.workflow_id != expected.workflow_id
+        || actual.run_id != expected.run_id
+        || actual.activity_id != expected.activity_id
+    {
+        return Err(StoreError::CorruptRecord(
+            "activity payload key does not match requested key".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_timer_key(actual: &TimerKey, expected: &TimerKey) -> Result<(), StoreError> {
+    if normalized_namespace(&actual.namespace) != normalized_namespace(&expected.namespace)
+        || actual.workflow_id != expected.workflow_id
+        || actual.run_id != expected.run_id
+        || actual.timer_id != expected.timer_id
+    {
+        return Err(StoreError::CorruptRecord(
+            "timer payload key does not match requested key".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_event_key(actual: &EventKey, expected: &EventKey) -> Result<(), StoreError> {
+    if normalized_namespace(&actual.namespace) != normalized_namespace(&expected.namespace)
+        || actual.workflow_id != expected.workflow_id
+        || actual.run_id != expected.run_id
+        || actual.event_id != expected.event_id
+    {
+        return Err(StoreError::CorruptRecord(
+            "event payload key does not match requested key".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_claim_key(actual: &ClaimKey, expected: &ClaimKey) -> Result<(), StoreError> {
+    if normalized_namespace(&actual.namespace) != normalized_namespace(&expected.namespace)
+        || actual.workflow_id != expected.workflow_id
+        || actual.run_id != expected.run_id
+        || actual.claim_id != expected.claim_id
+    {
+        return Err(StoreError::CorruptRecord(
+            "claim payload key does not match requested key".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn workflow_record_key(record: &v1::WorkflowRecord) -> Result<WorkflowKey, StoreError> {
+    if record.schema_version != v1::RecordSchemaVersion::Workflow as i32 {
+        return Err(StoreError::CorruptRecord(format!(
+            "workflow payload has schema_version {}, want {}",
+            record.schema_version,
+            v1::RecordSchemaVersion::Workflow as i32
+        )));
+    }
+    let proto = record
+        .key
+        .as_ref()
+        .ok_or_else(|| StoreError::CorruptRecord("workflow payload key is required".into()))?;
+    let key = workflow_key_from_proto(proto);
+    key.validate()
+        .map_err(|error| corrupt_key("workflow", error))?;
+    Ok(key)
+}
+
+fn activity_record_key(record: &v1::ActivityRecord) -> Result<ActivityKey, StoreError> {
+    if record.schema_version != v1::RecordSchemaVersion::Activity as i32 {
+        return Err(StoreError::CorruptRecord(format!(
+            "activity payload has schema_version {}, want {}",
+            record.schema_version,
+            v1::RecordSchemaVersion::Activity as i32
+        )));
+    }
+    let proto = record
+        .key
+        .as_ref()
+        .ok_or_else(|| StoreError::CorruptRecord("activity payload key is required".into()))?;
+    let key = activity_key_from_proto(proto);
+    key.validate()
+        .map_err(|error| corrupt_key("activity", error))?;
+    Ok(key)
+}
+
+fn timer_record_key(record: &v1::TimerRecord) -> Result<TimerKey, StoreError> {
+    if record.schema_version != v1::RecordSchemaVersion::Timer as i32 {
+        return Err(StoreError::CorruptRecord(format!(
+            "timer payload has schema_version {}, want {}",
+            record.schema_version,
+            v1::RecordSchemaVersion::Timer as i32
+        )));
+    }
+    let proto = record
+        .key
+        .as_ref()
+        .ok_or_else(|| StoreError::CorruptRecord("timer payload key is required".into()))?;
+    let key = timer_key_from_proto(proto);
+    key.validate()
+        .map_err(|error| corrupt_key("timer", error))?;
+    Ok(key)
+}
+
+fn event_record_key(record: &v1::EventRecord) -> Result<EventKey, StoreError> {
+    if record.schema_version != v1::RecordSchemaVersion::Event as i32 {
+        return Err(StoreError::CorruptRecord(format!(
+            "event payload has schema_version {}, want {}",
+            record.schema_version,
+            v1::RecordSchemaVersion::Event as i32
+        )));
+    }
+    let proto = record
+        .key
+        .as_ref()
+        .ok_or_else(|| StoreError::CorruptRecord("event payload key is required".into()))?;
+    let key = event_key_from_proto(proto);
+    key.validate()
+        .map_err(|error| corrupt_key("event", error))?;
+    Ok(key)
+}
+
+fn claim_record_key(record: &v1::ClaimRecord) -> Result<ClaimKey, StoreError> {
+    if record.schema_version != v1::RecordSchemaVersion::Claim as i32 {
+        return Err(StoreError::CorruptRecord(format!(
+            "claim payload has schema_version {}, want {}",
+            record.schema_version,
+            v1::RecordSchemaVersion::Claim as i32
+        )));
+    }
+    let proto = record
+        .key
+        .as_ref()
+        .ok_or_else(|| StoreError::CorruptRecord("claim payload key is required".into()))?;
+    let key = claim_key_from_proto(proto);
+    key.validate()
+        .map_err(|error| corrupt_key("claim", error))?;
+    Ok(key)
 }
 
 impl Store for OpenDALStore {
@@ -413,16 +748,22 @@ impl Store for OpenDALStore {
         &self,
         key: &WorkflowKey,
     ) -> Result<Option<v1::WorkflowRecord>, StoreError> {
-        let path = key.path();
+        let path = key.path()?;
         match read_optional(&self.op, &path).await? {
             None => Ok(None),
-            Some(bytes) => Ok(Some(v1::WorkflowRecord::decode(bytes)?)),
+            Some(bytes) => {
+                let record = v1::WorkflowRecord::decode(bytes)
+                    .map_err(|error| corrupt_decode("workflow", &path, error))?;
+                let actual = workflow_record_key(&record)?;
+                ensure_workflow_key("workflow", &actual, key)?;
+                Ok(Some(record))
+            }
         }
     }
 
     async fn put_workflow(&self, record: &v1::WorkflowRecord) -> Result<(), StoreError> {
-        let key = workflow_key_from_proto(&record.key.clone().unwrap_or_default());
-        write_bytes(&self.op, &key.path(), &record.encode_to_vec()).await
+        let key = workflow_record_key(record)?;
+        write_bytes(&self.op, &key.path()?, &record.encode_to_vec()).await
     }
 
     async fn list_workflows(
@@ -431,104 +772,126 @@ impl Store for OpenDALStore {
         workflow_id: &str,
         status: v1::WorkflowStatus,
     ) -> Result<Vec<v1::WorkflowRecord>, StoreError> {
-        let root = if namespace.is_empty() {
-            format!("{STORAGE_ROOT_PREFIX}/")
-        } else if workflow_id.is_empty() {
-            format!("{STORAGE_ROOT_PREFIX}/namespace={namespace}/")
-        } else {
-            format!("{STORAGE_ROOT_PREFIX}/namespace={namespace}/workflow_id={workflow_id}/")
+        if !namespace.is_empty() {
+            validate_component("namespace", namespace, true)?;
+        }
+        if !workflow_id.is_empty() {
+            validate_component("workflow_id", workflow_id, true)?;
+        }
+        let root = match (namespace.is_empty(), workflow_id.is_empty()) {
+            (true, _) => format!("{STORAGE_ROOT_PREFIX}/"),
+            (false, true) => format!("{STORAGE_ROOT_PREFIX}/{namespace}/"),
+            (false, false) => format!("{STORAGE_ROOT_PREFIX}/{namespace}/{workflow_id}/"),
         };
         let paths = walk_binpb(&self.op, &root).await?;
-        let match_workflow_id = if namespace.is_empty() && !workflow_id.is_empty() {
-            Some(workflow_id)
-        } else {
-            None
-        };
         let mut out = Vec::new();
         for path in paths {
-            if !path.ends_with("/kind=workflow/record.binpb") {
+            if !is_workflow_object(&path) {
                 continue;
             }
-            if let Some(parsed) = parse_workflow_path(&path) {
-                if let Some(want) = match_workflow_id {
-                    if parsed.workflow_id != want {
-                        continue;
-                    }
-                }
-                if let Some(record) = self.get_workflow(&parsed).await? {
-                    if status == v1::WorkflowStatus::Unspecified || record.status == status as i32 {
-                        out.push(record);
-                    }
-                }
+            let Some(bytes) = read_optional(&self.op, &path).await? else {
+                continue;
+            };
+            let record = v1::WorkflowRecord::decode(bytes)
+                .map_err(|error| corrupt_decode("workflow", &path, error))?;
+            let key = workflow_record_key(&record)?;
+            let expected_path = key.path().map_err(|error| corrupt_key("workflow", error))?;
+            ensure_path("workflow", expected_path, &path)?;
+            if (!namespace.is_empty() && normalized_namespace(&key.namespace) != namespace)
+                || (!workflow_id.is_empty() && key.workflow_id != workflow_id)
+            {
+                continue;
+            }
+            if status == v1::WorkflowStatus::Unspecified || record.status == status as i32 {
+                out.push(record);
             }
         }
         Ok(out)
     }
 
     async fn delete_workflow(&self, key: &WorkflowKey) -> Result<bool, StoreError> {
-        delete_if_exists(&self.op, &key.path()).await
+        delete_if_exists(&self.op, &key.path()?).await
     }
 
     async fn get_activity(
         &self,
         key: &ActivityKey,
     ) -> Result<Option<v1::ActivityRecord>, StoreError> {
-        let path = key.path();
+        let path = key.path()?;
         match read_optional(&self.op, &path).await? {
             None => Ok(None),
-            Some(bytes) => Ok(Some(v1::ActivityRecord::decode(bytes)?)),
+            Some(bytes) => {
+                let record = v1::ActivityRecord::decode(bytes)
+                    .map_err(|error| corrupt_decode("activity", &path, error))?;
+                let actual = activity_record_key(&record)?;
+                ensure_activity_key(&actual, key)?;
+                Ok(Some(record))
+            }
         }
     }
 
     async fn put_activity(&self, record: &v1::ActivityRecord) -> Result<(), StoreError> {
-        let key = activity_key_from_proto(&record.key.clone().unwrap_or_default());
-        write_bytes(&self.op, &key.path(), &record.encode_to_vec()).await
+        let key = activity_record_key(record)?;
+        write_bytes(&self.op, &key.path()?, &record.encode_to_vec()).await
     }
 
     async fn list_activities(
         &self,
         key: &WorkflowKey,
     ) -> Result<Vec<v1::ActivityRecord>, StoreError> {
-        // Build a sample ActivityKey just for the dir_path.
+        key.validate()?;
         let dir = ActivityKey {
             namespace: key.namespace.clone(),
             workflow_id: key.workflow_id.clone(),
             run_id: key.run_id.clone(),
             activity_id: "placeholder".into(),
         }
-        .dir_path();
+        .dir_path()?;
         let paths = walk_binpb(&self.op, &dir).await?;
         let mut out = Vec::new();
         for path in paths {
-            if let Some(activity_id) = extract_id_from_hive_path(&path, &dir, "activity_id=") {
-                let k = ActivityKey {
-                    namespace: key.namespace.clone(),
-                    workflow_id: key.workflow_id.clone(),
-                    run_id: key.run_id.clone(),
-                    activity_id,
-                };
-                if let Some(record) = self.get_activity(&k).await? {
-                    out.push(record);
-                }
-            }
+            let Some(bytes) = read_optional(&self.op, &path).await? else {
+                continue;
+            };
+            let record = v1::ActivityRecord::decode(bytes)
+                .map_err(|error| corrupt_decode("activity", &path, error))?;
+            let actual = activity_record_key(&record)?;
+            let actual_run = WorkflowKey {
+                namespace: actual.namespace.clone(),
+                workflow_id: actual.workflow_id.clone(),
+                run_id: actual.run_id.clone(),
+            };
+            ensure_workflow_key("activity", &actual_run, key)?;
+            let expected_path = actual
+                .path()
+                .map_err(|error| corrupt_key("activity", error))?;
+            ensure_path("activity", expected_path, &path)?;
+            out.push(record);
         }
         Ok(out)
     }
 
     async fn delete_activity(&self, key: &ActivityKey) -> Result<bool, StoreError> {
-        delete_if_exists(&self.op, &key.path()).await
+        delete_if_exists(&self.op, &key.path()?).await
     }
 
     async fn get_timer(&self, key: &TimerKey) -> Result<Option<v1::TimerRecord>, StoreError> {
-        match read_optional(&self.op, &key.path()).await? {
+        let path = key.path()?;
+        match read_optional(&self.op, &path).await? {
             None => Ok(None),
-            Some(bytes) => Ok(Some(v1::TimerRecord::decode(bytes)?)),
+            Some(bytes) => {
+                let record = v1::TimerRecord::decode(bytes)
+                    .map_err(|error| corrupt_decode("timer", &path, error))?;
+                let actual = timer_record_key(&record)?;
+                ensure_timer_key(&actual, key)?;
+                Ok(Some(record))
+            }
         }
     }
 
     async fn put_timer(&self, record: &v1::TimerRecord) -> Result<(), StoreError> {
-        let key = timer_key_from_proto(&record.key.clone().unwrap_or_default());
-        write_bytes(&self.op, &key.path(), &record.encode_to_vec()).await
+        let key = timer_record_key(record)?;
+        write_bytes(&self.op, &key.path()?, &record.encode_to_vec()).await
     }
 
     async fn list_timers(
@@ -536,106 +899,134 @@ impl Store for OpenDALStore {
         key: &WorkflowKey,
         status: v1::TimerStatus,
     ) -> Result<Vec<v1::TimerRecord>, StoreError> {
+        key.validate()?;
         let dir = TimerKey {
             namespace: key.namespace.clone(),
             workflow_id: key.workflow_id.clone(),
             run_id: key.run_id.clone(),
             timer_id: "placeholder".into(),
         }
-        .dir_path();
+        .dir_path()?;
         let paths = walk_binpb(&self.op, &dir).await?;
         let mut out = Vec::new();
         for path in paths {
-            if let Some(timer_id) = extract_id_from_hive_path(&path, &dir, "timer_id=") {
-                let k = TimerKey {
-                    namespace: key.namespace.clone(),
-                    workflow_id: key.workflow_id.clone(),
-                    run_id: key.run_id.clone(),
-                    timer_id,
-                };
-                if let Some(record) = self.get_timer(&k).await? {
-                    if status == v1::TimerStatus::Unspecified || record.status == status as i32 {
-                        out.push(record);
-                    }
-                }
+            let Some(bytes) = read_optional(&self.op, &path).await? else {
+                continue;
+            };
+            let record = v1::TimerRecord::decode(bytes)
+                .map_err(|error| corrupt_decode("timer", &path, error))?;
+            let actual = timer_record_key(&record)?;
+            let actual_run = WorkflowKey {
+                namespace: actual.namespace.clone(),
+                workflow_id: actual.workflow_id.clone(),
+                run_id: actual.run_id.clone(),
+            };
+            ensure_workflow_key("timer", &actual_run, key)?;
+            let expected_path = actual.path().map_err(|error| corrupt_key("timer", error))?;
+            ensure_path("timer", expected_path, &path)?;
+            if status == v1::TimerStatus::Unspecified || record.status == status as i32 {
+                out.push(record);
             }
         }
         Ok(out)
     }
 
     async fn delete_timer(&self, key: &TimerKey) -> Result<bool, StoreError> {
-        delete_if_exists(&self.op, &key.path()).await
+        delete_if_exists(&self.op, &key.path()?).await
     }
 
     async fn get_event(&self, key: &EventKey) -> Result<Option<v1::EventRecord>, StoreError> {
-        match read_optional(&self.op, &key.path()).await? {
+        let path = key.path()?;
+        match read_optional(&self.op, &path).await? {
             None => Ok(None),
-            Some(bytes) => Ok(Some(v1::EventRecord::decode(bytes)?)),
+            Some(bytes) => {
+                let record = v1::EventRecord::decode(bytes)
+                    .map_err(|error| corrupt_decode("event", &path, error))?;
+                let actual = event_record_key(&record)?;
+                ensure_event_key(&actual, key)?;
+                Ok(Some(record))
+            }
         }
     }
 
     async fn put_event(&self, record: &v1::EventRecord) -> Result<(), StoreError> {
-        let key = event_key_from_proto(&record.key.clone().unwrap_or_default());
-        write_bytes(&self.op, &key.path(), &record.encode_to_vec()).await
+        let key = event_record_key(record)?;
+        write_bytes(&self.op, &key.path()?, &record.encode_to_vec()).await
     }
 
     async fn list_events(&self, key: &WorkflowKey) -> Result<Vec<v1::EventRecord>, StoreError> {
+        key.validate()?;
         let dir = EventKey {
             namespace: key.namespace.clone(),
             workflow_id: key.workflow_id.clone(),
             run_id: key.run_id.clone(),
             event_id: "placeholder".into(),
         }
-        .dir_path();
+        .dir_path()?;
         let paths = walk_binpb(&self.op, &dir).await?;
         let mut out = Vec::new();
         for path in paths {
-            if let Some(event_id) = extract_id_from_hive_path(&path, &dir, "event_id=") {
-                let k = EventKey {
-                    namespace: key.namespace.clone(),
-                    workflow_id: key.workflow_id.clone(),
-                    run_id: key.run_id.clone(),
-                    event_id,
-                };
-                if let Some(record) = self.get_event(&k).await? {
-                    out.push(record);
-                }
-            }
+            let Some(bytes) = read_optional(&self.op, &path).await? else {
+                continue;
+            };
+            let record = v1::EventRecord::decode(bytes)
+                .map_err(|error| corrupt_decode("event", &path, error))?;
+            let actual = event_record_key(&record)?;
+            let actual_run = WorkflowKey {
+                namespace: actual.namespace.clone(),
+                workflow_id: actual.workflow_id.clone(),
+                run_id: actual.run_id.clone(),
+            };
+            ensure_workflow_key("event", &actual_run, key)?;
+            let expected_path = actual.path().map_err(|error| corrupt_key("event", error))?;
+            ensure_path("event", expected_path, &path)?;
+            out.push(record);
         }
         Ok(out)
     }
 
     async fn delete_event(&self, key: &EventKey) -> Result<bool, StoreError> {
-        delete_if_exists(&self.op, &key.path()).await
+        delete_if_exists(&self.op, &key.path()?).await
     }
 
     async fn get_claim(&self, key: &ClaimKey) -> Result<Option<v1::ClaimRecord>, StoreError> {
-        match read_optional(&self.op, &key.path()).await? {
+        let path = key.path()?;
+        match read_optional(&self.op, &path).await? {
             None => Ok(None),
-            Some(bytes) => Ok(Some(v1::ClaimRecord::decode(bytes)?)),
+            Some(bytes) => {
+                let record = v1::ClaimRecord::decode(bytes)
+                    .map_err(|error| corrupt_decode("claim", &path, error))?;
+                let actual = claim_record_key(&record)?;
+                ensure_claim_key(&actual, key)?;
+                Ok(Some(record))
+            }
         }
     }
 
     async fn try_create_claim(&self, record: &v1::ClaimRecord) -> Result<bool, StoreError> {
-        let key = claim_key_from_proto(&record.key.clone().unwrap_or_default());
-        let path = key.path();
-        // Best-effort create-only: check existence, then write. The
-        // OpenDAL `fs` backend doesn't expose conditional writes via the
-        // stable `write` API; for production multi-process atomicity, S3 /
-        // GCS native preconditions are needed (same caveat as Go's
-        // OpenDAL store — see docs/hard-cases.md).
-        match self.op.stat(&path).await {
-            Ok(_) => Ok(false),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
-                write_bytes(&self.op, &path, &record.encode_to_vec()).await?;
-                Ok(true)
+        let key = claim_record_key(record)?;
+        let path = key.path()?;
+        match self
+            .op
+            .write_with(&path, record.encode_to_vec())
+            .if_not_exists(true)
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    opendal::ErrorKind::AlreadyExists | opendal::ErrorKind::ConditionNotMatch
+                ) =>
+            {
+                Ok(false)
             }
-            Err(e) => Err(e.into()),
+            Err(error) => Err(error.into()),
         }
     }
 
     async fn delete_claim(&self, key: &ClaimKey) -> Result<bool, StoreError> {
-        delete_if_exists(&self.op, &key.path()).await
+        delete_if_exists(&self.op, &key.path()?).await
     }
 
     async fn sweep(
@@ -647,7 +1038,9 @@ impl Store for OpenDALStore {
         if max_age.is_zero() {
             return Err(StoreError::InvalidKey("max_age must be > 0".into()));
         }
-        let cutoff = now - max_age;
+        let cutoff = now
+            .checked_sub(max_age)
+            .ok_or_else(|| StoreError::InvalidKey("max_age precedes the system epoch".into()))?;
         let completed = self
             .list_workflows(namespace, "", v1::WorkflowStatus::Completed)
             .await?;
@@ -660,20 +1053,31 @@ impl Store for OpenDALStore {
             if completed_at > cutoff {
                 continue;
             }
-            let key = workflow_key_from_proto(&record.key.clone().unwrap_or_default());
+            let key = workflow_record_key(&record)?;
 
-            // Sweep children first so the parent's existence reflects "still
-            // partly there" until everything under it is gone.
-            for a in self.list_activities(&key).await? {
-                let ak = activity_key_from_proto(&a.key.unwrap_or_default());
+            // Validate the complete deletion plan before mutating storage. A
+            // misplaced/corrupt child must never leave a partially deleted
+            // run. Claims go first during deletion so a later failure cannot
+            // strand coordination state after its target record is gone.
+            let claims = self.list_claims_for_run(&key).await?;
+            let activities = self.list_activities(&key).await?;
+            let timers = self.list_timers(&key, v1::TimerStatus::Unspecified).await?;
+            let events = self.list_events(&key).await?;
+
+            for claim in claims {
+                let claim_key = claim_record_key(&claim)?;
+                self.delete_claim(&claim_key).await?;
+            }
+            for a in activities {
+                let ak = activity_record_key(&a)?;
                 self.delete_activity(&ak).await?;
             }
-            for t in self.list_timers(&key, v1::TimerStatus::Unspecified).await? {
-                let tk = timer_key_from_proto(&t.key.unwrap_or_default());
+            for t in timers {
+                let tk = timer_record_key(&t)?;
                 self.delete_timer(&tk).await?;
             }
-            for e in self.list_events(&key).await? {
-                let ek = event_key_from_proto(&e.key.unwrap_or_default());
+            for e in events {
+                let ek = event_record_key(&e)?;
                 self.delete_event(&ek).await?;
             }
             self.delete_workflow(&key).await?;
@@ -692,14 +1096,14 @@ impl Store for OpenDALStore {
             .await?;
         let mut out = Vec::new();
         for workflow in in_flight {
-            let key = workflow_key_from_proto(&workflow.key.clone().unwrap_or_default());
+            let key = workflow_record_key(&workflow)?;
             let timers = self.list_timers(&key, v1::TimerStatus::Scheduled).await?;
             for timer in timers {
                 if let Some(ts) = &timer.fire_at {
                     if system_time_from_proto(ts) > now {
                         continue;
                     }
-                    let tk = timer_key_from_proto(&timer.key.clone().unwrap_or_default());
+                    let tk = timer_record_key(&timer)?;
                     out.push(DueTimer {
                         key: tk,
                         record: timer,
@@ -713,36 +1117,8 @@ impl Store for OpenDALStore {
 }
 
 // ---------------------------------------------------------------------------
-// Path parsing + proto key conversions. Same conventions as Go's
-// `parseWorkflowPath` and Python's `_parse_workflow_path`.
+// Proto key conversions. Object paths are never parsed back into identity.
 // ---------------------------------------------------------------------------
-
-fn parse_workflow_path(path: &str) -> Option<WorkflowKey> {
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() != 7 {
-        return None;
-    }
-    if parts[0] != "temporaless" || parts[1] != "v1" {
-        return None;
-    }
-    if parts[5] != "kind=workflow" || parts[6] != "record.binpb" {
-        return None;
-    }
-    let namespace = parts[2].strip_prefix("namespace=")?.to_string();
-    let workflow_id = parts[3].strip_prefix("workflow_id=")?.to_string();
-    let run_id = parts[4].strip_prefix("run_id=")?.to_string();
-    Some(WorkflowKey {
-        namespace,
-        workflow_id,
-        run_id,
-    })
-}
-
-fn extract_id_from_hive_path(path: &str, dir: &str, id_prefix: &str) -> Option<String> {
-    let rel = path.strip_prefix(dir)?;
-    let inner = rel.strip_suffix("/record.binpb")?;
-    Some(inner.strip_prefix(id_prefix)?.to_string())
-}
 
 fn workflow_key_from_proto(k: &v1::WorkflowKey) -> WorkflowKey {
     WorkflowKey {

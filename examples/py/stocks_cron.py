@@ -31,6 +31,7 @@ import tempfile
 from datetime import UTC, datetime
 
 import opendal
+from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import StringValue
 
 from temporaless import (
@@ -89,12 +90,15 @@ def _make_dispatcher(store: Store):
 
     async def dispatch(schedule_id: str, fire_time: datetime) -> None:
         symbol = schedule_id.removeprefix("prices:").upper()
+        run_order_time = Timestamp()
+        run_order_time.FromDatetime(fire_time)
         await run(
             store,
             Options(
                 workflow_id=schedule_id,
                 run_id=fire_time.strftime(RUN_ID_FORMAT),
                 code_version="example",
+                run_order_time=run_order_time,
                 # Two scheduler replicas may dispatch this fire together.
                 # OpenDAL supplies atomic create-if-absent claims; the caller
                 # supplies only a diagnostic owner identity.
@@ -121,9 +125,7 @@ async def main() -> None:
     scheduler = Scheduler(schedules, _make_dispatcher(store))
 
     # Stateless seeding — read existing fire times from the run records.
-    snapshot = await last_fires_from_runs(
-        store, "", [s.id for s in schedules], RUN_ID_FORMAT
-    )
+    snapshot = await last_fires_from_runs(store, "", [s.id for s in schedules])
     scheduler.restore(snapshot)
     if snapshot:
         print(f"resumed scheduler from storage: {snapshot}")

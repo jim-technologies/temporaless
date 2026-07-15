@@ -2,14 +2,34 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 )
 
+// ErrInvalidQuery marks caller-supplied query options that an optional query
+// adapter cannot accept. Transport adapters map it to INVALID_ARGUMENT.
+var ErrInvalidQuery = errors.New("invalid query")
+
+// ErrCorruptRecord marks a protobuf payload whose schema or embedded identity
+// does not match the authoritative point at which it was read. Callers may use
+// errors.Is to isolate one damaged object without treating a backend outage as
+// an empty result.
+var ErrCorruptRecord = errors.New("corrupt storage record")
+
+// ErrStaleLatestPointer marks a well-formed derived pointer whose referenced
+// workflow has already advanced to different metadata. This is an expected
+// observation between the authoritative WorkflowRecord write and the later
+// best-effort pointer write, not evidence of authoritative data corruption.
+var ErrStaleLatestPointer = errors.New("stale latest workflow run pointer")
+
 // DueTimer pairs a SCHEDULED timer with the workflow that owns it. Returned
 // by [Store.DueTimers] so callers can re-invoke the parent workflow when its
-// sleep is up.
+// sleep is up. The deterministic due-ledger object carries the exact prepared
+// TimerRecord and is written before the canonical run record. A scanner repairs
+// an interrupted write first and emits the wake only after a later scan observes
+// both copies in agreement.
 type DueTimer struct {
 	Key      TimerKey
 	Record   *temporalessv1.TimerRecord
@@ -26,11 +46,9 @@ type ActivityStore interface {
 type WorkflowStore interface {
 	GetWorkflow(context.Context, WorkflowKey) (*temporalessv1.WorkflowRecord, bool, error)
 	PutWorkflow(context.Context, *temporalessv1.WorkflowRecord) error
-	// ListWorkflows returns workflows under the given namespace + workflow_id.
-	// Empty namespace lists across all namespaces. Empty workflowID lists
-	// across all workflow_ids in the namespace(s). WORKFLOW_STATUS_UNSPECIFIED
-	// matches all statuses.
-	ListWorkflows(ctx context.Context, namespace string, workflowID string, status temporalessv1.WorkflowStatus) ([]*temporalessv1.WorkflowRecord, error)
+	// GetLatestWorkflowRun reads the derived point pointer for one workflow ID.
+	// The pointer is a scheduler optimization, not an authoritative run record.
+	GetLatestWorkflowRun(ctx context.Context, namespace string, workflowID string) (*temporalessv1.LatestWorkflowRunPointer, bool, error)
 	DeleteWorkflow(context.Context, WorkflowKey) (bool, error)
 }
 
@@ -82,14 +100,26 @@ type Store interface {
 	TimerStore
 	WorkflowStore
 
-	// Sweep is the record-only retention fallback for stores with no claim
-	// coordination. It deletes every externally quiesced COMPLETED workflow run
-	// under the namespace whose completed_at is older than now-maxAge, after
-	// prevalidating activities, timers, and events. Claim-aware callers use the
-	// janitor/query adapter with a ClaimRunStore so claims are removed first.
-	Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error)
-
-	// DueTimers returns SCHEDULED timer records under the given namespace
-	// whose fire_at <= now and whose parent workflow is still IN_PROGRESS.
+	// DueTimers returns SCHEDULED timer wakes under the given namespace whose
+	// fire_at <= now and whose parent workflow is still IN_PROGRESS. Returned
+	// records have matching prepared-ledger and canonical copies.
 	DueTimers(ctx context.Context, namespace string, now time.Time) ([]DueTimer, error)
+}
+
+// WorkflowQueryStore is the narrow cross-run candidate source used by
+// inspectors and retention. Implementations must be derived query adapters;
+// the authoritative bucket Store deliberately does not implement it.
+type WorkflowQueryStore interface {
+	ListWorkflows(context.Context, *temporalessv1.ListWorkflowsRequest) (*temporalessv1.ListWorkflowsResponse, error)
+}
+
+// QueryStore is the optional cross-run query and retention surface. It mirrors
+// RecordQueryService with generated protobuf requests and responses. SQL or
+// another rebuildable index belongs in an adapter, never in the core bucket
+// store. The Query suffixes avoid colliding with Store's run-scoped methods.
+type QueryStore interface {
+	WorkflowQueryStore
+	ListActivitiesQuery(context.Context, *temporalessv1.RecordQueryServiceListActivitiesRequest) (*temporalessv1.RecordQueryServiceListActivitiesResponse, error)
+	Sweep(context.Context, *temporalessv1.SweepRequest) (*temporalessv1.SweepResponse, error)
+	DueTimersQuery(context.Context, *temporalessv1.RecordQueryServiceDueTimersRequest) (*temporalessv1.RecordQueryServiceDueTimersResponse, error)
 }

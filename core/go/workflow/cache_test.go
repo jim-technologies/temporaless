@@ -22,7 +22,6 @@ type countingStore struct {
 	listActivity atomic.Int64
 	putActivity  atomic.Int64
 	getWorkflow  atomic.Int64
-	listWorkflow atomic.Int64
 	putWorkflow  atomic.Int64
 	getTimer     atomic.Int64
 	listTimer    atomic.Int64
@@ -67,9 +66,8 @@ func (s *countingStore) PutWorkflow(ctx context.Context, record *temporalessv1.W
 	return s.inner.PutWorkflow(ctx, record)
 }
 
-func (s *countingStore) ListWorkflows(ctx context.Context, namespace, workflowID string, status temporalessv1.WorkflowStatus) ([]*temporalessv1.WorkflowRecord, error) {
-	s.listWorkflow.Add(1)
-	return s.inner.ListWorkflows(ctx, namespace, workflowID, status)
+func (s *countingStore) GetLatestWorkflowRun(ctx context.Context, namespace, workflowID string) (*temporalessv1.LatestWorkflowRunPointer, bool, error) {
+	return s.inner.GetLatestWorkflowRun(ctx, namespace, workflowID)
 }
 
 func (s *countingStore) DeleteWorkflow(ctx context.Context, key storage.WorkflowKey) (bool, error) {
@@ -115,10 +113,6 @@ func (s *countingStore) ListEvents(ctx context.Context, key storage.WorkflowKey)
 func (s *countingStore) DeleteEvent(ctx context.Context, key storage.EventKey) (bool, error) {
 	s.deleteCalls.Add(1)
 	return s.inner.DeleteEvent(ctx, key)
-}
-
-func (s *countingStore) Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error) {
-	return s.inner.Sweep(ctx, namespace, now, maxAge)
 }
 
 func (s *countingStore) DueTimers(ctx context.Context, namespace string, now time.Time) ([]storage.DueTimer, error) {

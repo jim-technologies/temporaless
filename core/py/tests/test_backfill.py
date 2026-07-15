@@ -7,8 +7,9 @@ import asyncio
 import opendal
 import pytest
 from google.protobuf.wrappers_pb2 import StringValue
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
-from temporaless import Options, wrap_workflow_method
+from temporaless import Options
 from temporaless.backfill import BackfillStatus, backfill
 from temporaless.storage import OpenDALStore
 
@@ -40,13 +41,15 @@ class _FetchService:
         self.invocations: dict[str, int] = {}
 
     @wrap_workflow_method(
-        store=lambda self: self._store,  # type: ignore[attr-defined]
-        result_type=StringValue,
-        options_for=lambda _self, request: Options(
-            workflow_id="prices",
-            run_id=request.value,
-            code_version="v1",
-        ),
+        WorkflowMethodWrapOptions(
+            store=lambda self: self._store,  # type: ignore[attr-defined]
+            result_type=StringValue,
+            options_for=lambda _self, request: Options(
+                workflow_id="prices",
+                run_id=request.value,
+                code_version="v1",
+            ),
+        )
     )
     async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
         self.invocations[request.value] = self.invocations.get(request.value, 0) + 1
@@ -95,13 +98,15 @@ async def test_backfill_respects_concurrency_limit(store: OpenDALStore) -> None:
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="slow",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="slow",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
             nonlocal in_flight, peak
@@ -127,13 +132,15 @@ async def test_backfill_continues_past_failures_by_default(store: OpenDALStore) 
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="flaky",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="flaky",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
             if request.value == "BAD":
@@ -162,13 +169,15 @@ async def test_backfill_halt_on_error_stops_after_first_failure(
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="halt",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="halt",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
             invoked.append(request.value)
@@ -196,9 +205,7 @@ async def test_backfill_halt_on_error_stops_after_first_failure(
 async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
     store: OpenDALStore,
 ) -> None:
-    """A workflow body that returns ConnectError(UNAVAILABLE) — typically from
-    TimerPendingError or EventPendingError via wrap_workflow_method's
-    auto-mapping — surfaces as PENDING, not FAILED."""
+    """A locally wrapped typed pending error surfaces as PENDING, not FAILED."""
     from temporaless.workflow import current_workflow
 
     class _PendingService:
@@ -206,13 +213,15 @@ async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="pending",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="pending",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch_prices(self, request: StringValue, _ctx: object = None) -> StringValue:
             from datetime import timedelta
@@ -223,8 +232,8 @@ async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
     service = _PendingService(store)
     report = await backfill(_service_invoker(service), ["2026-05-01", "2026-05-02"], concurrency=1)
 
-    # Both runs are pending — they raised ConnectError(UNAVAILABLE) which the
-    # backfill helper recognizes as a pending sentinel.
+    # The adapter preserves TimerPendingError as __cause__, so the generic
+    # backfill helper recognizes it without depending on ConnectRPC.
     assert len(report.pending()) == 2
     assert len(report.failed()) == 0
     assert len(report.succeeded()) == 0
@@ -235,21 +244,14 @@ async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
     [
         pytest.param("claim", id="claim_busy"),
         pytest.param("concurrency", id="concurrency_busy"),
-        pytest.param("already_exists", id="connect_claim_busy"),
-        pytest.param("resource_exhausted", id="connect_concurrency_busy"),
     ],
 )
 async def test_backfill_reports_coordination_contention_as_pending(error: str) -> None:
-    from connectrpc.code import Code
-    from connectrpc.errors import ConnectError
-
     from temporaless.workflow import ClaimBusyError, ConcurrencyBusyError
 
     errors = {
         "claim": ClaimBusyError("workflow:execution"),
         "concurrency": ConcurrencyBusyError("vendor", 2),
-        "already_exists": ConnectError(Code.ALREADY_EXISTS, "claim busy"),
-        "resource_exhausted": ConnectError(Code.RESOURCE_EXHAUSTED, "cap busy"),
     }
 
     async def invoke(_run_id: str) -> StringValue:
@@ -260,10 +262,38 @@ async def test_backfill_reports_coordination_contention_as_pending(error: str) -
     assert len(report.failed()) == 0
 
 
+@pytest.mark.parametrize("explicit_cause", [False, True])
+async def test_backfill_finds_typed_pending_error_in_exception_chain(
+    explicit_cause: bool,
+) -> None:
+    from temporaless.workflow import EventPendingError
+
+    async def invoke(_run_id: str) -> StringValue:
+        pending = EventPendingError("approval")
+        if explicit_cause:
+            raise RuntimeError("transport wrapper") from pending
+        try:
+            raise pending
+        except EventPendingError:
+            raise RuntimeError("transport wrapper")  # noqa: B904
+
+    report = await backfill(invoke, ["run:1"])
+    assert len(report.pending()) == 1
+    assert len(report.failed()) == 0
+
+
 async def test_backfill_rejects_zero_concurrency(store: OpenDALStore) -> None:
     service = _FetchService(store)
     with pytest.raises(ValueError, match="concurrency"):
         await backfill(_service_invoker(service), ["x"], concurrency=0)
+
+
+async def test_backfill_rejects_non_callable_pending_error() -> None:
+    async def invoke(_run_id: str) -> StringValue:
+        return StringValue()
+
+    with pytest.raises(TypeError, match="pending_error must be callable"):
+        await backfill(invoke, ["x"], pending_error=object())  # type: ignore[arg-type]
 
 
 async def test_backfill_with_empty_run_ids_returns_empty_report(

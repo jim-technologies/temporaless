@@ -3,13 +3,13 @@
 # replace the CMD line with your entrypoint.
 #
 # Multi-stage: builder installs deps + the editable package, runtime ships
-# only the resulting venv + source. Result is ~140 MB on python:3.13-slim.
+# only the resulting venv + source. Result is ~140 MB on python:3.14-slim.
 
-FROM python:3.13-slim AS builder
+FROM python:3.14.6-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015 AS builder
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa /uv /uvx /usr/local/bin/
 
 # System deps OpenDAL's Python binding needs at runtime.
 RUN apt-get update \
@@ -19,12 +19,12 @@ RUN apt-get update \
 WORKDIR /app
 COPY core/py /app/core/py
 COPY README.md /app/README.md
-# `uvicorn` is a dev-only dep of the library (the library exposes ASGI; the
-# server is the user's choice). For the bundled production_server.py example,
-# install it as a runtime dep explicitly so the image is self-contained.
-RUN cd core/py && uv sync --frozen --no-dev && uv pip install --python .venv/bin/python uvicorn>=0.34.0
+# The library exposes ASGI and leaves the server optional. The image selects
+# the lockfile-backed `server` extra so every runtime dependency is resolved
+# during the repository lock update, not during the container build.
+RUN cd core/py && uv sync --frozen --no-dev --extra server
 
-FROM python:3.13-slim AS runtime
+FROM python:3.14.6-slim@sha256:d3400aa122fa42cf0af0dbe8ec3091b047eac5c8f7e3539f7135e86d855dc015 AS runtime
 ENV PATH="/app/core/py/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -41,7 +41,8 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).status == 200 else 1)"
 
-# Replace this CMD with your own server entrypoint. The default points at
-# the canonical production_server.py wiring (auth + health + JSON logs +
-# graceful shutdown).
+# Replace this CMD with your own server entrypoint. The default points at the
+# canonical production_server.py wiring (auth + health + JSON logs + graceful
+# shutdown). It deliberately has no credential or storage defaults and fails
+# closed until AUTH_TOKEN and TEMPORALESS_STORAGE_SCHEME are configured.
 CMD ["python", "examples/py/production_server.py"]

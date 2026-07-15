@@ -6,13 +6,153 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 The framework is **pre-1.0** — wire-format changes will be called out clearly when they happen, and there's no backwards-compatibility commitment until v1.0.0.
 
+Starting with v0.5.0, Go, Python core, every Python adapter, Rust, and
+TypeScript share the repository-root `VERSION` and ship from one plain
+`vX.Y.Z` repository tag. Earlier tags remain immutable and predate this
+lockstep policy.
+
 ## [Unreleased]
+
+## [0.5.0] — 2026-07-15
+
+### Added
+
+- Durable activity backoff now uses caller-supplied `retry_timer_id` values in
+  both SDKs. Timer-first publication, reciprocal activity ownership, replay
+  repair, and scanner redelivery keep long retries wakeable without retaining
+  a worker process.
+- Batch processing needs no separate checkpoint service: each stable
+  `activity_id` is an independently replayable protobuf checkpoint, and
+  operator reset helpers can re-run failed partitions while completed records
+  remain reusable.
+- Activity records now persist the normalized effective `RetryPolicy`, letting
+  resumed `RETRYING` activities reject policy drift and reconstruct the same
+  ordinal backoff schedule in Go and Python.
+- Go bucket storage now uses the flat v2 record layout and compact due-timer
+  ledger, with non-destructive malformed-entry quarantine, authoritative stale
+  filtering, and all-namespace timer discovery.
+- Workflow storage/coordination outages now return typed infrastructure errors
+  and leave parent workflows `IN_PROGRESS`; ambiguous durable-sleep writes are
+  authoritatively reread so a committed timer remains wakeable.
+
+### Changed
+
+- Release versioning is now lockstep across every SDK and adapter. A root
+  `VERSION`, exact internal Python requirements, one-command synchronizer, and
+  CI drift/tag checks replace independently managed package versions. The
+  existing v0.4.0 tag remains historical; v0.5.0 is the first unified line.
+- Temporaless-owned packages are now explicitly Git-only distributions. npm
+  and Cargo registry publication are disabled, and repository policy excludes
+  PyPI, npm, crates.io, and other language registries as release channels.
+- Workflow, run, activity, retry-timer, and claim-owner identities are now
+  consistently application-supplied. Runtime function-name inference and
+  retry-timer ID derivation were removed.
+- Latest-run ordering uses the caller's protobuf `run_order_time`, with
+  lifecycle timestamps as fallback; runtime code no longer parses opaque run
+  IDs.
+- Go core bucket storage is now strictly point/run-scoped. Cross-run workflow
+  and activity listing plus exact retention use the explicit `QueryStore`
+  boundary; `adapters/go/scanquery` provides an offline/development fallback.
+- Due activity-retry timers remain `SCHEDULED` while a resumed attempt is
+  ambiguous. Due workflow sleeps likewise remain redeliverable until a later
+  scheduled wake or terminal workflow record is durable.
+- Go and the experimental Rust crate are mandatory repository/CI gates. Rust
+  remains non-first-class at the product API level.
+- ConnectRPC workflow-trigger wrappers now live in explicit Go/Python boundary
+  adapters; core workflow replay no longer imports ConnectRPC. Prefect and
+  Temporal Python wrappers likewise accept one typed options object per
+  boundary instead of boundary-specific keywords or free-form decorator
+  keyword arguments.
+- Python now requires 3.14, Node-based development uses the Node 24 LTS line,
+  Go uses the newest Flox-catalog 1.26 patch available on every supported
+  platform, and the experimental Rust crate uses edition 2024 on Rust 1.97.
+- Direct Go, Python, Rust, TypeScript, Buf, and container dependencies were
+  promoted to their current stable ceilings. Invariant Protocol is pinned to
+  the immutable v0.6.1 commit; CI actions and Python/uv container bases are
+  digest/commit pinned.
+- Point-store RPCs now require their embedded protobuf key/record messages;
+  timer queries require `now`, and retention sweeps require a positive
+  `max_age`. Invalid requests fail before storage is touched.
 
 ### Fixed
 
+- Python timer-ledger scans now fail loudly after non-destructively quarantining
+  a corrupt discovery entry, and canonical timer repair/delete failures reach
+  the scheduler instead of being logged as successful empty ticks.
+- Cancellation after a successful activity-claim create but before activity
+  body entry now releases that unambiguous claim; post-entry cancellation still
+  retains the claim until operator recovery when no durable outcome exists.
+- Activity claim acquisition now refreshes both activity and retry-timer state
+  authoritatively before execution, closing a cache/claim race that could run
+  an attempt before its prepared durable backoff elapsed.
+- Replay rejects malformed `RETRYING`, terminal-failure, and durable-sleep
+  records instead of executing through inconsistent state. Go and Python now
+  persist the same retry-timer identity on short and durable backoffs.
+- Timer transitions now publish one deterministic due-ledger object containing
+  the full prepared `TimerRecord` before the canonical point. Reads overlay an
+  interrupted write exactly; scanners repair missing, stale, or corrupt points
+  and wait for a later exact scan before dispatch; deletes use durable canceled
+  tombstones.
 - Clean CI installs now explicitly allow the root package's SHA-pinned Git
   dependency, build it over HTTPS with `npm ci`, and deny unneeded transitive
   install scripts.
+- Durable retry resume no longer compounds an earlier vendor `Retry-After`
+  into later exponential intervals, and maximum-interval caps are preserved
+  across process boundaries.
+- Timer-ledger discovery validates payload ownership instead of deriving
+  identity from object paths. Corrupt/misplaced entries are copied to a
+  deterministic quarantine path while source entries remain intact; stale
+  entries are filtered without racing concurrent timer writers.
+- OpenDAL and Connect-backed point reads now reject protobufs whose record
+  schema or embedded key does not match the requested object location. Run
+  prefetch/list paths enforce the same boundary, and latest-run pointers are
+  returned only while their referenced workflow still exists and matches.
+  Transient pointer-metadata lag between authoritative and derived writes is
+  treated as not-found rather than corrupt data.
+- The optional Python SQLite timer index now falls back to the authoritative
+  bucket ledger after write/query failures and self-repairs missing rows, so
+  an index outage cannot make a durable timer permanently invisible.
+- SQLite index locks, transactions, and close operations now run off the async
+  event loop; a blocked database operation no longer stalls unrelated async
+  workflow work.
+- ConnectRPC 0.11 now uses async-only stubs generated with its explicit
+  Google-protobuf compatibility codecs. Remote workflow/query calls and direct
+  generated clients no longer fall through to the new `protobuf-py` default.
+- Query results now reread authoritative records, repair or prune stale index
+  rows, and continue pagination until the requested page is full. Rebuilds
+  reject misplaced records whose protobuf identity disagrees with the object
+  path.
+- The production ConnectStore examples fail closed without an auth token and
+  explicit storage configuration, and no longer advertise an inert
+  timer/cron loop as an operator.
+- Production HTTP examples authenticate before consuming RPC bodies, bound
+  encoded and decoded request sizes, reject implicit ephemeral storage, and
+  document ingress requirements for slow uploads and compressed payloads. Go
+  also sets finite header/read/write/idle timeouts.
+- The Python production example now rejects in-memory storage unconditionally;
+  its explicit unsafe acknowledgement applies only to the one-node filesystem
+  development backend.
+
+### Upgrade notes
+
+- Quiesce active v0.4 runs before upgrading. A v0.4 `RETRYING` activity does
+  not contain the persisted effective retry policy or caller-supplied retry
+  timer identity now required to resume safely. Let it finish, or delete/reset
+  its activity and paired retry-timer records before resetting the parent
+  workflow record; completed activity checkpoints remain reusable.
+- Regenerate clients from the updated v1 schema. Callers of `Sweep` and
+  `DueTimers` must populate the newly required time/duration messages.
+- The v0.4 time-partitioned due-ledger shape is not read by the new scanner.
+  Before switching scanners, quiesce timer writers and re-save every live
+  canonical `SCHEDULED` timer through the upgraded `PutTimer` / `put_timer`
+  API (using application run inventory or a rebuilt optional query index).
+  Verify the deterministic
+  `temporaless/v2/{namespace}/_due/{workflow_id}/{run_id}/{timer_id}.binpb`
+  objects exist, then remove the superseded time-partitioned v0.4 entries while
+  writers/scanners remain quiesced and deploy the new scanner. Otherwise those
+  legacy shapes are retained and quarantined as invalid on each scan. This
+  preserves each original `fire_at`; do not recreate timers from duration at
+  upgrade time.
 
 ## [0.4.0] — 2026-07-12
 
@@ -524,7 +664,7 @@ backwards-compatibility commitment until v1.0.0.
   this binary retires.
 - Cross-language parity for backfill + cross-pipeline dependencies:
   - Go: `adapters/go/backfill` (`Backfill[Resp](ctx, runIDs, Options, invoke)`) and `adapters/go/dependencies` (`WaitForWorkflow[Resp](ctx, store, key, newResult)`).
-  - Typed errors `WorkflowDependencyPendingError` / `WorkflowDependencyFailedError` in core, mapped through `ErrorToConnectCode` to `Unavailable` / `Internal`.
+  - Typed errors `WorkflowDependencyPendingError` / `WorkflowDependencyFailedError` in core, mapped through `connectworkflow.ErrorToCode` to `Unavailable` / `Internal`.
   - `(*Workflow).Store()` accessor so adapter helpers can read records without reaching into private state.
 - Stress tests covering 100 concurrent workflows, 100-workflow replay, 50 parallel activities in one workflow, and high-concurrency backfill with poison-pill isolation.
 - `examples/{go,py}/production-server` — tested production wiring (bearer-token auth, `/healthz` + `/readyz`, structured JSON logs, graceful shutdown).
@@ -533,7 +673,7 @@ backwards-compatibility commitment until v1.0.0.
 - `docs/runbook.md` — operator runbook for common production incidents.
 - `docs/production-checklist.md` — pre-launch checklist.
 - Prefect 3 compatibility adapter (`adapters/py/prefectcompat`).
-- Auto error-mapping in `HandleConnect` (Go) / `wrap_workflow_method` (Python) — framework typed errors now translate to `*connect.Error` / `ConnectError` automatically with the original error preserved via wrapping.
+- Auto error-mapping in `connectworkflow.Handle` (Go) / `wrap_workflow_method` (Python) — framework typed errors now translate to `*connect.Error` / `ConnectError` automatically with the original error preserved via wrapping. The Go trigger adapter lives outside the transport-agnostic core.
 - Production-server smoke tests in both languages that spawn the binary as a subprocess and verify auth + health + RPC behavior.
 
 ### Changed

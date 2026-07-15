@@ -20,12 +20,13 @@
 //
 // If two replicas accidentally both run the same loop, the framework's replay
 // model still produces correct results — the second workflow.Run short-circuits
-// via stored records; Store.Sweep and record deletes are idempotent. The
+// via stored records; query-adapter sweeps and point deletes are idempotent. The
 // opt-in is purely an efficiency optimization, not a correctness one.
 //
 // # Typical wiring (operator replica)
 //
 //	workers := background.New(store, background.Config{
+//	    QueryStore: queryStore,
 //	    Cron: &background.CronConfig{Scheduler: myScheduler},
 //	    TimerScanner: &background.TimerScannerConfig{Dispatch: dispatchDueTimer},
 //	    Janitor: &background.JanitorConfig{MaxAge: 7 * 24 * time.Hour},
@@ -86,6 +87,8 @@ type JanitorConfig struct {
 	MaxAge time.Duration
 	// Interval defaults to 24h when zero.
 	Interval time.Duration
+	// Namespace limits retention candidates. Empty means all namespaces.
+	Namespace string
 	// ClaimStore is the optional separately configured claim backend. Nil lets
 	// janitor.Sweep auto-detect claim support from the record store.
 	ClaimStore storage.ClaimStore
@@ -97,6 +100,9 @@ type Config struct {
 	Cron         *CronConfig
 	TimerScanner *TimerScannerConfig
 	Janitor      *JanitorConfig
+	// QueryStore is required when Janitor is configured. Core bucket stores do
+	// not expose cross-run retention candidates.
+	QueryStore storage.WorkflowQueryStore
 
 	// Logger is used for transient per-iteration errors that shouldn't kill
 	// the worker. Defaults to slog.Default() when nil.
@@ -107,6 +113,7 @@ type Config struct {
 // and call Start/Stop on the service lifecycle.
 type Workers struct {
 	store  storage.Store
+	query  storage.WorkflowQueryStore
 	cfg    Config
 	logger *slog.Logger
 
@@ -144,12 +151,15 @@ func New(store storage.Store, cfg Config) (*Workers, error) {
 		if cfg.Janitor.Interval < 0 {
 			return nil, fmt.Errorf("janitor.Interval must be >= 0")
 		}
+		if cfg.QueryStore == nil {
+			return nil, fmt.Errorf("QueryStore is required when janitor is configured")
+		}
 	}
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Workers{store: store, cfg: cfg, logger: logger}, nil
+	return &Workers{store: store, query: cfg.QueryStore, cfg: cfg, logger: logger}, nil
 }
 
 // Start spawns goroutines for each enabled loop. Returns immediately; the
@@ -245,9 +255,10 @@ func (w *Workers) runJanitor(ctx context.Context, cfg *JanitorConfig) {
 		interval = 24 * time.Hour
 	}
 	w.loop(ctx, "janitor", interval, func(ctx context.Context) error {
-		_, err := janitor.Sweep(ctx, w.store, cfg.ClaimStore, &temporalessv1.SweepRequest{
-			Now:    timestamppb.New(time.Now().UTC()),
-			MaxAge: durationpb.New(cfg.MaxAge),
+		_, err := janitor.Sweep(ctx, w.query, w.store, cfg.ClaimStore, &temporalessv1.SweepRequest{
+			Namespace: cfg.Namespace,
+			Now:       timestamppb.New(time.Now().UTC()),
+			MaxAge:    durationpb.New(cfg.MaxAge),
 		})
 		return err
 	})

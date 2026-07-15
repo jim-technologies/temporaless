@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::process::id;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use opendal::{services::Fs, Operator};
+use opendal::{Operator, services::Fs};
 use prost::Message;
-use temporaless::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, WorkflowKey};
+use temporaless::storage::{ActivityKey, OpenDALStore, Store, WorkflowKey, proto_timestamp};
 use temporaless::v1;
 
 const TARGET_DURATION_NS: u128 = 1_000_000_000;
@@ -35,7 +35,7 @@ fn temp_root(label: &str) -> PathBuf {
 fn new_store(label: &str) -> (PathBuf, OpenDALStore) {
     let root = temp_root(label);
     let builder = Fs::default().root(root.to_str().unwrap());
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     (root, OpenDALStore::new(op))
 }
 
@@ -52,6 +52,7 @@ fn workflow_record(workflow_id: &str, run_id: &str) -> v1::WorkflowRecord {
         created_at: Some(proto_timestamp(SystemTime::now())),
         completed_at: Some(proto_timestamp(SystemTime::now())),
         annotations: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -70,6 +71,7 @@ fn activity_record(workflow_id: &str, run_id: &str, activity_id: &str) -> v1::Ac
         attempts: vec![],
         annotations: Default::default(),
         next_attempt_at: None,
+        ..Default::default()
     }
 }
 

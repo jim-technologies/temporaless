@@ -87,19 +87,22 @@ async def backfill[T](
     *,
     concurrency: int = 1,
     halt_on_error: bool = False,
+    pending_error: Callable[[BaseException], bool] | None = None,
 ) -> BackfillReport[T]:
     """Run a workflow over many run_ids with bounded concurrency.
 
     ``invoke`` is a partial-applied workflow caller: given a run_id, it returns
-    the workflow result (typically by calling a ``@wrap_workflow_method``
-    method that derives ``Options.run_id`` from its request). Per-run results
-    are independent: a failure in one run_id doesn't affect others, unless
+    the workflow result (typically by calling a transport adapter method that
+    derives ``Options.run_id`` from its request). Per-run results are
+    independent: a failure in one run_id doesn't affect others, unless
     ``halt_on_error=True``.
 
     Workflow runs that stay IN_PROGRESS (timer/event/dependency pending or a
-    live claim holder), plus concurrency-cap contention, are PENDING. Their
-    ConnectRPC forms (UNAVAILABLE, ALREADY_EXISTS, RESOURCE_EXHAUSTED) are
-    classified the same way.
+    live claim holder), plus concurrency-cap contention, are PENDING. Wrapped
+    local exceptions are recognized through their ``__cause__`` and
+    ``__context__`` chains. A remote transport can pass ``pending_error`` to
+    classify its status representation without coupling core to that
+    transport.
 
     Args:
         invoke: callable mapping a run_id to a workflow result.
@@ -108,12 +111,17 @@ async def backfill[T](
         halt_on_error: stop dispatching new run_ids after the first failure;
             already-running invocations finish; un-dispatched ones are reported
             as PENDING.
+        pending_error: optional transport-specific predicate. It supplements
+            the core typed-error classification; it must return ``True`` only
+            for errors that are safe to retry as an IN_PROGRESS run.
 
     Returns:
         ``BackfillReport`` with one ``BackfillEntry`` per input run_id.
     """
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
+    if pending_error is not None and not callable(pending_error):
+        raise TypeError("pending_error must be callable")
 
     semaphore = asyncio.Semaphore(concurrency)
     halt = asyncio.Event()
@@ -128,7 +136,7 @@ async def backfill[T](
                 result = await invoke(run_id)
                 return BackfillEntry(run_id=run_id, status=BackfillStatus.SUCCEEDED, result=result)
             except Exception as exc:
-                if _is_pending_error(exc):
+                if _is_pending_error(exc) or (pending_error is not None and pending_error(exc)):
                     return BackfillEntry(run_id=run_id, status=BackfillStatus.PENDING, error=exc)
                 if halt_on_error:
                     halt.set()
@@ -139,27 +147,25 @@ async def backfill[T](
 
 
 def _is_pending_error(exc: BaseException) -> bool:
-    if isinstance(
-        exc,
-        (
-            TimerPendingError,
-            EventPendingError,
-            WorkflowDependencyPendingError,
-            ClaimBusyError,
-            ConcurrencyBusyError,
-        ),
-    ):
-        return True
-    try:
-        from connectrpc.code import Code
-        from connectrpc.errors import ConnectError
-
-        if isinstance(exc, ConnectError) and exc.code in {
-            Code.UNAVAILABLE,
-            Code.ALREADY_EXISTS,
-            Code.RESOURCE_EXHAUSTED,
-        }:
+    pending_types = (
+        TimerPendingError,
+        EventPendingError,
+        WorkflowDependencyPendingError,
+        ClaimBusyError,
+        ConcurrencyBusyError,
+    )
+    stack = [exc]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(current, pending_types):
             return True
-    except ImportError:
-        pass
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+        if current.__context__ is not None:
+            stack.append(current.__context__)
     return False

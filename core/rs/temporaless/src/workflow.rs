@@ -11,8 +11,9 @@
 //!
 //! Ships today: `run()` with the three replay branches (COMPLETED short-
 //! circuit, FAILED replay, IN_PROGRESS resume, fresh execution),
-//! `execute_activity()` with full in-process retry + `Retry-After`,
-//! `activity()` ergonomic helper, `annotate()` durable metadata.
+//! `execute_activity()` with full in-process retry + `Retry-After`, and
+//! `annotate()` durable metadata. Every activity ID is caller-supplied through
+//! [`ActivityOptions`].
 //!
 //! Not yet shipped (read `docs/sdks.md` for the gap table): durable retry
 //! backoffs, concurrency keys, claims, `Sleep`, `WaitEvent`, ConnectRPC
@@ -27,7 +28,7 @@ use std::time::{Duration, SystemTime};
 use prost::{Message, Name};
 use thiserror::Error;
 
-use crate::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, StoreError, WorkflowKey};
+use crate::storage::{ActivityKey, OpenDALStore, Store, StoreError, WorkflowKey, proto_timestamp};
 use crate::v1;
 
 // ---------------------------------------------------------------------------
@@ -102,18 +103,6 @@ impl RetryPolicy {
             maximum_interval: Duration::ZERO,
             non_retryable_error_codes: Vec::new(),
         }
-    }
-}
-
-/// Sensible default for the ergonomic `activity()` helper. 3 attempts, 1s
-/// initial, 2x backoff, 30s max. Mirrors the Go and Python defaults.
-pub fn default_retry_policy() -> RetryPolicy {
-    RetryPolicy {
-        maximum_attempts: 3,
-        initial_interval: Duration::from_secs(1),
-        backoff_coefficient: 2.0,
-        maximum_interval: Duration::from_secs(30),
-        non_retryable_error_codes: Vec::new(),
     }
 }
 
@@ -214,10 +203,10 @@ pub fn current() -> Workflow {
 /// Attach a key/value to the in-flight record (activity if called from
 /// inside `execute_activity`'s body, workflow otherwise). Survives replay.
 pub fn annotate(key: impl Into<String>, value: impl Into<String>) {
-    if let Ok(w) = CURRENT.try_with(|w| w.annotations.clone()) {
-        if let Ok(mut map) = w.lock() {
-            map.insert(key.into(), value.into());
-        }
+    if let Ok(w) = CURRENT.try_with(|w| w.annotations.clone())
+        && let Ok(mut map) = w.lock()
+    {
+        map.insert(key.into(), value.into());
     }
 }
 
@@ -310,6 +299,7 @@ where
             created_at: Some(created_at),
             completed_at: None,
             annotations: Default::default(),
+            run_order_time: None,
         };
         store.put_workflow(&in_progress).await?;
     }
@@ -347,6 +337,7 @@ where
                 created_at: Some(created_at),
                 completed_at: Some(proto_timestamp(SystemTime::now())),
                 annotations: snapshot,
+                run_order_time: None,
             };
             store.put_workflow(&completed).await?;
             Ok(resp)
@@ -377,6 +368,7 @@ where
                 created_at: Some(created_at),
                 completed_at: Some(proto_timestamp(SystemTime::now())),
                 annotations: snapshot,
+                run_order_time: None,
             };
             store.put_workflow(&failed).await?;
             Err(err)
@@ -461,11 +453,11 @@ where
     let annotations = Arc::new(Mutex::new(HashMap::new()));
     // Restore prior annotations from RETRYING record so per-attempt metadata
     // survives cross-invocation resumes.
-    if let Some(record) = &existing {
-        if let Ok(mut map) = annotations.lock() {
-            for (k, v) in &record.annotations {
-                map.insert(k.clone(), v.clone());
-            }
+    if let Some(record) = &existing
+        && let Ok(mut map) = annotations.lock()
+    {
+        for (k, v) in &record.annotations {
+            map.insert(k.clone(), v.clone());
         }
     }
 
@@ -509,6 +501,8 @@ where
                     attempts,
                     annotations: snapshot,
                     next_attempt_at: None,
+                    retry_policy: None,
+                    retry_timer_id: String::new(),
                 };
                 workflow.store.put_activity(&record).await?;
                 return Ok(resp);
@@ -527,10 +521,10 @@ where
 
                 // Retry-After overrides the configured interval when it's
                 // longer — vendor pacing wins over our exponential floor.
-                if let Some(ra) = err.retry_after {
-                    if ra > interval {
-                        interval = ra;
-                    }
+                if let Some(ra) = err.retry_after
+                    && ra > interval
+                {
+                    interval = ra;
                 }
 
                 let non_retryable = plan
@@ -557,6 +551,8 @@ where
                         attempts,
                         annotations: snapshot,
                         next_attempt_at: None,
+                        retry_policy: None,
+                        retry_timer_id: String::new(),
                     };
                     workflow.store.put_activity(&record).await?;
                     return Err(RunError::Activity(err));
@@ -583,6 +579,8 @@ where
                     attempts: attempts.clone(),
                     annotations: snapshot,
                     next_attempt_at: None,
+                    retry_policy: None,
+                    retry_timer_id: String::new(),
                 };
                 workflow.store.put_activity(&retrying).await?;
 
@@ -597,50 +595,6 @@ where
         "activity {:?} exhausted retry plan",
         options.activity_id
     )))
-}
-
-/// Ergonomic shortcut: auto-derives `activity_id` from the function's
-/// type name and applies `default_retry_policy()`. Pass [`execute_activity`]
-/// directly when you need explicit control.
-pub async fn activity<Req, Resp, F, Fut>(input: Req, execute: F) -> Result<Resp, RunError>
-where
-    Req: Message + Name + Default + Clone,
-    Resp: Message + Name + Default,
-    F: Fn(Req) -> Fut,
-    Fut: Future<Output = Result<Resp, ActivityError>>,
-{
-    let activity_id = infer_activity_id::<F>();
-    let options = ActivityOptions::new(activity_id).with_retry_policy(default_retry_policy());
-    execute_activity(options, input, execute).await
-}
-
-/// Pull a path-safe activity_id out of `F`'s type name. Closures whose
-/// generated names contain forbidden characters fall back to a generic
-/// `closure` label; pass an explicit `activity_id` for stable replay.
-fn infer_activity_id<F>() -> String {
-    let raw = std::any::type_name::<F>();
-    // Take only the last `::`-separated segment so the activity_id stays
-    // short and stable across `cargo` rebuilds (the full type name
-    // contains the package path).
-    let short = raw.rsplit("::").next().unwrap_or(raw);
-    // Strip generic args (e.g. "fetch_quote<...>") for stability.
-    let short = short.split('<').next().unwrap_or(short);
-    // Sanitize to the framework's ID regex [A-Za-z0-9._:-].
-    let sanitized: String = short
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.is_empty() {
-        "closure".into()
-    } else {
-        sanitized
-    }
 }
 
 // ---------------------------------------------------------------------------

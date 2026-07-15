@@ -4,21 +4,18 @@
 // to satisfy the lint would worsen ergonomics for callers. Allow it.
 #![allow(clippy::result_large_err)]
 
-//! Temporaless — Rust SDK (storage layer).
+//! Temporaless — experimental Rust SDK.
 //!
 //! # Scope (intentional)
 //!
-//! This crate currently ships the **storage layer only**: an
-//! [`OpenDALStore`](storage::OpenDALStore) that reads/writes the same
-//! Hive-partitioned protobuf records the Go and Python SDKs use, so
-//! Rust-side tooling (analytics, custom inspectors, MCP servers, future
-//! workflow runtime) interoperates with workflows authored in either of
-//! the other languages.
+//! This crate ships an [`OpenDALStore`](storage::OpenDALStore), a partial
+//! workflow/activity runtime, and an in-process dispatcher. Storage uses the
+//! canonical flat v2 paths and protobuf binary records shared with Go and
+//! Python.
 //!
-//! It does NOT yet ship: workflow.run, activity replay, claims, durable
-//! retries, ConnectStore client/server, cron scheduler, timer scanner,
-//! janitor. Those are tracked separately; the storage layer is the
-//! prerequisite.
+//! It does NOT yet ship the full first-class SDK surface: durable sleeps and
+//! durable activity backoff, events, production claim integration,
+//! ConnectStore, cron, and indexed timer scanning remain Go/Python features.
 //!
 //! # OpenDAL native
 //!
@@ -47,10 +44,15 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/temporaless.v1.rs"));
 }
 
+pub mod reserved_names {
+    //! Framework-reserved names generated from protobuf Edition defaults.
+    include!(concat!(env!("OUT_DIR"), "/reserved_names.rs"));
+}
+
 pub use storage::{
     ActivityKey, ClaimKey, EventKey, OpenDALStore, Store, StoreError, TimerKey, WorkflowKey,
 };
 pub use workflow::{
-    activity, annotate, current, default_retry_policy, execute_activity, run, ActivityError,
-    ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions,
+    ActivityError, ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions, annotate,
+    current, execute_activity, run,
 };

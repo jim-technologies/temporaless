@@ -9,7 +9,12 @@ It does not emulate the Prefect server. It wraps a Temporaless handler so the sa
 If your team already has Prefect's UI, alerting, and deployment surface set up, this adapter lets you reuse all of it while keeping Temporaless's storage-first replay underneath. Existing Temporaless handlers register as Prefect flows by changing only one line.
 
 ```python
-from temporaless_prefectcompat import wrap_activity, wrap_workflow
+from temporaless_prefectcompat import (
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
+    wrap_activity,
+    wrap_workflow,
+)
 
 # Before: plain Temporaless protobuf handlers
 async def fetch_price(req: FetchRequest) -> FetchResponse:
@@ -19,8 +24,14 @@ async def price_workflow(req: PriceRequest) -> PriceResponse:
     ...
 
 # After: register as Prefect flows / tasks
-fetch_price_task = wrap_activity(fetch_price, name="fetch_price")
-PriceFlow = wrap_workflow(price_workflow, name="PriceFlow", retries=2)
+fetch_price_task = wrap_activity(
+    fetch_price,
+    ActivityWrapOptions(name="fetch_price"),
+)
+PriceFlow = wrap_workflow(
+    price_workflow,
+    WorkflowWrapOptions(name="PriceFlow", retries=2),
+)
 
 # Run via Prefect — shows up in the UI, scheduled, retried per Prefect's rules
 await PriceFlow(PriceRequest(symbol="AAPL"))
@@ -33,10 +44,14 @@ The wrapped functions retain their unary protobuf shape; Prefect handles run tra
 - one protobuf workflow request and one protobuf workflow response
 - one protobuf activity request and one protobuf activity response
 - async-only handlers (sync callables rejected at wrap time)
-- arbitrary `flow_kwargs` / `task_kwargs` forwarded to Prefect (retries, cache_policy, persist_result, tags, etc.)
+- explicit `ActivityWrapOptions` / `WorkflowWrapOptions` fields for `name`,
+  `retries`, and `retry_delay_seconds`
 
 ## Not in scope
 
+- Forwarding arbitrary Prefect decorator keyword arguments. Use a native
+  Prefect flow or task when you need settings outside the adapter's explicit
+  compatibility surface.
 - Mapping Temporaless typed errors (`TimerPendingError`, `EventPendingError`) to Prefect retry semantics — Prefect tracks the run state, but the underlying workflow stays IN_PROGRESS in Temporaless storage and resumes via the timer scanner.
 - Persisting Prefect run state into Temporaless records — Prefect's database is canonical for its run tracking.
 - Two-way migration of existing Prefect `@flow` code to Temporaless storage — that's a separate, larger project.

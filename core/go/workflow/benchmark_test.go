@@ -131,7 +131,7 @@ func BenchmarkRetryLoopInProcess(b *testing.B) {
 			func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 				return workflow.ExecuteActivity(
 					ctx,
-					&workflow.ActivityOptions{ActivityId: "fetch", RetryPolicy: policy},
+					&workflow.ActivityOptions{ActivityId: "fetch", RetryPolicy: policy, RetryTimerId: "retry=fetch"},
 					input,
 					func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					func(_ context.Context, request *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {

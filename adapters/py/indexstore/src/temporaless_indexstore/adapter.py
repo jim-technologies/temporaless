@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 import threading
@@ -27,6 +28,9 @@ from temporaless.storage import (
     _claim_keys_for_run,
     _event_keys_for_run,
     _timer_keys_for_run,
+    _validate_activity_record,
+    _validate_timer_record,
+    _validate_workflow_record,
     activity_key_from_proto,
     timer_key_from_proto,
     workflow_key_from_proto,
@@ -101,7 +105,10 @@ class IndexedStore:
 
     async def put_workflow(self, record: temporaless_pb2.WorkflowRecord) -> None:
         await self._inner.put_workflow(record)
-        await self._run_db(lambda conn: _upsert_workflow(conn, record))
+        try:
+            await self._run_db(lambda conn: _upsert_workflow(conn, record))
+        except Exception:
+            _LOGGER.exception("workflow index update failed; authoritative record remains durable")
 
     async def get_latest_workflow_run(
         self, namespace: str, workflow_id: str
@@ -111,7 +118,10 @@ class IndexedStore:
     async def delete_workflow(self, key: WorkflowKey) -> bool:
         deleted = await self._inner.delete_workflow(key)
         if deleted:
-            await self._run_db(lambda conn: _delete_workflow_row(conn, key))
+            try:
+                await self._run_db(lambda conn: _delete_workflow_row(conn, key))
+            except Exception:
+                _LOGGER.exception("workflow index delete failed; rebuild will remove the stale row")
         return deleted
 
     async def delete_run(self, key: WorkflowKey) -> int:
@@ -124,7 +134,10 @@ class IndexedStore:
                 if await claim_store.delete_claim(claim_key):
                     deleted += 1
         deleted += await self._inner.delete_run(key)
-        await self._run_db(lambda conn: _delete_run_rows(conn, key))
+        try:
+            await self._run_db(lambda conn: _delete_run_rows(conn, key))
+        except Exception:
+            _LOGGER.exception("run index delete failed; rebuild will remove stale rows")
         return deleted
 
     async def get_activity(self, key: ActivityKey) -> temporaless_pb2.ActivityRecord | None:
@@ -132,7 +145,10 @@ class IndexedStore:
 
     async def put_activity(self, record: temporaless_pb2.ActivityRecord) -> None:
         await self._inner.put_activity(record)
-        await self._run_db(lambda conn: _upsert_activity(conn, record))
+        try:
+            await self._run_db(lambda conn: _upsert_activity(conn, record))
+        except Exception:
+            _LOGGER.exception("activity index update failed; authoritative record remains durable")
 
     async def list_activities(self, key: WorkflowKey) -> list[temporaless_pb2.ActivityRecord]:
         return await self._inner.list_activities(key)
@@ -140,7 +156,10 @@ class IndexedStore:
     async def delete_activity(self, key: ActivityKey) -> bool:
         deleted = await self._inner.delete_activity(key)
         if deleted:
-            await self._run_db(lambda conn: _delete_activity_row(conn, key))
+            try:
+                await self._run_db(lambda conn: _delete_activity_row(conn, key))
+            except Exception:
+                _LOGGER.exception("activity index delete failed; rebuild will remove the stale row")
         return deleted
 
     async def get_timer(self, key: TimerKey) -> temporaless_pb2.TimerRecord | None:
@@ -148,7 +167,15 @@ class IndexedStore:
 
     async def put_timer(self, record: temporaless_pb2.TimerRecord) -> None:
         await self._inner.put_timer(record)
-        await self._run_db(lambda conn: _upsert_timer(conn, record))
+        try:
+            await self._run_db(lambda conn: _upsert_timer(conn, record))
+        except Exception:
+            # The SQLite database is a derived query accelerator. Once the
+            # authoritative timer (and its bucket due ledger) is durable, an
+            # index outage must not turn a successful scheduling boundary into
+            # a lost wakeup. due_timers repairs the missing row from the inner
+            # store on every scan.
+            _LOGGER.exception("timer index update failed; durable timer remains discoverable")
 
     async def list_timers(
         self, key: WorkflowKey, status: temporaless_pb2.TimerStatus
@@ -158,7 +185,10 @@ class IndexedStore:
     async def delete_timer(self, key: TimerKey) -> bool:
         deleted = await self._inner.delete_timer(key)
         if deleted:
-            await self._run_db(lambda conn: _delete_timer_row(conn, key))
+            try:
+                await self._run_db(lambda conn: _delete_timer_row(conn, key))
+            except Exception:
+                _LOGGER.exception("timer index delete failed; rebuild will remove the stale row")
         return deleted
 
     async def get_event(self, key: EventKey) -> temporaless_pb2.EventRecord | None:
@@ -195,24 +225,78 @@ class IndexedStore:
         page_size: int = 0,
         page_token: str = "",
     ) -> tuple[list[temporaless_pb2.WorkflowRecord], str]:
-        rows, next_page_token = await self._run_db(
-            lambda conn: _select_workflows(
-                conn, namespace, workflow_id, status, order_by, page_size, page_token
-            )
-        )
+        if page_size < 0:
+            raise ValueError("page_size must be >= 0")
+
+        # An index update is deliberately best-effort, so every returned row
+        # must be checked against the authoritative protobuf. For paginated
+        # queries, consume one raw row at a time and fetch one extra valid row.
+        # This keeps pages full even when stale rows are repaired or pruned and
+        # makes the returned offset point at the first unreturned valid row.
+        select_size = 0 if page_size == 0 else 1
+        cursor = page_token
         records: list[temporaless_pb2.WorkflowRecord] = []
-        for row in rows:
-            key = WorkflowKey(
-                namespace=row["namespace"],
-                workflow_id=row["workflow_id"],
-                run_id=row["run_id"],
+        while True:
+            rows, next_cursor = await self._run_db(
+                lambda conn, cursor=cursor: _select_workflows(
+                    conn,
+                    namespace,
+                    workflow_id,
+                    status,
+                    order_by,
+                    select_size,
+                    cursor,
+                )
             )
-            record = await self._inner.get_workflow(key)
-            if record is None:
-                await self._run_db(lambda conn, key=key: _delete_workflow_row(conn, key))
+            if not rows:
+                return records, ""
+
+            rows_to_check = rows if page_size == 0 else rows[:1]
+
+            removed_current_row = False
+            next_record_cursor = cursor
+            for row in rows_to_check:
+                row_cursor = next_record_cursor
+                if page_size == 0:
+                    # Unlimited queries have no follow-up token, so this value
+                    # is only used for a uniform append path below.
+                    row_cursor = ""
+                elif next_cursor:
+                    next_record_cursor = next_cursor
+
+                key = WorkflowKey(
+                    namespace=row["namespace"],
+                    workflow_id=row["workflow_id"],
+                    run_id=row["run_id"],
+                )
+                record = await self._inner.get_workflow(key)
+                if record is None:
+                    await self._run_db(lambda conn, key=key: _delete_workflow_row(conn, key))
+                    removed_current_row = True
+                    continue
+
+                # Refresh every selected projection before applying the
+                # caller's filter. A stale FAILED/COMPLETED row must never be
+                # returned merely because SQLite missed the latest write.
+                await self._run_db(lambda conn, record=record: _upsert_workflow(conn, record))
+                if not _workflow_matches_query(record, namespace, workflow_id, status):
+                    removed_current_row = True
+                    continue
+
+                if page_size > 0 and len(records) == page_size:
+                    return records, row_cursor
+                records.append(record)
+
+            if page_size == 0:
+                return records, ""
+            if removed_current_row:
+                # Repair/delete removed the selected row from this result set;
+                # retry the same offset so the row that shifted into its place
+                # is not skipped.
                 continue
-            records.append(record)
-        return records, next_page_token
+            if not next_cursor:
+                return records, ""
+            cursor = next_cursor
 
     async def list_activities_query(
         self,
@@ -225,25 +309,64 @@ class IndexedStore:
         page_size: int = 0,
         page_token: str = "",
     ) -> tuple[list[temporaless_pb2.ActivityRecord], str]:
-        rows, next_page_token = await self._run_db(
-            lambda conn: _select_activities(
-                conn, namespace, workflow_id, run_id, status, order_by, page_size, page_token
-            )
-        )
+        if page_size < 0:
+            raise ValueError("page_size must be >= 0")
+
+        select_size = 0 if page_size == 0 else 1
+        cursor = page_token
         records: list[temporaless_pb2.ActivityRecord] = []
-        for row in rows:
-            key = ActivityKey(
-                namespace=row["namespace"],
-                workflow_id=row["workflow_id"],
-                run_id=row["run_id"],
-                activity_id=row["activity_id"],
+        while True:
+            rows, next_cursor = await self._run_db(
+                lambda conn, cursor=cursor: _select_activities(
+                    conn,
+                    namespace,
+                    workflow_id,
+                    run_id,
+                    status,
+                    order_by,
+                    select_size,
+                    cursor,
+                )
             )
-            record = await self._inner.get_activity(key)
-            if record is None:
-                await self._run_db(lambda conn, key=key: _delete_activity_row(conn, key))
+            if not rows:
+                return records, ""
+
+            rows_to_check = rows if page_size == 0 else rows[:1]
+            removed_current_row = False
+            next_record_cursor = cursor
+            for row in rows_to_check:
+                row_cursor = next_record_cursor if page_size > 0 else ""
+                if page_size > 0 and next_cursor:
+                    next_record_cursor = next_cursor
+
+                key = ActivityKey(
+                    namespace=row["namespace"],
+                    workflow_id=row["workflow_id"],
+                    run_id=row["run_id"],
+                    activity_id=row["activity_id"],
+                )
+                record = await self._inner.get_activity(key)
+                if record is None:
+                    await self._run_db(lambda conn, key=key: _delete_activity_row(conn, key))
+                    removed_current_row = True
+                    continue
+
+                await self._run_db(lambda conn, record=record: _upsert_activity(conn, record))
+                if not _activity_matches_query(record, namespace, workflow_id, run_id, status):
+                    removed_current_row = True
+                    continue
+
+                if page_size > 0 and len(records) == page_size:
+                    return records, row_cursor
+                records.append(record)
+
+            if page_size == 0:
+                return records, ""
+            if removed_current_row:
                 continue
-            records.append(record)
-        return records, next_page_token
+            if not next_cursor:
+                return records, ""
+            cursor = next_cursor
 
     async def sweep(self, namespace: str, now: datetime, max_age: timedelta) -> int:
         if now.tzinfo is None:
@@ -260,6 +383,25 @@ class IndexedStore:
                 workflow_id=row["workflow_id"],
                 run_id=row["run_id"],
             )
+            record = await self._inner.get_workflow(key)
+            if record is None:
+                await self._run_db(lambda conn, key=key: _delete_workflow_row(conn, key))
+                continue
+
+            # SQLite is derived state. Re-evaluate retention against the
+            # authoritative record so a missed reopen/fresh-completion update
+            # can never delete a live or too-young run.
+            await self._run_db(lambda conn, record=record: _upsert_workflow(conn, record))
+            if record.status != temporaless_pb2.WORKFLOW_STATUS_COMPLETED:
+                continue
+            if not record.HasField("completed_at"):
+                continue
+            try:
+                completed_at = record.completed_at.ToDatetime().replace(tzinfo=UTC)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError("workflow completed_at is invalid") from exc
+            if completed_at > now - max_age:
+                continue
             await self.delete_run(key)
             deleted += 1
         return deleted
@@ -267,8 +409,31 @@ class IndexedStore:
     async def due_timers(self, namespace: str, now: datetime) -> list[DueTimer]:
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
-        rows = await self._run_db(lambda conn: _select_due_timers(conn, namespace, _dt(now)))
-        due: list[DueTimer] = []
+
+        # The bucket due ledger is authoritative for discovery. Unioning it
+        # with indexed candidates makes a failed/missed SQLite upsert
+        # self-healing without a full bucket walk: OpenDAL and Connect stores
+        # both serve this as one compact DueTimers operation.
+        authoritative_due = await self._inner.due_timers(namespace, now)
+        due_by_key = {item.key: item for item in authoritative_due}
+        for item in authoritative_due:
+            try:
+                await self._run_db(lambda conn, record=item.record: _upsert_timer(conn, record))
+            except Exception:
+                _LOGGER.exception(
+                    "failed to repair timer index row for %s/%s/%s/%s",
+                    item.key.namespace,
+                    item.key.workflow_id,
+                    item.key.run_id,
+                    item.key.timer_id,
+                )
+
+        try:
+            rows = await self._run_db(lambda conn: _select_due_timers(conn, namespace, _dt(now)))
+        except Exception:
+            _LOGGER.exception("timer index query failed; using authoritative due ledger")
+            return sorted(authoritative_due, key=_due_timer_sort_key)
+
         for row in rows:
             timer_key = TimerKey(
                 namespace=row["namespace"],
@@ -281,24 +446,77 @@ class IndexedStore:
                 workflow_id=row["workflow_id"],
                 run_id=row["run_id"],
             )
-            timer = await self._inner.get_timer(timer_key)
-            workflow = await self._inner.get_workflow(workflow_key)
-            if timer is None or timer.status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
-                await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+            if timer_key in due_by_key:
                 continue
-            timer_fire_at = timer.fire_at.ToDatetime().replace(tzinfo=UTC)
+            try:
+                timer_key.validate()
+                workflow_key.validate()
+                timer = await self._inner.get_timer(timer_key)
+                workflow = await self._inner.get_workflow(workflow_key)
+                if timer is not None:
+                    authoritative_timer_key = timer_key_from_proto(timer.key)
+                    authoritative_timer_key.validate()
+                    if authoritative_timer_key != timer_key:
+                        raise ValueError(
+                            "authoritative timer payload key does not match its index row"
+                        )
+                if workflow is not None:
+                    authoritative_workflow_key = workflow_key_from_proto(workflow.key)
+                    authoritative_workflow_key.validate()
+                    if authoritative_workflow_key != workflow_key:
+                        raise ValueError(
+                            "authoritative workflow payload key does not match the timer index row"
+                        )
+            except (DecodeError, ValidationError, ValueError, OverflowError) as exc:
+                _LOGGER.warning(
+                    "pruning invalid timer index row %s/%s/%s/%s: %s",
+                    timer_key.namespace,
+                    timer_key.workflow_id,
+                    timer_key.run_id,
+                    timer_key.timer_id,
+                    exc,
+                )
+                try:
+                    await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+                except Exception:
+                    _LOGGER.exception("failed to prune invalid timer index row")
+                continue
+            if timer is None or timer.status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                try:
+                    await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+                except Exception:
+                    _LOGGER.exception("failed to prune stale timer index row")
+                continue
+            try:
+                timer_fire_at = timer.fire_at.ToDatetime().replace(tzinfo=UTC)
+            except (ValueError, OverflowError) as exc:
+                _LOGGER.warning("pruning timer index row with invalid fire_at: %s", exc)
+                try:
+                    await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+                except Exception:
+                    _LOGGER.exception("failed to prune invalid timer index row")
+                continue
             timer_fire_at_index = _dt(timer_fire_at)
             if timer_fire_at > now:
                 if timer_fire_at_index != row["fire_at"]:
-                    await self._run_db(lambda conn, record=timer: _upsert_timer(conn, record))
+                    try:
+                        await self._run_db(lambda conn, record=timer: _upsert_timer(conn, record))
+                    except Exception:
+                        _LOGGER.exception("failed to repair future timer index row")
                 continue
             if timer_fire_at_index != row["fire_at"]:
-                await self._run_db(lambda conn, record=timer: _upsert_timer(conn, record))
+                try:
+                    await self._run_db(lambda conn, record=timer: _upsert_timer(conn, record))
+                except Exception:
+                    _LOGGER.exception("failed to repair due timer index row")
             if workflow is None or workflow.status != temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS:
-                await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+                try:
+                    await self._run_db(lambda conn, key=timer_key: _delete_timer_row(conn, key))
+                except Exception:
+                    _LOGGER.exception("failed to prune terminal timer index row")
                 continue
-            due.append(DueTimer(key=timer_key, record=timer, workflow=workflow))
-        return due
+            due_by_key[timer_key] = DueTimer(key=timer_key, record=timer, workflow=workflow)
+        return sorted(due_by_key.values(), key=_due_timer_sort_key)
 
     async def rebuild(self) -> int:
         """Rebuild the whole index from a populated v2 bucket.
@@ -318,7 +536,7 @@ class IndexedStore:
                         self._operator,
                         path,
                         temporaless_pb2.WorkflowRecord,
-                        workflow_key_from_proto,
+                        _validate_workflow_record,
                     )
                     if record is None:
                         if count_skipped:
@@ -334,7 +552,7 @@ class IndexedStore:
                         self._operator,
                         path,
                         temporaless_pb2.ActivityRecord,
-                        activity_key_from_proto,
+                        _validate_activity_record,
                     )
                     if record is None:
                         if count_skipped:
@@ -347,7 +565,7 @@ class IndexedStore:
                     )
                 elif kind == "timer":
                     record, count_skipped = await _read_rebuild_record(
-                        self._operator, path, temporaless_pb2.TimerRecord, timer_key_from_proto
+                        self._operator, path, temporaless_pb2.TimerRecord, _validate_timer_record
                     )
                     if record is None:
                         if count_skipped:
@@ -363,7 +581,12 @@ class IndexedStore:
             await self._run_db(_drop_rebuild_index)
         return skipped
 
-    def close(self) -> None:
+    async def close(self) -> None:
+        """Close the SQLite connection without blocking the event loop."""
+
+        await asyncio.to_thread(self._close_db)
+
+    def _close_db(self) -> None:
         with self._lock:
             self._conn.close()
 
@@ -428,16 +651,19 @@ class IndexedStore:
             ) from exc
         _claim_keys_for_run(key, records)
 
-    async def _run_db(self, fn: Callable[[sqlite3.Connection], object]):
-        with self._lock:
-            try:
-                result = fn(self._conn)
-            except Exception:
-                self._conn.rollback()
-                raise
-            else:
-                self._conn.commit()
-                return result
+    async def _run_db[T](self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        def run() -> T:
+            with self._lock:
+                try:
+                    result = fn(self._conn)
+                except Exception:
+                    self._conn.rollback()
+                    raise
+                else:
+                    self._conn.commit()
+                    return result
+
+        return await asyncio.to_thread(run)
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -619,6 +845,16 @@ def _delete_run_rows(conn: sqlite3.Connection, key: WorkflowKey) -> None:
     conn.execute("DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?", params)
 
 
+def _due_timer_sort_key(item: DueTimer) -> tuple[datetime, str, str, str, str]:
+    return (
+        item.record.fire_at.ToDatetime().replace(tzinfo=UTC),
+        item.key.namespace,
+        item.key.workflow_id,
+        item.key.run_id,
+        item.key.timer_id,
+    )
+
+
 def _select_workflows(
     conn: sqlite3.Connection,
     namespace: str,
@@ -648,6 +884,20 @@ def _select_workflows(
         page_size,
         page_token,
         allowed_order={"created_at", "completed_at", "workflow_id", "run_id", "status"},
+    )
+
+
+def _workflow_matches_query(
+    record: temporaless_pb2.WorkflowRecord,
+    namespace: str,
+    workflow_id: str,
+    status: temporaless_pb2.WorkflowStatus,
+) -> bool:
+    key = workflow_key_from_proto(record.key)
+    return (
+        (not namespace or key.namespace == namespace)
+        and (not workflow_id or key.workflow_id == workflow_id)
+        and (status == temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED or record.status == status)
     )
 
 
@@ -684,6 +934,22 @@ def _select_activities(
         page_size,
         page_token,
         allowed_order={"created_at", "completed_at", "activity_id", "status"},
+    )
+
+
+def _activity_matches_query(
+    record: temporaless_pb2.ActivityRecord,
+    namespace: str,
+    workflow_id: str,
+    run_id: str,
+    status: temporaless_pb2.ActivityStatus,
+) -> bool:
+    key = activity_key_from_proto(record.key)
+    return (
+        (not namespace or key.namespace == namespace)
+        and (not workflow_id or key.workflow_id == workflow_id)
+        and (not run_id or key.run_id == run_id)
+        and (status == temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED or record.status == status)
     )
 
 
@@ -730,9 +996,8 @@ def _select_sweep(conn: sqlite3.Connection, namespace: str, cutoff: str) -> list
 
 
 def _select_due_timers(conn: sqlite3.Connection, namespace: str, now: str) -> list[sqlite3.Row]:
-    del now
-    params: list[object] = [int(temporaless_pb2.TIMER_STATUS_SCHEDULED)]
-    where = "status=? AND fire_at != ''"
+    params: list[object] = [int(temporaless_pb2.TIMER_STATUS_SCHEDULED), now]
+    where = "status=? AND fire_at != '' AND fire_at <= ?"
     if namespace:
         where = f"namespace=? AND {where}"
         params.insert(0, namespace)
@@ -906,10 +1171,10 @@ async def _walk_binpb(operator: opendal.AsyncOperator, root: str) -> AsyncIterab
                 yield entry.path
 
 
-async def _read_rebuild_record(operator: opendal.AsyncOperator, path: str, factory, key_factory):
+async def _read_rebuild_record(operator: opendal.AsyncOperator, path: str, factory, validator):
     try:
         record = await _read_pb(operator, path, factory)
-        key_factory(record.key).validate()
+        validator(record, storage_path=path)
     except opendal.exceptions.NotFound:
         return None, False
     except (DecodeError, ValidationError, ValueError) as exc:

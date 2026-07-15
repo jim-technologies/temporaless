@@ -10,6 +10,7 @@ import (
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/connectstore"
 	"github.com/jim-technologies/temporaless/adapters/go/inspector"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
@@ -31,8 +32,12 @@ func TestRemoteWorkflowRunEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(operator.Close)
 	backend := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, backend, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, handler := connectstore.NewHTTPHandlerWithLocalQuery(backend)
+	_, handler := connectstore.NewHTTPHandlerWithLocalQuery(backend, query)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	remoteStore := connectstore.NewHTTPClientStore(server.Client(), server.URL)

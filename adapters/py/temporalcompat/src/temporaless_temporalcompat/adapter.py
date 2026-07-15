@@ -47,10 +47,23 @@ class ActivityCall:
     activity_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ActivityWrapOptions:
+    """Explicit Temporal activity-definition options."""
+
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowWrapOptions:
+    """Explicit Temporal workflow-definition options."""
+
+    name: str | None = None
+
+
 def wrap_activity(
     execute: ActivityFunc[Req],
-    *,
-    name: str | None = None,
+    options: ActivityWrapOptions | None = None,
 ) -> Callable[[Req], Awaitable[Message]]:
     """Decorate an async unary protobuf function as a Temporal activity.
 
@@ -62,7 +75,13 @@ def wrap_activity(
         raise ValueError("temporal activity executor is required")
     if not inspect.iscoroutinefunction(execute):
         raise ValueError("temporal activity executor must be async (define it with `async def`)")
-    activity_name = name or getattr(execute, "__name__", "")
+    if options is None:
+        options = ActivityWrapOptions()
+    elif not isinstance(options, ActivityWrapOptions):
+        raise ValueError("temporal activity wrap options are invalid")
+    if options.name is not None and (not isinstance(options.name, str) or not options.name.strip()):
+        raise ValueError("temporal activity name must be a non-empty string")
+    activity_name = options.name if options.name is not None else getattr(execute, "__name__", "")
     if not activity_name:
         raise ValueError("temporal activity name is required")
 
@@ -80,8 +99,7 @@ def wrap_activity(
 
 def wrap_workflow(
     execute: WorkflowFunc[Req],
-    *,
-    name: str | None = None,
+    options: WorkflowWrapOptions | None = None,
 ) -> type:
     """Decorate an async unary protobuf function as a Temporal workflow class.
 
@@ -105,7 +123,13 @@ def wrap_workflow(
         raise ValueError("temporal workflow executor is required")
     if not inspect.iscoroutinefunction(execute):
         raise ValueError("temporal workflow executor must be async (define it with `async def`)")
-    workflow_name = name or getattr(execute, "__name__", "")
+    if options is None:
+        options = WorkflowWrapOptions()
+    elif not isinstance(options, WorkflowWrapOptions):
+        raise ValueError("temporal workflow wrap options are invalid")
+    if options.name is not None and (not isinstance(options.name, str) or not options.name.strip()):
+        raise ValueError("temporal workflow name must be a non-empty string")
+    workflow_name = options.name if options.name is not None else getattr(execute, "__name__", "")
     if not workflow_name:
         raise ValueError("temporal workflow name is required")
 

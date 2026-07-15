@@ -20,8 +20,10 @@ contracts. Deployment decides how those service-shaped clients dispatch:
 
 The domain-facing store interfaces still exist in each language:
 
-- Go: `storage.Store`, `storage.ClaimStore`, and the bounded `storage.ClaimRunStore` deletion extension
-- Python: `Store`, `ClaimStore`, and `ClaimRunStore` protocols
+- Go: point `storage.Store`, `storage.ClaimStore`, bounded
+  `storage.ClaimRunStore`, and optional `storage.QueryStore`
+- Python: point `Store`, `ClaimStore`, `ClaimRunStore`, and optional
+  `QueryStore` protocols
 
 Those interfaces are the business-layer seam used by workflow replay. They
 mirror the protobuf service semantics and are intentionally thin. Inspector
@@ -33,9 +35,10 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
   `NewLocalClientStore(...)` calls the generated service interface in-process,
   and `NewHTTPClientStore(...)` uses generated ConnectRPC clients.
   `NewHTTPHandler(...)` mounts only `RecordStoreService`;
-  `NewHTTPHandlerWithLocalQuery(...)` explicitly adds the local/development
-  query fallback over `storage.Store`; `NewHTTPHandlerWithQuery(...)` mounts a
-  caller-supplied indexed `RecordQueryService`.
+  `NewHTTPHandlerWithLocalQuery(store, query, ...)` explicitly adds a supplied
+  `storage.QueryStore`; `NewHTTPHandlerWithQuery(...)` mounts a caller-supplied
+  `RecordQueryService`. The optional `adapters/go/scanquery` implementation is
+  for offline/development bucket scans only.
 - Python exposes `temporaless.connectstore.RecordStoreService` (async),
   `ConnectStore.local(...)`, `ConnectStore.from_address(...)`,
   `ConnectQueryStore.local(...)`, `ConnectQueryStore.from_address(...)`, and
@@ -62,6 +65,13 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
 
 Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. `DeleteRun` snapshots and validates every listed record before deleting claims, then activities/timers/events/workflow; a separately configured claim store must implement `ClaimRunStore` or deletion is rejected before mutation. Deletions are idempotent.
 
+Treat both storage services as operator/admin APIs. A namespace is a storage
+partition, not an authorization boundary, and an empty namespace on
+`DueTimers` intentionally scans every application namespace. Remote
+deployments must authenticate the transport and authorize each RPC with a
+ConnectRPC interceptor or equivalent gateway policy; do not expose these
+handlers directly to untrusted workflow users.
+
 `DeleteRun` is a bounded cleanup operation, not a transaction or execution fence. Quiesce the run before calling it. A claim created concurrently after the listing snapshot can survive this pass; strict concurrent deletion would require a run tombstone checked by every claim create, which the create-only core does not pretend to provide.
 
 ## Query Surface
@@ -84,8 +94,8 @@ quiesce eligible runs while retention executes.
 
 Production inspectors, large operational search, and exact retention sweeps
 should use an indexed `RecordQueryService` backed by SQL, DuckLake, or another
-rebuildable metadata index. Bucket/local query fallbacks are only for small
-local deployments and development.
+rebuildable metadata index. The Go `scanquery` adapter is an explicit
+offline/development fallback and never expands the core bucket interface.
 
 ## Rules
 

@@ -66,10 +66,12 @@ async def test_timer_scanner_loop_dispatches(store):
     """Timer scanner invokes dispatch for each due timer; transient
     dispatcher errors don't kill the loop."""
     seen: list[str] = []
-    errors_logged: list[str] = []
+    dispatched_both = asyncio.Event()
 
     async def dispatch(timer) -> None:
         seen.append(timer.key.timer_id)
+        if {"good", "bad"}.issubset(seen):
+            dispatched_both.set()
         if "bad" in timer.key.timer_id:
             raise RuntimeError("simulated dispatch failure")
 
@@ -115,14 +117,15 @@ async def test_timer_scanner_loop_dispatches(store):
         timer_scanner=TimerScannerConfig(dispatch=dispatch, interval=timedelta(milliseconds=50)),
     )
     await workers.start()
-    await asyncio.sleep(0.15)
-    await workers.stop()
+    try:
+        await asyncio.wait_for(dispatched_both.wait(), timeout=2)
+    finally:
+        await workers.stop()
 
     assert "good" in seen, "scanner should have dispatched the good timer"
     assert "bad" in seen, "scanner should have attempted the bad timer"
     # The good timer may have been seen multiple times (still SCHEDULED) — that's
     # fine; the scanner is idempotent.
-    _ = errors_logged
 
 
 async def test_janitor_loop_runs(store):
@@ -152,8 +155,16 @@ async def test_janitor_loop_runs(store):
         janitor=JanitorConfig(max_age=timedelta(hours=1), interval=timedelta(milliseconds=50)),
     )
     await workers.start()
-    await asyncio.sleep(0.15)
-    await workers.stop()
+
+    async def wait_until_swept() -> None:
+        key = WorkflowKey(workflow_id="wf", run_id="old")
+        while await store.get_workflow(key) is not None:
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait_until_swept(), timeout=2)
+    finally:
+        await workers.stop()
 
     swept = await store.get_workflow(WorkflowKey(workflow_id="wf", run_id="old"))
     assert swept is None, "janitor should have swept the old COMPLETED workflow"

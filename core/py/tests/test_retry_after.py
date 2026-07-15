@@ -25,7 +25,6 @@ from temporaless.workflow import (
     RetryPolicy,
     TimerPendingError,
     Workflow,
-    _activity_retry_timer_id,
 )
 
 
@@ -42,6 +41,10 @@ def _duration(td: timedelta) -> Duration:
     d = Duration()
     d.FromTimedelta(td)
     return d
+
+
+def _retry_timer_id(activity_id: str) -> str:
+    return f"retry:{activity_id}"
 
 
 async def test_retry_after_longer_than_computed_wins(store):
@@ -70,6 +73,7 @@ async def test_retry_after_longer_than_computed_wins(store):
             StringValue,
             execute,
             retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:ra"),
         )
     assert attempts[0] == 1, "should bail after the first failure"
     assert info.value.wake_at >= start + timedelta(seconds=29)
@@ -142,12 +146,13 @@ async def test_retry_after_promotes_short_policy_to_durable(store):
             StringValue,
             execute,
             retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:promote"),
         )
     timer = await store.get_timer(
         TimerKey(
             workflow_id="wf",
             run_id="r",
-            timer_id=_activity_retry_timer_id("act:promote"),
+            timer_id=_retry_timer_id("act:promote"),
         )
     )
     assert timer is not None

@@ -44,10 +44,14 @@ type runDeletionPlan struct {
 // the number of fully deleted runs before that error.
 func Sweep(
 	ctx context.Context,
+	query storage.WorkflowQueryStore,
 	store storage.Store,
 	claimStore storage.ClaimStore,
 	request *temporalessv1.SweepRequest,
 ) (uint32, error) {
+	if query == nil {
+		return 0, fmt.Errorf("query store is required")
+	}
 	if store == nil {
 		return 0, fmt.Errorf("store is required")
 	}
@@ -57,7 +61,10 @@ func Sweep(
 	if request.GetNow() == nil {
 		return 0, fmt.Errorf("now is required")
 	}
-	if request.GetMaxAge() == nil || request.GetMaxAge().AsDuration() <= 0 {
+	if err := request.GetNow().CheckValid(); err != nil {
+		return 0, fmt.Errorf("now is invalid: %w", err)
+	}
+	if request.GetMaxAge() == nil || request.GetMaxAge().CheckValid() != nil || request.GetMaxAge().AsDuration() <= 0 {
 		return 0, fmt.Errorf("max_age must be > 0")
 	}
 
@@ -66,29 +73,74 @@ func Sweep(
 		return 0, err
 	}
 
-	completed, err := store.ListWorkflows(
-		ctx,
-		request.GetNamespace(),
-		"",
-		temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
-	)
-	if err != nil {
-		return 0, err
+	var completed []*temporalessv1.WorkflowRecord
+	pageToken := ""
+	seenPageTokens := map[string]struct{}{}
+	for {
+		response, err := query.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{
+			Namespace: request.GetNamespace(),
+			Status:    temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+			PageToken: pageToken,
+		})
+		if err != nil {
+			return 0, err
+		}
+		completed = append(completed, response.GetRecords()...)
+		next := response.GetNextPageToken()
+		if next == "" {
+			break
+		}
+		if _, repeated := seenPageTokens[next]; repeated {
+			return 0, fmt.Errorf("retention query repeated page token %q", next)
+		}
+		seenPageTokens[next] = struct{}{}
+		pageToken = next
 	}
 
 	cutoff := request.GetNow().AsTime().Add(-request.GetMaxAge().AsDuration())
 	plans := make([]runDeletionPlan, 0, len(completed))
+	seenRuns := make(map[storage.WorkflowKey]struct{}, len(completed))
 	for _, record := range completed {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		if completedAt := record.GetCompletedAt(); completedAt == nil || completedAt.AsTime().After(cutoff) {
-			continue
+		if record == nil {
+			return 0, fmt.Errorf("%w: query returned a nil workflow record", ErrRunListingDataLoss)
 		}
 
 		key := storage.WorkflowKeyFromProto(record.GetKey())
 		if err := validateWorkflowCandidate(request.GetNamespace(), key); err != nil {
 			return 0, err
+		}
+		if key.Namespace == "" {
+			key.Namespace = storage.DefaultNamespace
+		}
+		if _, duplicate := seenRuns[key]; duplicate {
+			return 0, fmt.Errorf("%w: query returned duplicate workflow run", ErrRunListingDataLoss)
+		}
+		seenRuns[key] = struct{}{}
+		// The query is only a candidate source and may lag an authoritative state
+		// transition. Re-read the point record before snapshotting any children so
+		// a stale COMPLETED row cannot delete a reset or resumed run.
+		authoritative, found, err := store.GetWorkflow(ctx, key)
+		if err != nil {
+			return 0, fmt.Errorf("read authoritative workflow %s/%s: %w", key.WorkflowID, key.RunID, err)
+		}
+		if !found {
+			continue
+		}
+		if err := storage.ValidateWorkflowRecord(authoritative, key); err != nil {
+			return 0, fmt.Errorf("validate authoritative workflow %s/%s: %w", key.WorkflowID, key.RunID, err)
+		}
+		if authoritative.GetStatus() != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED {
+			continue
+		}
+		completedAt := authoritative.GetCompletedAt()
+		if completedAt == nil || completedAt.CheckValid() != nil {
+			return 0, fmt.Errorf("%w: completed workflow has invalid completed_at", ErrRunListingDataLoss)
+		}
+		if completedAt.AsTime().After(cutoff) {
+			continue
 		}
 		plan, err := snapshotRun(ctx, store, claimRunStore, key)
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,126 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func TestRunOrderTimePersistsAcrossWorkflowStates(t *testing.T) {
+	runOrderTime := timestamppb.New(time.Date(2026, time.July, 14, 12, 0, 0, 123, time.UTC))
+	tests := []struct {
+		name string
+		body WorkflowFunc[*wrapperspb.StringValue, *wrapperspb.StringValue]
+		want temporalessv1.WorkflowStatus
+	}{
+		{
+			name: "in progress",
+			body: func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				return nil, &TimerPendingError{TimerID: "wake", WakeAt: time.Now().UTC().Add(time.Hour)}
+			},
+			want: temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+		},
+		{
+			name: "completed",
+			body: func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				return wrapperspb.String("done"), nil
+			},
+			want: temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		},
+		{
+			name: "failed",
+			body: func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				return nil, errors.New("failed")
+			},
+			want: temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED,
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t)
+			options := &Options{
+				WorkflowId:   fmt.Sprintf("run-order-%d", index),
+				RunId:        "run",
+				CodeVersion:  "v1",
+				RunOrderTime: runOrderTime,
+			}
+			_, _ = Run(
+				ctx,
+				store,
+				options,
+				nil,
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				test.body,
+			)
+			record, found, err := store.GetWorkflow(ctx, storage.NewWorkflowKey(options.GetWorkflowId(), options.GetRunId()))
+			if err != nil || !found {
+				t.Fatalf("workflow record: err=%v found=%v", err, found)
+			}
+			if got := record.GetStatus(); got != test.want {
+				t.Fatalf("status = %s, want %s", got, test.want)
+			}
+			if record.GetRunOrderTime() == nil || !record.GetRunOrderTime().AsTime().Equal(runOrderTime.AsTime()) {
+				t.Fatalf("run_order_time = %v, want %v", record.GetRunOrderTime(), runOrderTime)
+			}
+		})
+	}
+}
+
+func TestRunOrderTimeReplayRejectsDriftAndInvalidTimestamp(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	firstOrder := timestamppb.New(time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC))
+	options := &Options{
+		WorkflowId:   "run-order-drift",
+		RunId:        "run",
+		CodeVersion:  "v1",
+		RunOrderTime: firstOrder,
+	}
+	pendingBody := func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return nil, &TimerPendingError{TimerID: "wake", WakeAt: time.Now().UTC().Add(time.Hour)}
+	}
+	_, err := Run(
+		ctx, store, options, nil, wrapperspb.String("request"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, pendingBody,
+	)
+	if !errors.Is(err, ErrTimerPending) {
+		t.Fatalf("initial run error = %v, want pending", err)
+	}
+
+	drifted := &Options{
+		WorkflowId:   options.GetWorkflowId(),
+		RunId:        options.GetRunId(),
+		CodeVersion:  options.GetCodeVersion(),
+		RunOrderTime: timestamppb.New(firstOrder.AsTime().Add(time.Second)),
+	}
+	bodyCalls := 0
+	_, err = Run(
+		ctx, store, drifted, nil, wrapperspb.String("request"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+		func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			bodyCalls++
+			return wrapperspb.String("unexpected"), nil
+		},
+	)
+	if !errors.Is(err, ErrWorkflowConflict) {
+		t.Fatalf("drift error = %v, want workflow conflict", err)
+	}
+	if bodyCalls != 0 {
+		t.Fatalf("body calls after drift = %d, want 0", bodyCalls)
+	}
+
+	invalid := &Options{
+		WorkflowId:   "run-order-invalid",
+		RunId:        "run",
+		CodeVersion:  "v1",
+		RunOrderTime: &timestamppb.Timestamp{Seconds: 253402300800},
+	}
+	_, err = Run(
+		ctx, store, invalid, nil, wrapperspb.String("request"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, pendingBody,
+	)
+	if err == nil {
+		t.Fatal("expected invalid run_order_time error")
+	}
+}
 
 func TestRunActivity(t *testing.T) {
 	// User-supplied activity_id is the de-duplication contract. Same id
@@ -71,6 +192,7 @@ func TestRunActivity(t *testing.T) {
 				"fetch:symbol",
 				"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 				nil,
+				"",
 				wrapperspb.String(test.firstInput),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				run,
@@ -88,6 +210,7 @@ func TestRunActivity(t *testing.T) {
 				"fetch:symbol",
 				"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 				nil,
+				"",
 				wrapperspb.String(test.nextInput),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				run,
@@ -248,6 +371,7 @@ func TestConcurrentActivityClaimSerialization(t *testing.T) {
 				"fetch:concurrent",
 				"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 				nil,
+				"",
 				wrapperspb.String("AAPL"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -1134,6 +1258,7 @@ func TestRunActivityRetriesUntilSuccess(t *testing.T) {
 					MaximumAttempts: test.maxAttempts,
 					InitialInterval: durationpb.New(time.Millisecond),
 				},
+				testRetryTimerID("fetch:retry"),
 				wrapperspb.String("AAPL"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				run,
@@ -1195,6 +1320,7 @@ func TestRunActivityRetriesExhaustedSurfacesFailure(t *testing.T) {
 			MaximumAttempts: 3,
 			InitialInterval: durationpb.New(time.Millisecond),
 		},
+		testRetryTimerID("fetch:exhausted"),
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		run,
@@ -1242,6 +1368,7 @@ func TestRunActivityRetriesExhaustedSurfacesFailure(t *testing.T) {
 			MaximumAttempts: 3,
 			InitialInterval: durationpb.New(time.Millisecond),
 		},
+		testRetryTimerID("fetch:exhausted"),
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -1290,6 +1417,7 @@ func TestRunActivityResumesRetryAcrossInvocations(t *testing.T) {
 		"fetch:resume",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		policy,
+		testRetryTimerID("fetch:resume"),
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -1333,6 +1461,7 @@ func TestRunActivityResumesRetryAcrossInvocations(t *testing.T) {
 		"fetch:resume",
 		"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 		policy,
+		testRetryTimerID("fetch:resume"),
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		func(_ context.Context) (*wrapperspb.StringValue, error) {
@@ -1400,6 +1529,7 @@ func TestRunActivityNonRetryableErrorFailsFast(t *testing.T) {
 			InitialInterval:        durationpb.New(time.Millisecond),
 			NonRetryableErrorCodes: []string{"invalid_argument"},
 		},
+		testRetryTimerID("fetch:non-retryable"),
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		run,
@@ -1425,6 +1555,75 @@ func TestRunActivityInvalidRetryPolicyRejected(t *testing.T) {
 			name:   "missing initial_interval with retries is rejected",
 			policy: &temporalessv1.RetryPolicy{MaximumAttempts: 3},
 		},
+		{
+			name: "negative initial_interval is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts: 1,
+				InitialInterval: durationpb.New(-time.Second),
+			},
+		},
+		{
+			name: "negative backoff_coefficient is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts:    2,
+				InitialInterval:    durationpb.New(time.Second),
+				BackoffCoefficient: -1,
+			},
+		},
+		{
+			name: "NaN backoff_coefficient is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts:    2,
+				InitialInterval:    durationpb.New(time.Second),
+				BackoffCoefficient: math.NaN(),
+			},
+		},
+		{
+			name: "infinite backoff_coefficient is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts:    2,
+				InitialInterval:    durationpb.New(time.Second),
+				BackoffCoefficient: math.Inf(1),
+			},
+		},
+		{
+			name: "negative maximum_interval is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts: 2,
+				InitialInterval: durationpb.New(time.Second),
+				MaximumInterval: durationpb.New(-time.Second),
+			},
+		},
+		{
+			name: "maximum_interval below initial_interval is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts: 2,
+				InitialInterval: durationpb.New(2 * time.Second),
+				MaximumInterval: durationpb.New(time.Second),
+			},
+		},
+		{
+			name: "negative durable_backoff_threshold is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts:         2,
+				InitialInterval:         durationpb.New(time.Second),
+				DurableBackoffThreshold: durationpb.New(-time.Second),
+			},
+		},
+		{
+			name: "invalid protobuf duration is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts: 2,
+				InitialInterval: &durationpb.Duration{Nanos: 1_000_000_000},
+			},
+		},
+		{
+			name: "duration outside Go range is rejected",
+			policy: &temporalessv1.RetryPolicy{
+				MaximumAttempts: 2,
+				InitialInterval: &durationpb.Duration{Seconds: 315_576_000_000},
+			},
+		},
 	}
 
 	for index, test := range tests {
@@ -1443,6 +1642,7 @@ func TestRunActivityInvalidRetryPolicyRejected(t *testing.T) {
 				"fetch:bad",
 				"activity:google.protobuf.StringValue->google.protobuf.StringValue",
 				test.policy,
+				testRetryTimerID("fetch:bad"),
 				wrapperspb.String("AAPL"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				func(_ context.Context) (*wrapperspb.StringValue, error) {

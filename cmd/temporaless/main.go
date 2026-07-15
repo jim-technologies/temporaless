@@ -39,6 +39,7 @@ import (
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/inspector"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -126,7 +127,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return errors.New("--store-root is required")
 	}
 
-	store, cleanup, err := openStore(global.scheme, global.root)
+	store, query, cleanup, err := openStore(global.scheme, global.root)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -134,7 +135,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	switch subcommand {
 	case "list-workflows":
-		return cmdListWorkflows(ctx, store, global, subArgs, stdout)
+		return cmdListWorkflows(ctx, query, global, subArgs, stdout)
 	case "list-activities":
 		return cmdListActivities(ctx, store, global, subArgs, stdout)
 	case "get-workflow":
@@ -146,40 +147,46 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "reset-event":
 		return cmdResetEvent(ctx, store, subArgs, stdout)
 	case "sweep":
-		return cmdSweep(ctx, store, subArgs, stdout)
+		return cmdSweep(ctx, query, store, subArgs, stdout)
 	case "stale-workflows":
-		return cmdStaleWorkflows(ctx, store, global, subArgs, stdout)
+		return cmdStaleWorkflows(ctx, query, global, subArgs, stdout)
 	case "tail":
-		return cmdTail(ctx, store, global, subArgs, stdout)
+		return cmdTail(ctx, query, global, subArgs, stdout)
 	case "export":
-		return cmdExport(ctx, store, subArgs, stdout)
+		return cmdExport(ctx, store, query, subArgs, stdout)
 	default:
 		fmt.Fprint(stderr, usage)
 		return fmt.Errorf("unknown subcommand %q", subcommand)
 	}
 }
 
-func openStore(scheme, root string) (storage.Store, func(), error) {
+func openStore(scheme, root string) (storage.Store, storage.QueryStore, func(), error) {
 	resolved, ok := schemeRegistry[scheme]
 	if !ok {
 		supported := make([]string, 0, len(schemeRegistry))
 		for k := range schemeRegistry {
 			supported = append(supported, k)
 		}
-		return nil, func() {}, fmt.Errorf("unsupported --store-scheme %q (supported: %s)", scheme, strings.Join(supported, ", "))
+		return nil, nil, func() {}, fmt.Errorf("unsupported --store-scheme %q (supported: %s)", scheme, strings.Join(supported, ", "))
 	}
 	operator, err := opendal.NewOperator(resolved, opendal.OperatorOptions{
 		"root": root,
 	})
 	if err != nil {
-		return nil, func() {}, err
+		return nil, nil, func() {}, err
 	}
-	return storage.NewOpenDALStore(operator), operator.Close, nil
+	point := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, point, nil)
+	if err != nil {
+		operator.Close()
+		return nil, nil, func() {}, err
+	}
+	return point, query, operator.Close, nil
 }
 
 // list-workflows ------------------------------------------------------------
 
-func cmdListWorkflows(ctx context.Context, store storage.Store, g globalOpts, args []string, stdout io.Writer) error {
+func cmdListWorkflows(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("list-workflows", flag.ContinueOnError)
 	var statusFlag, namespaceFlag, workflowIDFlag string
 	fs.StringVar(&statusFlag, "status", "", "Filter: in-progress | completed | failed (default: all)")
@@ -192,10 +199,15 @@ func cmdListWorkflows(ctx context.Context, store storage.Store, g globalOpts, ar
 	if err != nil {
 		return err
 	}
-	records, err := store.ListWorkflows(ctx, namespaceFlag, workflowIDFlag, status)
+	response, err := query.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{
+		Namespace:  namespaceFlag,
+		WorkflowId: workflowIDFlag,
+		Status:     status,
+	})
 	if err != nil {
 		return err
 	}
+	records := response.GetRecords()
 	if g.json {
 		return emitJSONList(stdout, records)
 	}
@@ -360,7 +372,7 @@ func cmdResetEvent(ctx context.Context, store storage.Store, args []string, stdo
 
 // sweep --------------------------------------------------------------------
 
-func cmdSweep(ctx context.Context, store storage.Store, args []string, stdout io.Writer) error {
+func cmdSweep(ctx context.Context, query storage.WorkflowQueryStore, store storage.Store, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
 	var maxAge time.Duration
 	fs.DurationVar(&maxAge, "max-age", 0, "Delete COMPLETED runs older than this (required, e.g. 168h for 7 days)")
@@ -370,7 +382,7 @@ func cmdSweep(ctx context.Context, store storage.Store, args []string, stdout io
 	if maxAge <= 0 {
 		return errors.New("--max-age must be > 0")
 	}
-	deleted, err := janitor.Sweep(ctx, store, nil, &temporalessv1.SweepRequest{
+	deleted, err := janitor.Sweep(ctx, query, store, nil, &temporalessv1.SweepRequest{
 		Now:    timestamppb.New(time.Now().UTC()),
 		MaxAge: durationpb.New(maxAge),
 	})
@@ -387,7 +399,7 @@ func cmdSweep(ctx context.Context, store storage.Store, args []string, stdout io
 // than the operator-supplied threshold. Wire this into alerting: a workflow
 // stuck IN_PROGRESS for hours past its expected duration usually means a
 // stuck timer-scanner, a missing event delivery, or an exhausted claim leak.
-func cmdStaleWorkflows(ctx context.Context, store storage.Store, g globalOpts, args []string, stdout io.Writer) error {
+func cmdStaleWorkflows(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("stale-workflows", flag.ContinueOnError)
 	var olderThan time.Duration
 	var namespace string
@@ -399,7 +411,7 @@ func cmdStaleWorkflows(ctx context.Context, store storage.Store, g globalOpts, a
 	if olderThan <= 0 {
 		return errors.New("--older-than must be > 0")
 	}
-	inFlight, err := inspector.ListInFlightWorkflows(ctx, store)
+	inFlight, err := inspector.ListInFlightWorkflows(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -437,7 +449,7 @@ func cmdStaleWorkflows(ctx context.Context, store storage.Store, g globalOpts, a
 //
 // The poll interval defaults to 2s. Caller exits the loop with Ctrl-C; ctx
 // cancellation also unwinds cleanly.
-func cmdTail(ctx context.Context, store storage.Store, g globalOpts, args []string, stdout io.Writer) error {
+func cmdTail(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	var pollInterval time.Duration
 	var statusFlag, namespace, workflowID string
@@ -461,10 +473,15 @@ func cmdTail(ctx context.Context, store storage.Store, g globalOpts, args []stri
 	defer ticker.Stop()
 
 	emit := func() error {
-		records, err := store.ListWorkflows(ctx, namespace, workflowID, status)
+		response, err := query.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{
+			Namespace:  namespace,
+			WorkflowId: workflowID,
+			Status:     status,
+		})
 		if err != nil {
 			return err
 		}
+		records := response.GetRecords()
 		for _, r := range records {
 			key := storage.WorkflowKeyFromProto(r.GetKey())
 			composite := fmt.Sprintf("%s|%s|%s", key.Namespace, key.WorkflowID, key.RunID)
@@ -514,7 +531,7 @@ func cmdTail(ctx context.Context, store storage.Store, g globalOpts, args []stri
 //
 // Output: stdout by default; --output FILE for redirection. One JSONL record
 // per stored record; each line is independently parseable.
-func cmdExport(ctx context.Context, store storage.Store, args []string, stdout io.Writer) error {
+func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQueryStore, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	var kind, namespace, workflowID, runID, output string
 	fs.StringVar(&kind, "kind", "", "Record kind: workflow | activity | timer | event (required)")
@@ -550,10 +567,14 @@ func cmdExport(ctx context.Context, store storage.Store, args []string, stdout i
 
 	switch kind {
 	case "workflow":
-		records, err := store.ListWorkflows(ctx, namespace, workflowID, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED)
+		response, err := query.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{
+			Namespace:  namespace,
+			WorkflowId: workflowID,
+		})
 		if err != nil {
 			return err
 		}
+		records := response.GetRecords()
 		for _, r := range records {
 			if err := emit(r); err != nil {
 				return err

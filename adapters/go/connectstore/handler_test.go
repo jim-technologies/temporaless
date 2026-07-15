@@ -2,6 +2,8 @@ package connectstore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/gocdkclaims"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"gocloud.dev/blob/fileblob"
@@ -18,6 +21,32 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type corruptBackendErrorStore struct {
+	storage.Store
+}
+
+func (store *corruptBackendErrorStore) GetTimer(
+	context.Context,
+	storage.TimerKey,
+) (*temporalessv1.TimerRecord, bool, error) {
+	return nil, false, fmt.Errorf("decode timer: %w", storage.ErrCorruptRecord)
+}
+
+func TestHandlerMapsBackendCorruptionToDataLoss(t *testing.T) {
+	key := storage.NewTimerKey("workflow", "run", "timer")
+	handler := NewHandler(&corruptBackendErrorStore{Store: newTestStore(t)})
+	_, err := handler.GetTimer(context.Background(), connect.NewRequest(&temporalessv1.GetTimerRequest{
+		Key: key.Proto(),
+	}))
+	if connect.CodeOf(err) != connect.CodeDataLoss {
+		t.Fatalf("code=%s err=%v, want DATA_LOSS", connect.CodeOf(err), err)
+	}
+	_, _, err = NewClientStore(handler).GetTimer(context.Background(), key)
+	if !errors.Is(err, storage.ErrCorruptRecord) {
+		t.Fatalf("client err=%v, want ErrCorruptRecord", err)
+	}
+}
 
 func TestHandlerRoundTrip(t *testing.T) {
 	tests := []struct {
@@ -87,6 +116,7 @@ func TestHandlerRoundTrip(t *testing.T) {
 						TimerKind:     storage.SleepTimerKind,
 						CodeVersion:   "test-version",
 						Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
+						FireAt:        timestamppb.Now(),
 					},
 				}))
 				if err != nil {
@@ -126,6 +156,42 @@ func TestHandlerRoundTrip(t *testing.T) {
 				t.Fatalf("result type = %q, want %q", typeURL, wantType)
 			}
 		})
+	}
+}
+
+type latestPointerPointStore struct {
+	storage.Store
+}
+
+func TestClientStoreLatestWorkflowRunUsesPointRPC(t *testing.T) {
+	ctx := context.Background()
+	backend := newTestStore(t)
+	key := storage.NewWorkflowKey("prices:aapl", "2026-07-03T09:00:00Z")
+	completedAt := timestamppb.New(time.Date(2026, 7, 3, 9, 1, 0, 0, time.UTC))
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     completedAt,
+		CompletedAt:   completedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pointStore := &latestPointerPointStore{Store: backend}
+	clientStore := NewClientStore(NewHandler(pointStore))
+
+	pointer, found, err := clientStore.GetLatestWorkflowRun(ctx, "", key.WorkflowID)
+	if err != nil || !found {
+		t.Fatalf("GetLatestWorkflowRun: found=%v err=%v", found, err)
+	}
+	if got := pointer.GetKey().GetRunId(); got != key.RunID {
+		t.Fatalf("run_id = %q, want %q", got, key.RunID)
+	}
+	_, found, err = clientStore.GetLatestWorkflowRun(ctx, "", "prices:missing")
+	if err != nil || found {
+		t.Fatalf("missing pointer: found=%v err=%v", found, err)
 	}
 }
 
@@ -177,12 +243,12 @@ func TestHTTPHandlerDoesNotMountLocalQueryFallbackByDefault(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	clientStore := NewHTTPClientStore(server.Client(), server.URL)
-	if _, err := clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED); err == nil {
+	if _, err := clientStore.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{}); err == nil {
 		t.Fatal("expected default HTTP handler to omit RecordQueryService")
 	}
 }
 
-func TestLocalClientStoreUsesRecordServicesWithoutHTTP(t *testing.T) {
+func TestLocalClientStoreUsesPointServiceWithoutHTTP(t *testing.T) {
 	ctx := context.Background()
 	clientStore := NewLocalClientStore(newTestStore(t))
 
@@ -208,12 +274,8 @@ func TestLocalClientStoreUsesRecordServicesWithoutHTTP(t *testing.T) {
 		t.Fatalf("workflow type = %q", record.GetWorkflowType())
 	}
 
-	records, err := clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := len(records); got != 1 {
-		t.Fatalf("list count = %d, want 1", got)
+	if _, err := clientStore.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{}); err == nil {
+		t.Fatal("point-only local client unexpectedly exposed RecordQueryService")
 	}
 }
 
@@ -244,8 +306,65 @@ func TestQueryHandlerRejectsUnsupportedOrderingAndPagination(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.run(context.Background(), NewQueryHandler(newTestStore(t)))
+			_, query := newTestStoreAndQuery(t, nil)
+			err := test.run(context.Background(), NewQueryHandler(query))
 			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
+			}
+		})
+	}
+}
+
+func TestHandlersRejectMissingRequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "point key",
+			run: func() error {
+				_, err := NewHandler(newTestStore(t)).GetWorkflow(
+					context.Background(),
+					connect.NewRequest(&temporalessv1.GetWorkflowRequest{}),
+				)
+				return err
+			},
+		},
+		{
+			name: "point due time",
+			run: func() error {
+				_, err := NewHandler(newTestStore(t)).DueTimers(
+					context.Background(),
+					connect.NewRequest(&temporalessv1.DueTimersRequest{}),
+				)
+				return err
+			},
+		},
+		{
+			name: "query due time",
+			run: func() error {
+				_, err := NewQueryHandler(nil).DueTimers(
+					context.Background(),
+					connect.NewRequest(&temporalessv1.RecordQueryServiceDueTimersRequest{}),
+				)
+				return err
+			},
+		},
+		{
+			name: "sweep time and age",
+			run: func() error {
+				_, err := NewQueryHandler(nil).Sweep(
+					context.Background(),
+					connect.NewRequest(&temporalessv1.SweepRequest{}),
+				)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
 			}
 		})
@@ -254,8 +373,8 @@ func TestQueryHandlerRejectsUnsupportedOrderingAndPagination(t *testing.T) {
 
 func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	backend := newTestStore(t)
-	_, handler := NewHTTPHandlerWithLocalQuery(backend)
+	backend, query := newTestStoreAndQuery(t, nil)
+	_, handler := NewHTTPHandlerWithLocalQuery(backend, query)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -275,10 +394,11 @@ func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
 		}
 	}
 
-	records, err := clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	response, err := clientStore.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{Status: temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records := response.GetRecords()
 	if got := len(records); got != 2 {
 		t.Fatalf("list count = %d, want 2", got)
 	}
@@ -291,10 +411,11 @@ func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
 		t.Fatal("expected delete to report true")
 	}
 
-	records, err = clientStore.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	response, err = clientStore.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{Status: temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED})
 	if err != nil {
 		t.Fatal(err)
 	}
+	records = response.GetRecords()
 	if got := len(records); got != 1 {
 		t.Fatalf("list count after delete = %d, want 1", got)
 	}
@@ -340,6 +461,7 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		TimerKind:     storage.SleepTimerKind,
 		CodeVersion:   "v1",
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
+		FireAt:        timestamppb.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -487,9 +609,9 @@ func TestClientStoreDeleteRunDeletesClaimsFromExplicitStore(t *testing.T) {
 
 func TestClientStoreSweepDeletesClaimsFromExplicitStore(t *testing.T) {
 	ctx := context.Background()
-	backend := newTestStore(t)
 	claimStore := newClaimsBackend(t)
-	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, claimStore)
+	backend, query := newTestStoreAndQuery(t, claimStore)
+	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, claimStore, query)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	clientStore := NewHTTPClientStore(server.Client(), server.URL)
@@ -519,10 +641,14 @@ func TestClientStoreSweepDeletesClaimsFromExplicitStore(t *testing.T) {
 		t.Fatalf("create claim: created=%v err=%v", created, err)
 	}
 
-	deleted, err := clientStore.Sweep(ctx, "", time.Now(), 24*time.Hour)
+	response, err := clientStore.Sweep(ctx, &temporalessv1.SweepRequest{
+		Now:    timestamppb.Now(),
+		MaxAge: durationpb.New(24 * time.Hour),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	deleted := response.GetDeleted()
 	if deleted != 1 {
 		t.Fatalf("deleted = %d, want 1", deleted)
 	}
@@ -665,10 +791,10 @@ func TestHandlerDeleteRunRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 
 func TestClientStoreSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
 	ctx := context.Background()
-	backend := newTestStore(t)
 	claimStore := newClaimsBackend(t)
 	pointOnly := &pointOnlyClaimStore{ClaimStore: claimStore}
-	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, pointOnly)
+	backend, query := newTestStoreAndQuery(t, pointOnly)
+	_, handler := NewHTTPHandlerWithClaimsAndLocalQuery(backend, pointOnly, query)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	clientStore := NewHTTPClientStore(server.Client(), server.URL)
@@ -698,7 +824,10 @@ func TestClientStoreSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 		t.Fatalf("create claim: created=%v err=%v", created, err)
 	}
 
-	_, err = clientStore.Sweep(ctx, "", time.Now(), 24*time.Hour)
+	_, err = clientStore.Sweep(ctx, &temporalessv1.SweepRequest{
+		Now:    timestamppb.Now(),
+		MaxAge: durationpb.New(24 * time.Hour),
+	})
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %s, want %s (err=%v)", connect.CodeOf(err), connect.CodeFailedPrecondition, err)
 	}
@@ -793,21 +922,9 @@ func TestHandlerDeleteRunValidatesEntireClaimListingBeforeDelete(t *testing.T) {
 
 func TestQueryHandlerSweepMapsCorruptClaimListingToDataLoss(t *testing.T) {
 	ctx := context.Background()
-	backend := newTestStore(t)
 	claims := newClaimsBackend(t)
 	key := storage.NewWorkflowKey("prices:sweep", "run:corrupt")
 	old := timestamppb.New(time.Now().Add(-48 * time.Hour))
-	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
-		SchemaVersion: storage.WorkflowRecordSchemaVersion,
-		Key:           key.Proto(),
-		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
-		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
-		CreatedAt:     old,
-		CompletedAt:   old,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "target")
 	target := &temporalessv1.ClaimRecord{
 		SchemaVersion: storage.ClaimRecordSchemaVersion,
@@ -828,7 +945,19 @@ func TestQueryHandlerSweepMapsCorruptClaimListingToDataLoss(t *testing.T) {
 			{Key: storage.NewClaimKey(key.WorkflowID, "run:other", "misplaced").Proto()},
 		},
 	}
-	handler := NewQueryHandlerWithClaims(backend, corrupt)
+	backend, query := newTestStoreAndQuery(t, corrupt)
+	if err := backend.PutWorkflow(ctx, &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  "workflow:test",
+		CodeVersion:   "v1",
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+		CreatedAt:     old,
+		CompletedAt:   old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewQueryHandler(query)
 
 	_, err = handler.Sweep(ctx, connect.NewRequest(&temporalessv1.SweepRequest{
 		Now:    timestamppb.Now(),
@@ -1049,6 +1178,12 @@ func TestHandlerReportsNoClaimCapabilityWithoutClaimStore(t *testing.T) {
 
 func newTestStore(t *testing.T) *storage.OpenDALStore {
 	t.Helper()
+	store, _ := newTestStoreAndQuery(t, nil)
+	return store
+}
+
+func newTestStoreAndQuery(t *testing.T, claims storage.ClaimStore) (*storage.OpenDALStore, storage.QueryStore) {
+	t.Helper()
 
 	operator, err := opendal.NewOperator(fs.Scheme, opendal.OperatorOptions{
 		"root": t.TempDir(),
@@ -1057,5 +1192,10 @@ func newTestStore(t *testing.T) *storage.OpenDALStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(operator.Close)
-	return storage.NewOpenDALStore(operator)
+	point := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, point, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return point, query
 }

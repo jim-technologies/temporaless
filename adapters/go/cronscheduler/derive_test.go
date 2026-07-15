@@ -10,6 +10,7 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/cronscheduler"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -34,9 +35,10 @@ func TestLastFireFromRunsDerivesStateFromStorage(t *testing.T) {
 			ctx,
 			store,
 			&workflow.Options{
-				WorkflowId:  "prices:aapl",
-				RunId:       fireTime.UTC().Format(time.RFC3339),
-				CodeVersion: "test",
+				WorkflowId:   "prices:aapl",
+				RunId:        fireTime.UTC().Format(time.RFC3339),
+				CodeVersion:  "test",
+				RunOrderTime: timestamppb.New(fireTime),
 			},
 			nil,
 			wrapperspb.String("AAPL"),
@@ -49,7 +51,7 @@ func TestLastFireFromRunsDerivesStateFromStorage(t *testing.T) {
 		}
 	}
 
-	last, ok, err := cronscheduler.LastFireFromRuns(ctx, store, "", "prices:aapl", time.RFC3339)
+	last, ok, err := cronscheduler.LastFireFromRuns(ctx, store, "", "prices:aapl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestLastFireFromRunsReturnsFalseWhenNoRuns(t *testing.T) {
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
 
-	_, ok, err := cronscheduler.LastFireFromRuns(ctx, store, "", "prices:aapl", time.RFC3339)
+	_, ok, err := cronscheduler.LastFireFromRuns(ctx, store, "", "prices:aapl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,17 +96,19 @@ func TestLastFiresFromRunsBuildsRestorableSnapshot(t *testing.T) {
 	for _, schedule := range []struct {
 		workflowID string
 		runID      string
+		fireTime   time.Time
 	}{
-		{"prices:aapl", "2026-05-04T09:32:00Z"},
-		{"prices:msft", "2026-05-04T09:33:00Z"},
+		{"prices:aapl", "run:aapl:32", time.Date(2026, 5, 4, 9, 32, 0, 0, time.UTC)},
+		{"prices:msft", "run:msft:33", time.Date(2026, 5, 4, 9, 33, 0, 0, time.UTC)},
 	} {
 		if _, err := workflow.Run(
 			ctx,
 			store,
 			&workflow.Options{
-				WorkflowId:  schedule.workflowID,
-				RunId:       schedule.runID,
-				CodeVersion: "test",
+				WorkflowId:   schedule.workflowID,
+				RunId:        schedule.runID,
+				CodeVersion:  "test",
+				RunOrderTime: timestamppb.New(schedule.fireTime),
 			},
 			nil,
 			wrapperspb.String("input"),
@@ -122,7 +126,6 @@ func TestLastFiresFromRunsBuildsRestorableSnapshot(t *testing.T) {
 		store,
 		"",
 		[]string{"prices:aapl", "prices:msft", "prices:never-ran"},
-		time.RFC3339,
 	)
 	if err != nil {
 		t.Fatal(err)

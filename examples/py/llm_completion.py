@@ -2,8 +2,8 @@
 
 A realistic vendor-LLM activity uses the full stack:
 
-  - ``workflow.activity()`` — one-line activity dispatch with auto-inferred
-    activity_id (from the function name) and a sensible default retry policy
+  - ``workflow.activity()`` — concise activity dispatch with explicit stable
+    activity/timer IDs and a sensible default retry policy
     (3 attempts, 1s initial, 2x backoff, 30s max, 30s durable threshold).
   - ``outbox.idempotency_key()`` — stable per-activity dedup key for the
     vendor's HTTP ``Idempotency-Key`` header. Retries don't double-charge.
@@ -85,12 +85,16 @@ async def llm_complete(prompt: StringValue) -> StringValue:
 async def ask_llm_workflow(workflow: Workflow, prompt: StringValue) -> StringValue:
     """Workflow body — one line per activity, defaults from the framework.
 
-    ``workflow.activity()`` infers ``activity_id`` from ``llm_complete.__qualname__``
-    and applies the default retry policy. To override either, pass
-    ``activity_id=`` or ``retry_policy=`` as a keyword argument.
+    ``workflow.activity()`` applies the default retry policy while keeping all
+    durable identities application-owned and explicit.
     """
     annotate("request_kind", "qa")
-    return await workflow.activity(llm_complete, prompt)
+    return await workflow.activity(
+        llm_complete,
+        prompt,
+        activity_id="llm:complete",
+        retry_timer_id="retry:llm:complete",
+    )
 
 
 async def main() -> None:
@@ -125,7 +129,7 @@ async def main() -> None:
         ActivityKey(
             workflow_id="llm:answer",
             run_id="2026-05-02-r1",
-            activity_id="llm_complete",
+            activity_id="llm:complete",
         )
     )
     assert workflow_record is not None

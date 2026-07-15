@@ -12,10 +12,8 @@
 //   - On next boot, call Restore() with the persisted map.
 //
 // For fully storage-derived state (no separate persistence), pair the scheduler
-// with LastFireFromRuns: it scans existing workflow records for the schedule
-// and parses run_ids as timestamps, returning the most recent fire time. This
-// is the recommended pattern when run_ids follow the
-// `prices:aapl/2026-05-04T09:30:00Z` convention.
+// with LastFireFromRuns: it point-reads the schedule's latest-run pointer and
+// uses its caller-supplied protobuf run_order_time.
 package cronscheduler
 
 import (

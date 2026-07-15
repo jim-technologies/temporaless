@@ -1,25 +1,31 @@
-"""Production-ready Temporaless server example.
+"""Production ConnectStore server wiring example.
 
-Demonstrates the full production wiring as one runnable script:
+Demonstrates the storage-service boundary as one runnable script:
 
 1. ``ConnectStore`` exposed over ConnectRPC for cross-process / cross-region
-   access. Uses local filesystem here; swap the OpenDAL operator scheme to
-   ``s3``/``gcs``/``azblob`` for real deployments.
-2. **Bearer-token auth interceptor** — rejects unauthenticated requests with
-   ``Code.UNAUTHENTICATED`` *before* the handler runs.
+   access. The OpenDAL scheme and options are explicit environment inputs.
+2. **Outer bearer-token and body-limit middleware** — rejects unauthenticated
+   requests before consuming their bodies and caps encoded request bytes before
+   ConnectRPC buffers or decompresses them.
 3. **Structured JSON logging with correlation IDs** — one-line-per-request,
    parseable by Loki / Datadog / CloudWatch without a sidecar.
 4. **HTTP health endpoints** (``/healthz`` liveness, ``/readyz`` readiness)
    for Kubernetes / load-balancer probes. The probes do not require auth.
-5. **Graceful shutdown on SIGTERM** — finishes in-flight requests, stops
-   accepting new ones, drains the timer-scanner / cron tick loop.
-6. **Combined operator-process loop** — periodic timer-scanner +
-   cron-scheduler tick alongside the HTTP server in one uvicorn process.
-   Split into separate pods if you want independent scaling.
+5. **Graceful shutdown on SIGTERM** — marks the service unready, stops
+   accepting new requests, and gives the ASGI server time to drain.
+
+This process serves durable records only. It intentionally does not pretend to
+route timers or cron schedules: application workflow services must wire their
+own ``BackgroundWorkers`` handlers, or send due-timer entries to an external
+scheduler/queue.
 
 Run::
 
-    AUTH_TOKEN=secret123 uv run --project core/py python examples/py/production_server.py
+    AUTH_TOKEN=secret123 \
+      TEMPORALESS_STORAGE_SCHEME=fs \
+      TEMPORALESS_STORAGE_OPTIONS='{"root":"/var/lib/temporaless"}' \
+      TEMPORALESS_ALLOW_UNSAFE_FS=1 \
+      uv run --project core/py python examples/py/production_server.py
     curl -H 'Authorization: Bearer secret123' http://localhost:8080/healthz
 
 The script exits cleanly on Ctrl-C / SIGTERM.
@@ -29,12 +35,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import os
 import signal
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Iterable
@@ -44,12 +50,13 @@ from typing import Any
 
 import opendal
 import uvicorn
-from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
 
 from temporaless import OpenDALStore, asgi_application
-from temporaless.cronscheduler import Scheduler
+
+MAX_CONNECT_MESSAGE_BYTES = 8 << 20  # 8 MiB decoded protobuf message.
+MAX_HTTP_REQUEST_BYTES = 8 << 20  # 8 MiB total encoded ASGI request body.
 
 # ---- structured JSON logging -----------------------------------------------
 
@@ -58,7 +65,7 @@ _correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="-")
 
 class _JSONFormatter(logging.Formatter):
     """One JSON object per log line. Includes correlation_id when set by the
-    auth interceptor — one of the few places where correlation lives."""
+    outer request guard or RPC logger."""
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -113,12 +120,11 @@ def _configure_logging() -> None:
 _log = logging.getLogger("temporaless.production")
 
 
-# ---- bearer-token auth interceptor -----------------------------------------
+# ---- RPC logging interceptor + outer request guard -------------------------
 
 
-class BearerTokenAuth:
-    """Reject requests without a valid bearer token + log per-RPC outcomes
-    with a correlation ID.
+class RPCLogger:
+    """Log authenticated per-RPC outcomes with a correlation ID.
 
     Implements the connectrpc-python ``MetadataInterceptor`` Protocol —
     structurally typed via ``on_start`` / ``on_end``. The framework's
@@ -126,32 +132,13 @@ class BearerTokenAuth:
     implement one you write a regular class with the matching methods,
     *not* a subclass of ``Interceptor`` (it's not a base class).
 
-    The token is read once from the environment. For production, source
-    it from your secret manager (Vault / SSM / Secret Manager); never
-    hardcode.
+    Authentication happens in ``_RPCRequestGuard`` outside ConnectRPC so an
+    attacker cannot force the runtime to buffer a request body before auth.
     """
 
-    def __init__(self, token: str) -> None:
-        if not token:
-            raise ValueError("auth token must be non-empty")
-        self._token = token
-
     async def on_start(self, ctx: RequestContext) -> dict[str, Any]:
-        correlation_id = (
-            ctx.request_headers().get("x-correlation-id") or uuid.uuid4().hex
-        )
+        correlation_id = ctx.request_headers.get("x-correlation-id") or uuid.uuid4().hex
         token_ctx = _correlation_id_var.set(correlation_id)
-
-        authz = ctx.request_headers().get("authorization", "")
-        if not authz.startswith("Bearer "):
-            _log.warning("auth.missing_bearer_prefix")
-            _correlation_id_var.reset(token_ctx)
-            raise ConnectError(Code.UNAUTHENTICATED, "bearer token required")
-        if authz[len("Bearer ") :] != self._token:
-            _log.warning("auth.token_mismatch")
-            _correlation_id_var.reset(token_ctx)
-            raise ConnectError(Code.UNAUTHENTICATED, "invalid bearer token")
-
         return {
             "start": time.perf_counter(),
             "token": token_ctx,
@@ -185,21 +172,128 @@ class BearerTokenAuth:
         _correlation_id_var.reset(token["token"])
 
 
+class _RPCRequestGuard:
+    """Authenticate and bound encoded request bytes before invoking ConnectRPC."""
+
+    def __init__(self, app: Any, *, token: str, max_body_bytes: int) -> None:
+        if not token:
+            raise ValueError("auth token must be non-empty")
+        if max_body_bytes <= 0:
+            raise ValueError("max_body_bytes must be positive")
+        self._app = app
+        self._authorization = b"Bearer " + token.encode()
+        self._max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+
+        headers = scope.get("headers", ())
+        authorization_values = [
+            value for name, value in headers if name.lower() == b"authorization"
+        ]
+        correlation_values = [
+            value for name, value in headers if name.lower() == b"x-correlation-id"
+        ]
+        correlation_id = (
+            correlation_values[0].decode("latin-1", errors="replace")
+            if len(correlation_values) == 1
+            else uuid.uuid4().hex
+        )
+        token_ctx = _correlation_id_var.set(correlation_id)
+        try:
+            if len(authorization_values) != 1 or not authorization_values[0].startswith(
+                b"Bearer "
+            ):
+                _log.warning("auth.missing_bearer_prefix")
+                await _send_plaintext(send, 401, b"bearer token required")
+                return
+            if not hmac.compare_digest(authorization_values[0], self._authorization):
+                _log.warning("auth.token_mismatch")
+                await _send_plaintext(send, 401, b"invalid bearer token")
+                return
+
+            content_length_values = [
+                value for name, value in headers if name.lower() == b"content-length"
+            ]
+            if len(content_length_values) > 1:
+                await _send_plaintext(send, 400, b"ambiguous content-length")
+                return
+            if content_length_values:
+                raw_content_length = content_length_values[0]
+                if not raw_content_length.isdigit():
+                    await _send_plaintext(send, 400, b"invalid content-length")
+                    return
+                content_length = int(raw_content_length)
+                if content_length > self._max_body_bytes:
+                    _log.warning("request.body_too_large")
+                    await _send_plaintext(send, 413, b"request body too large")
+                    return
+
+            body = bytearray()
+            while True:
+                event = await receive()
+                if event.get("type") == "http.disconnect":
+                    await _send_plaintext(send, 400, b"request body disconnected")
+                    return
+                if event.get("type") != "http.request":
+                    await _send_plaintext(send, 400, b"invalid request body event")
+                    return
+                chunk = event.get("body", b"")
+                if len(body) + len(chunk) > self._max_body_bytes:
+                    _log.warning("request.body_too_large")
+                    await _send_plaintext(send, 413, b"request body too large")
+                    return
+                body.extend(chunk)
+                if not event.get("more_body", False):
+                    break
+
+            replayed = False
+
+            async def replay_receive() -> dict[str, Any]:
+                nonlocal replayed
+                if replayed:
+                    return {"type": "http.disconnect"}
+                replayed = True
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": False,
+                }
+
+            await self._app(scope, replay_receive, send)
+        finally:
+            _correlation_id_var.reset(token_ctx)
+
+
 # ---- ASGI app: ConnectStore + health endpoints -----------------------------
 
 
 def _build_app(
-    store: OpenDALStore, interceptors: Iterable[Any], *, ready: asyncio.Event
+    store: OpenDALStore,
+    interceptors: Iterable[Any],
+    *,
+    ready: asyncio.Event,
+    token: str,
 ):
     """Compose ConnectStore + /healthz + /readyz behind one ASGI callable.
 
     /healthz: always 200 once the process is alive. K8s liveness — restarts
               the container if this fails.
-    /readyz:  200 only after `ready` is set (after store + scheduler are
+    /readyz:  200 only after `ready` is set (after the storage service is
               initialized). K8s readiness — stops sending traffic during
               startup / shutdown.
     """
-    connect_app = asgi_application(store, interceptors=tuple(interceptors))
+    connect_app = _RPCRequestGuard(
+        asgi_application(
+            store,
+            interceptors=tuple(interceptors),
+            read_max_bytes=MAX_CONNECT_MESSAGE_BYTES,
+        ),
+        token=token,
+        max_body_bytes=MAX_HTTP_REQUEST_BYTES,
+    )
 
     async def app(scope: dict, receive, send) -> None:
         if scope["type"] != "http":
@@ -232,33 +326,6 @@ async def _send_plaintext(send, status: int, body: bytes) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-# ---- operator loop: timer scanner + cron scheduler -------------------------
-
-
-async def _operator_loop(
-    store: OpenDALStore, scheduler: Scheduler, *, shutdown: asyncio.Event
-) -> None:
-    """Periodic tick that fires due cron schedules and notifies the timer
-    scanner. Runs alongside the HTTP server in the same process for the demo;
-    in production you might split this into a dedicated pod for scaling.
-    """
-    _log.info("operator_loop.started")
-    try:
-        while not shutdown.is_set():
-            try:
-                fires = await scheduler.tick(datetime.now(UTC))
-                if fires:
-                    _log.info("scheduler.fired", extra={"count": fires})
-            except Exception:
-                _log.exception("scheduler.tick_failed")
-            try:
-                await asyncio.wait_for(shutdown.wait(), timeout=30)
-            except TimeoutError:
-                pass
-    finally:
-        _log.info("operator_loop.stopped")
-
-
 # ---- entry point -----------------------------------------------------------
 
 
@@ -267,29 +334,60 @@ async def _main() -> int:
 
     auth_token = os.environ.get("AUTH_TOKEN")
     if not auth_token:
-        _log.warning(
-            "auth: AUTH_TOKEN not set; defaulting to development value 'dev-token-only'"
+        _log.error("config.missing", extra={"variable": "AUTH_TOKEN"})
+        return 2
+
+    storage_scheme = os.environ.get("TEMPORALESS_STORAGE_SCHEME")
+    if not storage_scheme:
+        _log.error("config.missing", extra={"variable": "TEMPORALESS_STORAGE_SCHEME"})
+        return 2
+    try:
+        storage_options = json.loads(
+            os.environ.get("TEMPORALESS_STORAGE_OPTIONS", "{}")
         )
-        auth_token = "dev-token-only"
+    except json.JSONDecodeError:
+        _log.exception("config.invalid_storage_options")
+        return 2
+    if not isinstance(storage_options, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in storage_options.items()
+    ):
+        _log.error(
+            "config.invalid_storage_options", extra={"reason": "expected string map"}
+        )
+        return 2
+    normalized_scheme = storage_scheme.casefold()
+    if normalized_scheme == "memory":
+        _log.error(
+            "config.ephemeral_storage_refused",
+            extra={
+                "hint": "configure durable object storage; memory storage is unsupported"
+            },
+        )
+        return 2
+    if (
+        normalized_scheme == "fs"
+        and os.environ.get("TEMPORALESS_ALLOW_UNSAFE_FS") != "1"
+    ):
+        _log.error(
+            "config.unsafe_local_storage_refused",
+            extra={
+                "hint": "set TEMPORALESS_ALLOW_UNSAFE_FS=1 only for one-node development"
+            },
+        )
+        return 2
 
-    storage_root = os.environ.get(
-        "TEMPORALESS_STORAGE_ROOT", tempfile.mkdtemp(prefix="temporaless-prod-")
-    )
-    _log.info("storage.init", extra={"root": storage_root})
-
-    operator = opendal.AsyncOperator("fs", root=storage_root)
-    store = OpenDALStore(operator)
-
-    async def _dispatch(_schedule_id: str, _fire_time: datetime) -> None:
-        # Stub: real users dispatch a workflow.run() call here.
-        pass
-
-    scheduler = Scheduler(schedules=[], dispatch=_dispatch)
+    _log.info("storage.init", extra={"scheme": storage_scheme})
+    try:
+        operator = opendal.AsyncOperator(storage_scheme, **storage_options)
+        store = OpenDALStore(operator)
+    except Exception:
+        _log.exception("storage.init_failed", extra={"scheme": storage_scheme})
+        return 2
 
     ready = asyncio.Event()
     shutdown = asyncio.Event()
-    auth: Any = BearerTokenAuth(token=auth_token)
-    app = _build_app(store, interceptors=[auth], ready=ready)
+    app = _build_app(store, interceptors=[RPCLogger()], ready=ready, token=auth_token)
 
     config = uvicorn.Config(
         app,
@@ -298,6 +396,8 @@ async def _main() -> int:
         log_config=None,  # we control logging via _configure_logging
         access_log=False,
         lifespan="off",
+        timeout_keep_alive=5,
+        timeout_graceful_shutdown=10,
     )
     server = uvicorn.Server(config)
 
@@ -310,25 +410,43 @@ async def _main() -> int:
             ),
         )
 
-    operator_task = asyncio.create_task(
-        _operator_loop(store, scheduler, shutdown=shutdown)
-    )
     server_task = asyncio.create_task(server.serve())
 
-    await asyncio.sleep(0.1)
+    while not server.started:
+        if server_task.done():
+            with contextlib.suppress(Exception):
+                await server_task
+            _log.error("server.start_failed")
+            return 1
+        await asyncio.sleep(0.05)
     ready.set()
-    _log.info("server.ready", extra={"port": config.port, "storage_root": storage_root})
+    _log.info(
+        "server.ready", extra={"port": config.port, "storage_scheme": storage_scheme}
+    )
 
-    await shutdown.wait()
+    shutdown_task = asyncio.create_task(shutdown.wait())
+    done, _ = await asyncio.wait(
+        {shutdown_task, server_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if server_task in done and not shutdown.is_set():
+        shutdown_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await shutdown_task
+        _log.error("server.stopped_unexpectedly")
+        return 1
+
     _log.info("shutdown.draining")
     ready.clear()  # /readyz starts returning 503 — load balancer stops sending traffic
     server.should_exit = True
 
-    with contextlib.suppress(Exception):
+    try:
         await asyncio.wait_for(server_task, timeout=10)
-    operator_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await operator_task
+    except TimeoutError:
+        _log.error("shutdown.timeout")
+        server_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await server_task
+        return 1
     _log.info("shutdown.complete")
     return 0
 

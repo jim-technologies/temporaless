@@ -29,7 +29,7 @@ var ErrConcurrencyBusy = errors.New("concurrency cap is busy")
 // is full. The workflow body did NOT execute and no IN_PROGRESS record was
 // written — callers retry the same workflow.Run when capacity is available.
 //
-// Maps to gRPC code RESOURCE_EXHAUSTED via ErrorToConnectCode.
+// Transport adapters may map this to their standard capacity-exhausted status.
 type ConcurrencyBusyError struct {
 	Key   string
 	Limit uint32

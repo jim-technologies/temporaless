@@ -12,8 +12,8 @@
 //
 // Edition 2023: lets us declare field-level string defaults (used by
 // `ReservedNames` below) so framework-reserved literals like
-// "__concurrency__" and "activity-retry:" live ONCE — here — rather than
-// being duplicated in every SDK.
+// "__concurrency__" live ONCE — here — rather than being duplicated in every
+// SDK.
 edition = "2023";
 
 package temporaless.v1;
@@ -54,9 +54,9 @@ message WorkflowOptions {
       expression: "!this.startsWith('_')"
     }
   ];
-  // Identifier for this particular run of the workflow. By convention,
-  // schedule-driven workflows embed the fire time (e.g. `2026-05-04T09:30:00Z`)
-  // so reruns and backfills are explicit.
+  // Opaque identifier for this particular run of the workflow. Schedule
+  // adapters commonly derive a deterministic ID from the schedule and fire
+  // time so duplicate ticks converge, but the framework never parses it.
   string run_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -126,6 +126,12 @@ message WorkflowOptions {
     message: "claim_owner_id must be set when concurrency_key is set"
     expression: "this.concurrency_key == '' || this.claim_owner_id != ''"
   };
+  // Caller-supplied logical ordering time for this run. Schedule adapters set
+  // this to the scheduled fire time so a later-created backfill cannot replace
+  // the latest-run pointer for a newer fire. When unset, stores use the
+  // workflow record's lifecycle time. The framework never derives this value
+  // from run_id because run IDs are opaque application-owned identifiers.
+  google.protobuf.Timestamp run_order_time = 7;
 }
 
 // ActivityOptions controls how a single activity executes within a workflow.
@@ -147,6 +153,23 @@ message ActivityOptions {
   ];
   // Optional retry policy. When unset, the activity runs at most once.
   RetryPolicy retry_policy = 2;
+  // Stable caller-supplied ID for the durable timer used between activity
+  // attempts. Required when retry_policy enables durable backoff. It must be
+  // deterministic across replays of the same logical activity. The framework
+  // does not derive a timer ID from activity_id.
+  string retry_timer_id = 3 [
+    (buf.validate.field).string = {pattern: "^$|^[A-Za-z0-9._:=-]+$"},
+    (buf.validate.field).cel = {
+      id: "temporaless.activity_options.retry_timer_id.not_dot_path"
+      message: "retry_timer_id must not be . or .."
+      expression: "this == '' || (this != '.' && this != '..')"
+    }
+  ];
+  option (buf.validate.message).cel = {
+    id: "temporaless.activity_options.durable_retry_timer_id_required"
+    message: "retry_timer_id is required when retry_policy enables durable backoff"
+    expression: "!has(this.retry_policy) || this.retry_policy.maximum_attempts <= 1 || !has(this.retry_policy.durable_backoff_threshold) || this.retry_policy.durable_backoff_threshold <= duration('0s') || this.retry_timer_id != ''"
+  };
 }
 
 // DispatchOptions configures an in-process fire-and-forget dispatcher (the
@@ -215,7 +238,8 @@ message TaskInfo {
   google.protobuf.Timestamp completed_at = 7;
 }
 
-// RetryPolicy controls in-process retry behavior for a single activity.
+// RetryPolicy controls retry behavior for a single activity. Short waits stay
+// in-process; waits meeting durable_backoff_threshold use durable timers.
 //
 // Failures matched by `non_retryable_error_codes` short-circuit the loop and
 // surface immediately. Between attempts, the runtime persists an
@@ -223,15 +247,18 @@ message TaskInfo {
 // during the backoff sleep doesn't lose the attempt history.
 message RetryPolicy {
   // Wait before the second attempt. Required when `maximum_attempts > 1`.
-  google.protobuf.Duration initial_interval = 1;
+  google.protobuf.Duration initial_interval = 1 [(buf.validate.field).duration.gte = {}];
   // Multiplier applied to the previous interval to compute the next. Zero is
   // treated as 1.0 (linear, no growth). Typical value: 2.0.
-  double backoff_coefficient = 2;
+  double backoff_coefficient = 2 [(buf.validate.field).double = {
+    gte: 0
+    finite: true
+  }];
   // Cap on backoff growth. Zero means uncapped.
-  google.protobuf.Duration maximum_interval = 3;
+  google.protobuf.Duration maximum_interval = 3 [(buf.validate.field).duration.gte = {}];
   // Total attempts including the initial one. Must be > 0 when a policy is
   // set; an unset policy implies a single attempt.
-  uint32 maximum_attempts = 4;
+  uint32 maximum_attempts = 4 [(buf.validate.field).uint32.gt = 0];
   // Activity error codes (carried via `ActivityFailure.code`) that should
   // skip remaining retries and surface the failure immediately.
   repeated string non_retryable_error_codes = 5;
@@ -246,7 +273,13 @@ message RetryPolicy {
   // Zero (the default) keeps the legacy in-process behavior: every retry
   // sleeps inside the activity. Set this to ~30s for LLM workflows whose
   // rate-limit windows often exceed a serverless function's max duration.
-  google.protobuf.Duration durable_backoff_threshold = 6;
+  google.protobuf.Duration durable_backoff_threshold = 6 [(buf.validate.field).duration.gte = {}];
+
+  option (buf.validate.message).cel = {
+    id: "temporaless.retry_policy.initial_interval_required"
+    message: "initial_interval must be > 0 when maximum_attempts > 1"
+    expression: "this.maximum_attempts <= 1 || (has(this.initial_interval) && this.initial_interval > duration('0s'))"
+  };
 }
 
 // ActivityStatus tracks an activity's lifecycle in storage.
@@ -283,7 +316,8 @@ enum TimerStatus {
   // Timer is waiting for `fire_at`. The workflow returned `ErrTimerPending`
   // and should be re-invoked after `fire_at`.
   TIMER_STATUS_SCHEDULED = 1;
-  // Timer's `fire_at` has passed and a workflow re-invocation has consumed it.
+  // Timer's `fire_at` has passed and a resumed workflow has committed a later
+  // durable wake or terminal outcome, so this wake is no longer needed.
   TIMER_STATUS_FIRED = 2;
   // Timer was canceled before firing. Replay treats this as a conflict.
   TIMER_STATUS_CANCELED = 3;
@@ -297,14 +331,13 @@ enum TimerKind {
   // Paired with a RETRYING ActivityRecord: the runtime persisted a long retry
   // backoff as a durable timer instead of sleeping in-process. When the timer
   // is due, the workflow re-invokes and the activity's retry loop resumes
-  // from the next attempt. Timer ID convention is `activity-retry:{activity_id}`;
-  // the `activity-retry:` prefix is reserved by the runtime and rejected
-  // from user-supplied timer IDs in `workflow.Sleep`.
+  // from the next attempt. Its timer ID is supplied explicitly through
+  // ActivityOptions.retry_timer_id.
   TIMER_KIND_ACTIVITY_RETRY = 2;
 }
 
 // ReservedNames is the canonical source of framework-reserved string
-// literals — workflow_ids, claim_id prefixes, timer_id prefixes — that both
+// literals — workflow_ids and claim_id prefixes — that both
 // SDKs use to namespace runtime state. The values live HERE (via Edition
 // 2023 field defaults) so that:
 //
@@ -327,10 +360,12 @@ message ReservedNames {
     default = "__concurrency__"
   ];
 
-  // Prefix for timer records owned by the runtime's durable retry path. User
-  // code passing this prefix to `workflow.Sleep` is rejected at runtime so
-  // framework-managed retry timers don't collide with user timers.
+  // Deprecated compatibility literal retained so the pre-v1 protobuf API
+  // remains wire/source compatible with v0.4. Runtime retry timer IDs are now
+  // supplied explicitly through ActivityOptions.retry_timer_id and this value
+  // is no longer consulted by either first-class SDK.
   string activity_retry_timer_id_prefix = 2 [
+    deprecated = true,
     features.field_presence = EXPLICIT,
     default = "activity-retry:"
   ];
@@ -766,11 +801,22 @@ message ActivityRecord {
   map<string, string> annotations = 13;
   // Wall-clock instant at which the runtime should resume a durable retry.
   // Only set when status is `ACTIVITY_STATUS_RETRYING` and the policy's
-  // `durable_backoff_threshold` was exceeded — the runtime paired this record
+  // `durable_backoff_threshold` was met — the runtime paired this record
   // with a `TIMER_KIND_ACTIVITY_RETRY` timer. When unset on a RETRYING record,
   // the retry was in-process (legacy / threshold = 0) and replay resumes
   // immediately if a backing scanner re-invokes the workflow.
   google.protobuf.Timestamp next_attempt_at = 14;
+  // Normalized effective retry policy used to create this record. Absent
+  // means single-attempt execution. RETRYING replay requires this policy to
+  // match the caller's current policy so a deploy cannot silently change the
+  // remaining attempt count or backoff schedule under the same code_version.
+  // Terminal records remain authoritative and retain the policy for audit.
+  RetryPolicy retry_policy = 15;
+  // Caller-supplied ID of the durable retry timer paired with this activity.
+  // Empty when durable retry is disabled. RETRYING replay verifies it against
+  // ActivityOptions.retry_timer_id; terminal records retain it for cleanup
+  // and audit even if no wait crossed the durable threshold.
+  string retry_timer_id = 16;
 }
 
 // WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
@@ -797,6 +843,10 @@ message WorkflowRecord {
   // (between activity calls). Activity-scope annotations live on the
   // ActivityRecord instead.
   map<string, string> annotations = 12;
+  // Caller-supplied logical ordering time copied from WorkflowOptions. Stores
+  // use it for latest-run pointer ordering; when absent they use lifecycle
+  // record_time. This value is immutable for a workflow run.
+  google.protobuf.Timestamp run_order_time = 13;
 }
 
 // TimerRecord backs `workflow.Sleep`. Stored at `timer/{timer_id}.binpb`.
@@ -816,8 +866,14 @@ message TimerRecord {
   // against `now` to find re-invocations to dispatch.
   google.protobuf.Timestamp fire_at = 8;
   google.protobuf.Timestamp created_at = 9;
-  // Set when the workflow re-invocation consumed the timer.
+  // Set after the resumed workflow persists a later wake-bearing timer or a
+  // terminal workflow record. A due timer remains SCHEDULED until that durable
+  // boundary so a crash cannot consume its only wakeup.
   google.protobuf.Timestamp fired_at = 10;
+  // Activity paired with TIMER_KIND_ACTIVITY_RETRY. Empty for sleep timers.
+  // This reciprocal link lets replay reject two activities that accidentally
+  // reuse one caller-supplied retry_timer_id.
+  string retry_activity_id = 11;
 }
 
 // EventRecord delivers an external signal payload to a waiting workflow.
@@ -861,9 +917,9 @@ message ClaimRecord {
 // records so schedulers can seed from one point GET instead of listing a
 // workflow's full run history. The bucket object is best-effort monotonic: a
 // lost read/compare/write race can leave it stale, but it must never invent a
-// run that does not exist. Bucket stores compare parsed run_id fire times when
-// both the current and incoming run_ids match the store's configured schedule
-// formats; otherwise they fall back to record_time.
+// run that does not exist. Bucket stores compare run_order_time, which the
+// workflow runtime copies from caller-supplied WorkflowOptions; when it is
+// absent they fall back to record_time. Stores never parse opaque run IDs.
 message LatestWorkflowRunPointer {
   WorkflowKey key = 1;
   WorkflowStatus status = 2;
@@ -873,19 +929,27 @@ message LatestWorkflowRunPointer {
   google.protobuf.Timestamp record_time = 3;
   // Wall-clock time at which the pointer object was written.
   google.protobuf.Timestamp updated_at = 4;
+  // Ordering timestamp used for monotonic comparison. This is the workflow
+  // record's caller-supplied run_order_time when present, otherwise
+  // record_time.
+  google.protobuf.Timestamp run_order_time = 5;
 }
 
-// DueTimerEntry is the compact bucket ledger entry written for pending timers.
-// It intentionally stores keys, not payloads; the timer and workflow records
-// remain the source of truth.
+// DueTimerEntry is the deterministic write-ahead object written for timer
+// transitions. Its full prepared record repairs an interrupted canonical write.
 message DueTimerEntry {
   TimerKey key = 1;
   WorkflowKey workflow_key = 2;
   google.protobuf.Timestamp fire_at = 3;
+  // Full prepared timer state. The due object is written before the canonical
+  // TimerRecord and is its exact fallback if a process dies between writes.
+  // Keeping one deterministic entry per TimerKey makes that crash window
+  // recoverable without restarting a long sleep from replay time.
+  TimerRecord record = 4 [(buf.validate.field).required = true];
 }
 
 message GetWorkflowRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message GetWorkflowResponse {
@@ -896,7 +960,7 @@ message GetWorkflowResponse {
 }
 
 message PutWorkflowRequest {
-  WorkflowRecord record = 1;
+  WorkflowRecord record = 1 [(buf.validate.field).required = true];
 }
 
 message PutWorkflowResponse {}
@@ -912,7 +976,7 @@ message GetLatestWorkflowRunResponse {
 }
 
 message GetTimerRequest {
-  TimerKey key = 1;
+  TimerKey key = 1 [(buf.validate.field).required = true];
 }
 
 message GetTimerResponse {
@@ -921,13 +985,13 @@ message GetTimerResponse {
 }
 
 message PutTimerRequest {
-  TimerRecord record = 1;
+  TimerRecord record = 1 [(buf.validate.field).required = true];
 }
 
 message PutTimerResponse {}
 
 message GetActivityRequest {
-  ActivityKey key = 1;
+  ActivityKey key = 1 [(buf.validate.field).required = true];
 }
 
 message GetActivityResponse {
@@ -936,13 +1000,13 @@ message GetActivityResponse {
 }
 
 message PutActivityRequest {
-  ActivityRecord record = 1;
+  ActivityRecord record = 1 [(buf.validate.field).required = true];
 }
 
 message PutActivityResponse {}
 
 message GetEventRequest {
-  EventKey key = 1;
+  EventKey key = 1 [(buf.validate.field).required = true];
 }
 
 message GetEventResponse {
@@ -951,7 +1015,7 @@ message GetEventResponse {
 }
 
 message PutEventRequest {
-  EventRecord record = 1;
+  EventRecord record = 1 [(buf.validate.field).required = true];
 }
 
 message PutEventResponse {}
@@ -981,7 +1045,7 @@ message ListWorkflowsResponse {
 
 // ListActivitiesRequest scopes to a single workflow run.
 message ListActivitiesRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message ListActivitiesResponse {
@@ -991,7 +1055,7 @@ message ListActivitiesResponse {
 // ListTimersRequest scopes to a single workflow run, optionally filtering by
 // timer status (e.g. `TIMER_STATUS_SCHEDULED` to find pending timers).
 message ListTimersRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
   // UNSPECIFIED matches all statuses.
   TimerStatus status = 2;
 }
@@ -1002,7 +1066,7 @@ message ListTimersResponse {
 
 // ListEventsRequest scopes to a single workflow run.
 message ListEventsRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message ListEventsResponse {
@@ -1013,7 +1077,7 @@ message ListEventsResponse {
 // used for run deletion; cross-run claim search is intentionally not part of
 // the core storage contract.
 message ListClaimsRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message ListClaimsResponse {
@@ -1040,7 +1104,7 @@ message RecordQueryServiceListActivitiesResponse {
 // Delete* RPCs or use a higher-level adapter (e.g. `janitor.Sweep`) for
 // recursive deletion.
 message DeleteWorkflowRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteWorkflowResponse {
@@ -1057,7 +1121,7 @@ message DeleteWorkflowResponse {
 // run: this cleanup RPC is not an execution fence or a transaction against
 // concurrent claim/record creation.
 message DeleteRunRequest {
-  WorkflowKey key = 1;
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteRunResponse {
@@ -1065,7 +1129,7 @@ message DeleteRunResponse {
 }
 
 message DeleteActivityRequest {
-  ActivityKey key = 1;
+  ActivityKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteActivityResponse {
@@ -1073,7 +1137,7 @@ message DeleteActivityResponse {
 }
 
 message DeleteTimerRequest {
-  TimerKey key = 1;
+  TimerKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteTimerResponse {
@@ -1081,7 +1145,7 @@ message DeleteTimerResponse {
 }
 
 message DeleteEventRequest {
-  EventKey key = 1;
+  EventKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteEventResponse {
@@ -1089,7 +1153,7 @@ message DeleteEventResponse {
 }
 
 message GetClaimRequest {
-  ClaimKey key = 1;
+  ClaimKey key = 1 [(buf.validate.field).required = true];
 }
 
 message GetClaimResponse {
@@ -1101,7 +1165,7 @@ message GetClaimResponse {
 // key. Other write semantics (refresh, takeover) are exposed via separate
 // adapter APIs only when the backend's `ClaimCapability` allows them.
 message TryCreateClaimRequest {
-  ClaimRecord record = 1;
+  ClaimRecord record = 1 [(buf.validate.field).required = true];
 }
 
 message TryCreateClaimResponse {
@@ -1112,7 +1176,7 @@ message TryCreateClaimResponse {
 // DeleteClaimRequest releases a held claim so work is available to other
 // invocations. Idempotent: returns `deleted=false` when the claim wasn't present.
 message DeleteClaimRequest {
-  ClaimKey key = 1;
+  ClaimKey key = 1 [(buf.validate.field).required = true];
 }
 
 message DeleteClaimResponse {
@@ -1142,9 +1206,12 @@ message SweepRequest {
   // Reference time. Operators pass the current wall clock; backends compare
   // each record's `completed_at` against `now - max_age`. Required so the RPC
   // is deterministic — no implicit server-side clocks.
-  google.protobuf.Timestamp now = 2;
+  google.protobuf.Timestamp now = 2 [(buf.validate.field).required = true];
   // Minimum age for a COMPLETED run to be eligible for deletion.
-  google.protobuf.Duration max_age = 3;
+  google.protobuf.Duration max_age = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration.gt = {}
+  ];
 }
 
 message SweepResponse {
@@ -1152,9 +1219,10 @@ message SweepResponse {
   uint32 deleted = 1;
 }
 
-// DueTimer pairs a timer record with the workflow that owns it. Returned by
-// `DueTimers` so callers can re-invoke the parent workflow when its sleep is
-// up.
+// DueTimer pairs a due wake with the workflow that owns it. `record` is the
+// exact prepared TimerRecord whose canonical point was verified during a scan.
+// An interrupted canonical write is repaired first and becomes dispatchable
+// only when a later scan observes both copies in agreement.
 message DueTimer {
   TimerKey key = 1;
   TimerRecord record = 2;
@@ -1169,7 +1237,7 @@ message DueTimersRequest {
   string namespace = 1;
   // Reference time. Timers with `fire_at <= now` and status=SCHEDULED are
   // returned.
-  google.protobuf.Timestamp now = 2;
+  google.protobuf.Timestamp now = 2 [(buf.validate.field).required = true];
 }
 
 message DueTimersResponse {
@@ -1178,7 +1246,7 @@ message DueTimersResponse {
 
 message RecordQueryServiceDueTimersRequest {
   string namespace = 1;
-  google.protobuf.Timestamp now = 2;
+  google.protobuf.Timestamp now = 2 [(buf.validate.field).required = true];
 }
 
 message RecordQueryServiceDueTimersResponse {

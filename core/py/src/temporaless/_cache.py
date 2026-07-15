@@ -33,10 +33,18 @@ from temporaless.storage import (
     Store,
     TimerKey,
     WorkflowKey,
-    activity_key_from_proto,
-    event_key_from_proto,
-    timer_key_from_proto,
-    workflow_key_from_proto,
+    _activity_keys_for_run,
+    _claim_keys_for_run,
+    _event_keys_for_run,
+    _timer_keys_for_run,
+    _validate_activity_record,
+    _validate_claim_record,
+    _validate_due_timer,
+    _validate_event_record,
+    _validate_latest_workflow_run_pointer,
+    _validate_latest_workflow_run_reference,
+    _validate_timer_record,
+    _validate_workflow_record,
 )
 from temporaless.v1 import temporaless_pb2
 
@@ -80,15 +88,21 @@ class RunScopedCache:
             self._inner.list_timers(self._scope, temporaless_pb2.TIMER_STATUS_UNSPECIFIED),
             self._inner.list_events(self._scope),
         )
+        # Validate every response before changing any cache map. A custom Store
+        # must not redirect run A's replay through a record embedded for run B,
+        # nor leave a partially populated cache when one list is corrupt.
+        activity_keys = _activity_keys_for_run(self._scope, activities)
+        timer_keys = _timer_keys_for_run(self._scope, timers)
+        event_keys = _event_keys_for_run(self._scope, events)
         async with self._lock:
-            for record in activities:
-                self._activities[activity_key_from_proto(record.key).activity_id] = record
+            for key, record in zip(activity_keys, activities, strict=True):
+                self._activities[key.activity_id] = record
             self._activities_listed = True
-            for record in timers:
-                self._timers[timer_key_from_proto(record.key).timer_id] = record
+            for key, record in zip(timer_keys, timers, strict=True):
+                self._timers[key.timer_id] = record
             self._timers_listed = True
-            for record in events:
-                self._events[event_key_from_proto(record.key).event_id] = record
+            for key, record in zip(event_keys, events, strict=True):
+                self._events[key.event_id] = record
             self._events_listed = True
 
     def _in_scope(self, namespace: str, workflow_id: str, run_id: str) -> bool:
@@ -102,19 +116,26 @@ class RunScopedCache:
 
     async def get_workflow(self, key: WorkflowKey) -> temporaless_pb2.WorkflowRecord | None:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.get_workflow(key)
+            record = await self._inner.get_workflow(key)
+            if record is not None:
+                _validate_workflow_record(record, expected_key=key)
+            return record
         async with self._lock:
             if self._workflow_known:
+                if self._workflow is not None:
+                    _validate_workflow_record(self._workflow, expected_key=key)
                 return self._workflow
         record = await self._inner.get_workflow(key)
+        if record is not None:
+            _validate_workflow_record(record, expected_key=key)
         async with self._lock:
             self._workflow_known = True
             self._workflow = record
         return record
 
     async def put_workflow(self, record: temporaless_pb2.WorkflowRecord) -> None:
+        key = _validate_workflow_record(record)
         await self._inner.put_workflow(record)
-        key = workflow_key_from_proto(record.key)
         if self._in_scope(key.namespace, key.workflow_id, key.run_id):
             async with self._lock:
                 self._workflow_known = True
@@ -123,7 +144,14 @@ class RunScopedCache:
     async def get_latest_workflow_run(
         self, namespace: str, workflow_id: str
     ) -> temporaless_pb2.LatestWorkflowRunPointer | None:
-        return await self._inner.get_latest_workflow_run(namespace, workflow_id)
+        pointer = await self._inner.get_latest_workflow_run(namespace, workflow_id)
+        if pointer is None:
+            return None
+        key = _validate_latest_workflow_run_pointer(pointer, namespace, workflow_id)
+        workflow = await self._inner.get_workflow(key)
+        if not _validate_latest_workflow_run_reference(pointer, workflow):
+            return None
+        return pointer
 
     async def delete_workflow(self, key: WorkflowKey) -> bool:
         deleted = await self._inner.delete_workflow(key)
@@ -151,14 +179,22 @@ class RunScopedCache:
 
     async def get_activity(self, key: ActivityKey) -> temporaless_pb2.ActivityRecord | None:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.get_activity(key)
+            record = await self._inner.get_activity(key)
+            if record is not None:
+                _validate_activity_record(record, expected_key=key)
+            return record
         async with self._lock:
             if key.activity_id in self._activities:
-                return self._activities[key.activity_id]
+                record = self._activities[key.activity_id]
+                if record is not None:
+                    _validate_activity_record(record, expected_key=key)
+                return record
             listed = self._activities_listed
         if listed:
             return None
         record = await self._inner.get_activity(key)
+        if record is not None:
+            _validate_activity_record(record, expected_key=key)
         async with self._lock:
             self._activities[key.activity_id] = record
         return record
@@ -172,28 +208,35 @@ class RunScopedCache:
         that stale negative entry for the rest of the replay invocation.
         """
         record = await self._inner.get_activity(key)
+        if record is not None:
+            _validate_activity_record(record, expected_key=key)
         if self._in_scope(key.namespace, key.workflow_id, key.run_id):
             async with self._lock:
                 self._activities[key.activity_id] = record
         return record
 
     async def put_activity(self, record: temporaless_pb2.ActivityRecord) -> None:
+        key = _validate_activity_record(record)
         await self._inner.put_activity(record)
-        key = activity_key_from_proto(record.key)
         if self._in_scope(key.namespace, key.workflow_id, key.run_id):
             async with self._lock:
                 self._activities[key.activity_id] = record
 
     async def list_activities(self, key: WorkflowKey) -> list[temporaless_pb2.ActivityRecord]:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.list_activities(key)
+            records = await self._inner.list_activities(key)
+            _activity_keys_for_run(key, records)
+            return records
         async with self._lock:
             if self._activities_listed:
-                return [r for r in self._activities.values() if r is not None]
+                records = [r for r in self._activities.values() if r is not None]
+                _activity_keys_for_run(key, records)
+                return records
         records = await self._inner.list_activities(key)
+        activity_keys = _activity_keys_for_run(key, records)
         async with self._lock:
-            for record in records:
-                self._activities[activity_key_from_proto(record.key).activity_id] = record
+            for activity_key, record in zip(activity_keys, records, strict=True):
+                self._activities[activity_key.activity_id] = record
             self._activities_listed = True
         return records
 
@@ -208,21 +251,45 @@ class RunScopedCache:
 
     async def get_timer(self, key: TimerKey) -> temporaless_pb2.TimerRecord | None:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.get_timer(key)
+            record = await self._inner.get_timer(key)
+            if record is not None:
+                _validate_timer_record(record, expected_key=key)
+            return record
         async with self._lock:
             if key.timer_id in self._timers:
-                return self._timers[key.timer_id]
+                record = self._timers[key.timer_id]
+                if record is not None:
+                    _validate_timer_record(record, expected_key=key)
+                return record
             listed = self._timers_listed
         if listed:
             return None
         record = await self._inner.get_timer(key)
+        if record is not None:
+            _validate_timer_record(record, expected_key=key)
         async with self._lock:
             self._timers[key.timer_id] = record
         return record
 
+    async def refresh_timer(self, key: TimerKey) -> temporaless_pb2.TimerRecord | None:
+        """Authoritatively re-read one timer and refresh its cache entry.
+
+        Activity claim arbitration uses this after acquiring the claim. A
+        prior holder may have published a retry timer after this invocation's
+        pre-claim lookup cached a missing timer, and that durable wake must be
+        observed before the next activity attempt can start.
+        """
+        record = await self._inner.get_timer(key)
+        if record is not None:
+            _validate_timer_record(record, expected_key=key)
+        if self._in_scope(key.namespace, key.workflow_id, key.run_id):
+            async with self._lock:
+                self._timers[key.timer_id] = record
+        return record
+
     async def put_timer(self, record: temporaless_pb2.TimerRecord) -> None:
+        key = _validate_timer_record(record)
         await self._inner.put_timer(record)
-        key = timer_key_from_proto(record.key)
         if self._in_scope(key.namespace, key.workflow_id, key.run_id):
             async with self._lock:
                 self._timers[key.timer_id] = record
@@ -233,23 +300,30 @@ class RunScopedCache:
         status: temporaless_pb2.TimerStatus,
     ) -> list[temporaless_pb2.TimerRecord]:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.list_timers(key, status)
+            records = await self._inner.list_timers(key, status)
+            _timer_keys_for_run(key, records)
+            return records
         async with self._lock:
             if self._timers_listed:
-                return [
+                records = [
                     r
                     for r in self._timers.values()
                     if r is not None
                     and (status == temporaless_pb2.TIMER_STATUS_UNSPECIFIED or r.status == status)
                 ]
+                _timer_keys_for_run(key, records)
+                return records
         # A status-filtered list would hide records the body might still look
         # up by id; only the unfiltered call populates the cache.
         if status != temporaless_pb2.TIMER_STATUS_UNSPECIFIED:
-            return await self._inner.list_timers(key, status)
+            records = await self._inner.list_timers(key, status)
+            _timer_keys_for_run(key, records)
+            return records
         records = await self._inner.list_timers(key, status)
+        timer_keys = _timer_keys_for_run(key, records)
         async with self._lock:
-            for record in records:
-                self._timers[timer_key_from_proto(record.key).timer_id] = record
+            for timer_key, record in zip(timer_keys, records, strict=True):
+                self._timers[timer_key.timer_id] = record
             self._timers_listed = True
         return records
 
@@ -264,35 +338,48 @@ class RunScopedCache:
 
     async def get_event(self, key: EventKey) -> temporaless_pb2.EventRecord | None:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.get_event(key)
+            record = await self._inner.get_event(key)
+            if record is not None:
+                _validate_event_record(record, expected_key=key)
+            return record
         async with self._lock:
             if key.event_id in self._events:
-                return self._events[key.event_id]
+                record = self._events[key.event_id]
+                if record is not None:
+                    _validate_event_record(record, expected_key=key)
+                return record
             listed = self._events_listed
         if listed:
             return None
         record = await self._inner.get_event(key)
+        if record is not None:
+            _validate_event_record(record, expected_key=key)
         async with self._lock:
             self._events[key.event_id] = record
         return record
 
     async def put_event(self, record: temporaless_pb2.EventRecord) -> None:
+        key = _validate_event_record(record)
         await self._inner.put_event(record)
-        key = event_key_from_proto(record.key)
         if self._in_scope(key.namespace, key.workflow_id, key.run_id):
             async with self._lock:
                 self._events[key.event_id] = record
 
     async def list_events(self, key: WorkflowKey) -> list[temporaless_pb2.EventRecord]:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
-            return await self._inner.list_events(key)
+            records = await self._inner.list_events(key)
+            _event_keys_for_run(key, records)
+            return records
         async with self._lock:
             if self._events_listed:
-                return [r for r in self._events.values() if r is not None]
+                records = [r for r in self._events.values() if r is not None]
+                _event_keys_for_run(key, records)
+                return records
         records = await self._inner.list_events(key)
+        event_keys = _event_keys_for_run(key, records)
         async with self._lock:
-            for record in records:
-                self._events[event_key_from_proto(record.key).event_id] = record
+            for event_key, record in zip(event_keys, records, strict=True):
+                self._events[event_key.event_id] = record
             self._events_listed = True
         return records
 
@@ -315,10 +402,14 @@ class RunScopedCache:
 
     async def get_claim(self, key: ClaimKey) -> temporaless_pb2.ClaimRecord | None:
         inner = self._require_claim_store()
-        return await inner.get_claim(key)
+        record = await inner.get_claim(key)
+        if record is not None:
+            _validate_claim_record(record, expected_key=key)
+        return record
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
         inner = self._require_claim_store()
+        _validate_claim_record(record)
         return await inner.try_create_claim(record)
 
     async def delete_claim(self, key: ClaimKey) -> bool:
@@ -327,7 +418,9 @@ class RunScopedCache:
 
     async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
         inner = self._require_claim_run_store()
-        return await inner.list_claims(key)
+        records = await inner.list_claims(key)
+        _claim_keys_for_run(key, records)
+        return records
 
     def _require_claim_store(self) -> ClaimStore:
         if not isinstance(self._inner, ClaimStore):
@@ -347,4 +440,7 @@ class RunScopedCache:
     # Runtime scanner method passes straight through -----------------------
 
     async def due_timers(self, namespace: str, now: datetime) -> list[DueTimer]:
-        return await self._inner.due_timers(namespace, now)
+        due = await self._inner.due_timers(namespace, now)
+        for item in due:
+            _validate_due_timer(item, namespace=namespace, now=now)
+        return due

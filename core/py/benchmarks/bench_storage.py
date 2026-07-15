@@ -154,7 +154,7 @@ async def bench_last_fire_pointer_get(b: Bench) -> None:
         await _seed_schedule_runs(store, "bench:schedule", _LAST_FIRE_RUNS)
         b.reset_timer()
         for _ in range(b.n):
-            last = await last_fire_from_runs(store, "", "bench:schedule", "%Y-%m-%dT%H:%M:%SZ")
+            last = await last_fire_from_runs(store, "", "bench:schedule")
             if last != _fire_time(_LAST_FIRE_RUNS - 1):
                 raise AssertionError(f"got {last!r}, want {_fire_time(_LAST_FIRE_RUNS - 1)!r}")
     finally:
@@ -271,6 +271,7 @@ async def _seed_schedule_runs(store: OpenDALStore, workflow_id: str, count: int)
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             created_at=ts,
             completed_at=ts,
+            run_order_time=ts,
         )
         await store.put_workflow(record)
 

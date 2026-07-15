@@ -154,3 +154,60 @@ async def test_list_in_flight_and_failed_workflows(
 
     completed = await list_workflows_by_status(store, temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
     assert [r.key.workflow_id for r in completed] == ["prices:done"]
+
+
+@pytest.mark.parametrize(
+    ("helper", "status"),
+    [
+        (list_in_flight_workflows, temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS),
+        (list_failed_workflows, temporaless_pb2.WORKFLOW_STATUS_FAILED),
+    ],
+)
+async def test_workflow_inspector_helpers_consume_every_page(helper, status) -> None:
+    first = temporaless_pb2.WorkflowRecord(
+        key=WorkflowKey(workflow_id="first", run_id="r1").to_proto(), status=status
+    )
+    second = temporaless_pb2.WorkflowRecord(
+        key=WorkflowKey(workflow_id="second", run_id="r1").to_proto(), status=status
+    )
+
+    class PagedQuery:
+        async def list_workflows(
+            self,
+            _namespace,
+            _workflow_id,
+            requested_status,
+            *,
+            order_by="",
+            page_size=0,
+            page_token="",
+        ):
+            assert requested_status == status
+            assert order_by == ""
+            assert page_size == 0
+            if not page_token:
+                return [first], "page-2"
+            assert page_token == "page-2"
+            return [second], ""
+
+    records = await helper(PagedQuery())
+
+    assert [record.key.workflow_id for record in records] == ["first", "second"]
+
+
+async def test_workflow_inspector_rejects_repeated_page_token() -> None:
+    class RepeatingQuery:
+        async def list_workflows(
+            self,
+            _namespace,
+            _workflow_id,
+            _status,
+            *,
+            order_by="",
+            page_size=0,
+            page_token="",
+        ):
+            return [], "repeat"
+
+    with pytest.raises(RuntimeError, match="repeated page token"):
+        await list_workflows_by_status(RepeatingQuery(), temporaless_pb2.WORKFLOW_STATUS_COMPLETED)

@@ -24,6 +24,7 @@ import time
 import opendal
 import pytest
 from google.protobuf.wrappers_pb2 import StringValue
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
 from temporaless import (
     ActivityOptions,
@@ -31,7 +32,6 @@ from temporaless import (
     Workflow,
     current_workflow,
     run,
-    wrap_workflow_method,
 )
 from temporaless.backfill import backfill
 from temporaless.storage import OpenDALStore
@@ -208,13 +208,15 @@ async def test_backfill_at_high_concurrency_isolates_failures(store: OpenDALStor
             self._store = s
 
         @wrap_workflow_method(
-            store=lambda self: self._store,  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
-            result_type=StringValue,
-            options_for=lambda _self, request: Options(
-                workflow_id="backfill",
-                run_id=request.value,
-                code_version="v1",
-            ),
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                result_type=StringValue,
+                options_for=lambda _self, request: Options(
+                    workflow_id="backfill",
+                    run_id=request.value,
+                    code_version="v1",
+                ),
+            )
         )
         async def fetch(self, request: StringValue, _ctx: object = None) -> StringValue:
             if request.value == "POISON-50":

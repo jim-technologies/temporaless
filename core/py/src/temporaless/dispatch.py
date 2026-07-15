@@ -31,6 +31,7 @@ delivery across crashes; this module is for at-most-once + best-effort.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -209,7 +210,7 @@ class Dispatcher:
             raise ValueError("dispatch.register: request_type is required")
         if handle is None:
             raise ValueError("dispatch.register: handle is required")
-        if not asyncio.iscoroutinefunction(handle):
+        if not inspect.iscoroutinefunction(handle):
             raise TypeError(
                 "dispatch.register: handle must be a coroutine function "
                 "(define it with `async def`)"

@@ -79,6 +79,9 @@ func (store *Store) GetClaim(ctx context.Context, key storage.ClaimKey) (*tempor
 
 	record := &temporalessv1.ClaimRecord{}
 	if err := proto.Unmarshal(data, record); err != nil {
+		return nil, false, fmt.Errorf("%w: decode claim payload at %s: %w", storage.ErrCorruptRecord, path, err)
+	}
+	if err := storage.ValidateClaimRecord(record, key); err != nil {
 		return nil, false, err
 	}
 	return record, true, nil
@@ -125,7 +128,26 @@ func (store *Store) ListClaims(ctx context.Context, key storage.WorkflowKey) ([]
 		}
 		record := &temporalessv1.ClaimRecord{}
 		if err := proto.Unmarshal(data, record); err != nil {
+			return nil, fmt.Errorf("%w: decode claim payload at %s: %w", storage.ErrCorruptRecord, object.Key, err)
+		}
+		recordKey := storage.ClaimKeyFromProto(record.GetKey())
+		if err := storage.ValidateClaimRecord(record, recordKey); err != nil {
 			return nil, err
+		}
+		expectedPath, err := recordKey.Path()
+		if err != nil {
+			return nil, err
+		}
+		requested := key.Proto()
+		actual := recordKey.Proto()
+		if expectedPath != object.Key ||
+			requested.GetNamespace() != actual.GetNamespace() ||
+			requested.GetWorkflowId() != actual.GetWorkflowId() ||
+			requested.GetRunId() != actual.GetRunId() {
+			return nil, fmt.Errorf(
+				"%w: claim payload key does not match its listed workflow run and location",
+				storage.ErrCorruptRecord,
+			)
 		}
 		records = append(records, record)
 	}
@@ -138,11 +160,10 @@ func (store *Store) TryCreateClaim(ctx context.Context, record *temporalessv1.Cl
 	if store.bucket == nil {
 		return false, fmt.Errorf("gocdk bucket is required")
 	}
-	if record == nil {
-		return false, fmt.Errorf("claim record is required")
-	}
-
 	key := storage.ClaimKeyFromProto(record.GetKey())
+	if err := storage.ValidateClaimRecord(record, key); err != nil {
+		return false, err
+	}
 	path, err := key.Path()
 	if err != nil {
 		return false, err

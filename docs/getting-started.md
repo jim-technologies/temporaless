@@ -10,7 +10,7 @@ This guide walks the whole shape end-to-end. Examples lead with Python (async-on
 flox activate
 ```
 
-Flox owns Go, Python 3.13, uv, buf, and the C runtime libs OpenDAL and Protovalidate need. Everything else lives in `go.mod` or `core/py/uv.lock`.
+Flox owns Go, Python 3.14, uv, buf, and the C runtime libs OpenDAL and Protovalidate need. Everything else lives in `go.mod` or `core/py/uv.lock`.
 
 ## 2. Pick a storage backend
 
@@ -171,6 +171,16 @@ Each attempt is recorded on `ActivityRecord.attempts`. If retries are exhausted,
 
 A `RETRYING` record is persisted between attempts, so a process death mid-retry doesn't lose the attempt history — the next invocation resumes from the next attempt index.
 
+For a partitioned job, assign one stable activity ID per batch. Completed
+batches replay from their records, while only failed/incomplete activities use
+their remaining retries. If an activity exhausts retries, the workflow is
+terminally failed; to operator-retry only those partitions, reset their failed
+activity records and paired retry timers while the run is quiesced, reset the
+parent workflow record last, then invoke the same run once. Core does not add
+an implicit workflow-level retry loop. See the exact repair/reset sequence in
+`docs/runbook.md`; valid `RETRYING` records should be re-invoked for automatic
+timer repair before an operator deletes them.
+
 ## 6. Durable sleep
 
 Long pauses do not block a process. `workflow.sleep` writes a `TimerRecord` and raises `TimerPendingError`; a scheduler reinvokes the workflow after the timer fires.
@@ -281,16 +291,24 @@ in_flight = await list_in_flight_workflows(query_store)
 failed = await list_failed_workflows(query_store)
 activities = await list_activities(store, workflow_key)
 
-# Reset a FAILED run to re-execute from scratch:
-await reset_workflow(store, workflow_key)
+# With the run quiesced, reset failed children first; preserve successful ones.
+# Delete a failed activity's validated paired retry timer first, when present.
 await reset_activity(store, activity_key)
+await reset_workflow(store, workflow_key)  # parent is always deleted last
 ```
 
 Point operations are reachable as gRPC RPCs on `RecordStoreService` (via `ConnectStore`). Cross-run listing is reachable through optional `RecordQueryService` when you deploy a query index.
 
 ## 11. Retention
 
-Bucket-only deployments should use bucket lifecycle rules for retention. If you deploy the optional query index, `temporaless.janitor.sweep` deletes COMPLETED runs older than a max-age threshold by selecting indexed metadata and mirroring deletes to the bucket:
+Bucket-only deployments can use conservative lifecycle rules for archive
+retention, but those rules must preserve active run records and `_due`
+write-ahead records for at least the maximum timer horizon plus the
+scheduler-outage/recovery grace period. If timer duration is unbounded, exempt
+them. If you deploy the optional
+query index, `temporaless.janitor.sweep` deletes COMPLETED runs older than a
+max-age threshold by selecting indexed metadata and mirroring deletes to the
+bucket:
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -303,12 +321,13 @@ deleted = await sweep(query_store, datetime.now(UTC), timedelta(days=7))
 
 Workflows are protobuf RPC handlers. Mount them behind anything that speaks protobuf:
 
-- **ConnectRPC service**: decorate a normal service method with `@wrap_workflow_method` (Python) or use `workflow.HandleConnect(...)` (Go). The method signature stays standard ConnectRPC; the framework adds replay semantics.
+- **ConnectRPC service**: decorate a normal service method with `temporaless_connectworkflow.wrap_workflow_method` (Python) or use `connectworkflow.Handle(...)` (Go). The method signature stays standard ConnectRPC; the transport adapter adds replay semantics through the core workflow wrapper.
 - **Cloud function**: invoke `run` from the function entrypoint with IDs derived from the request.
 - **Cron / queue worker**: same pattern.
 
 ```python
-from temporaless import ActivityOptions, Options, Store, current_workflow, wrap_workflow_method
+from temporaless import ActivityOptions, Options, Store, current_workflow
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
 
 def _store_of(svc): return svc._store
@@ -319,7 +338,13 @@ class PriceService:
     def __init__(self, store: Store) -> None:
         self._store = store
 
-    @wrap_workflow_method(store=_store_of, result_type=StringValue, options_for=_options_for)
+    @wrap_workflow_method(
+        WorkflowMethodWrapOptions(
+            store=_store_of,
+            result_type=StringValue,
+            options_for=_options_for,
+        )
+    )
     async def fetch_prices(self, request: StringValue, ctx) -> StringValue:
         return await current_workflow().execute_activity(
             ActivityOptions(activity_id=f"vendor:{request.value}"),

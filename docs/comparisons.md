@@ -96,12 +96,12 @@ We're not aiming to compete head-on with these for asset-graph or lineage worklo
 | Parallel tasks via `expand` (Airflow), `DynamicTasks` (Prefect), or asset graph (Dagster) | `asyncio.gather(*[execute_activity(...) for x in items])`. Each activity has its own activity_id, gets its own record, replays independently. |
 | Bounded concurrency / pools (Airflow Pools) | `asyncio.Semaphore(n)` around the gather call. Standard Python; not a framework primitive. |
 | Conditional branching (Airflow `BranchPythonOperator`) | A regular `if`/`elif`/`else` around `execute_activity(...)` calls in the workflow body. |
-| Idempotent re-runs / clear-and-rerun | Replay short-circuits per activity_id. To force a step to re-execute, delete its record (`store.delete_activity` or `inspector.reset_activity`). |
+| Idempotent re-runs / clear-and-rerun | Replay short-circuits per activity_id. For a failed partial retry, quiesce the run, delete the failed activity's validated paired retry timer and activity record, then delete the parent workflow record last. Successful activity records remain checkpoints. |
 | Backfill across a date range | Python: `await temporaless.backfill.backfill(invoke, run_ids, concurrency=N, halt_on_error=...)`; Go: `backfill.Backfill[Resp](ctx, runIDs, backfill.Options{Concurrency: N, HaltOnError: ...}, invoke)`. Bounded concurrency, aggregated report with `succeeded()` / `failed()` / `pending()`, idempotent re-runs (COMPLETED replays from storage in microseconds). |
 | Sensors (file-arrived, time-elapsed, upstream-finished) | `workflow.sleep(timer_id, duration)` for time; `workflow.wait_event(event_id, payload_type)` for external triggers. Both raise typed pending errors that leave the workflow IN_PROGRESS until a scanner re-invokes it after the wait clears. |
 | Cross-DAG dependencies ("DAG B waits for DAG A's run") | Python: `await temporaless.dependencies.wait_for_workflow(store, workflow_id="A", run_id=date, result_factory=...)`; Go: `dependencies.WaitForWorkflow(ctx, store, key, newResult)`. Returns A's typed result on COMPLETED; raises `WorkflowDependencyPendingError` (workflow stays IN_PROGRESS) if A is unfinished; raises `WorkflowDependencyFailedError` if A failed terminally. |
 | Per-run parameters (Airflow `dag_run.conf`) | The protobuf request message IS the parameter bag. Strongly typed; caller-supplied `(workflow_id, run_id)` is the de-duplication key. |
-| Operator UI / re-run from UI | No UI. With the optional query index, use `inspector.list_workflows_by_status(FAILED)` + `inspector.reset_workflow(...)` from a script, notebook, or eventually invariantprotocol-generated CLI. |
+| Operator UI / re-run from UI | No UI. With the optional query index, list failed runs and use the child-first reset procedure in `docs/runbook.md` from a script, notebook, or eventually invariantprotocol-generated CLI. |
 | Scheduler service (Airflow scheduler, Prefect agent) | `cronscheduler` is a Python class you tick from a Kubernetes CronJob, EventBridge schedule, or `while True: tick(); sleep(60)` loop. No scheduler binary. |
 | Asset graph / lineage (Dagster) | Not provided. Use Dagster if this is your model. |
 
@@ -110,14 +110,18 @@ We're not aiming to compete head-on with these for asset-graph or lineage worklo
 - A DAG isn't declared — it's *expressed* as a workflow body using async/await. This means refactors are normal Python refactors; no separate "register the new task" step.
 - "Tasks" are activities. Each gets a stable `activity_id` you choose — deterministic across re-runs. Reusing an `activity_id` with different input is a bug (we'll raise `ActivityConflictError`).
 - "DAG run" = `workflow_id + run_id`. Caller-provided. By convention, `run_id` embeds the fire time / partition / batch ID for backfill-friendliness.
-- The "scheduler" doesn't own state. It's a stateless tick that calls `run()` for each due schedule. Terminal duplicate dispatches replay. To serialize two schedulers racing on a first invocation, set `claim_owner_id` and use an atomic claim store; otherwise dispatch is at-least-once.
+- The scheduler keeps only a last-fire cache that can be restored from
+  latest-run pointers or an external snapshot. It calls `run()` for each due
+  schedule. Terminal duplicate dispatches replay. To serialize two schedulers
+  racing on a first invocation, set `claim_owner_id` and use an atomic claim
+  store; otherwise dispatch is at-least-once.
 
 If your pipelining needs are **lineage-aware** (Dagster's whole identity) or **visual / no-code** (n8n / Zapier), use those tools. If your needs are **code-first ETL with retries / fan-out / backfill / cross-pipeline waits**, you can deliver them with this framework and zero engine to operate.
 
 ## Migration paths
 
 - **From Temporal**: workflows that don't use signal-channels, queries, or child workflows port cleanly. `adapters/{go,py}/temporalcompat` lets you run either direction (Temporaless-shaped handlers on the real Temporal SDK, or in the future, Temporal handlers on Temporaless storage).
-- **From Prefect**: their `@flow` / `@task` model is conceptually similar to our `wrap_workflow_method` / `execute_activity`. Rewriting decorators is mechanical; storage cutover is the harder part.
+- **From Prefect**: their `@flow` / `@task` model is conceptually similar to the `adapters/py/connectworkflow` decorator plus core `execute_activity`. Rewriting decorators is mechanical; storage cutover is the harder part.
 - **From Airflow**: each task becomes an activity; the DAG body becomes a workflow body composed with `await`. `dag_run.conf` parameters become the protobuf request message. Pools become `asyncio.Semaphore`. The scheduler service becomes a `cronscheduler.Scheduler` you tick from a Kubernetes CronJob.
 - **From Luigi**: each `Task.run()` becomes an activity; output `Target` becomes a stored protobuf record. Luigi's `requires()` chain becomes regular `await` in the workflow body.
 - **From Dagster**: if your assets are simple "fetch → transform → persist" without complex lineage, the asset DAG flattens into a workflow with N parallel activities. If your asset graph is rich, you probably shouldn't migrate.

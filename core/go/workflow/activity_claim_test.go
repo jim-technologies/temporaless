@@ -73,6 +73,7 @@ func TestActivityClaimSerializesLiveDuplicatesIncludingSameOwner(t *testing.T) {
 			go func() {
 				result, err := runActivity(
 					ctx, firstWorkflow, "send", activityClaimTestType, nil,
+					"",
 					wrapperspb.String("request"),
 					func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					execute,
@@ -88,6 +89,7 @@ func TestActivityClaimSerializesLiveDuplicatesIncludingSameOwner(t *testing.T) {
 
 			second, err := runActivity(
 				ctx, secondWorkflow, "send", activityClaimTestType, nil,
+				"",
 				wrapperspb.String("request"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				execute,
@@ -185,6 +187,7 @@ func TestActivityClaimReleasedAtDurableBoundaries(t *testing.T) {
 
 			result, err := runActivity(
 				ctx, workflow, "call", activityClaimTestType, test.policy,
+				testRetryTimerID("call"),
 				wrapperspb.String("request"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				test.execute,
@@ -237,6 +240,7 @@ func TestActivityClaimRetainedWhenOutcomeIsAmbiguous(t *testing.T) {
 				t.Helper()
 				_, err := runActivity(
 					context.Background(), workflow, "call", activityClaimTestType, nil,
+					"",
 					wrapperspb.String("request"),
 					func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					func(context.Context) (*wrapperspb.StringValue, error) {
@@ -253,6 +257,7 @@ func TestActivityClaimRetainedWhenOutcomeIsAmbiguous(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				_, err := runActivity(
 					ctx, workflow, "call", activityClaimTestType, nil,
+					"",
 					wrapperspb.String("request"),
 					func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					func(context.Context) (*wrapperspb.StringValue, error) {
@@ -406,6 +411,7 @@ func TestActivityClaimRefreshBypassesCachedMiss(t *testing.T) {
 			var bodyCalls atomic.Int64
 			result, err := runActivity(
 				ctx, workflow, "call", activityClaimTestType, nil,
+				"",
 				wrapperspb.String("request"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 				func(context.Context) (*wrapperspb.StringValue, error) {

@@ -10,6 +10,7 @@ import (
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/gocdkclaims"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
+	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
@@ -28,6 +29,10 @@ func TestSweepDeletesOldCompletedRuns(t *testing.T) {
 	}
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Run 1: completed yesterday — should be swept.
 	runWorkflow(t, ctx, store, "prices:old", "2026-05-03")
@@ -39,7 +44,7 @@ func TestSweepDeletesOldCompletedRuns(t *testing.T) {
 	// Run 3: still in progress — should be kept.
 	leaveInProgress(t, ctx, store, "prices:waiting", "2026-05-04")
 
-	deleted, err := janitor.Sweep(ctx, store, nil, sweepRequest(time.Now(), 24*time.Hour))
+	deleted, err := janitor.Sweep(ctx, query, store, nil, sweepRequest(time.Now(), 24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,8 +91,12 @@ func TestSweepRejectsBadInput(t *testing.T) {
 	}
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := janitor.Sweep(context.Background(), store, nil, sweepRequest(time.Now(), 0)); err == nil {
+	if _, err := janitor.Sweep(context.Background(), query, store, nil, sweepRequest(time.Now(), 0)); err == nil {
 		t.Fatal("expected error for non-positive maxAge")
 	}
 }
@@ -114,6 +123,64 @@ type corruptClaimListingStore struct {
 type combinedRecordClaimStore struct {
 	storage.Store
 	storage.ClaimRunStore
+}
+
+type staticWorkflowQuery struct {
+	records []*temporalessv1.WorkflowRecord
+}
+
+func (query staticWorkflowQuery) ListWorkflows(
+	context.Context,
+	*temporalessv1.ListWorkflowsRequest,
+) (*temporalessv1.ListWorkflowsResponse, error) {
+	return &temporalessv1.ListWorkflowsResponse{Records: query.records}, nil
+}
+
+func TestSweepDoesNotTrustStaleCompletedQueryRecord(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestStoreAndQuery(t)
+	key := storage.NewWorkflowKey("prices:reset", "run:old")
+	runWorkflow(t, ctx, store, key.WorkflowID, key.RunID)
+	backdate(t, ctx, store, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+
+	staleCompleted, found, err := store.GetWorkflow(ctx, key)
+	if err != nil || !found {
+		t.Fatalf("get completed workflow: found=%v err=%v", found, err)
+	}
+	// Simulate a reset that the derived query adapter has not indexed yet.
+	authoritative := &temporalessv1.WorkflowRecord{
+		SchemaVersion: staleCompleted.GetSchemaVersion(),
+		Key:           staleCompleted.GetKey(),
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+		WorkflowType:  staleCompleted.GetWorkflowType(),
+		CodeVersion:   staleCompleted.GetCodeVersion(),
+		Input:         staleCompleted.GetInput(),
+		CreatedAt:     staleCompleted.GetCreatedAt(),
+	}
+	if err := store.PutWorkflow(ctx, authoritative); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := janitor.Sweep(
+		ctx,
+		staticWorkflowQuery{records: []*temporalessv1.WorkflowRecord{staleCompleted}},
+		store,
+		nil,
+		sweepRequest(time.Now(), 24*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	if record, found, err := store.GetWorkflow(ctx, key); err != nil || !found || record.GetStatus() != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS {
+		t.Fatalf("authoritative workflow after sweep: record=%v found=%v err=%v", record, found, err)
+	}
+	activityKey := storage.NewActivityKey(key.WorkflowID, key.RunID, "fetch:AAPL")
+	if _, found, err := store.GetActivity(ctx, activityKey); err != nil || !found {
+		t.Fatalf("activity after sweep: found=%v err=%v", found, err)
+	}
 }
 
 func (store *corruptClaimListingStore) ListClaims(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ClaimRecord, error) {
@@ -144,7 +211,7 @@ func TestSweepDeletesClaims(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			recordStore := newTestStore(t)
+			recordStore, query := newTestStoreAndQuery(t)
 			claimStore := newClaimStore(t)
 			key := storage.NewWorkflowKey("prices:claimed", "run:old")
 			runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
@@ -158,7 +225,7 @@ func TestSweepDeletesClaims(t *testing.T) {
 				store = &combinedRecordClaimStore{Store: recordStore, ClaimRunStore: claimStore}
 				explicitClaims = nil
 			}
-			deleted, err := janitor.Sweep(ctx, store, explicitClaims, sweepRequest(time.Now(), 24*time.Hour))
+			deleted, err := janitor.Sweep(ctx, query, store, explicitClaims, sweepRequest(time.Now(), 24*time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -177,7 +244,7 @@ func TestSweepDeletesClaims(t *testing.T) {
 
 func TestSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
 	ctx := context.Background()
-	recordStore := newTestStore(t)
+	recordStore, query := newTestStoreAndQuery(t)
 	baseClaims := newClaimStore(t)
 	claims := &pointOnlyClaimStore{ClaimStore: baseClaims}
 	key := storage.NewWorkflowKey("prices:point-only", "run:old")
@@ -186,7 +253,7 @@ func TestSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
 	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
 	createClaim(t, ctx, baseClaims, claimKey)
 
-	deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+	deleted, err := janitor.Sweep(ctx, query, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
 	if !errors.Is(err, janitor.ErrClaimRunListingUnsupported) {
 		t.Fatalf("error = %v, want ErrClaimRunListingUnsupported", err)
 	}
@@ -198,7 +265,7 @@ func TestSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) {
 
 func TestSweepTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
 	ctx := context.Background()
-	recordStore := newTestStore(t)
+	recordStore, query := newTestStoreAndQuery(t)
 	baseClaims := newClaimStore(t)
 	claims := &noClaimsPointStore{ClaimStore: baseClaims}
 	key := storage.NewWorkflowKey("prices:no-claims", "run:old")
@@ -207,7 +274,7 @@ func TestSweepTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
 	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "out-of-contract")
 	createClaim(t, ctx, baseClaims, claimKey)
 
-	deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+	deleted, err := janitor.Sweep(ctx, query, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +329,7 @@ func TestSweepRejectsCorruptClaimSnapshotsBeforeAnyRunMutation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			recordStore := newTestStore(t)
+			recordStore, query := newTestStoreAndQuery(t)
 			baseClaims := newClaimStore(t)
 			first := storage.NewWorkflowKey("prices:first", "run:old")
 			corruptKey := storage.NewWorkflowKey("prices:corrupt", "run:old")
@@ -277,7 +344,7 @@ func TestSweepRejectsCorruptClaimSnapshotsBeforeAnyRunMutation(t *testing.T) {
 				corrupt:       test.corrupt(corruptKey),
 			}
 
-			deleted, err := janitor.Sweep(ctx, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
+			deleted, err := janitor.Sweep(ctx, query, recordStore, claims, sweepRequest(time.Now(), 24*time.Hour))
 			if !errors.Is(err, janitor.ErrRunListingDataLoss) {
 				t.Fatalf("error = %v, want ErrRunListingDataLoss", err)
 			}
@@ -295,14 +362,19 @@ func TestSweepRejectsCorruptClaimSnapshotsBeforeAnyRunMutation(t *testing.T) {
 	}
 }
 
-func newTestStore(t *testing.T) *storage.OpenDALStore {
+func newTestStoreAndQuery(t *testing.T) (*storage.OpenDALStore, storage.WorkflowQueryStore) {
 	t.Helper()
 	operator, err := opendal.NewOperator(fs.Scheme, opendal.OperatorOptions{"root": t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(operator.Close)
-	return storage.NewOpenDALStore(operator)
+	store := storage.NewOpenDALStore(operator)
+	query, err := scanquery.New(operator, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, query
 }
 
 func newClaimStore(t *testing.T) storage.ClaimRunStore {

@@ -1,5 +1,7 @@
 from temporaless_temporalcompat.adapter import (
     ActivityCall,
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
     execute_activity,
     sleep,
     wrap_activity,
@@ -8,6 +10,8 @@ from temporaless_temporalcompat.adapter import (
 
 __all__ = [
     "ActivityCall",
+    "ActivityWrapOptions",
+    "WorkflowWrapOptions",
     "execute_activity",
     "sleep",
     "wrap_activity",

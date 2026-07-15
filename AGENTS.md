@@ -52,6 +52,29 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
 - ConnectRPC is the transport layer whenever a protobuf RPC boundary is needed.
 - Go and Python are the only first-class languages.
 
+## Versioning
+
+The repository-root `VERSION` is the release version for every Temporaless SDK
+and adapter. Ecosystem manifests and lockfiles are checked mirrors; update them
+together with `make version-set VERSION=X.Y.Z`. Releases use one plain root tag
+`vX.Y.Z`. Do not create language-, directory-, SDK-, or adapter-specific
+version streams or tags. Invariant Protocol remains a separately versioned
+external project.
+
+## Distribution
+
+Temporaless-owned Go, Python, TypeScript, and Rust packages are distributed
+only from Git. Do not publish them to, or document installation from, PyPI,
+the npm registry, crates.io, or another language registry. Production installs
+must pin one immutable commit SHA; release-oriented examples may use the one
+root `vX.Y.Z` tag. Language-specific subdirectories and package names are
+source/package locators only, never separate release identities.
+
+Keep registry publication disabled in ecosystem metadata wherever the
+ecosystem supports it (`private: true` for npm and `publish = false` for
+Cargo). This restriction applies to Temporaless-owned packages; third-party
+dependencies may still resolve from their normal registries.
+
 ## Storage
 
 Stored records are protobuf binary files at deterministic v2 flat keys:
@@ -89,7 +112,7 @@ When adding point storage RPC code, keep one cohesive `RecordStoreService` inste
 Flox owns the development environment. Keep it thin:
 
 - `go`
-- `python313`
+- `python314`
 - `uv`
 - `buf`
 - `libffi`

@@ -84,7 +84,7 @@ native `opendal` crate).
 | Concept | Go | Python | Rust |
 |---|---|---|---|
 | Entry point | `workflow.Run(ctx, store, options, claimStore, input, newResult, execute)` | `await run(store, options, input, ResultType, execute)` | `workflow::run(store, options, input, execute).await` |
-| Handler-style | `workflow.HandleConnect(ctx, req, opts)` (ConnectRPC) | `@wrap_workflow_method(options=...)` decorator | (tonic / connect-rs integration: next iteration) |
+| Handler-style | `connectworkflow.Handle(ctx, req, opts)` (`adapters/go/connectworkflow`) | `@wrap_workflow_method(WorkflowMethodWrapOptions(...))` (`adapters/py/connectworkflow`) | (tonic / connect-rs integration: next iteration) |
 | Current workflow in nested calls | `workflow.Current(ctx)` | `current_workflow()` | `workflow::current()` (tokio task-local) |
 | Annotate | `workflow.Annotate(ctx, key, value)` | `annotate(key, value)` | `workflow::annotate(key, value)` |
 
@@ -96,32 +96,27 @@ Each language uses its idiomatic concurrency primitive: Go's `ctx`, Python's
 | Concept | Go | Python | Rust |
 |---|---|---|---|
 | Lowest-level (explicit options) | `workflow.ExecuteActivity(ctx, opts, input, newResult, fn)` | `workflow.execute_activity(opts, input, result_type, fn)` | `workflow::execute_activity(opts, input, fn).await` |
-| Ergonomic helper (auto-id + default retry) | `workflow.Activity(ctx, fn, input, opts...)` | `workflow.activity(fn, input)` | `workflow::activity(fn, input).await` |
-| Auto-id source | `runtime.FuncForPC` (qualified Go function name) | `func.__qualname__` | `std::any::type_name::<F>()` |
-| Default retry policy | `workflow.DefaultRetryPolicy()` | `default_retry_policy()` | `workflow::default_retry_policy()` |
+| Ergonomic helper (explicit IDs + default retry) | `workflow.Activity(ctx, fn, input, WithActivityID(...), WithRetryTimerID(...))` | `workflow.activity(fn, input, activity_id=..., retry_timer_id=...)` | — |
+| Default retry policy | `workflow.DefaultRetryPolicy()` | `default_retry_policy()` | — |
 
-The auto-inferred IDs are sanitized per language to fit the framework's
-ID regex (`[A-Za-z0-9._:-]+`). The exact string is language-specific —
-two workflows referring to the same activity_id by auto-inference WILL
-diverge between Go and Python by design. The activity_id is part of
-storage identity; an activity authored in Python should be explicitly
-named (`activity_id="fetch:quote"`) if you intend to run replays of it
-from another language.
+Every activity ID and durable retry timer ID is application-owned and explicit.
+Use the same deterministic IDs across replay and across languages; the runtime
+never derives identity from a function name.
 
 ## What ships today
 
-v0.3.0 note: the v2 storage transition is Python-gated. Some Go packages,
-notably `adapters/go/connectstore` and `examples/go/production-server`, do not
-compile against the regenerated storage stubs yet; Go/Rust storage parity is a
-follow-up tracked in the changelog. The matrix below is the intended SDK
-surface, not the v0.3.0 gate.
+Go and Python are first-class and run in every repository gate. The narrower
+Rust surface is also formatted, linted, compiled, and tested by the release
+gate; its smaller capability matrix, rather than test status, is what keeps it
+from being first-class.
 
 | Capability | Go | Python | Rust |
 |---|:-:|:-:|:-:|
-| **Storage (read/write all record kinds)** | ✓ | ✓ | ✓ |
+| **Canonical storage reads (all record kinds)** | ✓ | ✓ | ✓ |
+| **Canonical point writes plus required derived/conditional invariants** | ✓ | ✓ | partial — shared point bytes only; latest pointer, timer WAL, and conditional claims are not implemented |
 | `workflow.run` + replay (terminal short-circuit, IN_PROGRESS resume, fresh execution) | ✓ | ✓ | ✓ |
 | `execute_activity` + replay | ✓ | ✓ | ✓ |
-| Ergonomic activity helper (auto-id + default retry) | ✓ | ✓ | ✓ |
+| Ergonomic activity helper (explicit IDs + default retry) | ✓ | ✓ | — |
 | Retry policy (attempts, backoff, max interval, non-retryable codes) | ✓ | ✓ | ✓ |
 | `Retry-After` from `ActivityFailure.retry_after` | ✓ | ✓ | ✓ |
 | Durable retry backoffs (`RetryPolicy.durable_backoff_threshold` → timer record) | ✓ | ✓ | — |
@@ -142,9 +137,11 @@ surface, not the v0.3.0 gate.
 
 The Rust SDK is **storage + minimal workflow runtime** today. The runtime
 layers above (claims, durable timers, retries-as-timers, concurrency keys,
-ConnectRPC, the operator adapters) need their own iterations. Read the
-storage records from Rust today; run a Rust-authored workflow against
-those records as the rest of the SDK lands.
+ConnectRPC, the operator adapters) need their own iterations. Reading every
+canonical record kind is supported. Rust workflow/activity records use the
+shared format, but its low-level timer and claim writers are not safe
+substitutes for the Go/Python latest-pointer, timer-WAL, and conditional-claim
+boundaries.
 
 The TypeScript package is not in the runtime matrix. Its root export ships
 generated `temporaless.v1` protobuf types plus `ConnectStore` /
@@ -157,19 +154,29 @@ contract without executing workflows locally.
 
 ## Install from Git
 
-The SDKs are installable directly from git:
+Git is the only distribution channel for Temporaless-owned packages; they are
+not published to PyPI, the npm registry, crates.io, or another language
+registry. Install every SDK directly from the same immutable Git revision:
 
 ```sh
-go get github.com/jim-technologies/temporaless@main
-pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@main#subdirectory=core/py"
-npm install "github:jim-technologies/temporaless#main"
+go get github.com/jim-technologies/temporaless@COMMIT_SHA
+pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
+npm install "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 ```toml
-temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", branch = "main", package = "temporaless" }
+temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
 ```
 
-Use a commit SHA instead of `main` for reproducible production builds.
+Replace `COMMIT_SHA` with the exact revision you deploy so every language uses
+the same immutable source revision.
+
+All Temporaless packages share the release version in the root `VERSION` file.
+A release has one repository tag, `vX.Y.Z`, which applies to Go, Python core,
+every Python adapter, Rust, and TypeScript together. There are no per-language
+or per-adapter tag streams. Use `make version-set VERSION=X.Y.Z` to prepare a
+new version; the repository gate rejects any manifest, lockfile, dependency
+constraint, or tag that drifts from it.
 
 ## Adapter audit
 
@@ -199,7 +206,9 @@ Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
 `core/py/src/temporaless/` rather than `adapters/py/` because they have
 no third-party deps; `prefectcompat` and `temporalcompat` need their own
 heavyweight deps so they ship as separate uv projects under
-`adapters/py/`.
+`adapters/py/`. The smaller `connectworkflow` transport boundary is also a
+separate uv project so the core replay package does not own ConnectRPC handler
+policy.
 
 ## Choosing a language
 

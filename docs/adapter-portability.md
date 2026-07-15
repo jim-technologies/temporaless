@@ -62,11 +62,14 @@ result = await run(
 ```python
 from datetime import timedelta
 from temporaless_temporalcompat import (
-    ActivityCall, execute_activity, wrap_activity, wrap_workflow,
+    ActivityCall, ActivityWrapOptions, WorkflowWrapOptions,
+    execute_activity, wrap_activity, wrap_workflow,
 )
 
 # Adapter wraps the SAME body as a Temporal activity:
-fetch_price_activity = wrap_activity(fetch_price, name="fetch_price")
+fetch_price_activity = wrap_activity(
+    fetch_price, ActivityWrapOptions(name="fetch_price")
+)
 
 
 async def price_workflow_body(request: StringValue) -> StringValue:
@@ -80,7 +83,9 @@ async def price_workflow_body(request: StringValue) -> StringValue:
     )
 
 
-PriceWorkflow = wrap_workflow(price_workflow_body, name="PriceWorkflow")
+PriceWorkflow = wrap_workflow(
+    price_workflow_body, WorkflowWrapOptions(name="PriceWorkflow")
+)
 
 # Trigger via Temporal SDK:
 result = await client.execute_workflow(
@@ -112,10 +117,18 @@ For replay / persistence semantics that match Temporaless, you'd `@op` the activ
 ### Prefect (via `adapters/py/prefectcompat`)
 
 ```python
-from temporaless_prefectcompat import wrap_activity, wrap_workflow
+from temporaless_prefectcompat import (
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
+    wrap_activity,
+    wrap_workflow,
+)
 
-# Same activity body — wrapped as a Prefect task. Per-call kwargs forwarded.
-fetch_price_task = wrap_activity(fetch_price, name="fetch_price", retries=3, retry_delay_seconds=10)
+# Same activity body — wrapped as a Prefect task with explicit supported options.
+fetch_price_task = wrap_activity(
+    fetch_price,
+    ActivityWrapOptions(name="fetch_price", retries=3, retry_delay_seconds=10),
+)
 
 
 async def price_flow_body(symbol: StringValue) -> StringValue:
@@ -124,13 +137,16 @@ async def price_flow_body(symbol: StringValue) -> StringValue:
 
 # Same workflow body — wrapped as a Prefect flow. Visible in Prefect UI;
 # Temporaless storage-first replay still applies inside the body.
-PriceFlow = wrap_workflow(price_flow_body, name="PriceFlow")
+PriceFlow = wrap_workflow(
+    price_flow_body,
+    WorkflowWrapOptions(name="PriceFlow"),
+)
 
 # Run via Prefect's runtime — Prefect tracks the run, storage records still go to S3/GCS.
 result = await PriceFlow(StringValue(value="AAPL"))
 ```
 
-Prefect's `@flow` / `@task` model maps cleanly to our `wrap_workflow_method` / `execute_activity`; the adapter does the wiring. The protobuf contract is enforced both ways. See `adapters/py/prefectcompat/tests/test_integration.py` for backfill + cross-pipeline-dep composition tested end-to-end through Prefect.
+Prefect's `@flow` / `@task` model maps cleanly to the `adapters/py/connectworkflow` trigger wrapper plus core `execute_activity`; the adapter does the wiring. The protobuf contract is enforced both ways. The compatibility surface deliberately exposes only names and retry settings; use native Prefect definitions for other decorator options. See `adapters/py/prefectcompat/tests/test_integration.py` for backfill + cross-pipeline-dep composition tested end-to-end through Prefect.
 
 ### Airflow (illustrative pattern)
 
@@ -163,7 +179,7 @@ Things that work in Temporaless but not in others (or vice versa):
 | `current_workflow()` contextvar accessor | ✓ | use Temporal's `workflow.now()`/`info()` | Dagster context | Prefect context | jinja templating |
 | Multi-signal `select` | ✗ | ✓ | n/a | n/a | n/a |
 | Asset graph / lineage | ✗ | ✗ | ✓ | partial | n/a |
-| `wrap_workflow_method` decorator | ✓ | per-Temporal patterns | `@op` | `@task` | `Operator` |
+| `adapters/py/connectworkflow` decorator | ✓ | per-Temporal patterns | `@op` | `@task` | `Operator` |
 | `code_version` fingerprinting | ✓ | history compatibility versioning | code location versions | deployments | DAG versioning |
 
 ## Practical migration recipe
@@ -174,7 +190,7 @@ Going from another framework to Temporaless:
 2. **Rewrite the workflow / DAG glue.** That's the mechanical part: replace `@op`/`@task`/operator definitions with `Workflow.execute_activity` calls inside an `async def workflow_body(workflow, request)`.
 3. **Pick caller-provided IDs.** Where the other framework auto-generates run IDs, decide your `(workflow_id, run_id)` scheme — usually `<entity>:<id>` and `<date>` or `<event_uuid>`.
 4. **Replace retry config.** Their retry decorators map to `RetryPolicy` on `ActivityOptions`. Same fields: max attempts, initial interval, backoff coefficient.
-5. **Replace the trigger surface.** Their server endpoint becomes `wrap_workflow_method` on a ConnectRPC service, mounted on uvicorn. Existing gRPC interceptors carry over.
+5. **Replace the trigger surface.** Their server endpoint uses `temporaless_connectworkflow.wrap_workflow_method` on a ConnectRPC service, mounted on uvicorn. Existing gRPC interceptors carry over.
 
 Going from Temporaless to another framework:
 

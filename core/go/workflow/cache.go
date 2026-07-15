@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -91,6 +93,15 @@ func (c *runScopedCache) prefetch(ctx context.Context) error {
 	if evtErr != nil {
 		return evtErr
 	}
+	if err := validateActivityList(c.scope, activities); err != nil {
+		return err
+	}
+	if err := validateTimerList(c.scope, timers, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED); err != nil {
+		return err
+	}
+	if err := validateEventList(c.scope, events); err != nil {
+		return err
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,7 +130,7 @@ func (c *runScopedCache) inScope(namespace, workflowID, runID string) bool {
 
 func (c *runScopedCache) GetWorkflow(ctx context.Context, key storage.WorkflowKey) (*temporalessv1.WorkflowRecord, bool, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.GetWorkflow(ctx, key)
+		return c.loadWorkflow(ctx, key)
 	}
 	c.mu.Lock()
 	if c.workflowKnown {
@@ -131,7 +142,7 @@ func (c *runScopedCache) GetWorkflow(ctx context.Context, key storage.WorkflowKe
 		return rec, true, nil
 	}
 	c.mu.Unlock()
-	rec, found, err := c.inner.GetWorkflow(ctx, key)
+	rec, found, err := c.loadWorkflow(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -161,13 +172,38 @@ func (c *runScopedCache) PutWorkflow(ctx context.Context, record *temporalessv1.
 	return nil
 }
 
-func (c *runScopedCache) ListWorkflows(
+func (c *runScopedCache) GetLatestWorkflowRun(
 	ctx context.Context,
 	namespace string,
 	workflowID string,
-	status temporalessv1.WorkflowStatus,
-) ([]*temporalessv1.WorkflowRecord, error) {
-	return c.inner.ListWorkflows(ctx, namespace, workflowID, status)
+) (*temporalessv1.LatestWorkflowRunPointer, bool, error) {
+	pointer, found, err := c.inner.GetLatestWorkflowRun(ctx, namespace, workflowID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateFoundRecord("latest workflow run pointer", found, pointer != nil); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if err := storage.ValidateLatestWorkflowRunPointer(pointer, namespace, workflowID); err != nil {
+		return nil, false, err
+	}
+	reference, referenceFound, err := c.loadWorkflow(ctx, storage.WorkflowKeyFromProto(pointer.GetKey()))
+	if err != nil {
+		return nil, false, err
+	}
+	if !referenceFound {
+		return nil, false, nil
+	}
+	if err := storage.ValidateLatestWorkflowRunReference(pointer, reference); err != nil {
+		if errors.Is(err, storage.ErrStaleLatestPointer) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return pointer, true, nil
 }
 
 func (c *runScopedCache) DeleteWorkflow(ctx context.Context, key storage.WorkflowKey) (bool, error) {
@@ -185,7 +221,7 @@ func (c *runScopedCache) DeleteWorkflow(ctx context.Context, key storage.Workflo
 
 func (c *runScopedCache) GetActivity(ctx context.Context, key storage.ActivityKey) (*temporalessv1.ActivityRecord, bool, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.GetActivity(ctx, key)
+		return c.loadActivity(ctx, key)
 	}
 	c.mu.Lock()
 	if rec, ok := c.activities[key.ActivityID]; ok {
@@ -200,7 +236,7 @@ func (c *runScopedCache) GetActivity(ctx context.Context, key storage.ActivityKe
 	if listed {
 		return nil, false, nil
 	}
-	rec, found, err := c.inner.GetActivity(ctx, key)
+	rec, found, err := c.loadActivity(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -227,9 +263,9 @@ func (c *runScopedCache) refreshActivity(
 	key storage.ActivityKey,
 ) (*temporalessv1.ActivityRecord, bool, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.GetActivity(ctx, key)
+		return c.loadActivity(ctx, key)
 	}
-	rec, found, err := c.inner.GetActivity(ctx, key)
+	rec, found, err := c.loadActivity(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -261,7 +297,14 @@ func (c *runScopedCache) PutActivity(ctx context.Context, record *temporalessv1.
 
 func (c *runScopedCache) ListActivities(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.ActivityRecord, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.ListActivities(ctx, key)
+		records, err := c.inner.ListActivities(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateActivityList(key, records); err != nil {
+			return nil, err
+		}
+		return records, nil
 	}
 	c.mu.Lock()
 	if c.activitiesListed {
@@ -277,6 +320,9 @@ func (c *runScopedCache) ListActivities(ctx context.Context, key storage.Workflo
 	c.mu.Unlock()
 	records, err := c.inner.ListActivities(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateActivityList(key, records); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -302,7 +348,7 @@ func (c *runScopedCache) DeleteActivity(ctx context.Context, key storage.Activit
 
 func (c *runScopedCache) GetTimer(ctx context.Context, key storage.TimerKey) (*temporalessv1.TimerRecord, bool, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.GetTimer(ctx, key)
+		return c.loadTimer(ctx, key)
 	}
 	c.mu.Lock()
 	if rec, ok := c.timers[key.TimerID]; ok {
@@ -317,7 +363,35 @@ func (c *runScopedCache) GetTimer(ctx context.Context, key storage.TimerKey) (*t
 	if listed {
 		return nil, false, nil
 	}
-	rec, found, err := c.inner.GetTimer(ctx, key)
+	rec, found, err := c.loadTimer(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	c.mu.Lock()
+	if found {
+		c.timers[key.TimerID] = rec
+	} else {
+		c.timers[key.TimerID] = nil
+	}
+	c.mu.Unlock()
+	if !found {
+		return nil, false, nil
+	}
+	return rec, true, nil
+}
+
+// refreshTimer bypasses a cached hit or miss and reloads the authoritative
+// timer. Durable activity-retry self-healing uses this after an ambiguous
+// PutTimer error: the write may have committed even though the cache correctly
+// declined to publish a failed write-through operation.
+func (c *runScopedCache) refreshTimer(
+	ctx context.Context,
+	key storage.TimerKey,
+) (*temporalessv1.TimerRecord, bool, error) {
+	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
+		return c.loadTimer(ctx, key)
+	}
+	rec, found, err := c.loadTimer(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -353,7 +427,14 @@ func (c *runScopedCache) ListTimers(
 	status temporalessv1.TimerStatus,
 ) ([]*temporalessv1.TimerRecord, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.ListTimers(ctx, key, status)
+		records, err := c.inner.ListTimers(ctx, key, status)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateTimerList(key, records, status); err != nil {
+			return nil, err
+		}
+		return records, nil
 	}
 	c.mu.Lock()
 	if c.timersListed {
@@ -374,10 +455,20 @@ func (c *runScopedCache) ListTimers(
 	// Only the unfiltered list call populates the cache — a filtered call could
 	// hide records the body later wants.
 	if status != temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED {
-		return c.inner.ListTimers(ctx, key, status)
+		records, err := c.inner.ListTimers(ctx, key, status)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateTimerList(key, records, status); err != nil {
+			return nil, err
+		}
+		return records, nil
 	}
 	records, err := c.inner.ListTimers(ctx, key, status)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateTimerList(key, records, status); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -403,7 +494,7 @@ func (c *runScopedCache) DeleteTimer(ctx context.Context, key storage.TimerKey) 
 
 func (c *runScopedCache) GetEvent(ctx context.Context, key storage.EventKey) (*temporalessv1.EventRecord, bool, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.GetEvent(ctx, key)
+		return c.loadEvent(ctx, key)
 	}
 	c.mu.Lock()
 	if rec, ok := c.events[key.EventID]; ok {
@@ -418,7 +509,7 @@ func (c *runScopedCache) GetEvent(ctx context.Context, key storage.EventKey) (*t
 	if listed {
 		return nil, false, nil
 	}
-	rec, found, err := c.inner.GetEvent(ctx, key)
+	rec, found, err := c.loadEvent(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -450,7 +541,14 @@ func (c *runScopedCache) PutEvent(ctx context.Context, record *temporalessv1.Eve
 
 func (c *runScopedCache) ListEvents(ctx context.Context, key storage.WorkflowKey) ([]*temporalessv1.EventRecord, error) {
 	if !c.inScope(key.Namespace, key.WorkflowID, key.RunID) {
-		return c.inner.ListEvents(ctx, key)
+		records, err := c.inner.ListEvents(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateEventList(key, records); err != nil {
+			return nil, err
+		}
+		return records, nil
 	}
 	c.mu.Lock()
 	if c.eventsListed {
@@ -466,6 +564,9 @@ func (c *runScopedCache) ListEvents(ctx context.Context, key storage.WorkflowKey
 	c.mu.Unlock()
 	records, err := c.inner.ListEvents(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateEventList(key, records); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -487,12 +588,166 @@ func (c *runScopedCache) DeleteEvent(ctx context.Context, key storage.EventKey) 
 	return deleted, err
 }
 
-// Operator-only methods pass straight through ------------------------------
-
-func (c *runScopedCache) Sweep(ctx context.Context, namespace string, now time.Time, maxAge time.Duration) (uint32, error) {
-	return c.inner.Sweep(ctx, namespace, now, maxAge)
+func (c *runScopedCache) DueTimers(ctx context.Context, namespace string, now time.Time) ([]storage.DueTimer, error) {
+	due, err := c.inner.DueTimers(ctx, namespace, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range due {
+		if err := storage.ValidateDueTimer(item, namespace, now); err != nil {
+			return nil, err
+		}
+	}
+	return due, nil
 }
 
-func (c *runScopedCache) DueTimers(ctx context.Context, namespace string, now time.Time) ([]storage.DueTimer, error) {
-	return c.inner.DueTimers(ctx, namespace, now)
+func (c *runScopedCache) loadWorkflow(
+	ctx context.Context,
+	key storage.WorkflowKey,
+) (*temporalessv1.WorkflowRecord, bool, error) {
+	record, found, err := c.inner.GetWorkflow(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateFoundRecord("workflow", found, record != nil); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if err := storage.ValidateWorkflowRecord(record, key); err != nil {
+		return nil, false, err
+	}
+	return record, true, nil
+}
+
+func (c *runScopedCache) loadActivity(
+	ctx context.Context,
+	key storage.ActivityKey,
+) (*temporalessv1.ActivityRecord, bool, error) {
+	record, found, err := c.inner.GetActivity(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateFoundRecord("activity", found, record != nil); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if err := storage.ValidateActivityRecord(record, key); err != nil {
+		return nil, false, err
+	}
+	return record, true, nil
+}
+
+func (c *runScopedCache) loadTimer(
+	ctx context.Context,
+	key storage.TimerKey,
+) (*temporalessv1.TimerRecord, bool, error) {
+	record, found, err := c.inner.GetTimer(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateFoundRecord("timer", found, record != nil); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if err := storage.ValidateTimerRecord(record, key); err != nil {
+		return nil, false, err
+	}
+	return record, true, nil
+}
+
+func (c *runScopedCache) loadEvent(
+	ctx context.Context,
+	key storage.EventKey,
+) (*temporalessv1.EventRecord, bool, error) {
+	record, found, err := c.inner.GetEvent(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateFoundRecord("event", found, record != nil); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	if err := storage.ValidateEventRecord(record, key); err != nil {
+		return nil, false, err
+	}
+	return record, true, nil
+}
+
+func validateFoundRecord(kind string, found bool, present bool) error {
+	if found == present {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: %s store read has found=%t with payload present=%t",
+		storage.ErrCorruptRecord,
+		kind,
+		found,
+		present,
+	)
+}
+
+func validateActivityList(key storage.WorkflowKey, records []*temporalessv1.ActivityRecord) error {
+	for _, record := range records {
+		recordKey := storage.ActivityKeyFromProto(record.GetKey())
+		if err := storage.ValidateActivityRecord(record, recordKey); err != nil {
+			return err
+		}
+		if !sameCachedWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return fmt.Errorf("%w: activity list payload crosses the requested workflow run", storage.ErrCorruptRecord)
+		}
+	}
+	return nil
+}
+
+func validateTimerList(
+	key storage.WorkflowKey,
+	records []*temporalessv1.TimerRecord,
+	status temporalessv1.TimerStatus,
+) error {
+	for _, record := range records {
+		recordKey := storage.TimerKeyFromProto(record.GetKey())
+		if err := storage.ValidateTimerRecord(record, recordKey); err != nil {
+			return err
+		}
+		if !sameCachedWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return fmt.Errorf("%w: timer list payload crosses the requested workflow run", storage.ErrCorruptRecord)
+		}
+		if status != temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED && record.GetStatus() != status {
+			return fmt.Errorf("%w: timer list payload does not match the requested status", storage.ErrCorruptRecord)
+		}
+	}
+	return nil
+}
+
+func validateEventList(key storage.WorkflowKey, records []*temporalessv1.EventRecord) error {
+	for _, record := range records {
+		recordKey := storage.EventKeyFromProto(record.GetKey())
+		if err := storage.ValidateEventRecord(record, recordKey); err != nil {
+			return err
+		}
+		if !sameCachedWorkflowRun(key, recordKey.Namespace, recordKey.WorkflowID, recordKey.RunID) {
+			return fmt.Errorf("%w: event list payload crosses the requested workflow run", storage.ErrCorruptRecord)
+		}
+	}
+	return nil
+}
+
+func sameCachedWorkflowRun(key storage.WorkflowKey, namespace string, workflowID string, runID string) bool {
+	requested := key.Proto()
+	payload := (&storage.WorkflowKey{
+		Namespace:  namespace,
+		WorkflowID: workflowID,
+		RunID:      runID,
+	}).Proto()
+	return requested.GetNamespace() == payload.GetNamespace() &&
+		requested.GetWorkflowId() == payload.GetWorkflowId() &&
+		requested.GetRunId() == payload.GetRunId()
 }

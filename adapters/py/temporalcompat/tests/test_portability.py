@@ -31,6 +31,8 @@ from temporalio.worker import Worker
 
 from temporaless_temporalcompat import (
     ActivityCall,
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
     execute_activity,
     wrap_activity,
     wrap_workflow,
@@ -75,7 +77,9 @@ async def _temporaless_run(symbol: StringValue) -> StringValue:
 
 # ---- runtime B: Temporal SDK via temporalcompat ----------------------------
 
-_fetch_price_temporal_activity = wrap_activity(_fetch_price, name="fetch_price_portable")
+_fetch_price_temporal_activity = wrap_activity(
+    _fetch_price, ActivityWrapOptions(name="fetch_price_portable")
+)
 
 
 async def _temporal_workflow_body(symbol: StringValue) -> StringValue:
@@ -91,7 +95,9 @@ async def _temporal_workflow_body(symbol: StringValue) -> StringValue:
     return result
 
 
-_TemporalWorkflow = wrap_workflow(_temporal_workflow_body, name="PortabilityWorkflow")
+_TemporalWorkflow = wrap_workflow(
+    _temporal_workflow_body, WorkflowWrapOptions(name="PortabilityWorkflow")
+)
 
 
 async def _temporal_run(symbol: StringValue) -> StringValue:

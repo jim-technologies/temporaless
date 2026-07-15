@@ -1,10 +1,8 @@
-// Package inspector provides operator-visibility helpers that read and prune
-// records via the Store interface.
+// Package inspector provides operator-visibility helpers over the explicit
+// query and point-store interfaces.
 //
-// Storage is the source of truth, so listing in-flight or failed workflows is
-// just a Store.ListWorkflows call with a status filter. Reset helpers map to
-// Store.Delete* — works against any backend, local OpenDAL or remote
-// ConnectStore.
+// Cross-run listing requires a QueryStore. Reset helpers and run-scoped lists
+// use the authoritative point Store.
 package inspector
 
 import (
@@ -17,33 +15,52 @@ import (
 
 // ListInFlightWorkflows returns every workflow record whose status is
 // WORKFLOW_STATUS_IN_PROGRESS.
-func ListInFlightWorkflows(ctx context.Context, store storage.Store) ([]*temporalessv1.WorkflowRecord, error) {
-	if store == nil {
-		return nil, fmt.Errorf("store is required")
-	}
-	return store.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS)
+func ListInFlightWorkflows(ctx context.Context, query storage.WorkflowQueryStore) ([]*temporalessv1.WorkflowRecord, error) {
+	return listWorkflowsByStatus(ctx, query, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS)
 }
 
 // ListFailedWorkflows returns every workflow record whose status is
 // WORKFLOW_STATUS_FAILED.
-func ListFailedWorkflows(ctx context.Context, store storage.Store) ([]*temporalessv1.WorkflowRecord, error) {
-	if store == nil {
-		return nil, fmt.Errorf("store is required")
-	}
-	return store.ListWorkflows(ctx, "", "", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED)
+func ListFailedWorkflows(ctx context.Context, query storage.WorkflowQueryStore) ([]*temporalessv1.WorkflowRecord, error) {
+	return listWorkflowsByStatus(ctx, query, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED)
 }
 
 // ListWorkflowsByStatus is the generic form, exposed for callers that want a
 // status the helpers above don't cover (e.g. COMPLETED for audits).
 func ListWorkflowsByStatus(
 	ctx context.Context,
-	store storage.Store,
+	query storage.WorkflowQueryStore,
 	status temporalessv1.WorkflowStatus,
 ) ([]*temporalessv1.WorkflowRecord, error) {
-	if store == nil {
-		return nil, fmt.Errorf("store is required")
+	return listWorkflowsByStatus(ctx, query, status)
+}
+
+func listWorkflowsByStatus(ctx context.Context, query storage.WorkflowQueryStore, status temporalessv1.WorkflowStatus) ([]*temporalessv1.WorkflowRecord, error) {
+	if query == nil {
+		return nil, fmt.Errorf("query store is required")
 	}
-	return store.ListWorkflows(ctx, "", "", status)
+	var records []*temporalessv1.WorkflowRecord
+	pageToken := ""
+	seenPageTokens := map[string]struct{}{}
+	for {
+		response, err := query.ListWorkflows(ctx, &temporalessv1.ListWorkflowsRequest{
+			Status:    status,
+			PageToken: pageToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, response.GetRecords()...)
+		next := response.GetNextPageToken()
+		if next == "" {
+			return records, nil
+		}
+		if _, repeated := seenPageTokens[next]; repeated {
+			return nil, fmt.Errorf("query store repeated page token %q", next)
+		}
+		seenPageTokens[next] = struct{}{}
+		pageToken = next
+	}
 }
 
 // ListActivities returns every activity record under the given workflow run.

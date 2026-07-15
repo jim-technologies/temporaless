@@ -6,10 +6,9 @@ iterations. The harness picks ``b.n`` to drive wall time toward ``target_seconds
 
     BenchmarkName                                   N    ns/op
 
-Sync OpenDAL ops live inside these async functions because the framework's
-storage layer is sync today; the async signature exists so benchmarks calling
-``await run(...)`` and benchmarks calling sync ``store.put_*`` share the same
-harness.
+The harness is async because the Python runtime and its OpenDAL storage surface
+are async-only. Storage and workflow benchmarks therefore measure the same
+``await`` boundaries used by application code.
 """
 
 from __future__ import annotations

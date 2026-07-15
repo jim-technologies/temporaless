@@ -13,17 +13,17 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use opendal::{services::Fs, Operator};
+use opendal::{Operator, services::Fs};
 use prost::{Message, Name};
 use tempfile::TempDir;
-use temporaless::storage::{proto_timestamp, ActivityKey, OpenDALStore, Store, WorkflowKey};
+use temporaless::storage::{ActivityKey, OpenDALStore, Store, WorkflowKey, proto_timestamp};
 use temporaless::v1;
-use temporaless::workflow::{run, Workflow, WorkflowOptions};
+use temporaless::workflow::{Workflow, WorkflowOptions, run};
 
 fn new_store() -> (TempDir, OpenDALStore) {
     let tmp = TempDir::new().unwrap();
     let builder = Fs::default().root(tmp.path().to_str().unwrap());
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     (tmp, OpenDALStore::new(op))
 }
 
@@ -59,6 +59,7 @@ async fn python_authored_workflow_record_decodes_correctly() {
         created_at: Some(now),
         completed_at: Some(now),
         annotations,
+        ..Default::default()
     };
     store.put_workflow(&record).await.unwrap();
 
@@ -139,6 +140,7 @@ async fn python_authored_activity_record_with_retry_history() {
         attempts,
         annotations: Default::default(),
         next_attempt_at: None,
+        ..Default::default()
     };
     store.put_activity(&record).await.unwrap();
 
@@ -158,15 +160,14 @@ async fn python_authored_activity_record_with_retry_history() {
     assert!(read_back.attempts[1].failure.is_none());
 }
 
-/// The Hive partition convention: workflows written by any SDK live at
-/// exactly this path. Inspecting the OpenDAL operator confirms Rust
-/// writes the same layout.
+/// Workflows written by every SDK live at the same flat v2 key. Inspecting
+/// the filesystem confirms Rust does not drift from the Go/Python layout.
 #[tokio::test]
-async fn rust_writes_canonical_hive_path() {
+async fn rust_writes_canonical_v2_path() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().to_str().unwrap();
     let builder = Fs::default().root(root);
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     let store = OpenDALStore::new(op);
 
     let key = WorkflowKey::new("prices:aapl", "2026-05-04T09:30:00Z");
@@ -183,16 +184,16 @@ async fn rust_writes_canonical_hive_path() {
         created_at: Some(now),
         completed_at: Some(now),
         annotations: Default::default(),
+        ..Default::default()
     };
     store.put_workflow(&record).await.unwrap();
 
-    // Expected canonical path — should match what Go/Python produce.
-    let expected_path = format!(
-        "{root}/temporaless/v1/namespace=default/workflow_id=prices:aapl/run_id=2026-05-04T09:30:00Z/kind=workflow/record.binpb"
-    );
+    // Expected canonical path — matches what Go/Python produce.
+    let expected_path =
+        format!("{root}/temporaless/v2/default/prices:aapl/2026-05-04T09:30:00Z/workflow.binpb");
     assert!(
         std::path::Path::new(&expected_path).exists(),
-        "expected canonical Hive path {expected_path}, fs contents: {:?}",
+        "expected canonical v2 path {expected_path}, fs contents: {:?}",
         walk(tmp.path()).collect::<Vec<_>>(),
     );
 }
@@ -212,7 +213,7 @@ async fn rust_writes_canonical_hive_path() {
 async fn rust_replays_python_authored_workflow_record() {
     let tmp = TempDir::new().unwrap();
     let builder = Fs::default().root(tmp.path().to_str().unwrap());
-    let op = Operator::new(builder).unwrap().finish();
+    let op = Operator::new(builder).unwrap();
     let store = Arc::new(OpenDALStore::new(op));
 
     let key = WorkflowKey::new("prices:aapl", "2026-05-04T09:30:00Z");
@@ -236,6 +237,7 @@ async fn rust_replays_python_authored_workflow_record() {
         created_at: Some(now),
         completed_at: Some(now),
         annotations: Default::default(),
+        ..Default::default()
     };
     store.put_workflow(&seeded).await.unwrap();
 

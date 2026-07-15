@@ -76,9 +76,19 @@ due-timer ledger. If you also deploy a query index, mount
 
 Both the server (`asgi_application`) and the client (`ConnectStore.from_address`) forward the standard ConnectRPC `interceptors=[...]` slot. Anything you'd already write for a gRPC/ConnectRPC service drops in unchanged — the framework's storage surface is just another ConnectRPC service.
 
-`connectrpc.interceptor.Interceptor` is a *Union* of the four interceptor Protocols (`UnaryInterceptor`, `MetadataInterceptor`, `ServerStreamInterceptor`, `BidiStreamInterceptor`) — implement the one that matches your need. For auth, `MetadataInterceptor` is the right shape: it only reads headers, fires before the handler, and lets you reject unauthenticated calls without touching request/response bodies.
+`connectrpc.interceptor.Interceptor` is a *Union* of the four interceptor
+Protocols (`UnaryInterceptor`, `MetadataInterceptor`, `ServerStreamInterceptor`,
+`BidiStreamInterceptor`) — implement the one that matches your need. A
+`MetadataInterceptor` can enforce authorization before the service method, but
+connectrpc-python has already read and decoded the unary request at that point.
+Do not use an interceptor as the only unauthenticated-body DoS boundary: put
+authentication, raw-body limits, and slow-read protection in outer ASGI/HTTP
+middleware and the ingress. Interceptors remain the right seam for RPC-aware
+logging, tracing, and principal-level policy after that boundary.
 
 ```python
+import hmac
+
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
@@ -92,8 +102,8 @@ class BearerTokenAuth:
         self._token = token
 
     async def on_start(self, ctx: RequestContext) -> dict:
-        authz = ctx.request_headers().get("authorization", "")
-        if not authz.startswith("Bearer ") or authz[7:] != self._token:
+        authz = ctx.request_headers.get("authorization", "")
+        if not hmac.compare_digest(authz, f"Bearer {self._token}"):
             raise ConnectError(Code.UNAUTHENTICATED, "missing or invalid token")
         return {}
 
@@ -112,7 +122,36 @@ remote = ConnectStore.from_address(
 )
 ```
 
-A complete runnable production server — auth, structured JSON logging with correlation IDs, `/healthz` + `/readyz` for any platform's health probes, graceful shutdown on SIGTERM — lives at `examples/py/production_server.py`.
+A complete runnable **ConnectStore-only** server — auth, structured JSON logging
+with correlation IDs, `/healthz` + `/readyz`, and graceful shutdown on SIGTERM
+— lives at `examples/py/production_server.py`. It fails closed unless
+`AUTH_TOKEN` and `TEMPORALESS_STORAGE_SCHEME` are explicit; backend options
+come from the JSON string map `TEMPORALESS_STORAGE_OPTIONS` (empty by default).
+Ephemeral `memory` storage is rejected. Local `fs` storage requires the explicit
+`TEMPORALESS_ALLOW_UNSAFE_FS=1` acknowledgement and remains suitable only for
+one-node development.
+The Go counterpart at
+`examples/go/production-server` requires `AUTH_TOKEN` and
+`TEMPORALESS_STORAGE_ROOT`; because that example compiles only the filesystem
+driver, it also requires `TEMPORALESS_ALLOW_UNSAFE_FS=1` and is suitable only
+for a single-node deployment.
+
+Both examples authenticate at the outer HTTP/ASGI boundary before reading an
+RPC body, and impose an 8 MiB encoded-body limit plus an 8 MiB decoded Connect
+message limit. Go additionally sets finite HTTP header/read/write/idle
+timeouts. The Python guard buffers at most the configured encoded-body limit
+before entering ConnectRPC. Uvicorn/ASGI cannot by itself provide a reliable
+slow-upload or decompression-bomb boundary: the reverse proxy must cap encoded
+body size and read duration, and either reject request compression or enforce
+a decompressed-size/expansion-ratio ceiling. This is necessary because the
+current connectrpc-python server joins and decompresses a unary request before
+checking its decoded-message limit.
+
+These examples serve storage records only. They do **not** run cron, scan due
+timers, or invoke application workflows. Mount `BackgroundWorkers` in the
+application workflow service, run a separate operator process, or dispatch
+ticks from an external scheduler/queue. A generic storage service cannot know
+which application handler or transport should receive a due workflow.
 
 The trigger surface — your own `WorkflowService` that calls `workflow.run` — is also a normal ConnectRPC service, so the same interceptors apply there. There's no framework-specific auth model to learn.
 
@@ -136,7 +175,7 @@ For claim coordination across processes:
 
 - For S3-native preconditions without the GoCDK indirection: write a thin `storage.ClaimStore` against the AWS SDK using `If-None-Match: *`. Same pattern for GCS with `ifGenerationMatch=0`. Either is small.
 
-The bundled stores are create-only. Workflow claims are deleted on orderly exits. Activity claims are deleted after a terminal record or fully persisted retry boundary, but retained when cancellation or persistence failure makes an activity outcome ambiguous. Cleanup errors are always surfaced. An activity-claim cleanup failure interrupts the body and leaves the workflow `IN_PROGRESS`; an invocation-claim cleanup failure after terminal persistence leaves the stored workflow `COMPLETED` or `FAILED`. A process crash or failed cleanup can leave a claim behind, and its `lease_expires_at` timestamp does not make takeover safe. Verify that no worker is still live and delete the exact claim through `ClaimStore.delete_claim` / `DeleteClaim`. CAS renewal and takeover are not implemented by the current core.
+The bundled stores are create-only. Workflow claims are deleted on orderly exits. If cancellation arrives after an activity claim is definitely created but before the activity body starts, the runtime safely deletes that claim because no application outcome is ambiguous. Once the body has started, an activity claim is deleted only after a terminal record or fully persisted retry boundary; cancellation or persistence failure before that boundary retains it for operator recovery. Cleanup errors are always surfaced. An activity-claim cleanup failure interrupts the body and leaves the workflow `IN_PROGRESS`; an invocation-claim cleanup failure after terminal persistence leaves the stored workflow `COMPLETED` or `FAILED`. A process crash or failed cleanup can leave a claim behind, and its `lease_expires_at` timestamp does not make takeover safe. Verify that no worker is still live and delete the exact claim through `ClaimStore.delete_claim` / `DeleteClaim`. CAS renewal and takeover are not implemented by the current core.
 
 ## 2. Mounting workflows as gRPC / ConnectRPC methods
 
@@ -144,13 +183,14 @@ The framework's design is: **you write a normal gRPC handler, the framework deco
 
 For application services, keep that normal handler callable directly. Temporaless should be an opt-in durable wrapper around idempotent, retriable, scheduled, or long-running work; it should not sit on the critical path for ordinary API reads or routine synchronous actions. If the Temporaless store, timer scanner, query index, or background operators are unavailable, the service should continue serving direct in-process APIs and return an explicit unavailable/deferred result only for the workflow-backed operation.
 
-### Go: `workflow.HandleConnect`
+### Go: `connectworkflow.Handle`
 
 ```go
 import (
     "connectrpc.com/connect"
     "net/http"
     pricesv1connect "your/package/pricesv1connect"
+    "github.com/jim-technologies/temporaless/adapters/go/connectworkflow"
     "github.com/jim-technologies/temporaless/core/go/workflow"
 )
 
@@ -162,7 +202,7 @@ func (s *pricesService) FetchPrices(
     ctx context.Context,
     req *connect.Request[pricesv1.FetchRequest],
 ) (*connect.Response[pricesv1.FetchResponse], error) {
-    return workflow.HandleConnect(ctx, req, workflow.WorkflowWrapOptions[*pricesv1.FetchRequest, *pricesv1.FetchResponse]{
+    return connectworkflow.Handle(ctx, req, workflow.WorkflowWrapOptions[*pricesv1.FetchRequest, *pricesv1.FetchResponse]{
         Store: s.store,
         OptionsFor: func(_ context.Context, r *pricesv1.FetchRequest) (*workflow.Options, error) {
             return &workflow.Options{
@@ -181,11 +221,11 @@ mux.Handle(pricesv1connect.NewPricesServiceHandler(&pricesService{store: store})
 http.ListenAndServe(":8080", mux)
 ```
 
-`HandleConnect` unwraps the `connect.Request`, runs `workflow.Run` with replay semantics, and wraps the response — saving the boilerplate while keeping the handler signature 100% standard ConnectRPC. Inside `fetchPricesBody`, call `workflow.ExecuteActivity(ctx, ...)`, `workflow.Sleep`, `workflow.WaitEvent` like any other workflow — the in-flight workflow rides on `ctx`.
+`connectworkflow.Handle` unwraps the `connect.Request`, runs the core workflow wrapper with replay semantics, and wraps the response — saving the boilerplate while keeping the handler signature 100% standard ConnectRPC. Inside `fetchPricesBody`, call `workflow.ExecuteActivity(ctx, ...)`, `workflow.Sleep`, `workflow.WaitEvent` like any other workflow — the in-flight workflow rides on `ctx`.
 
 It also auto-maps framework typed errors to `*connect.Error` with the right gRPC code (`TimerPendingError`/`EventPendingError` → `Unavailable`, `ClaimBusyError` → `AlreadyExists`, claim-release failures / activity failures → `Internal`, claim-capability and record conflicts → `FailedPrecondition`). The original error is preserved via wrapping, so `errors.As(err, &workflow.TimerPendingError{...})` still recovers it. Unknown errors pass through unchanged.
 
-### Python: `@wrap_workflow_method`
+### Python: `temporaless_connectworkflow.wrap_workflow_method`
 
 ```python
 from connectrpc.request import RequestContext
@@ -195,8 +235,8 @@ from temporaless import (
     Options,
     Store,
     current_workflow,
-    wrap_workflow_method,
 )
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
 
 class PriceService:
@@ -208,13 +248,15 @@ class PriceService:
         self._store = store
 
     @wrap_workflow_method(
-        store=lambda self: self._store,
-        result_type=FetchResponse,
-        options_for=lambda self, r: Options(
-            workflow_id=f"prices:{r.symbol}",
-            run_id=r.run_id,
-            code_version="v1",
-        ),
+        WorkflowMethodWrapOptions(
+            store=lambda self: self._store,
+            result_type=FetchResponse,
+            options_for=lambda self, r: Options(
+                workflow_id=f"prices:{r.symbol}",
+                run_id=r.run_id,
+                code_version="v1",
+            ),
+        )
     )
     async def fetch_prices(
         self, request: FetchRequest, ctx: RequestContext
@@ -231,20 +273,25 @@ class PriceService:
 
 Any client speaking gRPC / ConnectRPC / gRPC-Web can now trigger the workflow. Terminal duplicate calls with the same `workflow_id + run_id` replay from storage. To prevent two live calls from entering a missing or `IN_PROGRESS` run together, configure a claim store and set a caller-provided `claim_owner_id`; the loser receives `ALREADY_EXISTS`. Without that opt-in, overlapping execution is at-least-once. The "any server can trigger a workflow" model is literal — the framework only provides decoration.
 
-`@wrap_workflow_method` also auto-maps framework typed errors to `ConnectError` (`TimerPendingError`/`EventPendingError` → `UNAVAILABLE`, `ClaimBusyError` → `ALREADY_EXISTS`, claim-release failures / activity failures → `INTERNAL`, claim-capability and record conflicts → `FAILED_PRECONDITION`). The original exception is attached via `__cause__`, so `except ConnectError as e: e.__cause__` recovers the underlying type. Unknown exceptions propagate unchanged so application errors keep their full traceback.
+The decorator from `adapters/py/connectworkflow` also auto-maps framework typed errors to `ConnectError` (`TimerPendingError`/`EventPendingError` → `UNAVAILABLE`, `ClaimBusyError` → `ALREADY_EXISTS`, claim-release failures / activity failures → `INTERNAL`, claim-capability and record conflicts → `FAILED_PRECONDITION`). The original exception is attached via `__cause__`, so `except ConnectError as e: e.__cause__` recovers the underlying type. Unknown exceptions propagate unchanged so application errors keep their full traceback.
+
+Local backfills recognize that typed cause automatically. A remote ConnectRPC
+client receives only the status, so opt in explicitly with
+`backfill(..., pending_error=temporaless_connectworkflow.is_pending_error)`.
 
 ### Mapping framework errors to gRPC codes
 
-When the workflow body raises one of the framework's typed errors, `HandleConnect` (Go) and `@wrap_workflow_method` (Python) translate to the standard mapping below. If you drive `WrapWorkflow` / `run` directly from a non-Connect transport, call `workflow.ErrorToConnectCode` (Go) or `temporaless.workflow_error_to_connect_code` (Python) yourself.
+When the workflow body raises one of the framework's typed errors, `connectworkflow.Handle` (Go) and `temporaless_connectworkflow.wrap_workflow_method` (Python) translate to the standard mapping below. If you drive `workflow.WrapWorkflow` directly at a custom Go ConnectRPC boundary, call `connectworkflow.ErrorToCode`; Python callers can use `temporaless_connectworkflow.error_to_connect_code`.
 
 | Framework error                               | gRPC code            |
 |-----------------------------------------------|----------------------|
-| `TimerPendingError`, `EventPendingError`      | `UNAVAILABLE`        |
+| `TimerPendingError`, `EventPendingError`, `WorkflowDependencyPendingError`, `WorkflowInfrastructureError` | `UNAVAILABLE` |
 | `ClaimBusyError`                              | `ALREADY_EXISTS`     |
+| `ConcurrencyBusyError`                        | `RESOURCE_EXHAUSTED` |
 | `ClaimReleaseError` / Go `ErrClaimRelease`   | `INTERNAL`           |
 | `ClaimCapabilityError`                       | `FAILED_PRECONDITION`|
 | `WorkflowConflictError`, `ActivityConflictError`, `TimerConflictError` | `FAILED_PRECONDITION` |
-| `ActivityError`                               | `INTERNAL`           |
+| `ActivityError`, `WorkflowDependencyFailedError` | `INTERNAL`        |
 
 ## 3. Periodic jobs
 
@@ -260,9 +307,10 @@ scheduler, _ := cronscheduler.New(
     },
     func(ctx context.Context, scheduleID string, fireTime time.Time) error {
         _, err := workflow.Run(ctx, store, &workflow.Options{
-            WorkflowId:  scheduleID,
-            RunId:       fireTime.UTC().Format(time.RFC3339),
-            CodeVersion: codeVersion(),
+            WorkflowId:   scheduleID,
+            RunId:        fireTime.UTC().Format(time.RFC3339),
+            CodeVersion:  codeVersion(),
+            RunOrderTime: timestamppb.New(fireTime),
         }, nil, /* input */, /* newResult */, /* body */)
         return err
     },
@@ -270,7 +318,7 @@ scheduler, _ := cronscheduler.New(
 
 // Stateless seeding from latest-run pointer objects — no separate persistence.
 snapshot, _ := cronscheduler.LastFiresFromRuns(ctx, store, "",
-    []string{"prices:aapl", "prices:tsla"}, time.RFC3339)
+    []string{"prices:aapl", "prices:tsla"})
 scheduler.Restore(snapshot)
 
 // Run a Tick on a 1-minute cron / Kubernetes CronJob / EventBridge schedule.
@@ -282,6 +330,8 @@ The Python equivalent lives in `temporaless.cronscheduler` and uses the same Sna
 ```python
 from datetime import UTC, datetime
 
+from google.protobuf.timestamp_pb2 import Timestamp
+
 from temporaless.cronscheduler import (
     Schedule,
     Scheduler,
@@ -291,12 +341,15 @@ from temporaless.workflow import Options, run
 
 
 async def dispatch(schedule_id: str, fire_time: datetime) -> None:
+    run_order_time = Timestamp()
+    run_order_time.FromDatetime(fire_time)
     await run(
         store,
         Options(
             workflow_id=schedule_id,
             run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             code_version=code_version(),
+            run_order_time=run_order_time,
         ),
         input_message,
         ResultType,
@@ -314,7 +367,7 @@ scheduler = Scheduler(
 
 # Stateless seeding from latest-run pointer objects — no separate persistence.
 snapshot = await last_fires_from_runs(
-    store, "", ["prices:aapl", "prices:tsla"], "%Y-%m-%dT%H:%M:%SZ"
+    store, "", ["prices:aapl", "prices:tsla"]
 )
 scheduler.restore(snapshot)
 
@@ -327,8 +380,8 @@ Two cron-scheduler processes may dispatch the same fire concurrently. Terminal r
 ### Timer scanner
 
 For workflows that use `workflow.Sleep` (durable timers), the core writes a
-small due-ledger entry alongside each pending timer. Scanners list that ledger,
-not the whole workflow tree:
+deterministic prepared timer object alongside each timer. Scanners list that
+ledger, not the whole workflow tree:
 
 ```go
 due, _ := timerscanner.DueTimers(ctx, store, time.Now())
@@ -339,28 +392,52 @@ for _, t := range due {
 }
 ```
 
-Run on a cadence (every minute, every 30s — depends on the smallest timer interval you care about). The ledger contains only pending timers and self-prunes when timers fire or are cancelled.
+Run on a cadence (every minute, every 30s — depends on the smallest timer
+interval you care about). Each logical timer has one prepared object containing
+its full protobuf state. A scan repairs a missing, stale, or corrupt canonical
+timer from that prepared record, then waits until the next scan sees an exact
+pair before dispatching. This preserves the original deadline across a
+ledger-first crash at the cost of at most one scan interval. `CANCELED`
+tombstones suppress interrupted deletes and are retained until offline cleanup.
+
+Scanner delivery is at-least-once. The same due wake can be returned on every
+tick until replay crosses a later durable boundary, and two scanners can
+dispatch it concurrently. Set `claim_owner_id` on the dispatched workflow and
+use an atomic claim store to single-flight cooperating workflow invocations;
+claims do not make downstream side effects exactly-once, so activity-level
+idempotency remains required.
+
+Do not give active run objects or `temporaless/v2/{namespace}/_due/` entries a
+shorter object-lifecycle TTL than the maximum durable-timer horizon plus the
+longest tolerated scheduler outage and recovery window. A ten-year sleep needs
+its timer record and prepared due record for at least that long. If timer duration is
+unbounded, exempt active runs and `_due` from age deletion. Remove terminal
+prepared objects/tombstones only while timer writers and scanners are quiesced,
+after checking every candidate against workflow/timer state. The generic ledger
+defines no online compaction mode because deletion can race a same-key rearm and
+remove its only wakeup.
 
 ### Janitor
 
-Bucket-only deployments should prefer bucket lifecycle rules for broad
-retention. Exact "delete completed runs older than X" is a cross-run query and
-requires `RecordQueryService` / an index-backed `QueryStore`.
+Bucket-only deployments may use conservative bucket lifecycle rules sized by
+the timer-retention constraint above. Exact "delete completed runs older than
+X" is a cross-run query and requires `RecordQueryService` / an index-backed
+`QueryStore`.
 
 ```go
-deleted, _ := janitor.Sweep(ctx, queryStore, claimStore, &temporalessv1.SweepRequest{
+deleted, _ := janitor.Sweep(ctx, queryStore, store, claimStore, &temporalessv1.SweepRequest{
     Now:    timestamppb.Now(),
     MaxAge: durationpb.New(7 * 24 * time.Hour),
 })
 log.Printf("janitor swept %d completed runs older than 7 days", deleted)
 ```
 
-Pass `nil` for `claimStore` only when the query store itself exposes claim
-coordination or the deployment declares `NO_CLAIMS`. With a separate GoCDK/S3/GCS
-claim backend, pass it explicitly. The janitor prevalidates all eligible run
-snapshots and removes run-scoped claims before records. It is not an execution
-fence or transaction: externally quiesce eligible runs before the sweep, then
-run it daily.
+The query store selects candidates; the point store reloads and snapshots each
+authoritative run. Pass a separate GoCDK/S3/GCS claim backend when claims do not
+live on the point store. The janitor prevalidates all eligible run snapshots
+and removes run-scoped claims before records. It is not an execution fence or
+transaction: externally quiesce eligible runs before the sweep, then run it
+daily.
 
 ### Operator-vs-handler replicas
 
@@ -376,6 +453,7 @@ periodic work.
 import "github.com/jim-technologies/temporaless/adapters/go/background"
 
 workers, _ := background.New(store, background.Config{
+    QueryStore:   queryStore,
     Cron:         &background.CronConfig{Scheduler: scheduler},
     TimerScanner: &background.TimerScannerConfig{Dispatch: dispatchDueTimer},
     Janitor:      &background.JanitorConfig{
@@ -410,6 +488,11 @@ finally:
 **Handler replicas**: skip the helper entirely, or construct it with no
 config structs — `Start` becomes a no-op. They just serve workflow RPCs.
 
+The standalone production-server examples are ConnectStore handler processes,
+not operator replicas. To combine roles, do so in your application workflow
+service where the timer dispatcher can call a real handler; do not add a
+no-op scanner to the storage server.
+
 Each loop is independently toggleable: a deployment might enable only
 the timer scanner on every replica (because durable sleeps are
 latency-sensitive) and keep cron + janitor on a single operator replica.
@@ -425,9 +508,9 @@ the activity boundary.
 
 **Skip the helper entirely** when your platform already provides
 scheduled invocations: Lambda + EventBridge, Cloud Run + Cloud Scheduler,
-Kubernetes CronJob, GitHub Actions schedule. The platform's
-one-fire-per-tick semantics is exactly what this helper provides
-in-process; don't pay for both.
+Kubernetes CronJob, GitHub Actions schedule. Invoke the same stateless tick
+from that platform and retain the same at-least-once/idempotency assumptions;
+don't pay for both scheduling paths.
 
 ## 4. Multi-process and multi-region
 
@@ -477,7 +560,7 @@ Stored on the `ActivityRecord` / `WorkflowRecord` and visible via `inspector.Lis
 
 ### Real-time tracing / metrics / logging
 
-Workflow triggers are gRPC methods (`@wrap_workflow_method` / `workflow.HandleConnect`). Use **standard ConnectRPC interceptors** for per-call observability — auth, rate limit, tracing, metrics, structured logging all use the same surface that the rest of your gRPC service mesh uses. There is nothing Temporaless-specific to learn.
+Workflow triggers are gRPC methods (`temporaless_connectworkflow.wrap_workflow_method` / `connectworkflow.Handle`). Use **standard ConnectRPC interceptors** for per-call observability — auth, rate limit, tracing, metrics, structured logging all use the same surface that the rest of your gRPC service mesh uses. There is nothing Temporaless-specific to learn.
 
 ```python
 from connectrpc.interceptor import Interceptor

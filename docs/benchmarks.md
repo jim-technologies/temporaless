@@ -2,8 +2,8 @@
 
 Temporaless keeps benchmark suites for the storage hot paths. Output format
 matches Go's `testing.B` (`BenchmarkName N ns/op`) so cross-language costs are
-directly comparable. v0.3.0's v2 storage transition is Python-gated; Go/Rust
-benchmark parity is a follow-up alongside the regenerated-stub work.
+directly comparable. Go and Python use the same flat v2 storage layout; Rust
+benchmarks cover its narrower, optional storage surface.
 
 ```sh
 flox activate -- scripts/bench-go    # Go:     go test -bench=. on core/go/storage + core/go/workflow
@@ -17,14 +17,13 @@ flox activate -- scripts/bench-rs    # Rust:   cargo build --release && ./target
 |---|---|
 | `BenchmarkPutGetWorkflow` | Round-trip put + get for a single `WorkflowRecord`. |
 | `BenchmarkPutGetActivity` | Round-trip put + get for a single `ActivityRecord`. |
-| `BenchmarkLastFireSeeding/{pointer_get,legacy_full_bucket_walk}` | Scheduler seeding via latest-run pointer vs. old full-bucket scan. |
-| `BenchmarkRunScopedPrefetchActivities50` | Run-scoped activity list used by replay prefetch. |
-| `BenchmarkListWorkflowsFiltered/{index,legacy_full_bucket_walk}` | Query-index workflow listing vs. full bucket walk. |
 | `BenchmarkWorkflowRunFreshExecution` | Fresh `workflow.Run` with one activity from a clean store. |
 | `BenchmarkWorkflowRunReplay` | Replay a completed workflow (id match → return stored result). |
 | `BenchmarkRetryLoopInProcess` | Three-attempt retry loop with 1ms backoff. |
 
-All benchmarks run against OpenDAL `fs` with a per-benchmark temp directory.
+All core benchmarks run against OpenDAL `fs` with a per-benchmark temp
+directory. Cross-run query benchmarks belong with their optional index adapter,
+not the core point store.
 
 ## Reference numbers
 
@@ -33,7 +32,8 @@ at S3 / GCS. The `fs` backend exercises the encode/decode + filesystem path,
 which is the SDK overhead a real deployment pays per record regardless of
 remote-store latency.
 
-Most recent run (Intel Xeon E5-2696 v4, `fs` backend, single-threaded):
+Reference sample (Intel Xeon E5-2696 v4, `fs` backend, single-threaded; rerun
+the scripts above for current dependency/hardware numbers):
 
 | Benchmark | Rust (ns/op) | Go (ns/op) | Python (ns/op) | Notes |
 |---|---:|---:|---:|---|
@@ -52,9 +52,9 @@ Most recent run (Intel Xeon E5-2696 v4, `fs` backend, single-threaded):
   the framework's typical throughputs (cron-driven workflows, webhook
   receivers), this is rarely the bottleneck. But for very-high-rate ingest
   paths it's a real win.
-- **Python is ~31× slower than Go and ~59× slower than Rust**. Per-record
-  overhead is dominated by protovalidate + Python's pure-Python protobuf
-  encode. For LLM / vendor / quant workloads where you're waiting on
+- **Python is ~31× slower than Go and ~59× slower than Rust** in this historical
+  sample. Per-record overhead includes Python dispatch, validation, protobuf,
+  and the OpenDAL binding. For LLM / vendor / quant workloads where you're waiting on
   network round-trips, this overhead disappears in the noise. For a pure
   storage-throughput service, prefer Go or Rust.
 - **Pure protobuf encode/decode in Rust is sub-microsecond** (121 / 315 ns).
@@ -66,24 +66,23 @@ Most recent run (Intel Xeon E5-2696 v4, `fs` backend, single-threaded):
 | | Go | Python | Rust |
 |---|---|---|---|
 | `OpenDALStore` | ✓ | ✓ | ✓ |
-| `workflow.Run` / activity replay | ✓ | ✓ | not yet |
+| `workflow.Run` / activity replay | ✓ | ✓ | minimal |
 | Durable retry backoffs | ✓ | ✓ | not yet |
 | Concurrency keys | ✓ | ✓ | not yet |
 | Claims, cron scheduler, timer scanner, janitor | ✓ | ✓ | not yet |
 | ConnectStore client / server | ✓ | ✓ | not yet |
 | Adapters (backfill, dependencies, outbox, …) | ✓ | partial | — |
 
-The Rust SDK is **storage-layer only** right now — it reads and writes the
-same wire-format records the Go and Python SDKs use, so Rust-native
-tooling (analytics CLIs, MCP servers, future Rust workflow runtime)
-interoperates with workflows authored in either of the other languages.
-The workflow runtime, adapters, and ConnectStore layers will be added as
-the Rust SDK matures.
+The Rust SDK ships storage plus a **minimal workflow/activity replay runtime**
+right now. It reads and writes the same wire-format records as Go and Python,
+so Rust-native tooling and simple workflows interoperate across languages.
+Durable timers, claims/concurrency integration, full retry semantics, operator
+adapters, and ConnectStore remain outside the experimental Rust surface.
 
 ## Choosing a language
 
 - **Throughput-bound triggers** (high-rate webhooks, low-latency RPC): Go
-  or Rust. Rust is fastest at the storage layer but only ships read/write
+  or Rust. Rust is fastest at the storage layer but ships only minimal replay
   today; pick Go if you need the full runtime now.
 - **I/O-bound workloads where you wait on vendor APIs** (LLM completions,
   vendor data fetches, market-data polling): Python is fine — the

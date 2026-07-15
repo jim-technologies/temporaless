@@ -1,7 +1,7 @@
 """Tests for Workflow.activity() — the ergonomic shortcut over execute_activity.
 
 Defaults under test:
-- activity_id derived from func.__qualname__ when not given
+- caller supplies activity_id and durable retry_timer_id explicitly
 - retry_policy filled in via default_retry_policy() when not given
 - result_type inferred from func's return annotation when not given
 """
@@ -39,33 +39,26 @@ async def _double(req: Int32Value) -> Int32Value:
     return Int32Value(value=req.value * 2)
 
 
-async def test_activity_infers_id_from_qualname(store):
-    """Activity ID defaults to func.__qualname__ when omitted."""
+async def test_activity_requires_explicit_id(store):
     wf = _wf(store)
-    result = await wf.activity(_double, Int32Value(value=7))
-    assert result.value == 14
-
-    # Verify the stored record uses the qualname.
-    record = await store.get_activity(
-        ActivityKey(workflow_id="wf", run_id="r", activity_id=_double.__qualname__)
-    )
-    assert record is not None
-    assert record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED
+    with pytest.raises(TypeError, match="activity_id"):
+        await wf.activity(_double, Int32Value(value=7))  # type: ignore[call-arg]
 
 
-async def test_activity_explicit_id_overrides_qualname(store):
-    """Explicit activity_id wins over the inferred qualname."""
+async def test_activity_uses_explicit_id(store):
     wf = _wf(store)
-    await wf.activity(_double, Int32Value(value=3), activity_id="custom:1")
-
-    qualname_record = await store.get_activity(
-        ActivityKey(workflow_id="wf", run_id="r", activity_id=_double.__qualname__)
+    await wf.activity(
+        _double,
+        Int32Value(value=3),
+        activity_id="custom:1",
+        retry_timer_id="retry:custom:1",
     )
+
     custom_record = await store.get_activity(
         ActivityKey(workflow_id="wf", run_id="r", activity_id="custom:1")
     )
-    assert qualname_record is None, "should not write under inferred id when overridden"
     assert custom_record is not None
+    assert custom_record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED
 
 
 async def test_activity_applies_default_retry_policy(store):
@@ -81,7 +74,12 @@ async def test_activity_applies_default_retry_policy(store):
             raise ActivityError("transient", "first call fails")
         return StringValue(value="ok")
 
-    result = await wf.activity(flaky_then_ok, StringValue(value="x"))
+    result = await wf.activity(
+        flaky_then_ok,
+        StringValue(value="x"),
+        activity_id="flaky",
+        retry_timer_id="retry:flaky",
+    )
     assert result.value == "ok"
     assert attempts[0] == 2, "default retry policy should give a second attempt"
 
@@ -100,6 +98,7 @@ async def test_activity_explicit_retry_policy_overrides_default(store):
         await wf.activity(
             always_fail,
             StringValue(value="x"),
+            activity_id="always-fail",
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
     assert attempts[0] == 1, "explicit single-attempt policy should override default retry policy"
@@ -110,7 +109,12 @@ async def test_activity_infers_result_type_from_annotation(store):
     wf = _wf(store)
     # _double is annotated as `-> Int32Value`. The helper should use Int32Value
     # as the result_factory without us passing it.
-    result = await wf.activity(_double, Int32Value(value=5))
+    result = await wf.activity(
+        _double,
+        Int32Value(value=5),
+        activity_id="double",
+        retry_timer_id="retry:double",
+    )
     assert isinstance(result, Int32Value)
     assert result.value == 10
 
@@ -123,7 +127,13 @@ async def test_activity_result_type_override(store):
     async def no_annotation(req):  # type: ignore[no-untyped-def]
         return Int32Value(value=req.value + 1)
 
-    result = await wf.activity(no_annotation, Int32Value(value=4), result_type=Int32Value)
+    result = await wf.activity(
+        no_annotation,
+        Int32Value(value=4),
+        activity_id="increment",
+        retry_timer_id="retry:increment",
+        result_type=Int32Value,
+    )
     assert result.value == 5
 
 
@@ -154,7 +164,12 @@ async def test_activity_raises_when_no_annotation_and_no_override(store):
         return Int32Value(value=1)
 
     with pytest.raises(ValueError, match="result_type"):
-        await wf.activity(no_annotation, Int32Value(value=1))
+        await wf.activity(
+            no_annotation,
+            Int32Value(value=1),
+            activity_id="missing-result-type",
+            retry_timer_id="retry:missing-result-type",
+        )
 
 
 # Silence unused-import warnings for Duration / typing helpers used elsewhere.

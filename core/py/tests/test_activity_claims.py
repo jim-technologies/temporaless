@@ -12,6 +12,7 @@ from google.protobuf.duration_pb2 import Duration
 from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import StringValue
 
+from temporaless._cache import RunScopedCache
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
@@ -31,7 +32,7 @@ from temporaless.workflow import (
     RetryPolicy,
     TimerPendingError,
     Workflow,
-    _activity_retry_timer_id,
+    WorkflowInfrastructureError,
     run,
 )
 
@@ -86,6 +87,10 @@ def _durable_policy() -> RetryPolicy:
     )
 
 
+def _retry_timer_id(activity_id: str) -> str:
+    return f"retry:{activity_id}"
+
+
 async def _rewind_retry(store: OpenDALStore, *, run_id: str, activity_id: str = "fetch") -> None:
     past = datetime.now(UTC) - timedelta(seconds=1)
     activity = await store.get_activity(_activity_key(run_id, activity_id))
@@ -96,7 +101,7 @@ async def _rewind_retry(store: OpenDALStore, *, run_id: str, activity_id: str = 
     timer_key = TimerKey(
         workflow_id="prices:activity-claims",
         run_id=run_id,
-        timer_id=_activity_retry_timer_id(activity_id),
+        timer_id=_retry_timer_id(activity_id),
     )
     timer = await store.get_timer(timer_key)
     assert timer is not None
@@ -194,6 +199,7 @@ async def test_durable_retry_releases_claim_and_resumes_with_new_owner(
             StringValue,
             rate_limited,
             _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
         )
     assert await store.get_claim(_claim_key(run_id)) is None
 
@@ -213,6 +219,7 @@ async def test_durable_retry_releases_claim_and_resumes_with_new_owner(
         StringValue,
         succeed,
         _durable_policy(),
+        retry_timer_id=_retry_timer_id("fetch"),
     )
     assert result.value == "ok"
     assert executions == 1
@@ -222,6 +229,92 @@ async def test_durable_retry_releases_claim_and_resumes_with_new_owner(
     assert record is not None
     assert record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED
     assert len(record.attempts) == 2
+
+
+async def test_post_claim_refresh_observes_timer_published_after_cached_miss(tmp_path) -> None:
+    run_id = "post-claim-timer"
+    activity_id = "fetch"
+    retry_timer_id = _retry_timer_id(activity_id)
+
+    class TimerBeforeClaimStore(OpenDALStore):
+        activity_claim_attempts = 0
+
+        async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
+            if record.resource_type == temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY:
+                self.activity_claim_attempts += 1
+            if self.activity_claim_attempts == 1:
+                winner = temporaless_pb2.ClaimRecord()
+                winner.CopyFrom(record)
+                winner.owner_id = "prior-owner"
+                assert await super().try_create_claim(winner)
+                now = datetime.now(UTC)
+                fire_at = Timestamp()
+                fire_at.FromDatetime(now + timedelta(hours=1))
+                created_at = Timestamp()
+                created_at.FromDatetime(now)
+                await self.put_timer(
+                    temporaless_pb2.TimerRecord(
+                        schema_version=temporaless_pb2.RECORD_SCHEMA_VERSION_TIMER,
+                        key=TimerKey(
+                            workflow_id="prices:activity-claims",
+                            run_id=run_id,
+                            timer_id=retry_timer_id,
+                        ).to_proto(),
+                        timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
+                        code_version="test",
+                        duration=_duration(timedelta(hours=1)),
+                        status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
+                        fire_at=fire_at,
+                        created_at=created_at,
+                        retry_activity_id=activity_id,
+                    )
+                )
+                assert await super().delete_claim(_claim_key(run_id, activity_id))
+                return False
+            return await super().try_create_claim(record)
+
+    raw_store = TimerBeforeClaimStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    scope = WorkflowKey(workflow_id="prices:activity-claims", run_id=run_id)
+    cache = RunScopedCache(raw_store, scope)
+    workflow = Workflow(
+        cache,
+        Options(
+            workflow_id=scope.workflow_id,
+            run_id=scope.run_id,
+            code_version="test",
+            claim_owner_id="new-owner",
+        ),
+    )
+    executions = 0
+
+    async def should_not_run() -> StringValue:
+        nonlocal executions
+        executions += 1
+        return StringValue(value="unexpected")
+
+    with pytest.raises(TimerPendingError):
+        await workflow.run_activity(
+            activity_id,
+            _ACTIVITY_TYPE,
+            StringValue(value="AAPL"),
+            StringValue,
+            should_not_run,
+            _durable_policy(),
+            retry_timer_id=retry_timer_id,
+        )
+
+    assert executions == 0
+    assert raw_store.activity_claim_attempts == 2
+    assert await raw_store.get_claim(_claim_key(run_id, activity_id)) is None
+    timer = await raw_store.get_timer(
+        TimerKey(
+            workflow_id=scope.workflow_id,
+            run_id=scope.run_id,
+            timer_id=retry_timer_id,
+        )
+    )
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
 
 
 async def test_busy_activity_claim_does_not_consume_due_retry_timer(
@@ -241,6 +334,7 @@ async def test_busy_activity_claim_does_not_consume_due_retry_timer(
             StringValue,
             rate_limited,
             _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
         )
     await _rewind_retry(store, run_id=run_id)
 
@@ -275,15 +369,89 @@ async def test_busy_activity_claim_does_not_consume_due_retry_timer(
             StringValue,
             should_not_run,
             _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
         )
 
     timer = await store.get_timer(
         TimerKey(
             workflow_id="prices:activity-claims",
             run_id=run_id,
-            timer_id=_activity_retry_timer_id("fetch"),
+            timer_id=_retry_timer_id("fetch"),
         )
     )
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+
+async def test_cancellation_during_due_retry_retains_claim_and_scheduled_wakeup(
+    store: OpenDALStore,
+) -> None:
+    run_id = "cancel-due-retry"
+    first = _workflow(store, run_id=run_id, owner_id="first-owner")
+
+    async def rate_limited() -> StringValue:
+        raise ActivityError("rate_limited", "retry later")
+
+    with pytest.raises(TimerPendingError):
+        await first.run_activity(
+            "fetch",
+            _ACTIVITY_TYPE,
+            StringValue(value="AAPL"),
+            StringValue,
+            rate_limited,
+            _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
+        )
+    await _rewind_retry(store, run_id=run_id)
+
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    resumed = _workflow(store, run_id=run_id, owner_id="resumed-owner")
+
+    async def ambiguous_body() -> StringValue:
+        entered.set()
+        await never.wait()
+        return StringValue(value="never")
+
+    task = asyncio.create_task(
+        resumed.run_activity(
+            "fetch",
+            _ACTIVITY_TYPE,
+            StringValue(value="AAPL"),
+            StringValue,
+            ambiguous_body,
+            _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    timer_key = TimerKey(
+        workflow_id="prices:activity-claims",
+        run_id=run_id,
+        timer_id=_retry_timer_id("fetch"),
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await store.get_claim(_claim_key(run_id)) is not None
+
+    retry = _workflow(store, run_id=run_id, owner_id="third-owner")
+    with pytest.raises(ClaimBusyError):
+        await retry.run_activity(
+            "fetch",
+            _ACTIVITY_TYPE,
+            StringValue(value="AAPL"),
+            StringValue,
+            ambiguous_body,
+            _durable_policy(),
+            retry_timer_id=_retry_timer_id("fetch"),
+        )
+    timer = await store.get_timer(timer_key)
     assert timer is not None
     assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
 
@@ -364,6 +532,7 @@ async def test_cancellation_during_persisted_backoff_releases_claim_and_resumes(
             StringValue,
             body,
             policy,
+            retry_timer_id=_retry_timer_id("fetch"),
         )
     )
     await asyncio.wait_for(retry_persisted.wait(), timeout=1)
@@ -383,6 +552,7 @@ async def test_cancellation_during_persisted_backoff_releases_claim_and_resumes(
         StringValue,
         body,
         policy,
+        retry_timer_id=_retry_timer_id("fetch"),
     )
 
     assert result.value == "resumed"
@@ -390,7 +560,7 @@ async def test_cancellation_during_persisted_backoff_releases_claim_and_resumes(
     assert await backoff_store.get_claim(_claim_key("cancel-backoff")) is None
 
 
-async def test_cancellation_during_activity_claim_create_retains_acquired_claim(
+async def test_cancellation_during_activity_claim_create_releases_acquired_claim(
     tmp_path,
 ) -> None:
     claim_created = asyncio.Event()
@@ -429,7 +599,53 @@ async def test_cancellation_during_activity_claim_create_retains_acquired_claim(
         await task
 
     assert body_entries == 0
-    assert await blocking_store.get_claim(_claim_key("cancel-create")) is not None
+    assert await blocking_store.get_claim(_claim_key("cancel-create")) is None
+
+
+async def test_cancellation_during_activity_claim_create_surfaces_release_failure(
+    tmp_path,
+) -> None:
+    claim_created = asyncio.Event()
+    allow_create_to_return = asyncio.Event()
+
+    class FailingReleaseStore(OpenDALStore):
+        async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
+            created = await super().try_create_claim(record)
+            if record.resource_type == temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY:
+                claim_created.set()
+                await allow_create_to_return.wait()
+            return created
+
+        async def delete_claim(self, key: ClaimKey) -> bool:
+            raise OSError("claim release unavailable")
+
+    store = FailingReleaseStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    workflow = _workflow(store, run_id="cancel-create-release-fails", owner_id="worker")
+    body_entries = 0
+
+    async def body() -> StringValue:
+        nonlocal body_entries
+        body_entries += 1
+        return StringValue(value="should-not-run")
+
+    task = asyncio.create_task(
+        workflow.run_activity(
+            "fetch",
+            _ACTIVITY_TYPE,
+            StringValue(value="AAPL"),
+            StringValue,
+            body,
+        )
+    )
+    await asyncio.wait_for(claim_created.wait(), timeout=1)
+    task.cancel()
+    allow_create_to_return.set()
+    with pytest.raises(ClaimReleaseError, match="claim release unavailable") as exc_info:
+        await task
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert body_entries == 0
+    assert await store.get_claim(_claim_key("cancel-create-release-fails")) is not None
 
 
 async def test_activity_storage_failure_retains_claim(tmp_path) -> None:
@@ -443,7 +659,10 @@ async def test_activity_storage_failure_retains_claim(tmp_path) -> None:
     async def body() -> StringValue:
         return StringValue(value="side-effect-completed")
 
-    with pytest.raises(OSError, match="activity store unavailable"):
+    with pytest.raises(
+        WorkflowInfrastructureError,
+        match="activity store unavailable",
+    ) as exc_info:
         await workflow.run_activity(
             "fetch",
             _ACTIVITY_TYPE,
@@ -451,6 +670,7 @@ async def test_activity_storage_failure_retains_claim(tmp_path) -> None:
             StringValue,
             body,
         )
+    assert isinstance(exc_info.value.__cause__, OSError)
     assert await failing_store.get_claim(_claim_key("storage-failure")) is not None
 
 

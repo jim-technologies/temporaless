@@ -2,8 +2,8 @@
 
 The framework's design tenet: **a workflow IS a normal gRPC handler**. You
 write the standard ConnectRPC method shape ``async def m(self, request, ctx)``
-and add ``@wrap_workflow_method`` — replay, idempotency, and persistence
-follow without changing the handler interface.
+and add the ``temporaless_connectworkflow`` decorator — replay, idempotency,
+and persistence follow without changing the handler interface.
 
 To deploy this over real gRPC/ConnectRPC:
 
@@ -45,8 +45,8 @@ from temporaless import (
     Store,
     annotate,
     current_workflow,
-    wrap_workflow_method,
 )
+from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
 
 async def _vendor_fetch(request: StringValue) -> StringValue:
@@ -87,17 +87,19 @@ class QuantService:
 
     In production each method below would also appear in ``QuantService``'s
     generated ``Protocol`` (from ``buf generate``); here we just expose them
-    as plain methods. The ``@wrap_workflow_method`` decorator is the only
-    framework-specific addition — it does NOT change the method signature.
+    as plain methods. The ``@wrap_workflow_method`` adapter decorator is the
+    only framework-specific addition — it does NOT change the method signature.
     """
 
     def __init__(self, store: Store) -> None:
         self._store = store
 
     @wrap_workflow_method(
-        store=_store_of,
-        result_type=StringValue,
-        options_for=_options_for_fetch_prices,
+        WorkflowMethodWrapOptions(
+            store=_store_of,
+            result_type=StringValue,
+            options_for=_options_for_fetch_prices,
+        )
     )
     async def fetch_prices(
         self, request: StringValue, ctx: object = None
@@ -111,27 +113,29 @@ class QuantService:
         )
 
     @wrap_workflow_method(
-        store=_store_of,
-        result_type=StringValue,
-        options_for=_options_for_compose_signal,
+        WorkflowMethodWrapOptions(
+            store=_store_of,
+            result_type=StringValue,
+            options_for=_options_for_compose_signal,
+        )
     )
     async def compose_signal(
         self, request: StringValue, ctx: object = None
     ) -> StringValue:
         """Compose a signal across many symbols — uses asyncio.gather to fan
-        out parallel per-symbol workflows. Each per-symbol fetch lives in its
-        own activity record, so partial failures only need to retry the
-        failing symbol on the next invocation.
+        out parallel per-symbol activities. Each fetch has its own activity
+        record and default retry policy, so transient partial failures retry
+        only the failing symbols.
         """
         symbols = ["AAPL", "MSFT", "GOOG", "TSLA", "NVDA", "AMZN", "META", "AMD"]
         annotate("symbols", str(len(symbols)))
 
         async def fetch_one(symbol: str) -> StringValue:
-            return await current_workflow().execute_activity(
-                ActivityOptions(activity_id=f"fetch:{symbol}"),
-                StringValue(value=symbol),
-                StringValue,
+            return await current_workflow().activity(
                 _vendor_fetch,
+                StringValue(value=symbol),
+                activity_id=f"fetch:{symbol}",
+                retry_timer_id=f"retry:fetch:{symbol}",
             )
 
         prices = await asyncio.gather(*(fetch_one(s) for s in symbols))

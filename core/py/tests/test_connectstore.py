@@ -2,12 +2,14 @@ import opendal
 import pytest
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
+from google.protobuf.message import Message
 from temporaless_indexstore import IndexedStore
 
 from temporaless.connectstore import (
     ConnectQueryStore,
     ConnectStore,
     LocalRecordStoreClient,
+    RecordQueryService,
     RecordStoreService,
 )
 from temporaless.storage import (
@@ -21,6 +23,7 @@ from temporaless.storage import (
     ClaimKey,
     EventKey,
     OpenDALStore,
+    RunRecordValidationError,
     TimerKey,
     WorkflowKey,
 )
@@ -63,6 +66,242 @@ async def test_connect_store_covers_storage_surface(tmp_path) -> None:
     assert await store.get_activity(activity_key) is None
     assert await store.get_timer(timer_key) is None
     assert await store.get_claim(claim_key) is None
+
+
+@pytest.mark.parametrize(
+    ("method_name", "rpc_request"),
+    [
+        ("get_workflow", temporaless_pb2.GetWorkflowRequest()),
+        ("put_workflow", temporaless_pb2.PutWorkflowRequest()),
+        ("get_activity", temporaless_pb2.GetActivityRequest()),
+        ("put_activity", temporaless_pb2.PutActivityRequest()),
+        ("get_timer", temporaless_pb2.GetTimerRequest()),
+        ("put_timer", temporaless_pb2.PutTimerRequest()),
+        ("get_event", temporaless_pb2.GetEventRequest()),
+        ("put_event", temporaless_pb2.PutEventRequest()),
+        ("get_claim", temporaless_pb2.GetClaimRequest()),
+        ("try_create_claim", temporaless_pb2.TryCreateClaimRequest()),
+        ("delete_claim", temporaless_pb2.DeleteClaimRequest()),
+        ("list_activities", temporaless_pb2.ListActivitiesRequest()),
+        ("list_timers", temporaless_pb2.ListTimersRequest()),
+        ("list_events", temporaless_pb2.ListEventsRequest()),
+        ("list_claims", temporaless_pb2.ListClaimsRequest()),
+        ("delete_workflow", temporaless_pb2.DeleteWorkflowRequest()),
+        ("delete_activity", temporaless_pb2.DeleteActivityRequest()),
+        ("delete_timer", temporaless_pb2.DeleteTimerRequest()),
+        ("delete_event", temporaless_pb2.DeleteEventRequest()),
+        ("delete_run", temporaless_pb2.DeleteRunRequest()),
+    ],
+)
+async def test_record_store_service_rejects_missing_required_messages(
+    tmp_path, method_name: str, rpc_request: Message
+) -> None:
+    service = RecordStoreService(OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path))))
+
+    with pytest.raises(ConnectError) as captured:
+        await getattr(service, method_name)(rpc_request, None)
+
+    assert captured.value.code is Code.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize(
+    ("service_kind", "rpc_request"),
+    [
+        ("point_due", temporaless_pb2.DueTimersRequest()),
+        ("query_due", temporaless_pb2.RecordQueryServiceDueTimersRequest()),
+        ("sweep", temporaless_pb2.SweepRequest()),
+    ],
+)
+async def test_storage_services_reject_missing_required_times(
+    tmp_path, service_kind: str, rpc_request: Message
+) -> None:
+    point = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    if service_kind == "point_due":
+        service = RecordStoreService(point)
+        call = service.due_timers
+    else:
+        query = IndexedStore(point, tmp_path / "index.sqlite")
+        service = RecordQueryService(query)
+        call = service.due_timers if service_kind == "query_due" else service.sweep
+
+    with pytest.raises(ConnectError) as captured:
+        await call(rpc_request, None)
+
+    assert captured.value.code is Code.INVALID_ARGUMENT
+
+
+async def test_record_store_service_rejects_invalid_latest_pointer_key(tmp_path) -> None:
+    service = RecordStoreService(OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path))))
+
+    with pytest.raises(ConnectError) as captured:
+        await service.get_latest_workflow_run(
+            temporaless_pb2.GetLatestWorkflowRunRequest(workflow_id=""), None
+        )
+
+    assert captured.value.code is Code.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize(
+    "rpc_request",
+    [
+        temporaless_pb2.ListWorkflowsRequest(page_size=-1),
+        temporaless_pb2.ListWorkflowsRequest(page_token="not-a-valid-token"),
+    ],
+)
+async def test_record_query_service_maps_invalid_options_to_invalid_argument(
+    tmp_path, rpc_request: temporaless_pb2.ListWorkflowsRequest
+) -> None:
+    point = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    service = RecordQueryService(IndexedStore(point, tmp_path / "index.sqlite"))
+
+    with pytest.raises(ConnectError) as captured:
+        await service.list_workflows(rpc_request, None)
+
+    assert captured.value.code is Code.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("record_kind", ["workflow", "activity", "timer", "event", "claim"])
+async def test_connect_client_rejects_point_response_for_another_key(record_kind: str) -> None:
+    requested_key, response = _corrupt_point_response(record_kind)
+
+    class CorruptClient:
+        pass
+
+    async def get_record(_request):
+        return response
+
+    client = CorruptClient()
+    setattr(client, f"get_{record_kind}", get_record)
+    store = ConnectStore(client)  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="requested key"):
+        await getattr(store, f"get_{record_kind}")(requested_key)
+
+
+@pytest.mark.parametrize("record_kind", ["workflow", "activity", "timer", "event", "claim"])
+async def test_connect_client_rejects_payload_when_found_is_false(record_kind: str) -> None:
+    requested_key, response = _corrupt_point_response(record_kind)
+    response.found = False
+
+    class CorruptClient:
+        pass
+
+    async def get_record(_request):
+        return response
+
+    client = CorruptClient()
+    setattr(client, f"get_{record_kind}", get_record)
+    store = ConnectStore(client)  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="found=False"):
+        await getattr(store, f"get_{record_kind}")(requested_key)
+
+
+async def test_connect_client_rejects_latest_pointer_when_found_is_false() -> None:
+    key = WorkflowKey(workflow_id="prices:pointer", run_id="run:one")
+    pointer = temporaless_pb2.LatestWorkflowRunPointer(
+        key=key.to_proto(), status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS
+    )
+
+    class CorruptClient:
+        async def get_latest_workflow_run(self, _request):
+            return temporaless_pb2.GetLatestWorkflowRunResponse(found=False, pointer=pointer)
+
+    store = ConnectStore(CorruptClient())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="found=False"):
+        await store.get_latest_workflow_run(key.namespace, key.workflow_id)
+
+
+async def test_connect_client_rejects_cross_run_list_response() -> None:
+    key = WorkflowKey(workflow_id="prices:client", run_id="run:one")
+    misplaced = temporaless_pb2.ActivityRecord(
+        schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+        key=ActivityKey(
+            workflow_id=key.workflow_id,
+            run_id="run:other",
+            activity_id="fetch",
+        ).to_proto(),
+        activity_type="activity:test",
+        code_version="v1",
+        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+
+    class CorruptClient:
+        async def list_activities(self, _request):
+            return temporaless_pb2.ListActivitiesResponse(records=[misplaced])
+
+    store = ConnectStore(CorruptClient())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="requested workflow run"):
+        await store.list_activities(key)
+
+
+async def test_connect_client_maps_remote_timer_data_loss_to_storage_corruption() -> None:
+    key = TimerKey(workflow_id="prices:remote", run_id="run:one", timer_id="sleep")
+
+    class CorruptRemoteClient:
+        async def get_timer(self, _request):
+            raise ConnectError(Code.DATA_LOSS, "corrupt timer bytes")
+
+    store = ConnectStore(CorruptRemoteClient())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="corrupt storage data"):
+        await store.get_timer(key)
+
+
+async def test_connect_client_latest_pointer_requires_referenced_workflow() -> None:
+    key = WorkflowKey(workflow_id="prices:pointer", run_id="run:missing")
+    pointer = temporaless_pb2.LatestWorkflowRunPointer(
+        key=key.to_proto(),
+        status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
+    )
+    pointer.record_time.GetCurrentTime()
+    pointer.updated_at.GetCurrentTime()
+    pointer.run_order_time.CopyFrom(pointer.record_time)
+
+    class DanglingPointerClient:
+        async def get_latest_workflow_run(self, _request):
+            return temporaless_pb2.GetLatestWorkflowRunResponse(found=True, pointer=pointer)
+
+        async def get_workflow(self, _request):
+            return temporaless_pb2.GetWorkflowResponse(found=False)
+
+    store = ConnectStore(DanglingPointerClient())  # type: ignore[invalid-argument-type]
+
+    assert await store.get_latest_workflow_run("", key.workflow_id) is None
+
+
+async def test_record_store_service_maps_corrupt_point_response_to_data_loss() -> None:
+    requested = ActivityKey(
+        workflow_id="prices:service",
+        run_id="run:one",
+        activity_id="fetch",
+    )
+    misplaced = temporaless_pb2.ActivityRecord(
+        schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+        key=ActivityKey(
+            workflow_id=requested.workflow_id,
+            run_id="run:other",
+            activity_id=requested.activity_id,
+        ).to_proto(),
+        activity_type="activity:test",
+        code_version="v1",
+        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+
+    class CorruptStore:
+        async def get_activity(self, _key):
+            return misplaced
+
+    service = RecordStoreService(CorruptStore())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(ConnectError) as captured:
+        await service.get_activity(
+            temporaless_pb2.GetActivityRequest(key=requested.to_proto()), None
+        )
+
+    assert captured.value.code is Code.DATA_LOSS
 
 
 async def test_delete_run_deletes_all_claims_from_separate_claim_store(tmp_path) -> None:
@@ -207,11 +446,10 @@ async def test_delete_run_rejects_corrupt_record_listing_before_claim_deletion(
     await records_operator.create_dir(path_key.dir_path())
     await records_operator.write(path_key.path(), record.SerializeToString(deterministic=True))
 
-    with pytest.raises(ConnectError) as captured:
+    with pytest.raises(RunRecordValidationError) as captured:
         await store.delete_run(key)
 
-    assert captured.value.code is Code.DATA_LOSS
-    assert record_kind in captured.value.message
+    assert record_kind in str(captured.value)
     assert await records.get_workflow(key) is not None
     assert await claims.get_claim(claim_key) is not None
     assert await records_operator.exists(path_key.path())
@@ -366,10 +604,9 @@ async def test_delete_run_validates_entire_claim_listing_before_delete(tmp_path)
     corrupt = CorruptListingStore(claims, [target, misplaced])
     store = ConnectStore.local(records, corrupt)
 
-    with pytest.raises(ConnectError) as captured:
+    with pytest.raises(RunRecordValidationError):
         await store.delete_run(key)
 
-    assert captured.value.code is Code.DATA_LOSS
     assert corrupt.delete_calls == 0
     assert await claims.get_claim(target_key) is not None
 
@@ -517,3 +754,93 @@ async def test_connect_store_list_and_delete_round_trip(tmp_path) -> None:
 
     records, _ = await query.list_workflows("", "", temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
     assert [r.key.workflow_id for r in records] == ["prices:keep"]
+
+
+def _corrupt_point_response(record_kind: str):
+    workflow_id = "prices:client"
+    if record_kind == "workflow":
+        requested = WorkflowKey(workflow_id=workflow_id, run_id="run:one")
+        payload = WorkflowKey(workflow_id=workflow_id, run_id="run:other")
+        record = temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=payload.to_proto(),
+            workflow_type="workflow:test",
+            code_version="v1",
+            status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
+        )
+        return requested, temporaless_pb2.GetWorkflowResponse(found=True, record=record)
+    if record_kind == "activity":
+        requested = ActivityKey(
+            workflow_id=workflow_id,
+            run_id="run:one",
+            activity_id="fetch",
+        )
+        payload = ActivityKey(
+            workflow_id=workflow_id,
+            run_id="run:other",
+            activity_id="fetch",
+        )
+        record = temporaless_pb2.ActivityRecord(
+            schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+            key=payload.to_proto(),
+            activity_type="activity:test",
+            code_version="v1",
+            status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+        return requested, temporaless_pb2.GetActivityResponse(found=True, record=record)
+    if record_kind == "timer":
+        requested = TimerKey(
+            workflow_id=workflow_id,
+            run_id="run:one",
+            timer_id="wait",
+        )
+        payload = TimerKey(
+            workflow_id=workflow_id,
+            run_id="run:other",
+            timer_id="wait",
+        )
+        record = temporaless_pb2.TimerRecord(
+            schema_version=TIMER_RECORD_SCHEMA_VERSION,
+            key=payload.to_proto(),
+            timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
+            code_version="v1",
+            status=temporaless_pb2.TIMER_STATUS_FIRED,
+        )
+        return requested, temporaless_pb2.GetTimerResponse(found=True, record=record)
+    if record_kind == "event":
+        requested = EventKey(
+            workflow_id=workflow_id,
+            run_id="run:one",
+            event_id="approved",
+        )
+        payload = EventKey(
+            workflow_id=workflow_id,
+            run_id="run:other",
+            event_id="approved",
+        )
+        record = temporaless_pb2.EventRecord(
+            schema_version=EVENT_RECORD_SCHEMA_VERSION,
+            key=payload.to_proto(),
+        )
+        return requested, temporaless_pb2.GetEventResponse(found=True, record=record)
+    if record_kind == "claim":
+        requested = ClaimKey(
+            workflow_id=workflow_id,
+            run_id="run:one",
+            claim_id="activity:fetch",
+        )
+        payload = ClaimKey(
+            workflow_id=workflow_id,
+            run_id="run:other",
+            claim_id="activity:fetch",
+        )
+        record = temporaless_pb2.ClaimRecord(
+            schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+            key=payload.to_proto(),
+            owner_id="owner",
+            resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
+            resource_id="fetch",
+            code_version="v1",
+        )
+        return requested, temporaless_pb2.GetClaimResponse(found=True, record=record)
+    raise AssertionError(f"unsupported record kind: {record_kind}")

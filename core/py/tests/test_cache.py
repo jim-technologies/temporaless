@@ -22,6 +22,7 @@ from temporaless.storage import (
     ActivityKey,
     ClaimKey,
     OpenDALStore,
+    RunRecordValidationError,
     WorkflowKey,
 )
 from temporaless.v1 import temporaless_pb2
@@ -313,6 +314,67 @@ async def test_negative_cache_after_prefetch(inner_store, counter):
     )
     assert got is None
     assert counter.get_activity_calls == 0
+
+
+async def test_prefetch_rejects_cross_run_record_before_populating_cache() -> None:
+    scope = WorkflowKey(workflow_id="prices:cache", run_id="run:one")
+    misplaced = temporaless_pb2.ActivityRecord(
+        schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+        key=ActivityKey(
+            workflow_id=scope.workflow_id,
+            run_id="run:other",
+            activity_id="fetch",
+        ).to_proto(),
+        activity_type="activity:test",
+        code_version="v1",
+        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+
+    class CorruptPrefetchStore:
+        async def list_activities(self, _key):
+            return [misplaced]
+
+        async def list_timers(self, _key, _status):
+            return []
+
+        async def list_events(self, _key):
+            return []
+
+    cache = RunScopedCache(CorruptPrefetchStore(), scope)  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="requested workflow run"):
+        await cache.prefetch()
+
+    assert cache._activities == {}
+    assert cache._activities_listed is False
+    assert cache._timers_listed is False
+    assert cache._events_listed is False
+
+
+async def test_cache_revalidates_mutable_cached_record_before_return(inner_store) -> None:
+    scope = WorkflowKey(workflow_id="prices:cache", run_id="run:one")
+    key = ActivityKey(
+        workflow_id=scope.workflow_id,
+        run_id=scope.run_id,
+        activity_id="fetch",
+    )
+    record = temporaless_pb2.ActivityRecord(
+        schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+        key=key.to_proto(),
+        activity_type="activity:test",
+        code_version="v1",
+        status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    cache = RunScopedCache(inner_store, scope)
+    await cache.put_activity(record)
+    record.key.run_id = "run:other"
+
+    with pytest.raises(RunRecordValidationError, match="requested key"):
+        await cache.get_activity(key)
+
+    authoritative = await inner_store.get_activity(key)
+    assert authoritative is not None
+    assert authoritative.key.run_id == scope.run_id
 
 
 async def test_delete_invalidates_cache(inner_store, counter):

@@ -1,27 +1,26 @@
 schema-version = "1.11.0"
 
 [install]
+# Exact ceilings that resolve on Flox's four default systems as of 2026-07-14.
+# Upstream Go 1.26.5, Python 3.14.6, and uv 0.11.28 were not yet available on
+# x86_64-darwin together; the production container uses the newer Python/uv
+# releases directly from their upstream multi-architecture images.
 go.pkg-path = "go"
-python313.pkg-path = "python313"
+go.version = "1.26.4"
+python314.pkg-path = "python314"
+python314.version = "python3-3.14.4"
 uv.pkg-path = "uv"
+uv.version = "0.11.25"
 libffi.pkg-path = "libffi"
 buf.pkg-path = "buf"
-# Go linter. It is a CLI, not an importable module, so it cannot live in
-# go.mod — same thin-manifest rationale as clippy/rustfmt below for Rust.
-golangci-lint.pkg-path = "golangci-lint"
+buf.version = "1.71.0"
 gcc-unwrapped.pkg-path = "gcc-unwrapped"
 gcc-unwrapped.outputs = ["lib"]
-# Rust SDK (core/rs/). rustc + cargo only — third-party crates live in
-# core/rs/temporaless/Cargo.toml, same thin-manifest rationale as Go/Python.
-rustc.pkg-path = "rustc"
-cargo.pkg-path = "cargo"
-clippy.pkg-path = "clippy"
-rustfmt.pkg-path = "rustfmt"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"
 
 [hook]
 on-activate = '''
-  export UV_PYTHON="$(command -v python3.13)"
+  export UV_PYTHON="$(command -v python3.14)"
 '''

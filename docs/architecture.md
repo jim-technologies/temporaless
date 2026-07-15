@@ -52,7 +52,12 @@ Workflow records can be observed mid-flight: an `IN_PROGRESS` record is written 
 
 Activities and workflows can attach durable structured metadata via `workflow.Annotate(ctx, key, value)` (Go) or `temporaless.workflow.annotate(key, value)` (Python). Annotations are scoped to whichever record is currently being written — activity annotations land on the `ActivityRecord`, workflow-body annotations land on the `WorkflowRecord` — and survive replay because they are persisted alongside the result.
 
-External services deliver signals by writing `EventRecord` payloads at `events/{event_id}.binpb`. Workflow code calls `WaitEvent` (Go) or `Workflow.wait_event` (Python) and gets either the typed payload or an `EventPendingError` that the caller treats just like a timer pending — re-invoke later. This stays storage-first and requires no signal server.
+External services deliver signals by writing `EventRecord` payloads at
+`temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb`.
+Workflow code calls `WaitEvent` (Go) or `Workflow.wait_event` (Python) and gets
+either the typed payload or an `EventPendingError` that the caller treats just
+like a timer pending — re-invoke later. This stays storage-first and requires no
+signal server.
 
 The activity ID is the primary workflow authoring responsibility. It must be stable and meaningful. Reusing the same activity ID intentionally replays the stored result regardless of the new input bytes — pick a distinct id when you want a distinct execution.
 
@@ -85,7 +90,13 @@ async def fetch(request: Request) -> Response:
     ...
 ```
 
-For ConnectRPC service methods (`async def m(self, req, ctx) -> Response`), the `wrap_workflow_method` decorator wraps them as workflows without changing the method signature; inside the body, `current_workflow()` returns the active `Workflow` so activities, sleeps, and waits compose. Go's equivalent is `workflow.HandleConnect(ctx, req, opts)` inside a normal ConnectRPC handler.
+For ConnectRPC service methods (`async def m(self, req, ctx) -> Response`),
+`temporaless_connectworkflow.wrap_workflow_method` wraps them as workflows
+without changing the method signature; inside the body, `current_workflow()`
+returns the active `Workflow` so activities, sleeps, and waits compose. Go's
+equivalent is `connectworkflow.Handle(ctx, req, opts)` inside a normal
+ConnectRPC handler. The adapters live under `adapters/{py,go}/connectworkflow`;
+core workflow replay remains transport-agnostic.
 
 The core provides one options-driven workflow wrapper and one options-driven activity wrapper. The options carry either fixed IDs/options or a per-request resolver. Separate fixed and dynamic wrapper variants are intentionally avoided.
 
@@ -99,7 +110,7 @@ The core does not own market-data vendor clients, database writes, schedulers, q
 
 Adapters should sit next to the core when they adapt an external system or compatibility target:
 
-- ConnectRPC storage or activity host adapters
+- ConnectRPC storage or workflow-trigger adapters
 - Temporal migration adapters
 - GoCDK backend-specific claim adapters
 - scheduler indexes

@@ -14,6 +14,47 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+type dueTimersSpy struct {
+	storage.Store
+	calls     int
+	namespace string
+	now       time.Time
+	due       []storage.DueTimer
+	err       error
+}
+
+func (s *dueTimersSpy) DueTimers(_ context.Context, namespace string, now time.Time) ([]storage.DueTimer, error) {
+	s.calls++
+	s.namespace = namespace
+	s.now = now
+	return s.due, s.err
+}
+
+func TestDueTimersDelegatesOneStoreCall(t *testing.T) {
+	now := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+	want := []storage.DueTimer{{
+		Key: storage.NewTimerKey("workflow", "run", "wake"),
+	}}
+	store := &dueTimersSpy{due: want}
+
+	got, err := timerscanner.DueTimers(context.Background(), store, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 {
+		t.Fatalf("Store.DueTimers calls = %d, want 1", store.calls)
+	}
+	if store.namespace != "" {
+		t.Fatalf("namespace = %q, want empty all-namespace scope", store.namespace)
+	}
+	if !store.now.Equal(now) {
+		t.Fatalf("now = %s, want %s", store.now, now)
+	}
+	if len(got) != 1 || got[0].Key != want[0].Key {
+		t.Fatalf("due = %+v, want %+v", got, want)
+	}
+}
+
 func TestDueTimersFindsScheduledTimersInflight(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

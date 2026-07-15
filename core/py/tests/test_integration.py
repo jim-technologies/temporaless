@@ -33,7 +33,7 @@ from temporaless.inspector import (
     reset_workflow,
 )
 from temporaless.storage import ActivityKey, ClaimKey, WorkflowKey
-from temporaless.v1 import temporaless_pb2
+from temporaless.v1 import temporaless_connect, temporaless_pb2
 from temporaless.workflow import (
     WORKFLOW_EXECUTION_CLAIM_ID,
     ActivityError,
@@ -91,14 +91,33 @@ def remote_store(tmp_path):
         raise RuntimeError("uvicorn server failed to start")
     try:
         address = f"http://127.0.0.1:{port}"
-        yield ConnectStore.from_address(address), ConnectQueryStore.from_address(address)
+        yield (
+            ConnectStore.from_address(address),
+            ConnectQueryStore.from_address(address),
+            address,
+        )
     finally:
         server.should_exit = True
         thread.join(timeout=5)
 
 
+async def test_generated_client_defaults_to_google_protobuf_codec(remote_store) -> None:
+    """The generated client must work without a Temporaless wrapper.
+
+    connectrpc 0.11 defaults to protobuf-py, while Temporaless deliberately
+    generates Google protobuf messages. The matching generator option owns
+    this compatibility at the generated boundary.
+    """
+    _remote_store, _remote_query, address = remote_store
+    async with temporaless_connect.RecordStoreServiceClient(address) as client:
+        response = await client.get_store_capabilities(
+            temporaless_pb2.GetStoreCapabilitiesRequest()
+        )
+    assert response.claim_capability == temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
+
+
 async def test_remote_workflow_run_end_to_end(remote_store) -> None:
-    remote_store, remote_query = remote_store
+    remote_store, remote_query, _address = remote_store
     options = Options(
         workflow_id="remote:retry",
         run_id="2026-05-04",
@@ -184,7 +203,7 @@ async def test_remote_workflow_run_end_to_end(remote_store) -> None:
 
 
 async def test_remote_workflow_singleflight_busy_release_and_replay(remote_store) -> None:
-    remote_store, _remote_query = remote_store
+    remote_store, _remote_query, _address = remote_store
     options = Options(
         workflow_id="remote:singleflight",
         run_id="run:1",
@@ -247,7 +266,7 @@ async def test_remote_workflow_singleflight_busy_release_and_replay(remote_store
 
 
 async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:
-    remote_store, remote_query = remote_store
+    remote_store, remote_query, _address = remote_store
     """The compound RPCs (Sweep + DueTimers) work over the real ASGI wire.
     In-process tests cover the service handlers; this proves the proto
     serialization round-trip too. One round-trip per call rather than the

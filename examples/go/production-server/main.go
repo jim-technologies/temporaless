@@ -1,13 +1,13 @@
-// Production-ready Temporaless server example (Go parity with
+// Production ConnectStore server wiring example (Go parity with
 // examples/py/production_server.py).
 //
-// Demonstrates the full production wiring as one runnable binary:
+// Demonstrates the storage-service boundary as one runnable binary:
 //
 //  1. ConnectStore exposed over ConnectRPC for cross-process / cross-region
-//     access. Uses local filesystem; swap the OpenDAL operator scheme to
-//     s3 / gcs / azblob for real deployments.
-//  2. Bearer-token auth interceptor — rejects unauthenticated requests with
-//     CodeUnauthenticated *before* the handler runs.
+//     access. This example intentionally compiles only the filesystem OpenDAL
+//     service and requires an explicit unsafe acknowledgement.
+//  2. Outer bearer-token auth — rejects unauthenticated requests before
+//     ConnectRPC reads or decodes their bodies.
 //  3. Structured JSON logging via log/slog with per-request correlation IDs
 //     threaded via context.Context.
 //  4. HTTP health endpoints (/healthz liveness, /readyz readiness) for
@@ -17,7 +17,8 @@
 //
 // Run:
 //
-//	AUTH_TOKEN=secret123 go run ./examples/go/production-server/
+//	AUTH_TOKEN=secret123 TEMPORALESS_STORAGE_ROOT=/var/lib/temporaless \
+//	  TEMPORALESS_ALLOW_UNSAFE_FS=1 go run ./examples/go/production-server/
 //	curl http://localhost:8080/healthz
 //	curl -X POST -H 'authorization: Bearer secret123' \
 //	     http://localhost:8080/temporaless.v1.RecordStoreService/GetStoreCapabilities
@@ -25,6 +26,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,35 +50,65 @@ type ctxKey int
 
 const correlationIDKey ctxKey = 1
 
-// bearerTokenAuth is a unary connect.Interceptor that rejects unauthenticated
-// requests + logs per-RPC outcomes with a correlation ID. Implements
-// connect.Interceptor by being a function value that wraps UnaryFunc — the
-// idiomatic Go shape for Connect interceptors.
+const (
+	maxConnectMessageBytes = 8 << 20 // 8 MiB decoded protobuf message.
+	maxHTTPRequestBytes    = 8 << 20 // 8 MiB total encoded HTTP request body.
+	serverReadTimeout      = 15 * time.Second
+	serverWriteTimeout     = 30 * time.Second
+	serverIdleTimeout      = 60 * time.Second
+	serverHeaderTimeout    = 5 * time.Second
+)
+
+// bearerTokenAuth rejects unauthenticated HTTP requests before ConnectRPC reads
+// or decodes their bodies.
 type bearerTokenAuth struct {
 	token  string
 	logger *slog.Logger
 }
 
-func (a *bearerTokenAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		correlationID := req.Header().Get("x-correlation-id")
+func (a *bearerTokenAuth) Wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		correlationID := req.Header.Get("x-correlation-id")
 		if correlationID == "" {
 			correlationID = uuid.NewString()
 		}
-		ctx = context.WithValue(ctx, correlationIDKey, correlationID)
-		start := time.Now()
+		ctx := context.WithValue(req.Context(), correlationIDKey, correlationID)
 
-		authz := req.Header().Get("authorization")
+		authz := req.Header.Get("authorization")
 		if !strings.HasPrefix(authz, "Bearer ") {
 			a.logger.WarnContext(ctx, "auth.missing_bearer_prefix",
 				slog.String("correlation_id", correlationID))
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("bearer token required"))
+			http.Error(w, "bearer token required", http.StatusUnauthorized)
+			return
 		}
-		if authz[len("Bearer "):] != a.token {
+		provided := authz[len("Bearer "):]
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(a.token)) != 1 {
 			a.logger.WarnContext(ctx, "auth.token_mismatch",
 				slog.String("correlation_id", correlationID))
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid bearer token"))
+			http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+			return
 		}
+
+		next.ServeHTTP(w, req.WithContext(ctx))
+	})
+}
+
+// rpcLogger records authenticated unary RPC outcomes with a correlation ID.
+type rpcLogger struct {
+	logger *slog.Logger
+}
+
+func (l *rpcLogger) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		correlationID, _ := ctx.Value(correlationIDKey).(string)
+		if correlationID == "" {
+			correlationID = req.Header().Get("x-correlation-id")
+			if correlationID == "" {
+				correlationID = uuid.NewString()
+			}
+		}
+		ctx = context.WithValue(ctx, correlationIDKey, correlationID)
+		start := time.Now()
 
 		resp, err := next(ctx, req)
 		elapsed := time.Since(start)
@@ -86,26 +118,26 @@ func (a *bearerTokenAuth) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			slog.Duration("elapsed", elapsed),
 		}
 		if err == nil {
-			a.logger.InfoContext(ctx, "rpc.ok", fields...)
+			l.logger.InfoContext(ctx, "rpc.ok", fields...)
 			return resp, nil
 		}
 		var connectErr *connect.Error
 		if errors.As(err, &connectErr) {
-			a.logger.WarnContext(ctx, "rpc.connect_error",
+			l.logger.WarnContext(ctx, "rpc.connect_error",
 				append(fields, slog.String("code", connectErr.Code().String()))...)
 		} else {
-			a.logger.ErrorContext(ctx, "rpc.unhandled",
+			l.logger.ErrorContext(ctx, "rpc.unhandled",
 				append(fields, slog.String("err", err.Error()))...)
 		}
 		return resp, err
 	}
 }
 
-func (a *bearerTokenAuth) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+func (l *rpcLogger) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return next
 }
 
-func (a *bearerTokenAuth) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+func (l *rpcLogger) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
 }
 
@@ -122,8 +154,7 @@ func run() error {
 
 	token := os.Getenv("AUTH_TOKEN")
 	if token == "" {
-		logger.Warn("auth.AUTH_TOKEN_unset_using_dev_default")
-		token = "dev-token-only"
+		return errors.New("AUTH_TOKEN is required")
 	}
 
 	port := os.Getenv("PORT")
@@ -133,11 +164,10 @@ func run() error {
 
 	root := os.Getenv("TEMPORALESS_STORAGE_ROOT")
 	if root == "" {
-		var err error
-		root, err = os.MkdirTemp("", "temporaless-prod-")
-		if err != nil {
-			return fmt.Errorf("mkdir storage root: %w", err)
-		}
+		return errors.New("TEMPORALESS_STORAGE_ROOT is required")
+	}
+	if os.Getenv("TEMPORALESS_ALLOW_UNSAFE_FS") != "1" {
+		return errors.New("filesystem storage is single-node only; set TEMPORALESS_ALLOW_UNSAFE_FS=1 to acknowledge")
 	}
 	logger.Info("storage.init", slog.String("root", root))
 
@@ -149,7 +179,12 @@ func run() error {
 	store := storage.NewOpenDALStore(operator)
 
 	auth := &bearerTokenAuth{token: token, logger: logger}
-	path, connectHandler := connectstore.NewHTTPHandler(store, connect.WithInterceptors(auth))
+	rpcLog := &rpcLogger{logger: logger}
+	path, connectHandler := connectstore.NewHTTPHandler(
+		store,
+		connect.WithInterceptors(rpcLog),
+		connect.WithReadMaxBytes(maxConnectMessageBytes),
+	)
 
 	var ready atomic.Bool
 
@@ -167,12 +202,15 @@ func run() error {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("starting"))
 	})
-	mux.Handle(path, connectHandler)
+	mux.Handle(path, auth.Wrap(connectHandler))
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+		Handler:           http.MaxBytesHandler(mux, maxHTTPRequestBytes),
+		ReadTimeout:       serverReadTimeout,
+		ReadHeaderTimeout: serverHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

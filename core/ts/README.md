@@ -16,14 +16,18 @@ The npm package entry lives at the repository root so clients can install it
 directly from git without publishing to npm:
 
 ```sh
-npm install "github:jim-technologies/temporaless#main" @connectrpc/connect-web
+npm install "github:jim-technologies/temporaless#RELEASE_TAG" @connectrpc/connect-web
 ```
 
 For a private repository, use the SSH form:
 
 ```sh
-npm install "git+ssh://git@github.com/jim-technologies/temporaless.git#main" @connectrpc/connect-web
+npm install "git+ssh://git@github.com/jim-technologies/temporaless.git#RELEASE_TAG" @connectrpc/connect-web
 ```
+
+Replace `RELEASE_TAG` with the same root `vX.Y.Z` tag used by the Go, Python,
+and Rust packages. Every Temporaless SDK and adapter shares `VERSION`; mutable
+branch names are intentionally not installation examples.
 
 Use `@connectrpc/connect-node` instead of `@connectrpc/connect-web` for Node
 services.

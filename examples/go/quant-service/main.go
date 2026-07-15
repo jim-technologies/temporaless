@@ -7,7 +7,7 @@
 //	    ctx context.Context, req *connect.Request[Req],
 //	) (*connect.Response[Resp], error)
 //
-// and call workflow.HandleConnect inside it. Replay, idempotency, and
+// and call connectworkflow.Handle inside it. Replay, idempotency, and
 // persistence follow without changing the handler interface.
 //
 // To deploy this over real gRPC/ConnectRPC:
@@ -41,6 +41,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
+	"github.com/jim-technologies/temporaless/adapters/go/connectworkflow"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -61,13 +62,13 @@ func newQuantService(store storage.Store) *QuantService {
 
 // FetchPrices is a real ConnectRPC handler signature. The framework wraps it
 // as a workflow keyed on prices:{symbol}. Two calls with the same symbol +
-// run_id produce the same result without re-invoking the vendor. HandleConnect
+// run_id produce the same result without re-invoking the vendor. Handle
 // auto-maps framework errors to the right *connect.Error code.
 func (s *QuantService) FetchPrices(
 	ctx context.Context,
 	req *connect.Request[wrapperspb.StringValue],
 ) (*connect.Response[wrapperspb.StringValue], error) {
-	return workflow.HandleConnect(
+	return connectworkflow.Handle(
 		ctx, req,
 		workflow.WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 			Store: s.store,
@@ -85,13 +86,13 @@ func (s *QuantService) FetchPrices(
 }
 
 // ComposeSignal is the second canonical handler — sequentially fans out to
-// per-symbol activities inside one workflow. Each activity record is keyed
-// independently, so partial failures only retry the symbol that failed.
+// per-symbol activities inside one workflow. Each activity has its own key and
+// default retry policy, so transient partial failures retry only that symbol.
 func (s *QuantService) ComposeSignal(
 	ctx context.Context,
 	req *connect.Request[wrapperspb.StringValue],
 ) (*connect.Response[wrapperspb.StringValue], error) {
-	return workflow.HandleConnect(
+	return connectworkflow.Handle(
 		ctx, req,
 		workflow.WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 			Store: s.store,
@@ -126,12 +127,12 @@ func (s *QuantService) composeSignalBody(
 	symbols := []string{"AAPL", "MSFT", "GOOG", "TSLA", "NVDA"}
 	prices := make([]string, 0, len(symbols))
 	for _, symbol := range symbols {
-		out, err := workflow.ExecuteActivity(
+		out, err := workflow.Activity(
 			ctx,
-			&workflow.ActivityOptions{ActivityId: "fetch:" + symbol},
-			wrapperspb.String(symbol),
-			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 			s.vendorFetch,
+			wrapperspb.String(symbol),
+			workflow.WithActivityID("fetch:"+symbol),
+			workflow.WithRetryTimerID("retry:fetch:"+symbol),
 		)
 		if err != nil {
 			return nil, err

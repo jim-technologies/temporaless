@@ -9,10 +9,15 @@ It does not emulate the Temporal server. It delegates activities, retries, timeo
 If your existing code base has activities and workflows that already follow the Temporaless convention — one protobuf request, one protobuf response, errors raised normally — you can run them on a Temporal cluster by changing only the registration:
 
 ```python
-from temporaless_temporalcompat import wrap_activity, wrap_workflow
+from temporaless_temporalcompat import (
+    ActivityWrapOptions,
+    WorkflowWrapOptions,
+    wrap_activity,
+    wrap_workflow,
+)
 
 # Before: plain Python functions
-def fetch_price(req: FetchRequest) -> FetchResponse:
+async def fetch_price(req: FetchRequest) -> FetchResponse:
     ...
 
 async def price_workflow(req: PriceRequest) -> PriceResponse:
@@ -23,8 +28,14 @@ async def price_workflow(req: PriceRequest) -> PriceResponse:
     ...
 
 # After: register on a Temporal worker
-fetch_price_activity = wrap_activity(fetch_price, name="fetch_price")
-PriceWorkflow = wrap_workflow(price_workflow, name="PriceWorkflow")
+fetch_price_activity = wrap_activity(
+    fetch_price,
+    ActivityWrapOptions(name="fetch_price"),
+)
+PriceWorkflow = wrap_workflow(
+    price_workflow,
+    WorkflowWrapOptions(name="PriceWorkflow"),
+)
 
 # Worker setup as usual
 async with Worker(client, task_queue="...", workflows=[PriceWorkflow], activities=[fetch_price_activity]):
@@ -37,7 +48,8 @@ The wrapped functions retain their unary protobuf shape; Temporal handles execut
 
 - one protobuf workflow request and one protobuf workflow response
 - one protobuf activity request and one protobuf activity response
-- both **sync and async** activity / workflow bodies (the wrapper awaits if the result is awaitable)
+- async-only activity and workflow bodies; sync callables are rejected at wrap time
+- one explicit `ActivityWrapOptions` / `WorkflowWrapOptions` object per wrapper boundary
 - Temporal SDK activity scheduling through `workflow.execute_activity`
 - Temporal SDK durable timers through `workflow.sleep`
 - Temporal SDK `RetryPolicy`
@@ -67,7 +79,10 @@ For the inverse direction — running Temporal-shaped code against a Temporaless
 
 ## Testing
 
-The adapter has 99% line coverage exercising sync + async workflow / activity bodies, retry policies, durable timers, timeouts, input validation, and dynamic class identity. Tests run against `temporalio.testing.WorkflowEnvironment.start_time_skipping()` so no Temporal server is required.
+The adapter tests async workflow/activity bodies, retry policies, durable
+timers, timeouts, input validation, and dynamic class identity. They run
+against `temporalio.testing.WorkflowEnvironment.start_time_skipping()` so no
+Temporal server is required.
 
 ```sh
 uv run --project adapters/py/temporalcompat pytest adapters/py/temporalcompat/tests

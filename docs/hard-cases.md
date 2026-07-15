@@ -17,7 +17,7 @@ For production, one of these must be added:
 
 Even with claims, activities must tolerate a crash after an external side effect but before its result record is stored. Do not use check-then-write as a lock; it is not atomic.
 
-The runtime releases the workflow claim after every orderly workflow return and releases activity claims only after a persisted terminal/retry boundary. It retains an activity claim when cancellation or storage failure leaves the activity outcome ambiguous. A process crash or failed delete can therefore leave a claim behind. Its lease timestamp does not authorize takeover: an expired create-only claim remains busy until an operator verifies no worker is live and deletes it. CAS refresh/takeover is not implemented by the current core.
+The runtime releases the workflow claim after every orderly workflow return. An activity claim is also released when cancellation is observed after a successful conditional create but before the activity body starts: no application work is ambiguous at that point. After body entry, the claim is released only after a persisted terminal/retry boundary; cancellation or storage failure before that boundary retains it because the activity outcome may be ambiguous. A process crash or failed delete can therefore leave a claim behind. Its lease timestamp does not authorize takeover: an expired create-only claim remains busy until an operator verifies no worker is live and deletes it. CAS refresh/takeover is not implemented by the current core.
 
 ### Backend atomicity expectations
 
@@ -67,15 +67,61 @@ Production side-effect activities need an outbox or domain-specific idempotency 
 
 ## Retries
 
-Activities accept an optional `temporaless.v1.RetryPolicy` on `ActivityOptions`. When set, the runtime retries in-process with exponential backoff (`initial_interval`, `backoff_coefficient`, `maximum_interval`, `maximum_attempts`). Errors carrying a `code` listed in `non_retryable_error_codes` skip remaining retries and fail immediately.
+Activities accept an optional `temporaless.v1.RetryPolicy` on `ActivityOptions`. When set, the runtime retries with exponential backoff (`initial_interval`, `backoff_coefficient`, `maximum_interval`, `maximum_attempts`). Short backoffs remain in-process; waits at or above `durable_backoff_threshold` use durable timers. Errors carrying a `code` listed in `non_retryable_error_codes` skip remaining retries and fail immediately.
+
+When durable backoff is enabled, `ActivityOptions.retry_timer_id` is required
+and caller-supplied. Keep it stable and unique within the workflow run, just
+like `activity_id`; Temporaless never generates it.
+
+The policy delay is derived from the failed attempt number, so replay computes the same schedule as uninterrupted execution. `ActivityFailure.retry_after` is a floor for that failure's wait only; it does not become the base of later exponential delays. The normalized effective policy is stored on every activity record, and a `RETRYING` replay rejects policy drift under the same activity identity.
 
 Activities surface coded failures by returning `*workflow.ActivityError` (Go) or raising `workflow.ActivityError` (Python) with a stable string code. Errors without a code are still retried until exhaustion.
 
-After each failed attempt with retries remaining, the runtime persists `ActivityRecord{status: RETRYING, attempts: [...so far]}` before sleeping the backoff. If the process dies during the sleep, the next invocation reads the RETRYING record and resumes from `len(attempts) + 1` rather than restarting from attempt 1 — the full attempt history is preserved across process boundaries.
+After each failed attempt with retries remaining, short backoffs persist
+`ActivityRecord{status: RETRYING, attempts: [...so far]}` before sleeping. For
+durable backoffs, the runtime publishes the caller-supplied retry timer first,
+then the RETRYING record. A crash between those writes preserves a wake and may
+repeat the ambiguous failed attempt at-least-once; it cannot silently strand
+the workflow or bypass a future timer on immediate redelivery.
 
-With claims enabled, a fully persisted durable retry releases its activity claim before returning pending. Any later invocation may acquire a fresh claim and resume; owner equality is never used as proof that the old attempt is gone. A due retry timer is marked fired only after claim acquisition, so a busy claimant does not consume the wakeup.
+With claims enabled, a fully persisted durable retry releases its activity claim before returning pending. Any later invocation may acquire a fresh claim and resume; owner equality is never used as proof that the old attempt is gone. A busy claimant leaves the due retry timer scheduled so another invocation can consume the wakeup.
+
+A due retry timer remains scheduled while its resumed activity attempt is
+ambiguous. A new durable retry overwrites the same caller-supplied timer key;
+the reciprocal `retry_activity_id` prevents accidental cross-activity reuse. A
+terminal activity record is persisted before the timer is marked fired. If
+timer cleanup fails, the terminal activity outcome remains authoritative and a
+later terminal replay retries cleanup.
+
+`RETRYING` replay also repairs the nontransactional timer/activity boundary.
+A missing or compatible older retry timer is recreated from the normalized
+policy and persisted `next_attempt_at`; a compatible newer timer published
+before a lagging activity write is honored without moving the deadline
+backward. Operators should therefore re-invoke a valid `RETRYING` run before
+resetting it. A scanner's ledger-only wake is dispatch metadata, not a timer to
+store as repair.
 
 On exhaustion, the runtime writes `ActivityRecord{status: FAILED, failure: ..., attempts: [...]}` and surfaces the failure to the workflow. On a later workflow re-invocation the stored failure is replayed rather than re-executed; the inspector adapter's `ResetActivity` clears it for re-execution.
+
+### Batch checkpoints
+
+Use one stable `activity_id` per partition (for example `batch:000` through
+`batch:099`). Each completed `ActivityRecord` is the checkpoint: if 90
+partitions complete while 10 are still retrying, replay returns the 90 stored
+results and runs only the remaining attempts. No separate checkpoint service is
+required.
+
+If those 10 exhaust their policies, the activity and workflow outcomes become
+terminal. Core deliberately has no workflow-level retry policy. An operator can
+retry only the failed partitions, but the reset must be quiesced and
+child-first: validate and delete each failed activity's paired
+`retry_timer_id` timer, delete those 10 failed activity records, then delete
+the parent workflow record **last** with `inspector.ResetWorkflow` /
+`reset_workflow`. Invoke once before restoring ordinary dispatch. The 90
+successful activity records remain and replay without re-execution. See the
+operator sequence in `docs/runbook.md`. Alternatively, model every partition
+as its own workflow run when independent terminal/retry control is more useful
+than one aggregate result.
 
 ## Long Running Activities
 
@@ -91,7 +137,22 @@ For market-data ingestion, prefer small activities:
 
 Durable sleeps are timer records, not blocked processes. A workflow that reaches a future timer returns a pending error and must be invoked again after the timer is due.
 
-Pending timers also write compact due-ledger entries under the bucket. Timer scanners list that ledger by sortable `fire_at`, stop when they pass `now`, and delete stale entries when timers fire or are cancelled. They do not walk every workflow run.
+When a due sleep resumes, its timer remains scheduled while the rest of that workflow invocation is ambiguous. The runtime marks it fired only after persisting a later wake-bearing timer or a terminal workflow record. Cancellation, claim contention, an event/dependency pending result, or a failed terminal write therefore leaves the original wakeup redeliverable. Without workflow claims this may produce overlapping at-least-once dispatches; with claims, a busy duplicate leaves the timer untouched.
+
+Timer transitions also write one deterministic prepared object under the
+bucket's compact due ledger. The object contains the full `TimerRecord` and is
+written before the canonical timer point. Scanners list that ledger, repair any
+missing, stale, or corrupt canonical point, and wait for a later scan to observe
+both exact copies before dispatch. A `CANCELED` prepared tombstone suppresses an
+older point after an interrupted delete. Scanners do not walk every workflow
+run.
+
+Consequently, scanner dispatch is at-least-once and ledger retention must
+cover the maximum durable-timer horizon plus the tolerated scheduler outage
+and recovery window. If timers are unbounded, exempt active run timer records
+and `_due` prepared records from lifecycle expiry. Remove terminal tombstones
+only offline while writers/scanners are quiesced; the generic ledger has no
+online compaction mode.
 
 Cron should be implemented as a scheduler adapter that creates workflow runs from a schedule. The bundled scheduler seeds from latest-run pointer objects written by the bucket store. SQL can be introduced as an optional query index for search and large operational views, but the core must not require it.
 

@@ -22,4 +22,8 @@ Operational notes:
   self-heal. Runtime-created scheduled timers always set `fire_at`; malformed
   scheduled timer records with unset `fire_at` are outside the supported record
   contract and may be ignored by the index.
+- SQLite operations and lock acquisition run on worker threads so index I/O
+  does not block the async runtime. Call `await store.close()` during graceful
+  shutdown; close waits for any in-flight index operation without blocking the
+  event loop.
 - Postgres is future work. This package currently opens SQLite files only.

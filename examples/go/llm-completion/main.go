@@ -2,8 +2,8 @@
 //
 // A realistic vendor-LLM activity uses the full stack:
 //
-//   - workflow.Activity[...] — one-line activity dispatch with auto-inferred
-//     activity_id (from the function name) and a sensible default retry
+//   - workflow.Activity[...] — one-line activity dispatch with explicit,
+//     replay-stable activity and retry-timer IDs plus a sensible default retry
 //     policy (3 attempts, 1s initial, 2x backoff, 30s max, 30s durable
 //     threshold).
 //   - outbox.IdempotencyKey — stable per-activity dedup key for the vendor's
@@ -127,13 +127,17 @@ func main() {
 	fmt.Printf("  LLM calls during replay: %d (should be 0)\n", llmAttempts.Load())
 }
 
-// askLLMWorkflow — one line per activity, defaults from the framework.
-// workflow.Activity infers the activity_id from fakeLLMComplete's function
-// name and applies workflow.DefaultRetryPolicy(). To override, pass
-// workflow.WithActivityID(...) or workflow.WithRetryPolicy(...).
+// askLLMWorkflow uses explicit application-owned activity and retry-timer IDs
+// while keeping the framework's default retry policy.
 func askLLMWorkflow(ctx context.Context, prompt *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 	workflow.Annotate(ctx, "request_kind", "qa")
-	return workflow.Activity(ctx, fakeLLMComplete, prompt)
+	return workflow.Activity(
+		ctx,
+		fakeLLMComplete,
+		prompt,
+		workflow.WithActivityID("llm:complete"),
+		workflow.WithRetryTimerID("retry:llm:complete"),
+	)
 }
 
 // fakeLLMComplete — what a vendor LLM call looks like under the framework.
@@ -150,7 +154,7 @@ func askLLMWorkflow(ctx context.Context, prompt *wrapperspb.StringValue) (*wrapp
 //     becomes a timer record instead of holding the process alive.
 func fakeLLMComplete(ctx context.Context, prompt *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 	wf, _ := workflow.Current(ctx)
-	idempotencyKey := outbox.IdempotencyKey(wf, "fakeLLMComplete")
+	idempotencyKey := outbox.IdempotencyKey(wf, "llm:complete")
 	workflow.Annotate(ctx, "vendor", "openai")
 	workflow.Annotate(ctx, "model", "claude-opus-4-7")
 	workflow.Annotate(ctx, "idempotency_key", idempotencyKey)
@@ -182,18 +186,11 @@ func printAnnotations(ctx context.Context, store *storage.OpenDALStore) {
 	}
 	fmt.Printf("  workflow annotations: %v\n", wf.GetAnnotations())
 
-	// Activity ID is the inferred function name (main.fakeLLMComplete after
-	// sanitization). Use the helper to look it up the same way.
-	activityID, err := workflow.InferActivityID(fakeLLMComplete)
-	if err != nil {
-		fmt.Printf("  infer activity id: %v\n", err)
-		return
-	}
 	act, _, err := store.GetActivity(ctx, storage.ActivityKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: "llm:answer",
 		RunID:      "2026-05-02-r1",
-		ActivityID: activityID,
+		ActivityID: "llm:complete",
 	})
 	if err != nil {
 		fmt.Printf("  activity record error: %v\n", err)

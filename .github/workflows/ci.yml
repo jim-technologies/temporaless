@@ -3,6 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
+    # Run every tag so the version gate can reject language-/SDK-prefixed tags
+    # instead of silently leaving them unchecked.
+    tags: ["**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -11,15 +14,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   gate:
     name: full-gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -28,49 +36,182 @@ jobs:
         run: npm ci
 
       - name: Install Flox
-        uses: flox/install-flox-action@v2
+        uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
 
       # Generated proto files are committed (see core/go/gen and
-      # core/py/src/temporaless/v1). The gate's `buf generate` step
-      # validates they're up-to-date; we skip it on rate-limited days
-      # by setting BUF_SKIP_GENERATE=1 — local dev still runs it.
+      # core/py/src/temporaless/v1). Trusted CI regenerates them when BUF_TOKEN
+      # is available; fork/missing-secret runs validate the checked-in
+      # descriptor and compile every generated consumer instead.
       - name: Run gate
         env:
           BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
         run: flox activate -- scripts/check
 
   go-build:
-    if: ${{ vars.TEMPORALESS_CHECK_GO_RUST == '1' }}
-    # Quick parallel job that builds Go without flox so a Go-only typo
-    # surfaces fast even if the full gate is queued. During the Python v2
-    # storage transition, Go/Rust storage parity is tracked as follow-up and
-    # this job runs only when TEMPORALESS_CHECK_GO_RUST is enabled as a repo
-    # variable.
+    # Quick parallel build so a Go-only typo surfaces while the full gate is
+    # still running. Flox supplies Go and libffi consistently with local dev.
     name: go-build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          go-version: stable
-          cache: true
-      - run: go build ./...
-      - run: go vet ./...
+          fetch-depth: 0
+      - name: Install Flox
+        uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
+      - run: flox activate -- go build ./...
+      - run: flox activate -- go vet ./...
 
   go-check:
-    if: ${{ vars.TEMPORALESS_CHECK_GO_RUST == '1' }}
     # Go-only gate (gofmt-check + vet + golangci-lint + race tests) via the
-    # top-level Makefile. golangci-lint comes from the pinned Flox env, so this
-    # job activates Flox. During the Python v2 storage transition, Go/Rust
-    # storage parity is tracked as follow-up and this job runs only when
-    # TEMPORALESS_CHECK_GO_RUST is enabled as a repo variable.
+    # top-level Makefile. Go comes from Flox; golangci-lint is a pinned Go tool.
     name: go-check
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
       - name: Install Flox
-        uses: flox/install-flox-action@v2
+        uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
       - name: make check
         run: flox activate -- make check
+
+  rust-check:
+    # Rust is experimental and deliberately outside the first-class Flox
+    # environment. Keep it independently reproducible and mandatory in CI.
+    name: rust-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.0
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  git-install:
+    # Package each SDK from an immutable Git commit in a clean consumer
+    # environment. A local bare origin keeps this exact for pull-request merge
+    # commits too, which are not guaranteed to be fetchable by raw SHA from the
+    # public repository URL.
+    name: git-sha-install
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.0
+
+      - name: Install Flox
+        uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
+
+      - name: Create immutable Git source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          source_repo="$RUNNER_TEMP/temporaless.git"
+          git clone --bare "$GITHUB_WORKSPACE" "$source_repo"
+          git --git-dir="$source_repo" fetch "$GITHUB_WORKSPACE" \
+            "${source_sha}:refs/heads/ci-source"
+          {
+            echo "TEMPORALESS_GIT_REPO=$source_repo"
+            echo "TEMPORALESS_GIT_SHA=$source_sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Python packages from Git SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/python-git-install"
+          source_url="git+file://${TEMPORALESS_GIT_REPO}@${TEMPORALESS_GIT_SHA}"
+          flox activate -d "$GITHUB_WORKSPACE" -- uv venv "$venv"
+          flox activate -d "$GITHUB_WORKSPACE" -- uv pip install --python "$venv/bin/python" \
+            "$source_url#subdirectory=core/py"
+          for project in connectworkflow indexstore prefectcompat temporalcompat; do
+            flox activate -d "$GITHUB_WORKSPACE" -- uv pip install --python "$venv/bin/python" \
+              "$source_url#subdirectory=adapters/py/$project"
+          done
+          flox activate -d "$GITHUB_WORKSPACE" -- "$venv/bin/python" -c \
+            'import temporaless, temporaless_connectworkflow, temporaless_indexstore, temporaless_prefectcompat, temporaless_temporalcompat'
+          TEMPORALESS_EXPECTED_VERSION="$(tr -d '\n' < "$GITHUB_WORKSPACE/VERSION")"
+          export TEMPORALESS_EXPECTED_VERSION
+          flox activate -d "$GITHUB_WORKSPACE" -- "$venv/bin/python" -c \
+            'import importlib.metadata, os; packages = ("temporaless", "temporaless-connectworkflow", "temporaless-indexstore", "temporaless-prefectcompat", "temporaless-temporalcompat"); expected = os.environ["TEMPORALESS_EXPECTED_VERSION"]; actual = {name: importlib.metadata.version(name) for name in packages}; assert set(actual.values()) == {expected}, (expected, actual)'
+
+      - name: Install Go module from Git SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/go-git-install"
+          mkdir -p "$consumer"
+          cd "$consumer"
+          flox activate -d "$GITHUB_WORKSPACE" -- go mod init example.com/temporaless-install-check
+          export GIT_CONFIG_COUNT=3
+          export GIT_CONFIG_KEY_0="url.file://${TEMPORALESS_GIT_REPO}.insteadOf"
+          export GIT_CONFIG_VALUE_0="https://github.com/$GITHUB_REPOSITORY.git"
+          export GIT_CONFIG_KEY_1="url.file://${TEMPORALESS_GIT_REPO}.insteadOf"
+          export GIT_CONFIG_VALUE_1="https://github.com/$GITHUB_REPOSITORY"
+          export GIT_CONFIG_KEY_2=protocol.file.allow
+          export GIT_CONFIG_VALUE_2=always
+          export GOPRIVATE="github.com/$GITHUB_REPOSITORY"
+          export GONOSUMDB="github.com/$GITHUB_REPOSITORY"
+          export GOPROXY=direct
+          flox activate -d "$GITHUB_WORKSPACE" -- go get \
+            "github.com/$GITHUB_REPOSITORY/core/go/workflow@$TEMPORALESS_GIT_SHA"
+          flox activate -d "$GITHUB_WORKSPACE" -- go list \
+            "github.com/$GITHUB_REPOSITORY/core/go/workflow"
+          flox activate -d "$GITHUB_WORKSPACE" -- go build \
+            "github.com/$GITHUB_REPOSITORY/core/go/workflow"
+
+      - name: Install Rust crate from Git SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/rust-git-install"
+          cargo init --lib --name temporaless_install_check "$consumer"
+          cd "$consumer"
+          cargo add temporaless \
+            --git "file://${TEMPORALESS_GIT_REPO}" \
+            --rev "$TEMPORALESS_GIT_SHA"
+          cargo check --locked
+
+      - name: Install npm package from Git SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/npm-git-install"
+          mkdir -p "$consumer"
+          cd "$consumer"
+          npm init --yes
+          # npm 12 defaults Git dependencies to disabled. Temporaless and its
+          # pinned Invariant Protocol dependency are both intentionally
+          # installed from immutable Git commits in this consumer test.
+          npm install --allow-git=all \
+            "git+file://${TEMPORALESS_GIT_REPO}#${TEMPORALESS_GIT_SHA}"
+          node --input-type=module --eval \
+            "await import('@jim-technologies/temporaless'); await import('@jim-technologies/temporaless/invariant')"
+
+  docker-build:
+    name: docker-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Build production image
+        run: docker build --tag temporaless:ci .
