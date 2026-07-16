@@ -138,8 +138,9 @@ message WorkflowOptions {
 message ActivityOptions {
   // Stable identifier for the activity within its workflow run. Authoring
   // responsibility: must be deterministic across replays of the same logical
-  // step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). Reusing the
-  // same activity_id with different input is treated as a workflow bug.
+  // step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). This ID is the
+  // de-duplication contract: reusing it replays the stored result even if new
+  // input bytes differ. Use a distinct ID for a distinct execution.
   string activity_id = 1 [
     (buf.validate.field).string = {
       min_len: 1

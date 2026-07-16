@@ -108,7 +108,7 @@ We're not aiming to compete head-on with these for asset-graph or lineage worklo
 **The mental shift coming from Airflow/Prefect/Dagster:**
 
 - A DAG isn't declared — it's *expressed* as a workflow body using async/await. This means refactors are normal Python refactors; no separate "register the new task" step.
-- "Tasks" are activities. Each gets a stable `activity_id` you choose — deterministic across re-runs. Reusing an `activity_id` with different input is a bug (we'll raise `ActivityConflictError`).
+- "Tasks" are activities. Each gets a stable `activity_id` you choose — deterministic across re-runs. Reusing an `activity_id` replays its stored result even when new input bytes differ; choose a new ID when you intend a distinct execution. `ActivityConflictError` is reserved for incompatible request/response types or code versions.
 - "DAG run" = `workflow_id + run_id`. Caller-provided. By convention, `run_id` embeds the fire time / partition / batch ID for backfill-friendliness.
 - The scheduler keeps only a last-fire cache that can be restored from
   latest-run pointers or an external snapshot. It calls `run()` for each due

@@ -160,6 +160,39 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 ---
 
+## 3a. Upgrade reports a corrupt `_latest` pointer
+
+**Symptom:** The first workflow write after an upgrade raises
+`latest workflow pointer is missing required timestamps`, even though the
+canonical `workflow.binpb` write succeeded.
+
+**Cause:** Latest-run pointers written before v0.5 did not contain
+`run_order_time`. Current stores reject that old derived shape instead of
+guessing an ordering value from an opaque run ID.
+
+**Recovery:**
+
+1. Stop every workflow writer, cron dispatcher, timer scanner, and backfill
+   process that can touch the bucket.
+2. Inventory the canonical `WorkflowRecord` referenced by each affected
+   `temporaless/v2/{namespace}/_latest/{workflow_id}.binpb` object. Preserve the
+   old pointer bytes for rollback/diagnosis.
+3. If upgraded code will supply `WorkflowOptions.run_order_time` when replaying
+   an existing run, backfill that same value into its canonical workflow record
+   from application-owned schedule metadata first. Do not add a generic run-ID
+   parser; IDs are opaque to Temporaless.
+4. Delete only the affected `_latest` object. It is derived metadata; do not
+   delete the canonical workflow run.
+5. To preserve scheduler seed memory, re-put the intended latest canonical
+   `WorkflowRecord` through the upgraded store so it writes a validated
+   pointer. Otherwise, allow the next new workflow run to recreate the pointer
+   and accept that the scheduler starts from its normal first-tick anchor.
+6. Verify the rebuilt pointer references an existing workflow and contains
+   `record_time`, `updated_at`, and `run_order_time`, then restart scanners and
+   writers.
+
+---
+
 ## 4. Sustained 401s after a deploy
 
 **Symptom:** Auth interceptor logs `auth.token_mismatch` for legitimate clients.
@@ -191,14 +224,19 @@ aws s3 ls s3://your-bucket/  # or gsutil ls / az storage blob list
 
 ## 5. Workflow re-running its activity body on every call
 
-**Symptom:** A workflow that used to replay cleanly now re-executes its activity on every invocation. Vendor calls multiply; idempotency feels broken.
+**Symptom:** A workflow that used to replay cleanly now returns an identity conflict after a deployment.
 
-**Cause:** `code_version` on the workflow `Options` changed. Activities replay on `(workflow_id, run_id, activity_id, code_version)`; bumping `code_version` invalidates all stored records as a deliberate design choice.
+**Cause:** `code_version` on the workflow `Options` changed. Activities replay
+on `(workflow_id, run_id, activity_id, code_version)`; a stored record with a
+different version is rejected rather than silently executed or reused.
 
 **Fix:**
 
-- **If the change was intentional** (you deployed a body change that's incompatible with old records): no action — the framework is doing the right thing.
-- **If the change was accidental** (you mistyped a version, or your deploy tool injected a new SHA without you meaning it to): roll back the code_version, OR delete the affected runs (`store.delete_workflow(key)`) so the new code can re-record from scratch.
+- **If the change was intentional** (you deployed a body change that's
+  incompatible with old records): quiesce the run and use the child-first
+  reset procedure above, or start a new run ID.
+- **If the change was accidental** (you mistyped a version, or your deploy tool
+  injected a new SHA without you meaning it to): roll back `code_version`.
 
 ---
 

@@ -13,6 +13,65 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-16
+
+### Added
+
+- The TypeScript Invariant Protocol facade can now register generated
+  `RecordStoreService` and `RecordQueryService` implementations directly,
+  while retaining descriptor-backed Connect HTTP proxy support.
+
+### Changed
+
+- The lockstep development version is now 0.6.0.
+- Invariant Protocol is pinned to the immutable v0.7.0 commit. The TypeScript
+  facade now exposes the unified Connect `Interceptor`, `serveMcpStdio`, and
+  the public MCP types. The removed upstream-internal `mcpDispatch` export and
+  the old split unary/stream interceptor aliases are no longer exported;
+  Invariant error codes now use the upstream `canceled` spelling.
+- Go now declares 1.26.5 and selects that patched release through Go's
+  checksum-verified toolchain mechanism while retaining Flox's portable
+  1.26.4 bootstrap. gRPC and Genproto were promoted to their current patches.
+- Python ConnectRPC was promoted to 0.11.1, every Python distribution is
+  explicitly marked private/Git-only, and adapter wheels now carry `py.typed`.
+- npm 12 Git installation examples now explicitly opt in to Git dependencies,
+  which is required for both Temporaless and its immutable Invariant Protocol
+  dependency.
+
+### Fixed
+
+- Go cron dispatch no longer runs while holding the scheduler state mutex, so
+  callbacks can safely inspect, snapshot, seed, or restore scheduler state.
+- Python treats malformed stored protobuf bytes as permanent record corruption
+  rather than a transient workflow infrastructure outage.
+- Python validates workflow and activity response messages against their
+  declared protobuf result type before persisting completion; invalid activity
+  results fail terminally instead of entering retry loops or poisoning replay.
+- Python Connect-backed and cached timer listings reject records whose status
+  does not match the requested filter.
+- Activity-ID documentation now matches runtime semantics: the caller-owned ID
+  is the de-duplication contract, even when a later invocation supplies
+  different input bytes.
+- Release validation now proves that the Invariant dependency, npm lock, and
+  install-script allowlist use one full immutable Git SHA, and that Flox
+  selects the Go patch declared by `go.mod`.
+
+### Upgrade notes
+
+- A latest-run pointer originally written before v0.5 has no
+  `run_order_time` and is rejected by current storage validation. Before
+  upgrading such a bucket, quiesce workflow writers and scanners, preserve an
+  inventory of the referenced canonical workflow records, remove the affected
+  derived `temporaless/v2/{namespace}/_latest/{workflow_id}.binpb` objects, and
+  rebuild each pointer by re-putting the intended latest `WorkflowRecord`
+  through the upgraded store. If losing scheduler seed memory is acceptable,
+  the next new workflow run can recreate the pointer instead.
+- `run_order_time` is part of workflow replay identity once supplied. Existing
+  records that lack it must continue replaying without it, use a new run ID, or
+  be migrated while quiesced from application-owned schedule metadata before
+  upgraded callers begin supplying the field. Temporaless does not infer
+  ordering from opaque run IDs.
+
 ## [0.5.0] — 2026-07-15
 
 ### Added

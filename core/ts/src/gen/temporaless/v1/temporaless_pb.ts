@@ -141,8 +141,9 @@ export type ActivityOptions = Message<"temporaless.v1.ActivityOptions"> & {
   /**
    * Stable identifier for the activity within its workflow run. Authoring
    * responsibility: must be deterministic across replays of the same logical
-   * step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). Reusing the
-   * same activity_id with different input is treated as a workflow bug.
+   * step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). This ID is the
+   * de-duplication contract: reusing it replays the stored result even if new
+   * input bytes differ. Use a distinct ID for a distinct execution.
    *
    * @generated from field: string activity_id = 1;
    */

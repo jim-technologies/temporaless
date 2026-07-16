@@ -1358,10 +1358,13 @@ def _activity_keys_for_run(
 def _timer_keys_for_run(
     key: WorkflowKey,
     records: list[temporaless_pb2.TimerRecord],
+    status: temporaless_pb2.TimerStatus = temporaless_pb2.TIMER_STATUS_UNSPECIFIED,
 ) -> list[TimerKey]:
     timer_keys: list[TimerKey] = []
     for record in records:
         timer_key = _validate_timer_record(record, expected_run=key)
+        if status != temporaless_pb2.TIMER_STATUS_UNSPECIFIED and record.status != status:
+            raise RunRecordValidationError("timer list payload does not match the requested status")
         timer_keys.append(timer_key)
     return timer_keys
 

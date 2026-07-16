@@ -237,6 +237,61 @@ async def test_connect_client_rejects_cross_run_list_response() -> None:
         await store.list_activities(key)
 
 
+async def test_connect_client_rejects_timer_list_response_for_wrong_status() -> None:
+    key = WorkflowKey(workflow_id="prices:client", run_id="run:one")
+    timer = temporaless_pb2.TimerRecord(
+        schema_version=TIMER_RECORD_SCHEMA_VERSION,
+        key=TimerKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            timer_id="sleep",
+        ).to_proto(),
+        timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
+        code_version="v1",
+        status=temporaless_pb2.TIMER_STATUS_FIRED,
+    )
+
+    class CorruptClient:
+        async def list_timers(self, _request):
+            return temporaless_pb2.ListTimersResponse(records=[timer])
+
+    store = ConnectStore(CorruptClient())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(RunRecordValidationError, match="requested status"):
+        await store.list_timers(key, temporaless_pb2.TIMER_STATUS_SCHEDULED)
+
+
+async def test_record_store_service_rejects_timer_listing_for_wrong_status() -> None:
+    key = WorkflowKey(workflow_id="prices:service", run_id="run:one")
+    timer = temporaless_pb2.TimerRecord(
+        schema_version=TIMER_RECORD_SCHEMA_VERSION,
+        key=TimerKey(
+            workflow_id=key.workflow_id,
+            run_id=key.run_id,
+            timer_id="sleep",
+        ).to_proto(),
+        timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
+        code_version="v1",
+        status=temporaless_pb2.TIMER_STATUS_FIRED,
+    )
+
+    class CorruptStore:
+        async def list_timers(self, _key, _status):
+            return [timer]
+
+    service = RecordStoreService(CorruptStore())  # type: ignore[invalid-argument-type]
+
+    with pytest.raises(ConnectError) as captured:
+        await service.list_timers(
+            temporaless_pb2.ListTimersRequest(
+                key=key.to_proto(),
+                status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
+            ),
+            None,
+        )
+    assert captured.value.code is Code.DATA_LOSS
+
+
 async def test_connect_client_maps_remote_timer_data_loss_to_storage_corruption() -> None:
     key = TimerKey(workflow_id="prices:remote", run_id="run:one", timer_id="sleep")
 

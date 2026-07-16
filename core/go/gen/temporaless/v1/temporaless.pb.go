@@ -662,8 +662,9 @@ type ActivityOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Stable identifier for the activity within its workflow run. Authoring
 	// responsibility: must be deterministic across replays of the same logical
-	// step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). Reusing the
-	// same activity_id with different input is treated as a workflow bug.
+	// step (e.g. `fetch:aapl`, `normalize:tweet`, `llm:complete`). This ID is the
+	// de-duplication contract: reusing it replays the stored result even if new
+	// input bytes differ. Use a distinct ID for a distinct execution.
 	ActivityId string `protobuf:"bytes,1,opt,name=activity_id,json=activityId" json:"activity_id,omitempty"`
 	// Optional retry policy. When unset, the activity runs at most once.
 	RetryPolicy *RetryPolicy `protobuf:"bytes,2,opt,name=retry_policy,json=retryPolicy" json:"retry_policy,omitempty"`

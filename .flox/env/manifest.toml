@@ -1,10 +1,9 @@
 schema-version = "1.11.0"
 
 [install]
-# Exact ceilings that resolve on Flox's four default systems as of 2026-07-14.
-# Upstream Go 1.26.5, Python 3.14.6, and uv 0.11.28 were not yet available on
-# x86_64-darwin together; the production container uses the newer Python/uv
-# releases directly from their upstream multi-architecture images.
+# Exact bootstrap ceilings that resolve on Flox's four default systems.
+# Go's checksum-verified toolchain selector below supplies the patched Go
+# release while Flox continues to provide the portable bootstrap command.
 go.pkg-path = "go"
 go.version = "1.26.4"
 python314.pkg-path = "python314"
@@ -19,6 +18,7 @@ gcc-unwrapped.outputs = ["lib"]
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"
+GOTOOLCHAIN = "go1.26.5+auto"
 
 [hook]
 on-activate = '''

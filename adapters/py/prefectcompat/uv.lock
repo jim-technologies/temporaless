@@ -316,15 +316,15 @@ wheels = [
 
 [[package]]
 name = "connectrpc"
-version = "0.11.0"
+version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf-py" },
     { name = "pyqwest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/e4/1c5a2420ad9e8d62977c43daa81f4309ddaed15cb667557d8bf33d87d134/connectrpc-0.11.0.tar.gz", hash = "sha256:2af2053911cc2f94fead654d94ff0f82fb248fe7d81998c30e32c1024cb2065a", size = 48103, upload-time = "2026-06-25T15:40:37.464Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/b5/63e14ab9d4d4cc58818562db4120a35fa7454e3035633da41bdc6b712abd/connectrpc-0.11.1.tar.gz", hash = "sha256:18277f7838847b4271ca38d40c7d2387b5a2ea6a29f240689c19e1ec84aaff66", size = 46222, upload-time = "2026-07-15T06:33:31.601Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/ca/e3b379a7b210227f68d22c4edfbbe918aed29aaa1727a5786ddf1e0fe320/connectrpc-0.11.0-py3-none-any.whl", hash = "sha256:5c201073b70fa5b49f2d92b8c41506b7d89f4023439c4fda5b18751a6de15376", size = 65734, upload-time = "2026-06-25T15:40:34.574Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/ac/aa647675812cd075f2cb9acb00d62f4f2cbcbc6736049a62342b7371ce5b/connectrpc-0.11.1-py3-none-any.whl", hash = "sha256:8a52e2e92a485fa9681c1101a79a5ebeb31807e3ea3d5aabd41f484a6398bc7b", size = 64991, upload-time = "2026-07-15T06:33:29.396Z" },
 ]
 
 [[package]]
@@ -1811,7 +1811,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "../../../core/py" }
 dependencies = [
     { name = "connectrpc" },
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "connectrpc", specifier = ">=0.11.0" },
+    { name = "connectrpc", specifier = ">=0.11.1" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "opendal", specifier = ">=0.47.3" },
     { name = "protobuf", specifier = ">=7.35.1" },
@@ -1847,7 +1847,7 @@ dev = [
 
 [[package]]
 name = "temporaless-connectworkflow"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "../connectworkflow" }
 dependencies = [
     { name = "connectrpc" },
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "connectrpc", specifier = ">=0.11.0" },
+    { name = "connectrpc", specifier = ">=0.11.1" },
     { name = "temporaless", editable = "../../../core/py" },
 ]
 
@@ -1871,7 +1871,7 @@ dev = [
 
 [[package]]
 name = "temporaless-prefectcompat"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "prefect" },

@@ -161,7 +161,7 @@ registry. Install every SDK directly from the same immutable Git revision:
 ```sh
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
 pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
-npm install "github:jim-technologies/temporaless#COMMIT_SHA"
+npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 ```toml

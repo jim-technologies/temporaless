@@ -14,6 +14,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_COMPONENT = r"(?:0|[1-9][0-9]*)"
 SEMVER = re.compile(rf"{SEMVER_COMPONENT}\.{SEMVER_COMPONENT}\.{SEMVER_COMPONENT}")
+INVARIANT_PACKAGE = "@jim-technologies/invariant-protocol"
+INVARIANT_REPOSITORY = "github.com/jim-technologies/invariantprotocol.git"
+INVARIANT_SPEC = re.compile(
+    rf"git\+https://{re.escape(INVARIANT_REPOSITORY)}#([0-9a-f]{{40}})"
+)
+INVARIANT_ALLOW_SCRIPT_PREFIX = "github:jim-technologies/invariantprotocol#"
 OWNED_PACKAGES = {
     "temporaless",
     "temporaless-connectworkflow",
@@ -64,6 +70,21 @@ PYTHON_REQUIREMENTS = {
         "temporaless-connectworkflow",
     },
     "adapters/py/temporalcompat/pyproject.toml": {"temporaless"},
+}
+PY_TYPED_MARKERS = {
+    "core/py/pyproject.toml": "core/py/src/temporaless/py.typed",
+    "adapters/py/connectworkflow/pyproject.toml": (
+        "adapters/py/connectworkflow/src/temporaless_connectworkflow/py.typed"
+    ),
+    "adapters/py/indexstore/pyproject.toml": (
+        "adapters/py/indexstore/src/temporaless_indexstore/py.typed"
+    ),
+    "adapters/py/prefectcompat/pyproject.toml": (
+        "adapters/py/prefectcompat/src/temporaless_prefectcompat/py.typed"
+    ),
+    "adapters/py/temporalcompat/pyproject.toml": (
+        "adapters/py/temporalcompat/src/temporaless_temporalcompat/py.typed"
+    ),
 }
 
 
@@ -132,6 +153,86 @@ def main() -> int:
             "package.json must set private=true; Temporaless installs from Git only"
         )
 
+    invariant_dependency = package.get("dependencies", {}).get(INVARIANT_PACKAGE)
+    invariant_match = (
+        INVARIANT_SPEC.fullmatch(invariant_dependency)
+        if isinstance(invariant_dependency, str)
+        else None
+    )
+    invariant_sha = invariant_match.group(1) if invariant_match is not None else None
+    if invariant_sha is None:
+        errors.append(
+            f"package.json must pin {INVARIANT_PACKAGE} to one full HTTPS Git SHA; "
+            f"found {invariant_dependency!r}"
+        )
+
+    locked_root_dependency = (
+        package_lock.get("packages", {})
+        .get("", {})
+        .get("dependencies", {})
+        .get(INVARIANT_PACKAGE)
+    )
+    if locked_root_dependency != invariant_dependency:
+        errors.append(
+            f"package-lock.json root {INVARIANT_PACKAGE} dependency is "
+            f"{locked_root_dependency!r}; expected {invariant_dependency!r}"
+        )
+
+    locked_invariant = package_lock.get("packages", {}).get(
+        f"node_modules/{INVARIANT_PACKAGE}"
+    )
+    if not isinstance(locked_invariant, dict):
+        errors.append(f"package-lock.json is missing node_modules/{INVARIANT_PACKAGE}")
+    else:
+        if locked_invariant.get("resolved") != invariant_dependency:
+            errors.append(
+                f"package-lock.json locked {INVARIANT_PACKAGE} source is "
+                f"{locked_invariant.get('resolved')!r}; expected {invariant_dependency!r}"
+            )
+        locked_version = locked_invariant.get("version")
+        if (
+            not isinstance(locked_version, str)
+            or SEMVER.fullmatch(locked_version) is None
+        ):
+            errors.append(
+                f"package-lock.json locked {INVARIANT_PACKAGE} version must be SemVer; "
+                f"found {locked_version!r}"
+            )
+        integrity = locked_invariant.get("integrity")
+        if not isinstance(integrity, str) or not integrity.startswith("sha512-"):
+            errors.append(
+                f"package-lock.json locked {INVARIANT_PACKAGE} must have sha512 integrity"
+            )
+    allow_scripts = package.get("allowScripts", {})
+    invariant_script_keys = (
+        {
+            key
+            for key in allow_scripts
+            if isinstance(key, str) and key.startswith(INVARIANT_ALLOW_SCRIPT_PREFIX)
+        }
+        if isinstance(allow_scripts, dict)
+        else set()
+    )
+    expected_invariant_script_key = (
+        f"{INVARIANT_ALLOW_SCRIPT_PREFIX}{invariant_sha}"
+        if invariant_sha is not None
+        else None
+    )
+    if (
+        expected_invariant_script_key is None
+        or invariant_script_keys != {expected_invariant_script_key}
+        or allow_scripts.get(expected_invariant_script_key) is not True
+    ):
+        errors.append(
+            "package.json allowScripts must enable exactly the pinned Invariant "
+            f"Protocol SHA; found {sorted(invariant_script_keys)}"
+        )
+    if (
+        not isinstance(allow_scripts, dict)
+        or allow_scripts.get("protobufjs") is not False
+    ):
+        errors.append("package.json allowScripts must explicitly deny protobufjs")
+
     discovered_pyprojects = {"core/py/pyproject.toml"} | {
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "adapters/py").glob("*/pyproject.toml")
@@ -140,6 +241,11 @@ def main() -> int:
         errors.append(
             f"Python project inventory is {sorted(discovered_pyprojects)}; "
             f"checker declares {sorted(PYPROJECTS)}"
+        )
+    if set(PY_TYPED_MARKERS) != set(PYPROJECTS):
+        errors.append(
+            f"py.typed marker inventory is {sorted(PY_TYPED_MARKERS)}; "
+            f"expected {sorted(PYPROJECTS)}"
         )
     discovered_locks = {"core/py/uv.lock"} | {
         path.relative_to(ROOT).as_posix()
@@ -156,6 +262,17 @@ def main() -> int:
         if pyproject["project"]["name"] != expected_name:
             errors.append(
                 f"{path} declares {pyproject['project']['name']!r}; expected {expected_name!r}"
+            )
+        if "Private :: Do Not Upload" not in pyproject["project"].get(
+            "classifiers", []
+        ):
+            errors.append(
+                f"{path} must declare the Private :: Do Not Upload classifier"
+            )
+        marker = ROOT / PY_TYPED_MARKERS[path]
+        if not marker.is_file():
+            errors.append(
+                f"{path} typed package marker is missing: {marker.relative_to(ROOT)}"
             )
         actual_versions[path] = pyproject["project"]["version"]
 
@@ -229,6 +346,19 @@ def main() -> int:
         errors.append(
             f"go.mod declares {module_path!r}; expected the repository root module"
         )
+    go_version = captured("go.mod", r"^go\s+(\S+)$")
+    if SEMVER.fullmatch(go_version) is None:
+        errors.append(
+            f"go.mod must declare an exact Go patch version, got {go_version!r}"
+        )
+    flox_manifest = read_toml(".flox/env/manifest.toml")
+    expected_toolchain = f"go{go_version}+auto"
+    actual_toolchain = flox_manifest.get("vars", {}).get("GOTOOLCHAIN")
+    if actual_toolchain != expected_toolchain:
+        errors.append(
+            f".flox/env/manifest.toml GOTOOLCHAIN is {actual_toolchain!r}; "
+            f"expected {expected_toolchain!r}"
+        )
 
     ignored_dirs = {".flox", ".git", ".venv", "node_modules", "target"}
     nested_go_mods: list[Path] = []
@@ -256,6 +386,12 @@ def main() -> int:
             errors.append(
                 f"README.md must document the lockstep release marker {required_text}"
             )
+    for path in ("README.md", "docs/sdks.md", "core/ts/README.md"):
+        for line_number, line in enumerate((ROOT / path).read_text().splitlines(), 1):
+            if line.strip().startswith("npm install") and "--allow-git=all" not in line:
+                errors.append(
+                    f"{path}:{line_number} Git npm install must pass --allow-git=all"
+                )
 
     if os.environ.get("GITHUB_REF_TYPE") == "tag":
         expected_tag = f"v{version}"

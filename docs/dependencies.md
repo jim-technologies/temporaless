@@ -32,13 +32,13 @@ and `package-lock.json`. The Go gate runs the checksum-resolved module version o
 golangci-lint, while the experimental Rust SDK uses `rust-toolchain.toml` and a
 separate CI job so Flox remains the small first-class Go/Python environment.
 
-The exact Flox pins are the highest versions that resolved together on all four
-default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
-`aarch64-darwin`) on 2026-07-14: Go 1.26.4, Python 3.14.4, and uv 0.11.25.
-Upstream Go 1.26.5, Python 3.14.6, and uv 0.11.28 had already shipped, but the
-newer packages were not all present for `x86_64-darwin`. The production image
-does not have that catalog constraint and therefore uses upstream Python 3.14.6
-and uv 0.11.28.
+The Flox package pins remain the highest versions that resolve together on all
+four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
+`aarch64-darwin`): Go 1.26.4, Python 3.14.4, and uv 0.11.25. `go.mod` requires
+Go 1.26.5, so `GOTOOLCHAIN=go1.26.5+auto` selects that exact checksum-verified
+security patch while the catalog package acts only as the bootstrap command.
+The production image has no Flox catalog constraint and uses upstream Python
+3.14.6 and uv 0.11.28.
 
 ## Go
 
@@ -102,8 +102,10 @@ The npm package entry is at the repository root because npm git dependencies
 install from the repository package root; TypeScript source remains under
 `core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
 `core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
-backed by `@jim-technologies/invariant-protocol`; the root TypeScript export
-stays a lightweight generated-types + Connect-client surface.
+backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` v0.7.0;
+the root TypeScript export stays a lightweight generated-types +
+Connect-client surface. The facade follows v0.7's generated-service
+registration and unified Connect interceptor API.
 
 ## Buf
 

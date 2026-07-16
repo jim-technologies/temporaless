@@ -54,7 +54,7 @@ Historical tags remain immutable and predate this unified release policy.
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
 pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
 pip install "temporaless-connectworkflow @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
-npm install "github:jim-technologies/temporaless#COMMIT_SHA"
+npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 Rust consumers can depend on the workspace crate from git:

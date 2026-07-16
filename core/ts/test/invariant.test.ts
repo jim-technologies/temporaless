@@ -4,6 +4,7 @@ import {
   TEMPORALESS_RECORD_STORE_SERVICE,
   createTemporalessInvariantHttpProxy,
   createTemporalessInvariantServer,
+  registerTemporalessInvariantServices,
   temporalessDescriptorBytes,
 } from "../src/invariant.js";
 
@@ -41,5 +42,35 @@ describe("Temporaless invariantprotocol integration", () => {
 
     expect(names).not.toContain("RecordStoreService.GetWorkflow");
     expect(names).toContain("RecordQueryService.ListWorkflows");
+  });
+
+  it("registers generated Temporaless service implementations", async () => {
+    const server = createTemporalessInvariantServer({ includeQuery: false });
+    registerTemporalessInvariantServices(server, {
+      recordStore: {
+        getWorkflow(request) {
+          expect(request.key?.workflowId).toBe("prices:aapl");
+          return { found: false };
+        },
+      },
+    });
+
+    const response = await server.invoke("RecordStoreService.GetWorkflow", {
+      key: {
+        namespace: "default",
+        workflowId: "prices:aapl",
+        runId: "2026-07-16T00:00:00Z",
+      },
+    });
+
+    expect(response.found).toBe(false);
+  });
+
+  it("rejects empty generated service registration", () => {
+    const server = createTemporalessInvariantServer();
+
+    expect(() => registerTemporalessInvariantServices(server, {})).toThrow(
+      "At least one Temporaless service implementation is required.",
+    );
   });
 });

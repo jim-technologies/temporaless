@@ -39,6 +39,7 @@ type Dispatcher func(ctx context.Context, scheduleID string, fireTime time.Time)
 
 // Scheduler tracks last-fire times and dispatches due schedules on Tick.
 type Scheduler struct {
+	tickMu    sync.Mutex
 	mu        sync.Mutex
 	parser    cron.Parser
 	parsed    map[string]cron.Schedule
@@ -94,8 +95,8 @@ func (s *Scheduler) Seed(scheduleID string, lastFire time.Time) error {
 // schedule has multiple due fires (e.g. the process slept through several
 // cron intervals), all of them are dispatched in chronological order.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
 
 	fired := 0
 	for _, schedule := range s.schedules {
@@ -103,12 +104,15 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) (int, error) {
 			return fired, err
 		}
 		spec := s.parsed[schedule.ID]
+		s.mu.Lock()
 		anchor, ok := s.lastFires[schedule.ID]
 		if !ok {
 			anchor = now
 			s.lastFires[schedule.ID] = anchor
+			s.mu.Unlock()
 			continue
 		}
+		s.mu.Unlock()
 		next := spec.Next(anchor)
 		for !next.After(now) {
 			if err := ctx.Err(); err != nil {
@@ -119,8 +123,14 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) (int, error) {
 					schedule.ID, next.UTC().Format(time.RFC3339Nano), err)
 			}
 			fired++
-			s.lastFires[schedule.ID] = next
-			next = spec.Next(next)
+			s.mu.Lock()
+			current, exists := s.lastFires[schedule.ID]
+			if !exists || current.Before(next) {
+				current = next
+				s.lastFires[schedule.ID] = current
+			}
+			s.mu.Unlock()
+			next = spec.Next(current)
 		}
 	}
 	return fired, nil

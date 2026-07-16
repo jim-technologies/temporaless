@@ -1,26 +1,34 @@
 import { readFileSync } from "node:fs";
 
+import type { ServiceImpl } from "@connectrpc/connect";
 import {
   Server,
   type ConnectHttpOptions,
   type HandlerContext,
-  type StreamInterceptor,
+  type Interceptor,
   type ToolCatalogEntry,
-  type UnaryInterceptor,
 } from "@jim-technologies/invariant-protocol";
+import {
+  RecordQueryService,
+  RecordStoreService,
+} from "./gen/temporaless/v1/temporaless_pb.js";
 
 export {
   InvariantError,
+  MCP_PROTOCOL_VERSION,
   ParsedDescriptor,
   SchemaGenerator,
   cliHelp,
   httpHandler,
-  mcpDispatch,
   runCli,
   serveHttp,
+  serveMcpStdio,
   type Code,
   type JsonRpcRequest,
   type JsonSchema,
+  type McpContextOptions,
+  type McpStdioInput,
+  type McpStdioOutput,
   type ToolCatalogEntry,
 } from "@jim-technologies/invariant-protocol";
 
@@ -42,10 +50,19 @@ export type TemporalessInvariantHttpProxyOptions = TemporalessInvariantServerOpt
   Omit<ConnectHttpOptions, "serviceName">;
 
 export type TemporalessInvariantServer = Server;
-export type TemporalessInvariantUnaryInterceptor = UnaryInterceptor;
-export type TemporalessInvariantStreamInterceptor = StreamInterceptor;
+export type TemporalessInvariantInterceptor = Interceptor;
 export type TemporalessInvariantHandlerContext = HandlerContext;
 export type TemporalessInvariantToolCatalogEntry = ToolCatalogEntry;
+export type TemporalessRecordStoreImplementation = Partial<
+  ServiceImpl<typeof RecordStoreService>
+>;
+export type TemporalessRecordQueryImplementation = Partial<
+  ServiceImpl<typeof RecordQueryService>
+>;
+export type TemporalessInvariantServiceImplementations = {
+  recordStore?: TemporalessRecordStoreImplementation;
+  recordQuery?: TemporalessRecordQueryImplementation;
+};
 
 export function temporalessDescriptorBytes(): Uint8Array {
   return readFileSync(TEMPORALESS_DESCRIPTOR_URL);
@@ -79,6 +96,25 @@ export function createTemporalessInvariantHttpProxy(
       ...connectOptions,
       serviceName: TEMPORALESS_RECORD_QUERY_SERVICE,
     });
+  }
+  return server;
+}
+
+export function registerTemporalessInvariantServices(
+  server: TemporalessInvariantServer,
+  implementations: TemporalessInvariantServiceImplementations,
+): TemporalessInvariantServer {
+  let registered = false;
+  if (implementations.recordStore !== undefined) {
+    server.register(RecordStoreService, implementations.recordStore);
+    registered = true;
+  }
+  if (implementations.recordQuery !== undefined) {
+    server.register(RecordQueryService, implementations.recordQuery);
+    registered = true;
+  }
+  if (!registered) {
+    throw new Error("At least one Temporaless service implementation is required.");
   }
   return server;
 }

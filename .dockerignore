@@ -23,7 +23,9 @@ htmlcov/
 /quant-service
 /fetch-prices
 /llm-completion
+/production-server
 /stocks-pipeline
+/temporaless
 /twitter-webhook
 
 # Flox runtime state — host-specific, never goes in containers

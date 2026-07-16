@@ -5,8 +5,9 @@ import opendal
 import pytest
 from google.protobuf.any_pb2 import Any
 from google.protobuf.duration_pb2 import Duration
+from google.protobuf.message import DecodeError
 from google.protobuf.timestamp_pb2 import Timestamp
-from google.protobuf.wrappers_pb2 import StringValue
+from google.protobuf.wrappers_pb2 import Int32Value, StringValue
 from protovalidate import ValidationError
 
 from temporaless.storage import (
@@ -283,6 +284,164 @@ async def test_workflow_replay(
     )
     assert second.value == want
     assert executions == 1
+
+
+@pytest.mark.parametrize(
+    ("case_id", "returned"),
+    [
+        ("wrong-protobuf", Int32Value(value=7)),
+        ("non-protobuf", "not-a-protobuf"),
+    ],
+)
+async def test_activity_rejects_wrong_response_type_without_persisting_success(
+    store: OpenDALStore,
+    case_id: str,
+    returned: object,
+) -> None:
+    workflow = Workflow(
+        store,
+        Options(
+            workflow_id=f"prices:wrong-activity-result:{case_id}",
+            run_id="run",
+            code_version="test",
+        ),
+    )
+    executions = 0
+
+    async def execute(_request: StringValue) -> StringValue:
+        nonlocal executions
+        executions += 1
+        return returned  # type: ignore[return-value]
+
+    with pytest.raises(ActivityError, match="expected google.protobuf.StringValue"):
+        await workflow.execute_activity(
+            ActivityOptions(activity_id="fetch"),
+            StringValue(value="AAPL"),
+            StringValue,
+            execute,
+        )
+
+    key = ActivityKey(
+        workflow_id=workflow.workflow_id,
+        run_id=workflow.run_id,
+        activity_id="fetch",
+    )
+    record = await store.get_activity(key)
+    assert record is not None
+    assert record.status == temporaless_pb2.ACTIVITY_STATUS_FAILED
+    assert not record.HasField("result")
+    assert len(record.attempts) == 1
+    assert executions == 1
+
+    async def should_not_run(_request: StringValue) -> StringValue:
+        nonlocal executions
+        executions += 1
+        return StringValue(value="unexpected")
+
+    with pytest.raises(ActivityError, match="expected google.protobuf.StringValue"):
+        await workflow.execute_activity(
+            ActivityOptions(activity_id="fetch"),
+            StringValue(value="AAPL"),
+            StringValue,
+            should_not_run,
+        )
+    assert executions == 1
+
+
+@pytest.mark.parametrize(
+    ("case_id", "returned"),
+    [
+        ("wrong-protobuf", Int32Value(value=7)),
+        ("non-protobuf", "not-a-protobuf"),
+    ],
+)
+async def test_workflow_rejects_wrong_response_type_and_replays_terminal_failure(
+    store: OpenDALStore,
+    case_id: str,
+    returned: object,
+) -> None:
+    options = Options(
+        workflow_id=f"prices:wrong-workflow-result:{case_id}",
+        run_id="run",
+        code_version="test",
+    )
+    executions = 0
+
+    async def execute(_workflow: Workflow, _request: StringValue) -> StringValue:
+        nonlocal executions
+        executions += 1
+        return returned  # type: ignore[return-value]
+
+    with pytest.raises(TypeError, match="expected google.protobuf.StringValue"):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+
+    key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
+    record = await store.get_workflow(key)
+    assert record is not None
+    assert record.status == temporaless_pb2.WORKFLOW_STATUS_FAILED
+    assert not record.HasField("result")
+    assert executions == 1
+
+    with pytest.raises(ActivityError, match="expected google.protobuf.StringValue"):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    assert executions == 1
+
+
+@pytest.mark.parametrize("primitive", ["activity", "timer", "event"])
+async def test_corrupt_primitive_record_is_terminal_not_retryable_infrastructure(
+    store: OpenDALStore,
+    primitive: str,
+) -> None:
+    options = Options(
+        workflow_id=f"prices:corrupt-{primitive}",
+        run_id="run",
+        code_version="test",
+    )
+    if primitive == "activity":
+        corrupt_key = ActivityKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            activity_id="corrupt",
+        )
+    elif primitive == "timer":
+        corrupt_key = TimerKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            timer_id="corrupt",
+        )
+    else:
+        corrupt_key = EventKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            event_id="corrupt",
+        )
+    await store._operator.write(corrupt_key.path(), b"\xff")
+
+    async def execute(workflow: Workflow, request: StringValue) -> StringValue:
+        if primitive == "activity":
+
+            async def activity(_request: StringValue) -> StringValue:
+                pytest.fail("activity body must not run after corrupt record read")
+
+            return await workflow.execute_activity(
+                ActivityOptions(activity_id="corrupt"),
+                request,
+                StringValue,
+                activity,
+            )
+        if primitive == "timer":
+            await workflow.sleep("corrupt", timedelta(hours=1))
+            return request
+        return await workflow.wait_event("corrupt", StringValue)
+
+    with pytest.raises(DecodeError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+
+    workflow_record = await store.get_workflow(
+        WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
+    )
+    assert workflow_record is not None
+    assert workflow_record.status == temporaless_pb2.WORKFLOW_STATUS_FAILED
 
 
 async def test_run_order_time_is_persisted_and_immutable(store: OpenDALStore) -> None:

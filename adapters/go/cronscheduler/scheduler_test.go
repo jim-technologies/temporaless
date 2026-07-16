@@ -3,6 +3,7 @@ package cronscheduler_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -135,6 +136,65 @@ func TestDispatcherErrorStopsTick(t *testing.T) {
 	}
 	if dispatched != 1 {
 		t.Fatalf("dispatched = %d, want 1 (only first attempt before error)", dispatched)
+	}
+}
+
+func TestDispatcherCanInspectAndRestoreSchedulerState(t *testing.T) {
+	const scheduleID = "prices"
+	seed := time.Date(2026, 5, 2, 9, 30, 0, 0, time.UTC)
+	var scheduler *cronscheduler.Scheduler
+	dispatch := func(_ context.Context, gotScheduleID string, fireTime time.Time) error {
+		if gotScheduleID != scheduleID {
+			return fmt.Errorf("schedule id = %q, want %q", gotScheduleID, scheduleID)
+		}
+		if lastFire, ok := scheduler.LastFire(scheduleID); !ok || !lastFire.Equal(seed) {
+			return fmt.Errorf("last fire = %s, %t; want %s, true", lastFire, ok, seed)
+		}
+		snapshot := scheduler.Snapshot()
+		scheduler.Restore(snapshot)
+		return scheduler.Seed(scheduleID, fireTime)
+	}
+
+	var err error
+	scheduler, err = cronscheduler.New(
+		[]cronscheduler.Schedule{{ID: scheduleID, Expression: "* * * * *"}},
+		dispatch,
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := scheduler.Seed(scheduleID, seed); err != nil {
+		t.Fatalf("Seed() error = %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		count, tickErr := scheduler.Tick(
+			context.Background(),
+			time.Date(2026, 5, 2, 9, 31, 30, 0, time.UTC),
+		)
+		if tickErr != nil {
+			result <- tickErr
+			return
+		}
+		if count != 1 {
+			result <- fmt.Errorf("Tick() count = %d, want 1", count)
+			return
+		}
+		result <- nil
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Tick() deadlocked while dispatcher accessed scheduler state")
+	}
+	wantLastFire := time.Date(2026, 5, 2, 9, 31, 0, 0, time.UTC)
+	if lastFire, ok := scheduler.LastFire(scheduleID); !ok || !lastFire.Equal(wantLastFire) {
+		t.Fatalf("LastFire() = %s, %t; want %s, true", lastFire, ok, wantLastFire)
 	}
 }
 

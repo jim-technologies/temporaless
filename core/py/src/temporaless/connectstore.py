@@ -354,7 +354,7 @@ class ConnectStore:
             )
         )
         records = list(response.records)
-        _timer_keys_for_run(key, records)
+        _timer_keys_for_run(key, records, status)
         return records
 
     async def list_events(self, key: WorkflowKey) -> list[temporaless_pb2.EventRecord]:
@@ -781,7 +781,7 @@ class RecordStoreService:
         key = workflow_key_from_proto(request.key)
         try:
             records = await self._store.list_timers(key, request.status)
-            _timer_keys_for_run(key, records)
+            _timer_keys_for_run(key, records, request.status)
         except (DecodeError, ValidationError, ValueError, OverflowError) as exc:
             raise _record_data_loss("timer run listing", exc) from exc
         return temporaless_pb2.ListTimersResponse(records=records)

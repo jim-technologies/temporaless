@@ -1,12 +1,13 @@
 [project]
 name = "temporaless-connectworkflow"
-version = "0.5.0"
+version = "0.6.0"
 description = "ConnectRPC workflow handler adapter for Temporaless."
 readme = "README.md"
 requires-python = ">=3.14"
+classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "connectrpc>=0.11.0",
-    "temporaless==0.5.0",
+    "connectrpc>=0.11.1",
+    "temporaless==0.6.0",
 ]
 
 [build-system]

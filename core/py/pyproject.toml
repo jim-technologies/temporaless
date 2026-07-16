@@ -1,11 +1,12 @@
 [project]
 name = "temporaless"
-version = "0.5.0"
+version = "0.6.0"
 description = "Storage-first serverless workflow replay for protobuf activities."
 readme = "README.md"
 requires-python = ">=3.14"
+classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "connectrpc>=0.11.0",
+    "connectrpc>=0.11.1",
     "croniter>=6.2.4",
     "opendal>=0.47.3",
     "protobuf>=7.35.1",
@@ -63,8 +64,8 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "protoc-gen-connectrpc @ git+https://github.com/connectrpc/connect-py.git@ea19bf7530468e8aa1cdcca8bea0795a034d0f41#subdirectory=protoc-gen-connectrpc",
     "ruff>=0.15.21",
-    "temporaless-connectworkflow==0.5.0",
-    "temporaless-indexstore==0.5.0",
+    "temporaless-connectworkflow==0.6.0",
+    "temporaless-indexstore==0.6.0",
     "ty>=0.0.59",
     "types-protobuf>=7.34.1.20260518",
     "uvicorn>=0.51.0",

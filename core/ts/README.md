@@ -16,18 +16,26 @@ The npm package entry lives at the repository root so clients can install it
 directly from git without publishing to npm:
 
 ```sh
-npm install "github:jim-technologies/temporaless#RELEASE_TAG" @connectrpc/connect-web
+npm install --allow-git=all \
+  "github:jim-technologies/temporaless#RELEASE_TAG" \
+  @connectrpc/connect-web
 ```
 
 For a private repository, use the SSH form:
 
 ```sh
-npm install "git+ssh://git@github.com/jim-technologies/temporaless.git#RELEASE_TAG" @connectrpc/connect-web
+npm install --allow-git=all \
+  "git+ssh://git@github.com/jim-technologies/temporaless.git#RELEASE_TAG" \
+  @connectrpc/connect-web
 ```
 
 Replace `RELEASE_TAG` with the same root `vX.Y.Z` tag used by the Go, Python,
 and Rust packages. Every Temporaless SDK and adapter shares `VERSION`; mutable
 branch names are intentionally not installation examples.
+
+npm 12 disables Git dependencies unless they are explicitly allowed. The
+flag is also required for Temporaless's immutable Git-pinned Invariant
+Protocol dependency.
 
 Use `@connectrpc/connect-node` instead of `@connectrpc/connect-web` for Node
 services.
@@ -73,6 +81,25 @@ console.log(server.toolCatalog());
 console.log(await runCli(server, ["RecordQueryService", "ListWorkflows"]));
 ```
 
+Generated implementations can be registered on the same descriptor-backed
+server without adding a second Temporaless-specific handler shape:
+
+```ts
+import {
+  createTemporalessInvariantServer,
+  registerTemporalessInvariantServices,
+} from "@jim-technologies/temporaless/invariant";
+
+const server = createTemporalessInvariantServer({ includeQuery: false });
+registerTemporalessInvariantServices(server, {
+  recordStore: {
+    getWorkflow() {
+      return { found: false };
+    },
+  },
+});
+```
+
 This subpath reads the checked-in Temporaless descriptor set with source
 comments. It is intended for Node services, CLIs, MCP hosts, and inspectors.
 Browser clients should use the root package and provide a Connect transport.
@@ -82,6 +109,6 @@ Browser clients should use the root package and provide a Connect transport.
 Run these commands from the repository root:
 
 ```sh
-npm install
+npm install --allow-git=all
 npm run check
 ```

@@ -14,7 +14,7 @@ from typing import TypeVar, cast
 
 from google.protobuf.any_pb2 import Any
 from google.protobuf.duration_pb2 import Duration
-from google.protobuf.message import Message
+from google.protobuf.message import DecodeError, Message
 from google.protobuf.timestamp_pb2 import Timestamp
 from protovalidate import ValidationError, validate
 
@@ -273,6 +273,10 @@ class ActivityError(RuntimeError):
         self.retry_after = retry_after
 
 
+class _ResultTypeError(TypeError):
+    """A workflow/activity body violated its declared protobuf response type."""
+
+
 class WorkflowConflictError(RuntimeError):
     pass
 
@@ -375,7 +379,7 @@ async def _await_workflow_infrastructure(
 ) -> TaskResultT:
     try:
         return await awaitable
-    except RunRecordValidationError, ValidationError:
+    except DecodeError, RunRecordValidationError, ValidationError:
         # Corrupt records and invalid framework writes are durable invariant
         # violations, not transient outages. The caller's conflict/terminal
         # path must expose them rather than retrying forever.
@@ -533,6 +537,8 @@ class Workflow:
         validate(activity_options)
         if not activity_type:
             raise ValueError("activity type is required")
+        result_template = result_factory()
+        _validate_result_template("activity", result_template)
 
         key = ActivityKey(
             workflow_id=self._workflow_id,
@@ -814,7 +820,7 @@ class Workflow:
 
         async def replay_terminal(stored: temporaless_pb2.ActivityRecord) -> ResultT:
             await reconcile_terminal_retry_timer(stored)
-            return _replay_record(stored, activity_type, self._code_version, result_factory)
+            return _replay_record(stored, activity_type, self._code_version, result_template)
 
         record = await _await_workflow_infrastructure(
             "read activity",
@@ -980,6 +986,7 @@ class Workflow:
                         # again as soon as it starts.
                         release_activity_claim = False
                         result = await execute()
+                        _validate_result_message("activity", result, result_template)
                     except asyncio.CancelledError:
                         # Cancellation can arrive after an external side effect
                         # but before its result record. Retain the create-only
@@ -1002,7 +1009,10 @@ class Workflow:
                             if retry_after > retry_interval:
                                 retry_interval = retry_after
 
-                        non_retryable = failure.code in plan.non_retryable_codes
+                        non_retryable = (
+                            isinstance(run_err, _ResultTypeError)
+                            or failure.code in plan.non_retryable_codes
+                        )
                         if attempt_idx >= plan.maximum_attempts or non_retryable:
                             failed_record = temporaless_pb2.ActivityRecord(
                                 schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
@@ -1563,6 +1573,7 @@ async def run(
     if options.concurrency_key and not isinstance(store, ClaimStore):
         raise ValueError("claim store is required when concurrency_key is set")
     result_template = result_factory()
+    _validate_result_template("workflow", result_template)
     workflow_type = message_pair_type("workflow", input_message, result_template)
     key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
 
@@ -1584,7 +1595,7 @@ async def run(
                     workflow_type,
                     options.code_version,
                     options.run_order_time if options.HasField("run_order_time") else None,
-                    result_factory,
+                    result_template,
                 ),
                 None,
             )
@@ -1767,6 +1778,7 @@ async def run(
         try:
             try:
                 result = await execute(workflow, input_message)
+                _validate_result_message("workflow", result, result_template)
             except (
                 TimerPendingError,
                 ClaimBusyError,
@@ -1943,6 +1955,29 @@ def message_pair_type(kind: str, input_message: Message, output_message: Message
     return f"{kind}:{input_message.DESCRIPTOR.full_name}->{output_message.DESCRIPTOR.full_name}"
 
 
+def _validate_result_template(kind: str, result_template: object) -> None:
+    if not isinstance(result_template, Message):
+        raise _ResultTypeError(
+            f"{kind} result factory returned non-protobuf type "
+            f"{type(result_template).__module__}.{type(result_template).__qualname__}"
+        )
+
+
+def _validate_result_message(kind: str, result: object, expected: Message) -> None:
+    expected_type = expected.DESCRIPTOR.full_name
+    if not isinstance(result, Message):
+        raise _ResultTypeError(
+            f"{kind} executor returned non-protobuf type "
+            f"{type(result).__module__}.{type(result).__qualname__}; "
+            f"expected {expected_type}"
+        )
+    actual_type = result.DESCRIPTOR.full_name
+    if actual_type != expected_type:
+        raise _ResultTypeError(
+            f"{kind} executor returned protobuf type {actual_type}; expected {expected_type}"
+        )
+
+
 def _assert_activity_identity(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
@@ -1990,12 +2025,11 @@ def _replay_record(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
     code_version: str,
-    result_factory: Callable[[], ResultT],
+    result: ResultT,
 ) -> ResultT:
     _assert_activity_identity(record, activity_type, code_version)
 
     if record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED:
-        result = result_factory()
         if not record.result.Unpack(result):
             raise ActivityConflictError(
                 "stored activity result type does not match requested result"
@@ -2222,11 +2256,10 @@ def _replay_workflow_record(
     workflow_type: str,
     code_version: str,
     run_order_time: Timestamp | None,
-    result_factory: Callable[[], ResultT],
+    result: ResultT,
 ) -> ResultT:
     _assert_workflow_identity(record, workflow_type, code_version, run_order_time)
     if record.status == temporaless_pb2.WORKFLOW_STATUS_COMPLETED:
-        result = result_factory()
         if not record.result.Unpack(result):
             raise WorkflowConflictError(
                 "stored workflow result type does not match requested result"

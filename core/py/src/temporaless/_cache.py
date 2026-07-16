@@ -301,7 +301,7 @@ class RunScopedCache:
     ) -> list[temporaless_pb2.TimerRecord]:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
             records = await self._inner.list_timers(key, status)
-            _timer_keys_for_run(key, records)
+            _timer_keys_for_run(key, records, status)
             return records
         async with self._lock:
             if self._timers_listed:
@@ -311,13 +311,13 @@ class RunScopedCache:
                     if r is not None
                     and (status == temporaless_pb2.TIMER_STATUS_UNSPECIFIED or r.status == status)
                 ]
-                _timer_keys_for_run(key, records)
+                _timer_keys_for_run(key, records, status)
                 return records
         # A status-filtered list would hide records the body might still look
         # up by id; only the unfiltered call populates the cache.
         if status != temporaless_pb2.TIMER_STATUS_UNSPECIFIED:
             records = await self._inner.list_timers(key, status)
-            _timer_keys_for_run(key, records)
+            _timer_keys_for_run(key, records, status)
             return records
         records = await self._inner.list_timers(key, status)
         timer_keys = _timer_keys_for_run(key, records)
