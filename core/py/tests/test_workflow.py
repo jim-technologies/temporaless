@@ -1221,6 +1221,48 @@ async def test_annotations_persist_on_workflow_and_activity(store: OpenDALStore)
     assert act_record.annotations["tokens"] == "128"
 
 
+@pytest.mark.parametrize(
+    "pending_error",
+    [
+        TimerPendingError("wait", datetime(2030, 1, 1, tzinfo=UTC)),
+        EventPendingError("approval"),
+    ],
+)
+async def test_workflow_annotations_survive_continuation_replay(
+    store: OpenDALStore,
+    pending_error: RuntimeError,
+) -> None:
+    executions = 0
+    options = Options(
+        workflow_id=f"annotations:{type(pending_error).__name__}",
+        run_id="run",
+        code_version="v1",
+    )
+
+    async def execute(_workflow: Workflow, _request: StringValue) -> StringValue:
+        nonlocal executions
+        executions += 1
+        if executions == 1:
+            annotate("phase", "planned")
+            raise pending_error
+        return StringValue(value="done")
+
+    with pytest.raises(type(pending_error)):
+        await run(store, options, StringValue(value="request"), StringValue, execute)
+
+    key = WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id)
+    pending = await store.get_workflow(key)
+    assert pending is not None
+    assert pending.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS
+    assert pending.annotations["phase"] == "planned"
+
+    result = await run(store, options, StringValue(value="request"), StringValue, execute)
+    assert result.value == "done"
+    completed = await store.get_workflow(key)
+    assert completed is not None
+    assert completed.annotations["phase"] == "planned"
+
+
 async def test_workflow_accessors_expose_ids(store: OpenDALStore) -> None:
     async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
         assert workflow.workflow_id == "prices:accessors"

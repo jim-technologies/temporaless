@@ -399,11 +399,22 @@ class QueryStore(Protocol):
 
 class OpenDALStore:
     def __init__(self, operator: opendal.AsyncOperator) -> None:
+        capability = operator.capability()
+        required = ("stat", "read", "write", "delete", "list", "create_dir")
+        missing = [name for name in required if not getattr(capability, name)]
+        if missing:
+            raise ValueError(
+                "OpenDAL operator does not support required point-store operations: "
+                + ", ".join(missing)
+            )
         self._operator = operator
+        self._claim_capability = (
+            CREATE_ONLY_CLAIMS if capability.write_with_if_not_exists else NO_CLAIMS
+        )
         self._latest_pointer_lock = asyncio.Lock()
 
     async def claim_capability(self) -> temporaless_pb2.ClaimCapability:
-        return CREATE_ONLY_CLAIMS
+        return self._claim_capability
 
     async def get_activity(self, key: ActivityKey) -> temporaless_pb2.ActivityRecord | None:
         path = key.path()
@@ -525,6 +536,8 @@ class OpenDALStore:
         await self._operator.write(key.path(), record.SerializeToString(deterministic=True))
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
+        if self._claim_capability == NO_CLAIMS:
+            raise RuntimeError("OpenDAL backend does not support atomic create-if-absent claims")
         key = _validate_claim_record(record)
         await self._operator.create_dir(key.dir_path())
         try:
@@ -880,12 +893,9 @@ class OpenDALStore:
             try:
                 workflow = await self.get_workflow(workflow_key)
             except (DecodeError, ValidationError, ValueError, OverflowError) as exc:
-                _LOGGER.warning(
-                    "skipping due timer with invalid parent workflow %s: %s",
-                    ledger_path,
-                    exc,
-                )
-                continue
+                raise RunRecordValidationError(
+                    f"due timer {ledger_path} has an invalid parent workflow: {exc}"
+                ) from exc
             if workflow is None or workflow.status != temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS:
                 continue
             # Dispatch only from an exact prepared shadow/canonical pair.

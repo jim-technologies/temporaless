@@ -81,6 +81,32 @@ console.log(server.toolCatalog());
 console.log(await runCli(server, ["RecordQueryService", "ListWorkflows"]));
 ```
 
+The default catalog is inspection-only. It includes point reads, run-scoped
+lists, and query reads, but excludes record writes, claim creation/deletion,
+point-store `DueTimers` repair, retention `Sweep`, and all delete RPCs.
+
+Operator methods require an explicit opt-in:
+
+```ts
+const operatorServer = createTemporalessInvariantHttpProxy(
+  "https://temporaless-admin.example.com",
+  {
+    includeOperatorMethods: true,
+    auth: {
+      headerProvider: () => ({
+        authorization: `Bearer ${process.env.TEMPORALESS_OPERATOR_TOKEN!}`,
+      }),
+    },
+  },
+);
+```
+
+That opt-in is intentionally dangerous. Use a narrowly scoped backend
+credential, authenticate and authorize the inbound MCP/HTTP/CLI boundary, and
+do not expose the operator catalog to untrusted users or a general-purpose
+agent. The outbound `auth` option authenticates the proxy to ConnectRPC; it
+does not protect the facade itself.
+
 Generated implementations can be registered on the same descriptor-backed
 server without adding a second Temporaless-specific handler shape:
 

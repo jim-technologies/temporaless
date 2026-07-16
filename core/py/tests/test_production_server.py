@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import logging
 import os
 import signal
 import socket
@@ -30,6 +31,10 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError
+from connectrpc.method import IdempotencyLevel, MethodInfo
+from connectrpc.request import Headers, RequestContext
 
 from temporaless.v1 import temporaless_pb2
 
@@ -47,6 +52,7 @@ _EXAMPLE_MODULE = importlib.util.module_from_spec(_EXAMPLE_SPEC)
 _EXAMPLE_SPEC.loader.exec_module(_EXAMPLE_MODULE)
 MAX_HTTP_REQUEST_BYTES = cast(int, vars(_EXAMPLE_MODULE)["MAX_HTTP_REQUEST_BYTES"])
 _RPCRequestGuard = vars(_EXAMPLE_MODULE)["_RPCRequestGuard"]
+RPCLogger = vars(_EXAMPLE_MODULE)["RPCLogger"]
 
 
 def _free_port() -> int:
@@ -182,6 +188,42 @@ def _http_post(
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read() if hasattr(e, "read") else b""
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (None, "rpc.ok"),
+        (ConnectError(Code.INVALID_ARGUMENT, "invalid request"), "rpc.connect_error"),
+        (RuntimeError("unexpected failure"), "rpc.unhandled"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rpc_logger_includes_exact_procedure_for_every_outcome(
+    caplog: pytest.LogCaptureFixture,
+    error: Exception | None,
+    expected_message: str,
+) -> None:
+    ctx = RequestContext(
+        method=MethodInfo(
+            name="GetStoreCapabilities",
+            service_name="temporaless.v1.RecordStoreService",
+            input=temporaless_pb2.GetStoreCapabilitiesRequest,
+            output=temporaless_pb2.GetStoreCapabilitiesResponse,
+            idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+        ),
+        http_method="POST",
+        request_headers=Headers({"x-correlation-id": "correlation-123"}),
+    )
+    interceptor = RPCLogger()
+
+    with caplog.at_level(logging.INFO, logger="temporaless.production"):
+        token = await interceptor.on_start(ctx)
+        await interceptor.on_end(token, ctx, error)
+
+    [record] = [record for record in caplog.records if record.message == expected_message]
+    expected_procedure = "/temporaless.v1.RecordStoreService/GetStoreCapabilities"
+    assert vars(record)["procedure"] == expected_procedure
 
 
 def test_healthz_returns_200_without_auth(production_server) -> None:

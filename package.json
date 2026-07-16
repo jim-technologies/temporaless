@@ -1,9 +1,17 @@
 {
   "name": "@jim-technologies/temporaless",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "TypeScript SDK for Temporaless protobuf, ConnectRPC, and Invariant Protocol projections.",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/jim-technologies/temporaless#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jim-technologies/temporaless.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jim-technologies/temporaless/issues"
+  },
   "type": "module",
   "main": "./core/ts/dist/index.js",
   "types": "./core/ts/dist/index.d.ts",

@@ -6,6 +6,7 @@ import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import StringValue
 
+import temporaless.cronscheduler as cronscheduler_module
 from temporaless.cronscheduler import (
     Schedule,
     Scheduler,
@@ -35,6 +36,39 @@ async def test_tick_fires_due_schedules_after_seed() -> None:
         datetime(2026, 5, 2, 9, 32, tzinfo=UTC),
         datetime(2026, 5, 2, 9, 33, tzinfo=UTC),
     ]
+
+
+async def test_tick_streams_catchup_before_planning_later_fires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    calls_seen_by_dispatch: list[int] = []
+
+    class FakeCroniter:
+        def __init__(self, _expression: str, anchor: datetime) -> None:
+            self._next = anchor
+
+        def get_next(self, _result_type: type[datetime]) -> datetime:
+            nonlocal calls
+            calls += 1
+            self._next = self._next.replace(minute=self._next.minute + 1)
+            return self._next
+
+    async def dispatch(_schedule_id: str, _fire_time: datetime) -> None:
+        calls_seen_by_dispatch.append(calls)
+        raise RuntimeError("stop after first streamed fire")
+
+    scheduler = Scheduler(
+        [Schedule(id="every-minute", expression="* * * * *")],
+        dispatch,
+    )
+    scheduler.seed("every-minute", datetime(2026, 5, 2, 9, 30, tzinfo=UTC))
+    monkeypatch.setattr(cronscheduler_module, "croniter", FakeCroniter)
+
+    with pytest.raises(RuntimeError, match="stop after first streamed fire"):
+        await scheduler.tick(datetime(2026, 5, 2, 9, 33, tzinfo=UTC))
+
+    assert calls_seen_by_dispatch == [1]
 
 
 @pytest.mark.parametrize(

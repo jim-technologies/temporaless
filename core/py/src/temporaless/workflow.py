@@ -1766,13 +1766,17 @@ async def run(
             if options.HasField("run_order_time"):
                 in_progress.run_order_time.CopyFrom(options.run_order_time)
             await store.put_workflow(in_progress)
+        else:
+            assert record is not None
+            in_progress = temporaless_pb2.WorkflowRecord()
+            in_progress.CopyFrom(record)
 
         workflow = Workflow(
             store=store,
             options=options,
             claim_capability=claim_capability,
         )
-        workflow_annotations = _AnnotationsBag()
+        workflow_annotations = _AnnotationsBag(data=dict(in_progress.annotations))
         annotations_token = _annotations_var.set(workflow_annotations)
         workflow_token = _workflow_var.set(workflow)
         try:
@@ -1787,6 +1791,13 @@ async def run(
                 WorkflowDependencyPendingError,
                 WorkflowInfrastructureError,
             ):
+                annotations = workflow_annotations.snapshot()
+                if dict(in_progress.annotations) != annotations:
+                    updated = temporaless_pb2.WorkflowRecord()
+                    updated.CopyFrom(in_progress)
+                    updated.annotations.clear()
+                    updated.annotations.update(annotations)
+                    await store.put_workflow(updated)
                 raise
             except asyncio.CancelledError:
                 # Cancellation is shutdown, not workflow failure. Leave the

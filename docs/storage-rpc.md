@@ -47,8 +47,10 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
   `ConnectQueryStore` wrappers, and a Node-only
   `@jim-technologies/temporaless/invariant` subpath that uses
   invariantprotocol to project `RecordStoreService` / `RecordQueryService`
-  into MCP, CLI, HTTP/Connect, and descriptor-backed tool catalogs. It is not a
-  workflow runtime.
+  into MCP, CLI, HTTP/Connect, and descriptor-backed tool catalogs. Its default
+  catalog is read-only; mutations, point-store timer repair, retention sweeps,
+  and deletes require `includeOperatorMethods: true` plus an authenticated,
+  least-privilege operator boundary. It is not a workflow runtime.
 - The protobuf definitions and generated request/response types live under `api/temporaless/v1`.
 
 ## Core Surface
@@ -63,7 +65,7 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
 - `GetClaim` / `TryCreateClaim` / `DeleteClaim` / `ListClaims`
 - `DueTimers` (read the compact due-timer ledger)
 
-Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. `DeleteRun` snapshots and validates every listed record before deleting claims, then activities/timers/events/workflow; a separately configured claim store must implement `ClaimRunStore` or deletion is rejected before mutation. Deletions are idempotent.
+Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. These lists are unpaginated and materialize the selected run; core `DueTimers` likewise materializes its selected namespace. Keep runs and namespaces bounded, partition timer-heavy tenants, and use an optional indexed due query or external scheduler for very large backlogs. `DeleteRun` snapshots and validates every listed record before deleting claims, then activities/timers/events/workflow; a separately configured claim store must implement `ClaimRunStore` or deletion is rejected before mutation. Deletions are idempotent.
 
 Treat both storage services as operator/admin APIs. A namespace is a storage
 partition, not an authorization boundary, and an empty namespace on
@@ -71,6 +73,12 @@ partition, not an authorization boundary, and an empty namespace on
 deployments must authenticate the transport and authorize each RPC with a
 ConnectRPC interceptor or equivalent gateway policy; do not expose these
 handlers directly to untrusted workflow users.
+
+The bearer-token production examples represent one trusted internal principal
+with access to their mounted surface. Production should issue separate
+least-privilege identities to workflow runtimes and operators, and restrict
+reset, delete, sweep, claim cleanup, and point-store timer repair RPCs to the
+operator identity.
 
 `DeleteRun` is a bounded cleanup operation, not a transaction or execution fence. Quiesce the run before calling it. A claim created concurrently after the listing snapshot can survive this pass; strict concurrent deletion would require a run tombstone checked by every claim create, which the create-only core does not pretend to provide.
 
@@ -96,6 +104,11 @@ Production inspectors, large operational search, and exact retention sweeps
 should use an indexed `RecordQueryService` backed by SQL, DuckLake, or another
 rebuildable metadata index. The Go `scanquery` adapter is an explicit
 offline/development fallback and never expands the core bucket interface.
+
+The bundled `cmd/temporaless` binary is another offline/development fallback:
+it registers only OpenDAL `fs`. For cloud stores, use authenticated
+ConnectStore/RecordQueryService clients or generated remote operator tooling
+instead of placing cloud credentials in that local CLI.
 
 ## Rules
 

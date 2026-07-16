@@ -135,6 +135,61 @@ func TestTimerScannerLoopDispatches(t *testing.T) {
 	}
 }
 
+type timerNamespaceSpyStore struct {
+	storage.Store
+	namespaces chan string
+}
+
+func (store *timerNamespaceSpyStore) DueTimers(
+	_ context.Context,
+	namespace string,
+	_ time.Time,
+) ([]storage.DueTimer, error) {
+	store.namespaces <- namespace
+	return nil, nil
+}
+
+func TestTimerScannerLoopForwardsNamespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+	}{
+		{name: "all namespaces"},
+		{name: "one namespace", namespace: "tenant-a"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &timerNamespaceSpyStore{
+				namespaces: make(chan string, 1),
+			}
+			workers, err := New(store, Config{
+				TimerScanner: &TimerScannerConfig{
+					Dispatch:  func(context.Context, timerscanner.DueTimer) error { return nil },
+					Interval:  time.Hour,
+					Namespace: test.namespace,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := workers.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			defer workers.Stop()
+
+			select {
+			case got := <-store.namespaces:
+				if got != test.namespace {
+					t.Fatalf("namespace = %q, want %q", got, test.namespace)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timer scanner did not poll")
+			}
+		})
+	}
+}
+
 func TestJanitorLoopSweeps(t *testing.T) {
 	ctx := context.Background()
 	store, query := newTestStoreAndQuery(t)

@@ -104,6 +104,17 @@ Python equivalents for the operations adapters live in `core/py/src/temporaless/
 | [`examples/py/data_pipeline.py`](examples/py/data_pipeline.py) | **Airflow-style ETL**: extract → parallel transform (fan-out) → validate → conditional branch → load → notify, with backfill and replay |
 | [`examples/go/production-server`](examples/go/production-server) / [`examples/py/production_server.py`](examples/py/production_server.py) | **Production ConnectStore wiring**: durable-record service + bearer-token auth + health endpoints + structured logs + graceful shutdown. Timer/cron routing stays in the application workflow service or an external scheduler. |
 
+The production-server bearer token is a single-principal internal example, not
+a complete authorization model. Production deployments should authorize each
+RPC and give workflow runtimes and mutation-capable operators separate,
+least-privilege identities.
+
+The bundled `cmd/temporaless` operator CLI is a transitional local-filesystem
+tool and registers only OpenDAL `fs`. Operate cloud stores through
+authenticated ConnectStore/RecordQueryService clients or generated remote
+operator tooling; the CLI intentionally does not bundle cloud drivers or
+credentials.
+
 ## Docs
 
 - [`docs/philosophy.md`](docs/philosophy.md) — design tenets in one page (read first)
@@ -158,7 +169,7 @@ Keys are constructed from protobuf keys; runtime code never parses paths back in
 
 IDs may contain letters, numbers, `.`, `_`, `-`, `:`, and `=`. Slashes are rejected because object keys are path-like. Namespace and workflow ID values beginning with `_` are reserved for Temporaless system prefixes such as `_latest` and `_due`. The framework does not generate IDs — workflow IDs, run IDs, activity IDs, timer IDs, claim owner IDs, and event IDs are application-owned and must be passed explicitly.
 
-The core storage contract is generated from `temporaless.v1.RecordStoreService`: point GET/PUT/DELETE, run-scoped lists for replay prefetch and run deletion, create-if-absent claims, latest-run pointers, and the compact due-timer ledger. Cross-run search lives on optional `RecordQueryService` implementations such as `temporaless-indexstore`; the bucket remains the source of truth and the index is rebuildable.
+The core storage contract is generated from `temporaless.v1.RecordStoreService`: point GET/PUT/DELETE, run-scoped lists for replay prefetch and run deletion, create-if-absent claims, latest-run pointers, and the compact due-timer ledger. Core run-scoped lists and `DueTimers` are unpaginated and materialize the selected run or namespace; keep those partitions bounded. For very large runs or timer backlogs, partition namespaces and use an optional indexed query/scheduler adapter or an external scheduler. Cross-run search lives on optional `RecordQueryService` implementations such as `temporaless-indexstore`; the bucket remains the source of truth and the index is rebuildable.
 
 ## What you do and do not get
 

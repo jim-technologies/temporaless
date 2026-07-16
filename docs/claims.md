@@ -115,13 +115,18 @@ Claim capability is a protobuf enum in `temporaless.v1`, not a language-local st
 
 ## OpenDAL Status
 
-The Python OpenDAL binding exposes `if_not_exists`, so Temporaless Python has a create-only claim helper:
+The Python OpenDAL binding exposes backend capabilities and
+`if_not_exists`. Temporaless reports create-only claims only when the selected
+operator advertises `write_with_if_not_exists`; otherwise it reports
+`CLAIM_CAPABILITY_NO_CLAIMS` and rejects claim-dependent options.
 
 ```python
 store.try_create_claim(record)
 ```
 
-It writes the protobuf `ClaimRecord` with `if_not_exists=True`, returns `True` when this invocation acquired the claim, and returns `False` when the claim object already exists.
+On a capable backend, it writes the protobuf `ClaimRecord` with
+`if_not_exists=True`, returns `True` when this invocation acquired the claim,
+and returns `False` when the claim object already exists.
 
 The current Go OpenDAL binding exposes simple `Write` and does not expose conditional write options. Go support should wait for one of these:
 

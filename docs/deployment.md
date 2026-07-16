@@ -384,7 +384,7 @@ deterministic prepared timer object alongside each timer. Scanners list that
 ledger, not the whole workflow tree:
 
 ```go
-due, _ := timerscanner.DueTimers(ctx, store, time.Now())
+due, _ := timerscanner.DueTimers(ctx, store, time.Now(), "tenant-a")
 for _, t := range due {
     // Re-invoke the workflow handler. Do this however your trigger surface works:
     // call your ConnectRPC method, push to a queue, invoke a cloud function, etc.

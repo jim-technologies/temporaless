@@ -15,7 +15,10 @@ plugins:
   # The BSR plugin currently trails connectrpc-python 0.11. Use the locked
   # local generator so generated clients and servers select Google protobuf
   # codecs to match the rest of Temporaless.
-  - local: [uv, run, --frozen, --project, core/py, protoc-gen-connectrpc]
+  # Strip the BSR credential before spawning the local generator. Trusted CI
+  # needs BUF_TOKEN for remote plugins, but local package-manager subprocesses
+  # must not inherit that credential.
+  - local: [env, -u, BUF_TOKEN, uv, run, --frozen, --project, core/py, protoc-gen-connectrpc]
     out: core/py/src
     # connectrpc-python defaults to protobuf-py as of 0.10. Temporaless uses
     # Google's protobuf runtime across its Python core, Protovalidate, and

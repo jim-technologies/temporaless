@@ -26,6 +26,12 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   before the service method but after the runtime has read the unary body, so
   use outer ASGI/ingress authentication as the resource-exhaustion boundary.
   See `examples/py/production_server.py` for a complete implementation.
+- [ ] **Authorization is per RPC and least privilege.** The production-server
+  bearer-token examples intentionally model one trusted internal principal;
+  they are not tenant isolation or an operator authorization policy. Give
+  workflow runtimes and human/automation operators separate identities, and
+  reserve reset, delete, sweep, claim cleanup, and timer-repair mutations for
+  the operator identity.
 - [ ] **Server configuration fails closed.** The Python example requires
   `AUTH_TOKEN` and `TEMPORALESS_STORAGE_SCHEME`; backend options are a JSON
   string map in `TEMPORALESS_STORAGE_OPTIONS` (empty by default). It rejects
@@ -83,6 +89,11 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   Multiple copies provide at-least-once dispatch, so resulting workflow calls
   must use execution claims or tolerate overlap.
 - [ ] **Timer scanner ticked at the granularity you need.** ~1-minute polling is the framework's expected cadence. Tighter loops increase storage RPCs without lowering wake-up latency below the `sleep(duration)` precision you persisted.
+- [ ] **Point-store scan partitions are bounded.** Core `DueTimers` materializes
+  its selected namespace, and run-scoped activity/timer/event/claim lists
+  materialize the selected run; these RPCs are intentionally unpaginated.
+  Partition namespaces and avoid enormous aggregate runs. Use an indexed due
+  query or external scheduler for very large timer backlogs.
 - [ ] **Timer delivery treated as at-least-once.** A due wake remains
   dispatchable until replay persists a later wake-bearing or terminal boundary;
   multiple scanners can dispatch it concurrently. Use execution claims to
@@ -126,11 +137,23 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 
 ## Container image (optional)
 
-The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. It's a starting point; for your own service:
+The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. The image keeps `/app` root-owned while running as the unprivileged `app` user, so application code and the virtual environment cannot be modified by a compromised process. It's a starting point; for your own service:
 
 - Replace the `CMD` line with your entrypoint.
 - Keep the exact Python and uv image digests pinned; update tag and digest together.
-- Non-root user (`uid 10001` in the bundled Dockerfile).
+- Keep application files root-owned and run as the non-root user (`uid 10001`
+  in the bundled Dockerfile). Mount only the paths that genuinely need writes.
+- Run with a read-only root filesystem. Provide a small `tmpfs` for `/tmp` if
+  your platform or dependencies need it; provide a separate writable
+  volume/tmpfs only for explicitly configured local state. Cloud object
+  storage deployments should not need a writable application filesystem.
+- Drop all Linux capabilities, set `no-new-privileges`, and keep the runtime's
+  default seccomp/AppArmor (or an equivalently restrictive) profile enabled.
+- Inject `AUTH_TOKEN` through the platform's secret manager at runtime; never
+  bake it into an image layer or deployment manifest. The example's one shared
+  bearer token demonstrates authentication for a single internal principal,
+  not tenant-aware or per-RPC authorization. Put that policy at the ingress or
+  replace the example guard for multi-principal deployments.
 - `HEALTHCHECK` wired to `/readyz`.
 - Configure your platform's grace window so SIGTERM has ~30s to drain.
 

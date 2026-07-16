@@ -80,6 +80,8 @@ type TimerScannerConfig struct {
 	Dispatch DueTimerDispatcher
 	// Interval defaults to 60s when zero.
 	Interval time.Duration
+	// Namespace limits timer discovery. Empty means all namespaces.
+	Namespace string
 }
 
 // JanitorConfig periodically sweeps COMPLETED runs older than MaxAge.
@@ -226,7 +228,7 @@ func (w *Workers) runTimerScanner(ctx context.Context, cfg *TimerScannerConfig) 
 		interval = 60 * time.Second
 	}
 	w.loop(ctx, "timer_scanner", interval, func(ctx context.Context) error {
-		due, err := timerscanner.DueTimers(ctx, w.store, time.Now().UTC())
+		due, err := timerscanner.DueTimers(ctx, w.store, time.Now().UTC(), cfg.Namespace)
 		if err != nil {
 			return err
 		}
@@ -237,6 +239,7 @@ func (w *Workers) runTimerScanner(ctx context.Context, cfg *TimerScannerConfig) 
 			if err := cfg.Dispatch(ctx, timer); err != nil {
 				// One bad workflow shouldn't stall the scanner.
 				w.logger.Error("timer_scanner dispatch failed",
+					"namespace", timer.Key.Namespace,
 					"workflow_id", timer.Key.WorkflowID,
 					"run_id", timer.Key.RunID,
 					"timer_id", timer.Key.TimerID,

@@ -32,8 +32,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
-COPY --from=builder --chown=app:app /app /app
-COPY --chown=app:app examples/py /app/examples/py
+# Application code and the virtual environment stay root-owned and read-only
+# to the unprivileged runtime user. Writable state belongs on an explicit
+# volume/tmpfs or in the configured object-storage backend.
+COPY --from=builder /app /app
+COPY examples/py /app/examples/py
 USER app
 WORKDIR /app
 

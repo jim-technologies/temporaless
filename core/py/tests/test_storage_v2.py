@@ -13,6 +13,7 @@ from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
     EVENT_RECORD_SCHEMA_VERSION,
+    NO_CLAIMS,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
     ActivityKey,
@@ -27,6 +28,24 @@ from temporaless.storage import (
 )
 from temporaless.timerscanner import due_timers
 from temporaless.v1 import temporaless_pb2
+
+
+def test_opendal_store_rejects_incomplete_point_backend() -> None:
+    operator = opendal.AsyncOperator("http", endpoint="https://example.com")
+
+    with pytest.raises(
+        ValueError,
+        match="required point-store operations: write, delete, list, create_dir",
+    ):
+        OpenDALStore(operator)
+
+
+async def test_opendal_store_reports_no_claims_without_conditional_writes() -> None:
+    store = OpenDALStore(opendal.AsyncOperator("webdav", endpoint="https://example.com"))
+
+    assert await store.claim_capability() == NO_CLAIMS
+    with pytest.raises(RuntimeError, match="atomic create-if-absent"):
+        await store.try_create_claim(temporaless_pb2.ClaimRecord())
 
 
 async def test_latest_pointer_uses_fire_time_not_backfill_write_time(tmp_path) -> None:
@@ -1051,8 +1070,11 @@ async def test_due_timers_quarantines_ledger_keys_from_different_runs(tmp_path) 
     assert [entry async for entry in await operator.list("temporaless/v2/default/_due_invalid/")]
 
 
-@pytest.mark.parametrize("record_kind", ["timer", "workflow"])
-async def test_due_timers_conservatively_skips_authoritative_payload_key_mismatch(
+@pytest.mark.parametrize(
+    "record_kind",
+    ["timer_key_mismatch", "workflow_key_mismatch", "workflow_undecodable"],
+)
+async def test_due_timers_handles_corrupt_authoritative_payload(
     tmp_path,
     caplog,
     record_kind: str,
@@ -1082,7 +1104,7 @@ async def test_due_timers_conservatively_skips_authoritative_payload_key_mismatc
     await store.put_timer(timer)
     ledger_path = _due_entry_path(timer_key)
 
-    if record_kind == "timer":
+    if record_kind == "timer_key_mismatch":
         timer.key.CopyFrom(
             TimerKey(
                 workflow_id=timer_key.workflow_id,
@@ -1091,7 +1113,7 @@ async def test_due_timers_conservatively_skips_authoritative_payload_key_mismatc
             ).to_proto()
         )
         await operator.write(timer_key.path(), timer.SerializeToString(deterministic=True))
-    else:
+    elif record_kind == "workflow_key_mismatch":
         workflow.key.CopyFrom(
             WorkflowKey(
                 workflow_id=workflow_key.workflow_id,
@@ -1099,11 +1121,17 @@ async def test_due_timers_conservatively_skips_authoritative_payload_key_mismatc
             ).to_proto()
         )
         await operator.write(workflow_key.path(), workflow.SerializeToString(deterministic=True))
+    else:
+        await operator.write(workflow_key.path(), b"not a workflow protobuf")
 
-    with caplog.at_level(logging.WARNING, logger="temporaless.storage"):
-        assert await store.due_timers("", datetime.now(UTC)) == []
+    if record_kind.startswith("workflow_"):
+        with pytest.raises(RunRecordValidationError, match="invalid parent workflow"):
+            await store.due_timers("", datetime.now(UTC))
+    else:
+        with caplog.at_level(logging.WARNING, logger="temporaless.storage"):
+            assert await store.due_timers("", datetime.now(UTC)) == []
+        assert "repairing due timer with invalid canonical point" in caplog.text
     assert await operator.exists(ledger_path)
-    assert "due timer with invalid" in caplog.text
     assert not [
         entry async for entry in await operator.list("temporaless/v2/default/_due_invalid/")
     ]
@@ -1114,6 +1142,9 @@ class _RecordingOperator:
         self._inner = inner
         self.writes: list[str] = []
         self.reads: list[str] = []
+
+    def capability(self):
+        return self._inner.capability()
 
     async def create_dir(self, path: str):
         return await self._inner.create_dir(path)

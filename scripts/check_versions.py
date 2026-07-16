@@ -20,6 +20,18 @@ INVARIANT_SPEC = re.compile(
     rf"git\+https://{re.escape(INVARIANT_REPOSITORY)}#([0-9a-f]{{40}})"
 )
 INVARIANT_ALLOW_SCRIPT_PREFIX = "github:jim-technologies/invariantprotocol#"
+LICENSE = "Apache-2.0"
+PROJECT_URLS = {
+    "Homepage": "https://github.com/jim-technologies/temporaless",
+    "Repository": "https://github.com/jim-technologies/temporaless",
+    "Issues": "https://github.com/jim-technologies/temporaless/issues",
+}
+NPM_HOMEPAGE = f"{PROJECT_URLS['Homepage']}#readme"
+NPM_REPOSITORY = {
+    "type": "git",
+    "url": "git+https://github.com/jim-technologies/temporaless.git",
+}
+NPM_BUGS = {"url": PROJECT_URLS["Issues"]}
 OWNED_PACKAGES = {
     "temporaless",
     "temporaless-connectworkflow",
@@ -152,6 +164,14 @@ def main() -> int:
         errors.append(
             "package.json must set private=true; Temporaless installs from Git only"
         )
+    for field, actual, expected in (
+        ("license", package.get("license"), LICENSE),
+        ("homepage", package.get("homepage"), NPM_HOMEPAGE),
+        ("repository", package.get("repository"), NPM_REPOSITORY),
+        ("bugs", package.get("bugs"), NPM_BUGS),
+    ):
+        if actual != expected:
+            errors.append(f"package.json {field} is {actual!r}; expected {expected!r}")
 
     invariant_dependency = package.get("dependencies", {}).get(INVARIANT_PACKAGE)
     invariant_match = (
@@ -259,13 +279,21 @@ def main() -> int:
 
     for path, expected_name in PYPROJECTS.items():
         pyproject = read_toml(path)
-        if pyproject["project"]["name"] != expected_name:
+        project = pyproject["project"]
+        if project["name"] != expected_name:
             errors.append(
-                f"{path} declares {pyproject['project']['name']!r}; expected {expected_name!r}"
+                f"{path} declares {project['name']!r}; expected {expected_name!r}"
             )
-        if "Private :: Do Not Upload" not in pyproject["project"].get(
-            "classifiers", []
-        ):
+        if project.get("license") != LICENSE:
+            errors.append(
+                f"{path} license is {project.get('license')!r}; expected {LICENSE!r}"
+            )
+        if project.get("urls") != PROJECT_URLS:
+            errors.append(
+                f"{path} project URLs are {project.get('urls')!r}; "
+                f"expected {PROJECT_URLS!r}"
+            )
+        if "Private :: Do Not Upload" not in project.get("classifiers", []):
             errors.append(
                 f"{path} must declare the Private :: Do Not Upload classifier"
             )
@@ -274,7 +302,7 @@ def main() -> int:
             errors.append(
                 f"{path} typed package marker is missing: {marker.relative_to(ROOT)}"
             )
-        actual_versions[path] = pyproject["project"]["version"]
+        actual_versions[path] = project["version"]
 
         requirements = temporaless_requirements(pyproject)
         expected_requirements = PYTHON_REQUIREMENTS[path]

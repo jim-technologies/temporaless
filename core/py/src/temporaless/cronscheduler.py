@@ -77,37 +77,36 @@ class Scheduler:
 
         The dispatcher is awaited sequentially per schedule fire — if you need
         parallel dispatch, wrap the dispatcher with ``asyncio.create_task``.
+        Catch-up is generated one fire at a time so a long outage cannot build
+        an unbounded in-memory plan before the first dispatch.
         """
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
         # Serialize ticks so two concurrent callers cannot plan the same fire.
-        # Plan under the thread lock so ``snapshot``/``seed`` see a consistent
-        # view, but never hold that lock while awaiting user code.
+        # Never hold the thread lock while awaiting user code: dispatchers may
+        # safely inspect or update scheduler state.
         async with self._tick_lock:
-            plan: list[tuple[str, datetime]] = []
-            with self._lock:
-                for schedule in self._schedules:
+            dispatched = 0
+            for schedule in self._schedules:
+                with self._lock:
                     anchor = self._last_fires.get(schedule.id)
                     if anchor is None:
                         self._last_fires[schedule.id] = now
                         continue
-                    iterator = croniter(schedule.expression, anchor)
-                    next_fire = iterator.get_next(datetime)
-                    while next_fire <= now:
-                        plan.append((schedule.id, next_fire))
-                        next_fire = iterator.get_next(datetime)
 
-            dispatched = 0
-            for schedule_id, fire_time in plan:
-                await self._dispatch(schedule_id, fire_time)
-                # A fire is durable scheduler state only after dispatch
-                # succeeds. If dispatch raises, the failed fire remains due on
-                # the next tick while earlier successful fires stay committed.
-                with self._lock:
-                    current = self._last_fires.get(schedule_id)
-                    if current is None or fire_time > current:
-                        self._last_fires[schedule_id] = fire_time
-                dispatched += 1
+                next_fire = croniter(schedule.expression, anchor).get_next(datetime)
+                while next_fire <= now:
+                    await self._dispatch(schedule.id, next_fire)
+                    # A fire is durable scheduler state only after dispatch
+                    # succeeds. If dispatch raises, the failed fire remains due
+                    # on the next tick while earlier successes stay committed.
+                    with self._lock:
+                        current = self._last_fires.get(schedule.id)
+                        if current is None or next_fire > current:
+                            current = next_fire
+                            self._last_fires[schedule.id] = current
+                    dispatched += 1
+                    next_fire = croniter(schedule.expression, current).get_next(datetime)
             return dispatched
 
     def snapshot(self) -> dict[str, datetime]:

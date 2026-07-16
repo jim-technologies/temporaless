@@ -152,8 +152,12 @@ class RPCLogger:
         error: Exception | None,
     ) -> None:
         elapsed_ms = round((time.perf_counter() - token["start"]) * 1000, 2)
+        procedure = f"/{ctx.method.service_name}/{ctx.method.name}"
         if error is None:
-            _log.info("rpc.ok", extra={"elapsed_ms": elapsed_ms})
+            _log.info(
+                "rpc.ok",
+                extra={"elapsed_ms": elapsed_ms, "procedure": procedure},
+            )
         elif isinstance(error, ConnectError):
             _log.warning(
                 "rpc.connect_error",
@@ -162,12 +166,17 @@ class RPCLogger:
                     if hasattr(error.code, "name")
                     else str(error.code),
                     "elapsed_ms": elapsed_ms,
+                    "procedure": procedure,
                 },
             )
         else:
             _log.error(
                 "rpc.unhandled",
-                extra={"elapsed_ms": elapsed_ms, "exc_type": type(error).__name__},
+                extra={
+                    "elapsed_ms": elapsed_ms,
+                    "exc_type": type(error).__name__,
+                    "procedure": procedure,
+                },
             )
         _correlation_id_var.reset(token["token"])
 

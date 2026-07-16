@@ -28,11 +28,13 @@ The framework relies on the underlying storage providing **atomic record writes*
 
 The OpenDAL `fs` scheme used in tests and small-scale local deployments **does not** provide truly atomic concurrent writes — readers can observe partial files during a write. This is acceptable for development but not safe for multi-writer production use. Use S3, GCS, or another backend with native object-store semantics in production.
 
-Python OpenDAL exposes `if_not_exists=True`, so the Python core can provide
-create-only claims on backends that honor that precondition. On `fs`, treat
-that as local-development coordination, not a distributed lock. Filesystem
-deployments that need multiple writers should use a backend-specific claim
-adapter or keep activities idempotent.
+Python OpenDAL exposes `if_not_exists=True`, so the Python core reports
+create-only claims only when the selected operator advertises
+`write_with_if_not_exists`. Backends without that capability report
+`NO_CLAIMS`. On `fs`, treat create-only behavior as local-development
+coordination, not a distributed lock. Filesystem deployments that need
+multiple writers should use a backend-specific claim adapter or keep
+activities idempotent.
 
 The bundled `gocdkclaims` adapter wraps GoCDK's `WriterOptions.IfNotExist`. The fileblob driver implements this as Stat-then-Rename, which is racy across goroutines, so the adapter additionally serializes `TryCreateClaim` through a process-level mutex. For multi-process atomicity, again rely on S3/GCS native preconditions.
 
@@ -155,6 +157,32 @@ only offline while writers/scanners are quiesced; the generic ledger has no
 online compaction mode.
 
 Cron should be implemented as a scheduler adapter that creates workflow runs from a schedule. The bundled scheduler seeds from latest-run pointer objects written by the bucket store. SQL can be introduced as an optional query index for search and large operational views, but the core must not require it.
+
+### Point-store scan size
+
+Core `RecordStoreService.DueTimers` and the run-scoped activity, timer, event,
+and claim lists are deliberately unpaginated. Each call materializes the
+selected namespace or run in the server and client. This keeps replay and
+cleanup semantics explicit, but it is not a large-backlog query engine.
+
+Keep individual runs bounded, partition timer-heavy tenants across namespaces,
+and avoid an empty-namespace `DueTimers` scan when the global ledger can grow
+without bound. Very large timer backlogs should use an optional indexed
+`RecordQueryService` due query or an external scheduler whose index can page
+and shard independently of the core point store.
+
+## Authorization Boundaries
+
+A namespace is a storage partition, not an authorization boundary. The bearer
+token in the production-server examples represents one trusted internal
+principal and grants the example's full mounted RPC surface. It is not suitable
+as a shared credential for untrusted workflow callers and operators.
+
+Production deployments should authorize each RPC at the ConnectRPC
+interceptor or gateway, issue separate least-privilege identities to workflow
+runtimes and operators, and reserve reset, delete, sweep, claim cleanup, and
+timer-repair methods for operator identities. External authorization remains
+necessary even when the storage key itself contains a namespace.
 
 ## Determinism
 

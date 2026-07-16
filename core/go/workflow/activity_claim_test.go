@@ -19,6 +19,114 @@ import (
 
 const activityClaimTestType = "activity:google.protobuf.StringValue->google.protobuf.StringValue"
 
+func TestActivityNilResultPersistsFailureAndReleasesClaim(t *testing.T) {
+	tests := []struct {
+		name       string
+		withClaims bool
+	}{
+		{name: "without claims"},
+		{name: "with claims", withClaims: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t)
+			workflow := &Workflow{
+				store:       store,
+				workflowID:  "nil-activity-result",
+				runID:       strings.ReplaceAll(test.name, " ", "-"),
+				codeVersion: "v1",
+			}
+			var claimStore storage.ClaimStore
+			if test.withClaims {
+				claimStore = newTestClaimStore(t)
+				workflow.claimStore = claimStore
+				workflow.claimCapability = storage.CreateOnlyClaims
+				workflow.claimOwner = "worker"
+			}
+			policy := &temporalessv1.RetryPolicy{
+				MaximumAttempts:    3,
+				InitialInterval:    durationpb.New(time.Millisecond),
+				BackoffCoefficient: 2,
+			}
+
+			bodyCalls := 0
+			_, err := runActivity(
+				ctx,
+				workflow,
+				"call",
+				activityClaimTestType,
+				policy,
+				"",
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				func(context.Context) (*wrapperspb.StringValue, error) {
+					bodyCalls++
+					var result *wrapperspb.StringValue
+					return result, nil
+				},
+			)
+			var activityErr *ActivityError
+			if !errors.As(err, &activityErr) ||
+				!strings.Contains(activityErr.Message, "returned a nil result") {
+				t.Fatalf("activity error = %v, want terminal nil-result failure", err)
+			}
+			if bodyCalls != 1 {
+				t.Fatalf("activity body calls = %d, want 1 non-retryable attempt", bodyCalls)
+			}
+
+			key := storage.NewActivityKey(workflow.workflowID, workflow.runID, "call")
+			record, found, err := store.GetActivity(ctx, key)
+			if err != nil || !found {
+				t.Fatalf("activity record: err=%v found=%v", err, found)
+			}
+			if record.GetStatus() != temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED {
+				t.Fatalf("activity status = %s, want FAILED", record.GetStatus())
+			}
+			if len(record.GetAttempts()) != 1 {
+				t.Fatalf("activity attempts = %d, want 1", len(record.GetAttempts()))
+			}
+			if record.GetFailure() == nil ||
+				!strings.Contains(record.GetFailure().GetMessage(), "returned a nil result") {
+				t.Fatalf("activity failure = %v, want nil-result message", record.GetFailure())
+			}
+
+			if test.withClaims {
+				_, claimFound, claimErr := claimStore.GetClaim(
+					ctx,
+					activityClaimKeyForTest(workflow, "call"),
+				)
+				if claimErr != nil || claimFound {
+					t.Fatalf("activity claim after terminal failure: found=%v err=%v", claimFound, claimErr)
+				}
+			}
+
+			_, replayErr := runActivity(
+				ctx,
+				workflow,
+				"call",
+				activityClaimTestType,
+				policy,
+				"",
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				func(context.Context) (*wrapperspb.StringValue, error) {
+					bodyCalls++
+					return wrapperspb.String("must-not-run"), nil
+				},
+			)
+			if !errors.As(replayErr, &activityErr) ||
+				!strings.Contains(activityErr.Message, "returned a nil result") {
+				t.Fatalf("replay error = %v, want stored nil-result failure", replayErr)
+			}
+			if bodyCalls != 1 {
+				t.Fatalf("activity body calls after replay = %d, want 1", bodyCalls)
+			}
+		})
+	}
+}
+
 func TestActivityClaimSerializesLiveDuplicatesIncludingSameOwner(t *testing.T) {
 	tests := []struct {
 		name        string

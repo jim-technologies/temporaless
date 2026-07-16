@@ -6,9 +6,11 @@
 // To keep the eventual swap painless, every subcommand maps 1:1 to a single
 // adapter function. No business logic lives here.
 //
-// Storage backend is selected via --store-scheme / --store-root (OpenDAL
-// schemes such as `fs`, `s3`, `gcs`). Output is text by default; --json
-// switches to protojson for machine consumption.
+// This transitional binary registers only OpenDAL `fs` via --store-scheme /
+// --store-root. Cloud deployments should use authenticated remote
+// RecordStoreService / RecordQueryService tooling instead of adding cloud
+// credentials and drivers to this local operator binary. Output is text by
+// default; --json switches to protojson for machine consumption.
 //
 // Subcommands:
 //
@@ -32,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,10 +52,9 @@ import (
 )
 
 // schemeRegistry maps the user-facing --store-scheme flag to OpenDAL Schemes.
-// Only `fs` is wired by default. To support s3/gcs/azblob, import the relevant
-// opendal-go-services package and add an entry here. The CLI is a transitional
-// surface; once invariantprotocol generates the CLI from proto + a generic
-// store factory, this lookup goes away.
+// Only `fs` is wired into this transitional local CLI. Production cloud
+// operators should use authenticated remote tooling over RecordStoreService /
+// RecordQueryService rather than embedding cloud drivers and credentials here.
 var schemeRegistry = map[string]opendal.Scheme{
 	"fs": fs.Scheme,
 }
@@ -63,7 +65,7 @@ USAGE
   temporaless [global flags] <subcommand> [flags]
 
 GLOBAL FLAGS
-  --store-scheme   OpenDAL scheme (default: "fs"). Examples: fs, s3, gcs.
+  --store-scheme   OpenDAL scheme (only "fs" is registered).
   --store-root     OpenDAL root path/bucket (required).
   --json           Output records as protojson instead of text summaries.
 
@@ -80,6 +82,10 @@ SUBCOMMANDS
   export           Bulk-decode records under a prefix to JSON Lines (audit / analytics).
 
 Run "temporaless <subcommand> --help" for subcommand-specific flags.
+
+This is a transitional local-filesystem CLI. For cloud stores, use
+authenticated ConnectStore/RecordQueryService clients or generated remote
+operator tooling; this binary intentionally does not bundle cloud drivers.
 `
 
 type globalOpts struct {
@@ -531,7 +537,13 @@ func cmdTail(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts
 //
 // Output: stdout by default; --output FILE for redirection. One JSONL record
 // per stored record; each line is independently parseable.
-func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQueryStore, args []string, stdout io.Writer) error {
+func cmdExport(
+	ctx context.Context,
+	store storage.Store,
+	query storage.WorkflowQueryStore,
+	args []string,
+	stdout io.Writer,
+) (returnErr error) {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	var kind, namespace, workflowID, runID, output string
 	fs.StringVar(&kind, "kind", "", "Record kind: workflow | activity | timer | event (required)")
@@ -546,14 +558,23 @@ func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQ
 		return errors.New("--kind is required (workflow | activity | timer | event)")
 	}
 
+	exported := 0
+	defer func() {
+		if returnErr == nil {
+			fmt.Fprintf(os.Stderr, "exported %d %s records\n", exported, kind)
+		}
+	}()
+
 	w := stdout
 	if output != "" {
-		f, err := os.Create(output)
+		secure, err := openSecureExportFile(output)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		w = f
+		defer func() {
+			returnErr = secure.finish(returnErr)
+		}()
+		w = secure.file
 	}
 
 	emit := func(message proto.Message) error {
@@ -580,7 +601,7 @@ func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQ
 				return err
 			}
 		}
-		fmt.Fprintf(os.Stderr, "exported %d workflow records\n", len(records))
+		exported = len(records)
 		return nil
 	case "activity":
 		if workflowID == "" || runID == "" {
@@ -596,7 +617,7 @@ func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQ
 				return err
 			}
 		}
-		fmt.Fprintf(os.Stderr, "exported %d activity records\n", len(records))
+		exported = len(records)
 		return nil
 	case "timer":
 		if workflowID == "" || runID == "" {
@@ -612,7 +633,7 @@ func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQ
 				return err
 			}
 		}
-		fmt.Fprintf(os.Stderr, "exported %d timer records\n", len(records))
+		exported = len(records)
 		return nil
 	case "event":
 		if workflowID == "" || runID == "" {
@@ -628,11 +649,61 @@ func cmdExport(ctx context.Context, store storage.Store, query storage.WorkflowQ
 				return err
 			}
 		}
-		fmt.Fprintf(os.Stderr, "exported %d event records\n", len(records))
+		exported = len(records)
 		return nil
 	default:
 		return fmt.Errorf("unknown --kind %q (want: workflow | activity | timer | event)", kind)
 	}
+}
+
+type secureExportFile struct {
+	file      *os.File
+	finalPath string
+	tempPath  string
+}
+
+func openSecureExportFile(path string) (*secureExportFile, error) {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func(operationErr error) (*secureExportFile, error) {
+		if closeErr := f.Close(); closeErr != nil {
+			operationErr = errors.Join(operationErr, closeErr)
+		}
+		if removeErr := os.Remove(f.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			operationErr = errors.Join(operationErr, removeErr)
+		}
+		return nil, operationErr
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return cleanup(err)
+	}
+	return &secureExportFile{
+		file:      f,
+		finalPath: path,
+		tempPath:  f.Name(),
+	}, nil
+}
+
+func (export *secureExportFile) finish(operationErr error) error {
+	if operationErr == nil {
+		operationErr = export.file.Sync()
+	}
+	if closeErr := export.file.Close(); closeErr != nil {
+		operationErr = errors.Join(operationErr, closeErr)
+	}
+	if operationErr == nil {
+		operationErr = os.Rename(export.tempPath, export.finalPath)
+	}
+	if operationErr != nil {
+		if removeErr := os.Remove(export.tempPath); removeErr != nil &&
+			!errors.Is(removeErr, os.ErrNotExist) {
+			operationErr = errors.Join(operationErr, removeErr)
+		}
+	}
+	return operationErr
 }
 
 func workflowKeyFor(namespace, workflowID, runID string) storage.WorkflowKey {

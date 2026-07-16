@@ -13,6 +13,74 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-16
+
+### Added
+
+- CI now runs weekly Go, Python, npm, Rust, secret-history, and production
+  container vulnerability checks. The repository also publishes a confidential
+  vulnerability-reporting policy in `SECURITY.md`.
+- The Go background timer scanner accepts an explicit namespace partition.
+  Empty still means the all-namespace operator scope.
+- Production container CI now proves the server becomes healthy with a
+  read-only root filesystem, no Linux capabilities, `no-new-privileges`, and
+  only explicit writable tmpfs mounts.
+
+### Changed
+
+- The lockstep repository version is now 0.7.0.
+- The Invariant Protocol projection is read-only by default. Record mutation,
+  claim coordination, timer repair, retention sweeps, and deletes require the
+  explicit `includeOperatorMethods: true` opt-in and an operator-authorized
+  boundary.
+- Python `OpenDALStore` validates the backend's required point-operation
+  capabilities at construction and advertises create-only claims only when the
+  operator reports atomic `write_with_if_not_exists` support.
+- Python cron catch-up generates and dispatches one fire at a time instead of
+  materializing an unbounded in-memory plan after a long outage.
+- The production image keeps application code and its virtual environment
+  root-owned while continuing to run as UID 10001.
+- Git-only Python installation CI now exercises ordinary `pip` against one
+  immutable repository commit for the core and every adapter.
+- Python and npm packages now carry complete license, repository, homepage,
+  and issue metadata; the Rust lockfile uses Tokio 1.52.4.
+- The transitional operator CLI now accurately advertises its bundled
+  filesystem-only backend. Cloud operation belongs behind authenticated
+  RecordStoreService / RecordQueryService clients.
+- Production documentation now makes the unpaginated point-store scan boundary
+  explicit: bound runs and namespace timer partitions, and use an indexed or
+  external scheduler for very large backlogs.
+
+### Fixed
+
+- Go workflow and activity bodies that return a nil protobuf result now
+  persist a terminal failure, release claims, and replay that failure instead
+  of leaving an unrecorded ambiguous execution.
+- Go and Python due-timer scans now surface a corrupt parent workflow as typed
+  storage corruption rather than silently dropping a wake.
+- Workflow annotations written before a timer, event, claim, dependency, or
+  infrastructure continuation boundary now survive replay in Go and Python.
+- Python production RPC logs now include the exact Connect procedure on
+  successful, Connect-error, and unhandled-error outcomes.
+- Go timer discovery now preserves the caller's namespace instead of always
+  scanning every namespace.
+- Operator JSONL exports write through a mode-`0600` temporary file and
+  atomically replace the destination, avoiding symlink/hardlink clobbering and
+  surfacing final sync/close failures.
+- The Buf registry token is exposed only to trusted main-branch protobuf
+  regeneration and is stripped from local generator subprocesses.
+
+### Upgrade notes
+
+- Go callers of `timerscanner.DueTimers` must pass the namespace as the fourth
+  argument. Use `""` only for an intentional all-namespace operator scan.
+- Invariant consumers that intentionally need mutation or retention methods
+  must set `includeOperatorMethods: true` and protect that facade with
+  operator-scoped authentication and per-RPC authorization.
+- Python OpenDAL backends without atomic create-if-absent now report
+  `CLAIM_CAPABILITY_NO_CLAIMS`; deployments that require single-flight claims
+  must select a capable object backend or provide a dedicated claim adapter.
+
 ## [0.6.0] — 2026-07-16
 
 ### Added

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -357,6 +358,12 @@ func TestCLIHelp(t *testing.T) {
 	if !strings.Contains(stdout.String(), "SUBCOMMANDS") {
 		t.Errorf("expected usage in stdout: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), `only "fs" is registered`) {
+		t.Errorf("expected fs-only store guidance in stdout: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "Examples: fs, s3, gcs") {
+		t.Errorf("help must not advertise unregistered cloud schemes: %s", stdout.String())
+	}
 }
 
 func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
@@ -542,8 +549,85 @@ func TestCLIExport_ActivityKindEmits(t *testing.T) {
 func TestCLIExport_OutputFile(t *testing.T) {
 	root, store := newTestRoot(t)
 	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
-	tmp := t.TempDir()
-	outPath := tmp + "/export.jsonl"
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+	}{
+		{name: "new file"},
+		{
+			name: "existing file is restricted and truncated",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("stale data that must not remain"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			outPath := t.TempDir() + "/export.jsonl"
+			if test.prepare != nil {
+				test.prepare(t, outPath)
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{
+				"--store-scheme", "fs",
+				"--store-root", root,
+				"export", "--kind", "workflow", "--output", outPath,
+			}, &stdout, &stderr); err != nil {
+				t.Fatalf("err=%v stderr=%s", err, stderr.String())
+			}
+			data, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout should be empty when --output is set: %q", stdout.String())
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) != 1 {
+				t.Fatalf("expected exactly one JSONL record after truncation, got %d: %q", len(lines), data)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(lines[0]), &obj); err != nil {
+				t.Fatalf("invalid JSON in output file: %v", err)
+			}
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(outPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := info.Mode().Perm(); got != 0o600 {
+					t.Fatalf("export permissions = %04o, want 0600", got)
+				}
+			}
+		})
+	}
+}
+
+func TestCLIExport_OutputFileDoesNotFollowSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires platform-specific privileges on Windows")
+	}
+
+	root, store := newTestRoot(t)
+	seedWorkflow(t, store, "wf-a", "run-1", temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED)
+	dir := t.TempDir()
+	protectedPath := dir + "/protected.txt"
+	outPath := dir + "/export.jsonl"
+	const protectedContents = "must remain unchanged"
+	if err := os.WriteFile(protectedPath, []byte(protectedContents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(protectedPath, outPath); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	if err := run(context.Background(), []string{
@@ -553,22 +637,23 @@ func TestCLIExport_OutputFile(t *testing.T) {
 	}, &stdout, &stderr); err != nil {
 		t.Fatalf("err=%v stderr=%s", err, stderr.String())
 	}
-	data, err := os.ReadFile(outPath)
+
+	protected, err := os.ReadFile(protectedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) == 0 {
-		t.Fatal("expected non-empty export file")
+	if string(protected) != protectedContents {
+		t.Fatalf("symlink target was modified: %q", protected)
 	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout should be empty when --output is set: %q", stdout.String())
+	info, err := os.Lstat(outPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// File contents must be valid JSONL.
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			t.Fatalf("invalid JSON in output file: %v", err)
-		}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("export path remained a symlink")
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("export permissions = %04o, want 0600", got)
 	}
 }
 

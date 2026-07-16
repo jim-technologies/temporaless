@@ -1,0 +1,17 @@
+title = "Temporaless secret scanning"
+
+[extend]
+useDefault = true
+
+# The production-server comments use one documented placeholder token. Keep
+# the exception narrow: the exact curl rule, exact line value, and exact two
+# example files must all match.
+[[rules]]
+id = "curl-auth-header"
+
+[[rules.allowlists]]
+description = "Documented production-server placeholder bearer token"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''(?i)authorization:\s*Bearer secret123''']
+paths = ['''^examples/(go/production-server/main\.go|py/production_server\.py)$''']

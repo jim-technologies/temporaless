@@ -28,9 +28,10 @@ func DueTimers(
 	ctx context.Context,
 	store storage.Store,
 	now time.Time,
+	namespace string,
 ) ([]DueTimer, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
-	return store.DueTimers(ctx, "", now)
+	return store.DueTimers(ctx, namespace, now)
 }

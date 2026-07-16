@@ -37,15 +37,15 @@ func TestDueTimersDelegatesOneStoreCall(t *testing.T) {
 	}}
 	store := &dueTimersSpy{due: want}
 
-	got, err := timerscanner.DueTimers(context.Background(), store, now)
+	got, err := timerscanner.DueTimers(context.Background(), store, now, "tenant-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if store.calls != 1 {
 		t.Fatalf("Store.DueTimers calls = %d, want 1", store.calls)
 	}
-	if store.namespace != "" {
-		t.Fatalf("namespace = %q, want empty all-namespace scope", store.namespace)
+	if store.namespace != "tenant-a" {
+		t.Fatalf("namespace = %q, want %q", store.namespace, "tenant-a")
 	}
 	if !store.now.Equal(now) {
 		t.Fatalf("now = %s, want %s", store.now, now)
@@ -90,7 +90,7 @@ func TestDueTimersFindsScheduledTimersInflight(t *testing.T) {
 	}
 
 	beforeFire := time.Now().Add(time.Minute)
-	due, err := timerscanner.DueTimers(ctx, store, beforeFire)
+	due, err := timerscanner.DueTimers(ctx, store, beforeFire, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestDueTimersFindsScheduledTimersInflight(t *testing.T) {
 	}
 
 	afterFire := time.Now().Add(2 * time.Hour)
-	due, err = timerscanner.DueTimers(ctx, store, afterFire)
+	due, err = timerscanner.DueTimers(ctx, store, afterFire, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestDueTimersSkipsFiredTimers(t *testing.T) {
 		},
 	)
 
-	due, err := timerscanner.DueTimers(ctx, store, time.Now().Add(time.Hour))
+	due, err := timerscanner.DueTimers(ctx, store, time.Now().Add(time.Hour), "")
 	if err != nil {
 		t.Fatal(err)
 	}

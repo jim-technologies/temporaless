@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,101 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func TestRunNilResultPersistsFailureAndReplays(t *testing.T) {
+	tests := []struct {
+		name       string
+		withClaims bool
+	}{
+		{name: "without claims"},
+		{name: "with claims", withClaims: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t)
+			options := &Options{
+				WorkflowId:  "nil-workflow-result-" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:       "run",
+				CodeVersion: "v1",
+			}
+			var claimStore storage.ClaimStore
+			if test.withClaims {
+				claimStore = newTestClaimStore(t)
+				options.ClaimOwnerId = "worker"
+			}
+
+			bodyCalls := 0
+			execute := func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				bodyCalls++
+				var result *wrapperspb.StringValue
+				return result, nil
+			}
+			_, err := Run(
+				ctx,
+				store,
+				options,
+				claimStore,
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				execute,
+			)
+			if err == nil || !strings.Contains(err.Error(), "returned a nil result") {
+				t.Fatalf("first run error = %v, want nil-result failure", err)
+			}
+
+			key := storage.NewWorkflowKey(options.GetWorkflowId(), options.GetRunId())
+			record, found, err := store.GetWorkflow(ctx, key)
+			if err != nil || !found {
+				t.Fatalf("workflow record: err=%v found=%v", err, found)
+			}
+			if record.GetStatus() != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED {
+				t.Fatalf("workflow status = %s, want FAILED", record.GetStatus())
+			}
+			if record.GetFailure() == nil ||
+				!strings.Contains(record.GetFailure().GetMessage(), "returned a nil result") {
+				t.Fatalf("workflow failure = %v, want nil-result message", record.GetFailure())
+			}
+
+			if test.withClaims {
+				_, claimFound, claimErr := claimStore.GetClaim(
+					ctx,
+					storage.ClaimKey{
+						Namespace:  storage.DefaultNamespace,
+						WorkflowID: options.GetWorkflowId(),
+						RunID:      options.GetRunId(),
+						ClaimID:    WorkflowExecutionClaimID,
+					},
+				)
+				if claimErr != nil || claimFound {
+					t.Fatalf("workflow claim after terminal failure: found=%v err=%v", claimFound, claimErr)
+				}
+			}
+
+			_, replayErr := Run(
+				ctx,
+				store,
+				options,
+				claimStore,
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+					bodyCalls++
+					return wrapperspb.String("must-not-run"), nil
+				},
+			)
+			var replayFailure *ActivityError
+			if !errors.As(replayErr, &replayFailure) ||
+				!strings.Contains(replayFailure.Message, "returned a nil result") {
+				t.Fatalf("replay error = %v, want stored nil-result failure", replayErr)
+			}
+			if bodyCalls != 1 {
+				t.Fatalf("workflow body calls = %d, want 1", bodyCalls)
+			}
+		})
+	}
+}
 
 func TestRunOrderTimePersistsAcrossWorkflowStates(t *testing.T) {
 	runOrderTime := timestamppb.New(time.Date(2026, time.July, 14, 12, 0, 0, 123, time.UTC))
@@ -870,6 +966,102 @@ func TestAnnotationsPersistOnWorkflowAndActivity(t *testing.T) {
 	}
 	if actRecord.GetAnnotations()["model"] != "claude-opus-4-7" || actRecord.GetAnnotations()["tokens"] != "128" {
 		t.Fatalf("activity annotations = %v", actRecord.GetAnnotations())
+	}
+}
+
+func TestWorkflowAnnotationsSurviveContinuationReplay(t *testing.T) {
+	tests := []struct {
+		name       string
+		pendingErr error
+		wantErr    error
+	}{
+		{
+			name:       "timer pending",
+			pendingErr: &TimerPendingError{TimerID: "wait", WakeAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)},
+			wantErr:    ErrTimerPending,
+		},
+		{
+			name:       "event pending",
+			pendingErr: &EventPendingError{EventID: "approval"},
+			wantErr:    ErrEventPending,
+		},
+		{
+			name: "dependency pending",
+			pendingErr: &WorkflowDependencyPendingError{
+				WorkflowID: "upstream",
+				RunID:      "run",
+			},
+			wantErr: ErrWorkflowDependencyPending,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t)
+			options := &Options{
+				WorkflowId:  "annotations:" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:       "run",
+				CodeVersion: "v1",
+			}
+			executions := 0
+			execute := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+				executions++
+				if executions == 1 {
+					Annotate(ctx, "phase", "planned")
+					return nil, test.pendingErr
+				}
+				return wrapperspb.String("done"), nil
+			}
+
+			_, err := Run(
+				ctx,
+				store,
+				options,
+				nil,
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				execute,
+			)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("first run error = %v, want %v", err, test.wantErr)
+			}
+
+			key := storage.NewWorkflowKey(options.GetWorkflowId(), options.GetRunId())
+			pending, found, err := store.GetWorkflow(ctx, key)
+			if err != nil || !found {
+				t.Fatalf("pending workflow record: err=%v found=%v", err, found)
+			}
+			if pending.GetStatus() != temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS {
+				t.Fatalf("pending status = %s, want IN_PROGRESS", pending.GetStatus())
+			}
+			if pending.GetAnnotations()["phase"] != "planned" {
+				t.Fatalf("pending annotations = %v, want phase=planned", pending.GetAnnotations())
+			}
+
+			result, err := Run(
+				ctx,
+				store,
+				options,
+				nil,
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+				execute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.GetValue() != "done" {
+				t.Fatalf("result = %q, want done", result.GetValue())
+			}
+			completed, found, err := store.GetWorkflow(ctx, key)
+			if err != nil || !found {
+				t.Fatalf("completed workflow record: err=%v found=%v", err, found)
+			}
+			if completed.GetAnnotations()["phase"] != "planned" {
+				t.Fatalf("completed annotations = %v, want phase=planned", completed.GetAnnotations())
+			}
+		})
 	}
 }
 

@@ -1,14 +1,20 @@
 [project]
 name = "temporaless-temporalcompat"
-version = "0.6.0"
+version = "0.7.0"
 description = "Strict Temporal Python SDK compatibility adapter for Temporaless unary protobuf handlers."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "temporaless==0.6.0",
+    "temporaless==0.7.0",
     "temporalio>=1.30.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jim-technologies/temporaless"
+Repository = "https://github.com/jim-technologies/temporaless"
+Issues = "https://github.com/jim-technologies/temporaless/issues"
 
 [build-system]
 requires = ["hatchling>=1.31.0"]

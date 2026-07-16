@@ -34,6 +34,24 @@ export {
 
 export const TEMPORALESS_RECORD_STORE_SERVICE = "temporaless.v1.RecordStoreService";
 export const TEMPORALESS_RECORD_QUERY_SERVICE = "temporaless.v1.RecordQueryService";
+export const TEMPORALESS_READ_ONLY_STORE_METHODS = [
+  "GetStoreCapabilities",
+  "GetWorkflow",
+  "GetLatestWorkflowRun",
+  "GetTimer",
+  "GetActivity",
+  "GetClaim",
+  "GetEvent",
+  "ListActivities",
+  "ListTimers",
+  "ListEvents",
+  "ListClaims",
+] as const;
+export const TEMPORALESS_READ_ONLY_QUERY_METHODS = [
+  "ListWorkflows",
+  "ListActivities",
+  "DueTimers",
+] as const;
 export const TEMPORALESS_DESCRIPTOR_URL = new URL(
   "./gen/temporaless/v1/temporaless_descriptor.binpb",
   import.meta.url,
@@ -44,6 +62,13 @@ export type TemporalessInvariantServerOptions = {
   descriptorPath?: string;
   includeStore?: boolean;
   includeQuery?: boolean;
+  /**
+   * Include mutation, claim-coordination, timer-repair, retention, and delete
+   * methods. Defaults to false so an ordinary MCP/CLI projection is
+   * inspection-only. Enabling this requires an operator-scoped backend
+   * credential and an authenticated inbound boundary.
+   */
+  includeOperatorMethods?: boolean;
 };
 
 export type TemporalessInvariantHttpProxyOptions = TemporalessInvariantServerOptions &
@@ -125,10 +150,22 @@ function includeTemporalessServices(
 ): void {
   const includes: string[] = [];
   if (options.includeStore ?? true) {
-    includes.push(`${TEMPORALESS_RECORD_STORE_SERVICE}.*`);
+    includes.push(
+      ...(options.includeOperatorMethods
+        ? [`${TEMPORALESS_RECORD_STORE_SERVICE}.*`]
+        : TEMPORALESS_READ_ONLY_STORE_METHODS.map(
+            (method) => `${TEMPORALESS_RECORD_STORE_SERVICE}.${method}`,
+          )),
+    );
   }
   if (options.includeQuery ?? true) {
-    includes.push(`${TEMPORALESS_RECORD_QUERY_SERVICE}.*`);
+    includes.push(
+      ...(options.includeOperatorMethods
+        ? [`${TEMPORALESS_RECORD_QUERY_SERVICE}.*`]
+        : TEMPORALESS_READ_ONLY_QUERY_METHODS.map(
+            (method) => `${TEMPORALESS_RECORD_QUERY_SERVICE}.${method}`,
+          )),
+    );
   }
   if (includes.length === 0) {
     throw new Error("At least one Temporaless service must be included.");

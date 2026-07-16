@@ -526,3 +526,85 @@ func TestOpenDALStoreDueTimersRecoversFromCorruptCanonicalPoint(t *testing.T) {
 		t.Fatalf("corrupt point recovery=%v found=%v err=%v", recovered, found, err)
 	}
 }
+
+func TestOpenDALStoreDueTimersReportsCorruptParentWorkflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload func(*testing.T, WorkflowKey, time.Time) []byte
+	}{
+		{
+			name: "undecodable protobuf",
+			payload: func(*testing.T, WorkflowKey, time.Time) []byte {
+				return []byte("not a workflow protobuf")
+			},
+		},
+		{
+			name: "misplaced payload",
+			payload: func(t *testing.T, key WorkflowKey, now time.Time) []byte {
+				t.Helper()
+				record := &temporalessv1.WorkflowRecord{
+					SchemaVersion: WorkflowRecordSchemaVersion,
+					Key: (&WorkflowKey{
+						Namespace:  key.Namespace,
+						WorkflowID: key.WorkflowID,
+						RunID:      "other-run",
+					}).Proto(),
+					WorkflowType: "workflow:test",
+					CodeVersion:  "v1",
+					Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+					CreatedAt:    timestamppb.New(now.Add(-time.Minute)),
+				}
+				data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return data
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, operator := newDueTimerTestStore(t)
+			now := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+			workflowKey := WorkflowKey{
+				Namespace:  "alpha",
+				WorkflowID: "workflow",
+				RunID:      "run",
+			}
+			timerKey := TimerKey{
+				Namespace:  workflowKey.Namespace,
+				WorkflowID: workflowKey.WorkflowID,
+				RunID:      workflowKey.RunID,
+				TimerID:    "wake",
+			}
+			putDueTimerTestWorkflow(
+				t,
+				store,
+				workflowKey,
+				temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+				now,
+			)
+			if err := store.PutTimer(
+				ctx,
+				dueTimerTestRecord(timerKey, now, temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED),
+			); err != nil {
+				t.Fatal(err)
+			}
+			workflowPath, err := workflowKey.Path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeDueTimerTestBytes(t, operator, workflowPath, test.payload(t, workflowKey, now))
+
+			due, err := store.DueTimers(ctx, workflowKey.Namespace, now)
+			if due != nil || !errors.Is(err, ErrCorruptRecord) {
+				t.Fatalf("due=%+v err=%v, want nil and ErrCorruptRecord", due, err)
+			}
+			if exists, existsErr := operator.IsExist(workflowPath); existsErr != nil || !exists {
+				t.Fatalf("corrupt parent retained=%v err=%v", exists, existsErr)
+			}
+		})
+	}
+}

@@ -68,6 +68,32 @@ async def test_connect_store_covers_storage_surface(tmp_path) -> None:
     assert await store.get_claim(claim_key) is None
 
 
+async def test_record_store_service_rejects_claim_create_without_atomic_backend() -> None:
+    service = RecordStoreService(
+        OpenDALStore(opendal.AsyncOperator("webdav", endpoint="https://example.com"))
+    )
+    record = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=ClaimKey(
+            workflow_id="prices:claims",
+            run_id="run",
+            claim_id="workflow:execution",
+        ).to_proto(),
+        owner_id="worker",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id="prices:claims",
+        code_version="v1",
+    )
+
+    with pytest.raises(ConnectError) as captured:
+        await service.try_create_claim(
+            temporaless_pb2.TryCreateClaimRequest(record=record),
+            None,
+        )
+
+    assert captured.value.code is Code.FAILED_PRECONDITION
+
+
 @pytest.mark.parametrize(
     ("method_name", "rpc_request"),
     [

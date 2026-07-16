@@ -891,7 +891,13 @@ func (store *OpenDALStore) DueTimers(ctx context.Context, namespace string, now 
 			workflow, workflowFound, err := store.GetWorkflow(ctx, workflowKey)
 			if err != nil {
 				if errors.Is(err, ErrCorruptRecord) {
-					continue
+					return nil, fmt.Errorf(
+						"read parent workflow %q/%q for due timer %q: %w",
+						workflowKey.WorkflowID,
+						workflowKey.RunID,
+						timerKey.TimerID,
+						err,
+					)
 				}
 				return nil, err
 			}

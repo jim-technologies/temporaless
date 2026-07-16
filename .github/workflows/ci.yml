@@ -9,6 +9,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -40,12 +42,50 @@ jobs:
         uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
 
       # Generated proto files are committed (see core/go/gen and
-      # core/py/src/temporaless/v1). Trusted CI regenerates them when BUF_TOKEN
-      # is available; fork/missing-secret runs validate the checked-in
-      # descriptor and compile every generated consumer instead.
-      - name: Run gate
+      # core/py/src/temporaless/v1). Only a push to the designated main branch
+      # receives the BSR credential. Tag verification intentionally accepts
+      # every tag name, and workflow_dispatch can target another ref, so
+      # neither is a sufficient trust boundary for a repository secret. Keep
+      # this command isolated so npm scripts, Go tools/tests, Rust, Python
+      # tests, and pull-request code cannot inherit BUF_TOKEN. The local Python
+      # generator explicitly strips it too.
+      - name: Regenerate protobuf sources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+        run: flox activate -- buf generate
+
+      - name: Verify protobuf regeneration is clean
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # protoc-gen-connectrpc-py 0.11.1 currently emits trailing spaces on
+          # generated optional-header parameters. Match scripts/check.
+          sed -i 's/[[:space:]]*$//' core/py/src/temporaless/v1/temporaless_connect.py
+          git diff --exit-code -- \
+            api \
+            core/go/gen \
+            core/py/src/buf \
+            core/py/src/temporaless/v1 \
+            core/ts/src/gen
+          generated_untracked="$(git ls-files --others --exclude-standard -- \
+            api \
+            core/go/gen \
+            core/py/src/buf \
+            core/py/src/temporaless/v1 \
+            core/ts/src/gen)"
+          if [ -n "$generated_untracked" ]; then
+            echo "Buf generation produced untracked files:" >&2
+            echo "$generated_untracked" >&2
+            exit 1
+          fi
+
+      # Pull requests and the secret-free full gate validate the checked-in
+      # descriptor and compile/test every generated consumer. The main-branch
+      # push additionally proves that a trusted regeneration is clean before a
+      # release tag points at that commit.
+      - name: Run gate
         run: flox activate -- scripts/check
 
   go-build:
@@ -94,6 +134,63 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  security-check:
+    name: security-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.0
+
+      - name: Install Flox
+        uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
+
+      - name: Audit npm lockfile
+        run: npm audit --audit-level=moderate
+
+      - name: Audit Go dependency reachability
+        run: flox activate -- go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+      - name: Audit Python environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          for project in \
+            core/py \
+            adapters/py/connectworkflow \
+            adapters/py/indexstore \
+            adapters/py/prefectcompat \
+            adapters/py/temporalcompat
+          do
+            flox activate -- uv run --project "$project" \
+              --with "pip-audit==2.10.1" \
+              pip-audit --local --progress-spinner=off
+          done
+
+      - name: Audit Rust lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --version 0.22.1
+          cargo audit --file Cargo.lock
+
+      - name: Scan Git history for secrets
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo:ro" \
+            zricethezav/gitleaks:v8.28.0@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
+            git /repo --no-banner --redact=100
+
   git-install:
     # Package each SDK from an immutable Git commit in a clean consumer
     # environment. A local bare origin keeps this exact for pull-request merge
@@ -133,19 +230,20 @@ jobs:
             echo "TEMPORALESS_GIT_SHA=$source_sha"
           } >> "$GITHUB_ENV"
 
-      - name: Install Python packages from Git SHA
+      - name: Install Python packages from Git SHA with pip
         shell: bash
         run: |
           set -euo pipefail
           venv="$RUNNER_TEMP/python-git-install"
           source_url="git+file://${TEMPORALESS_GIT_REPO}@${TEMPORALESS_GIT_SHA}"
-          flox activate -d "$GITHUB_WORKSPACE" -- uv venv "$venv"
-          flox activate -d "$GITHUB_WORKSPACE" -- uv pip install --python "$venv/bin/python" \
-            "$source_url#subdirectory=core/py"
-          for project in connectworkflow indexstore prefectcompat temporalcompat; do
-            flox activate -d "$GITHUB_WORKSPACE" -- uv pip install --python "$venv/bin/python" \
-              "$source_url#subdirectory=adapters/py/$project"
-          done
+          flox activate -d "$GITHUB_WORKSPACE" -- uv venv --seed "$venv"
+          flox activate -d "$GITHUB_WORKSPACE" -- "$venv/bin/python" -m pip install \
+            --disable-pip-version-check \
+            "$source_url#subdirectory=core/py" \
+            "$source_url#subdirectory=adapters/py/connectworkflow" \
+            "$source_url#subdirectory=adapters/py/indexstore" \
+            "$source_url#subdirectory=adapters/py/prefectcompat" \
+            "$source_url#subdirectory=adapters/py/temporalcompat"
           flox activate -d "$GITHUB_WORKSPACE" -- "$venv/bin/python" -c \
             'import temporaless, temporaless_connectworkflow, temporaless_indexstore, temporaless_prefectcompat, temporaless_temporalcompat'
           TEMPORALESS_EXPECTED_VERSION="$(tr -d '\n' < "$GITHUB_WORKSPACE/VERSION")"
@@ -216,3 +314,74 @@ jobs:
           fetch-depth: 0
       - name: Build production image
         run: docker build --tag temporaless:ci .
+
+      - name: Scan production image for fixable high-severity vulnerabilities
+        run: |
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$HOME/.cache/trivy:/root/.cache" \
+            aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f \
+            image \
+            --skip-version-check \
+            --scanners vuln \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            temporaless:ci
+
+      - name: Smoke test hardened production image
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="temporaless-ci-smoke"
+
+          diagnostics() {
+            echo "Container state:" >&2
+            docker inspect --format '{{json .State}}' "$container" >&2 || true
+            echo "Container logs:" >&2
+            docker logs "$container" >&2 || true
+          }
+
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+
+          docker run --detach \
+            --name "$container" \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m,uid=10001,gid=10001,mode=0700 \
+            --tmpfs /data:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --env AUTH_TOKEN=ci-smoke-placeholder \
+            --env TEMPORALESS_STORAGE_SCHEME=fs \
+            --env 'TEMPORALESS_STORAGE_OPTIONS={"root":"/data"}' \
+            --env TEMPORALESS_ALLOW_UNSAFE_FS=1 \
+            temporaless:ci
+
+          for _ in $(seq 1 60); do
+            state="$(docker inspect --format '{{.State.Status}}' "$container")"
+            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container")"
+            if [ "$state" != "running" ]; then
+              echo "Container stopped before becoming healthy (state=$state)." >&2
+              diagnostics
+              exit 1
+            fi
+            if [ "$health" = "healthy" ]; then
+              docker exec "$container" python -c \
+                'import os; assert os.geteuid() == 10001; assert os.stat("/app").st_uid == 0; assert not os.access("/app", os.W_OK)'
+              exit 0
+            fi
+            if [ "$health" = "unhealthy" ] || [ "$health" = "missing" ]; then
+              echo "Container health check failed (health=$health)." >&2
+              diagnostics
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "Container did not become healthy within 60 seconds." >&2
+          diagnostics
+          exit 1

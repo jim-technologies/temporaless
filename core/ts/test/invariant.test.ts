@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   TEMPORALESS_RECORD_QUERY_SERVICE,
   TEMPORALESS_RECORD_STORE_SERVICE,
+  TEMPORALESS_READ_ONLY_QUERY_METHODS,
+  TEMPORALESS_READ_ONLY_STORE_METHODS,
   createTemporalessInvariantHttpProxy,
   createTemporalessInvariantServer,
   registerTemporalessInvariantServices,
@@ -28,10 +30,32 @@ describe("Temporaless invariantprotocol integration", () => {
 
     expect(names).toContain("RecordStoreService.GetWorkflow");
     expect(names).toContain("RecordQueryService.ListWorkflows");
+    expect(names).not.toContain("RecordStoreService.PutWorkflow");
+    expect(names).not.toContain("RecordStoreService.DueTimers");
+    expect(names).not.toContain("RecordStoreService.DeleteRun");
+    expect(names).not.toContain("RecordQueryService.Sweep");
+    expect(
+      names.filter((name) => name.startsWith("RecordStoreService.")),
+    ).toHaveLength(TEMPORALESS_READ_ONLY_STORE_METHODS.length);
+    expect(
+      names.filter((name) => name.startsWith("RecordQueryService.")),
+    ).toHaveLength(TEMPORALESS_READ_ONLY_QUERY_METHODS.length);
     expect(
       tools.find((tool) => tool.name === "RecordStoreService.GetWorkflow")
         ?.description,
     ).toContain("Read a single workflow record");
+  });
+
+  it("requires an explicit operator opt-in for destructive methods", () => {
+    const server = createTemporalessInvariantHttpProxy("https://temporaless.example", {
+      includeOperatorMethods: true,
+    });
+    const names = server.toolCatalog().map((tool) => tool.name);
+
+    expect(names).toContain("RecordStoreService.PutWorkflow");
+    expect(names).toContain("RecordStoreService.DueTimers");
+    expect(names).toContain("RecordStoreService.DeleteRun");
+    expect(names).toContain("RecordQueryService.Sweep");
   });
 
   it("can scope invariant projection to query services only", () => {
@@ -42,6 +66,7 @@ describe("Temporaless invariantprotocol integration", () => {
 
     expect(names).not.toContain("RecordStoreService.GetWorkflow");
     expect(names).toContain("RecordQueryService.ListWorkflows");
+    expect(names).not.toContain("RecordQueryService.Sweep");
   });
 
   it("registers generated Temporaless service implementations", async () => {

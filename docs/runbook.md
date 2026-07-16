@@ -4,6 +4,18 @@ What to do when things go wrong in production. Each entry: **symptom**, **diagno
 
 The framework's design means most operator work is **reading records out of object storage and selectively deleting/resetting them**. There's no engine state to repair, no leader to evict, no quorum to fix.
 
+The bundled `cmd/temporaless` binary is a transitional local-filesystem tool
+and registers only OpenDAL `fs`. For S3, GCS, and other cloud stores, perform
+these procedures through authenticated ConnectStore/RecordQueryService clients
+or generated remote operator tooling. Do not put cloud credentials into the
+local CLI.
+
+The bearer token in the production-server examples represents one trusted
+internal principal. In production, authorize each RPC and use separate
+least-privilege identities for workflow runtimes and operators; reset, delete,
+sweep, claim cleanup, and timer-repair procedures require the operator
+identity.
+
 ---
 
 ## 1. Workflow stuck in `IN_PROGRESS` past expected duration
@@ -250,7 +262,10 @@ different version is rejected rather than silently executed or reused.
 
 - For sleeps: ensure a timer-scanner tick is calling `due_timers` / `DueTimers`
   and dispatching every returned wake to the application workflow handler.
-  The ConnectStore production server does not do this itself.
+  The ConnectStore production server does not do this itself. Core
+  `DueTimers` is unpaginated and materializes its selected namespace; partition
+  namespaces and use an indexed due query or external scheduler when a timer
+  backlog is too large for one bounded response.
 - For events: trace the workflow body to find the event_id it's waiting on, deliver it.
 - For upstream deps: backfill the upstream pipeline first, then re-run the dependent backfill. Backfill is idempotent — re-running the same set is free for already-`SUCCEEDED` entries.
 

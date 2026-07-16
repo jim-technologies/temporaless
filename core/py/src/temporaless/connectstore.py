@@ -708,6 +708,15 @@ class RecordStoreService:
         _validate_rpc_request(request)
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
+        capability = await self._claim_store.claim_capability()
+        if capability not in (
+            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
+            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
+        ):
+            raise ConnectError(
+                Code.FAILED_PRECONDITION,
+                "configured claim store does not support atomic claim creation",
+            )
         try:
             _validate_claim_record(request.record)
         except (ValidationError, ValueError) as exc:

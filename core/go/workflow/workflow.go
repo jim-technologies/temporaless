@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"reflect"
@@ -638,9 +639,10 @@ func Run[Req proto.Message, Resp proto.Message](
 		return zero, err
 	}
 
+	var inProgress *temporalessv1.WorkflowRecord
 	if createdAt == nil {
 		createdAt = timestamppb.New(time.Now().UTC())
-		inProgress := &temporalessv1.WorkflowRecord{
+		inProgress = &temporalessv1.WorkflowRecord{
 			SchemaVersion: storage.WorkflowRecordSchemaVersion,
 			Key:           key.Proto(),
 			WorkflowType:  workflowType,
@@ -653,6 +655,8 @@ func Run[Req proto.Message, Resp proto.Message](
 		if err := store.PutWorkflow(ctx, inProgress); err != nil {
 			return zero, err
 		}
+	} else {
+		inProgress = proto.Clone(record).(*temporalessv1.WorkflowRecord)
 	}
 
 	workflowContext := &Workflow{
@@ -666,11 +670,25 @@ func Run[Req proto.Message, Resp proto.Message](
 	}
 	ctx = context.WithValue(ctx, workflowContextKey{}, workflowContext)
 	workflowAnnotations := newAnnotationsBag()
+	for annotationKey, annotationValue := range inProgress.GetAnnotations() {
+		workflowAnnotations.set(annotationKey, annotationValue)
+	}
 	ctx = context.WithValue(ctx, annotationsKey{}, workflowAnnotations)
 
 	result, runErr := execute(ctx, input)
+	if runErr == nil && isNilMessage(result) {
+		runErr = fmt.Errorf("workflow %q returned a nil result", runOptions.GetWorkflowId())
+	}
 	if runErr != nil {
 		if isWorkflowContinuationError(runErr) {
+			annotations := workflowAnnotations.snapshot()
+			if !maps.Equal(inProgress.GetAnnotations(), annotations) {
+				updated := proto.Clone(inProgress).(*temporalessv1.WorkflowRecord)
+				updated.Annotations = annotations
+				if err := store.PutWorkflow(ctx, updated); err != nil {
+					return zero, fmt.Errorf("persist workflow annotations at continuation boundary: %w", err)
+				}
+			}
 			return zero, runErr
 		}
 		failure := failureFromError(runErr)
@@ -696,9 +714,6 @@ func Run[Req proto.Message, Resp proto.Message](
 		// cannot replace the workflow body's terminal error.
 		_ = workflowContext.acknowledgeConsumedSleepTimers(ctx, "")
 		return zero, runErr
-	}
-	if isNilMessage(result) {
-		return zero, fmt.Errorf("workflow %q returned a nil result", runOptions.GetWorkflowId())
 	}
 
 	resultAny, err := anypb.New(result)
@@ -1466,11 +1481,12 @@ func runActivity[T proto.Message](
 		startedAt := time.Now().UTC()
 		result, runErr := execute(activityCtx)
 		completedAt := time.Now().UTC()
+		invalidResult := runErr == nil && isNilMessage(result)
+		if invalidResult {
+			runErr = fmt.Errorf("activity %q returned a nil result", activityID)
+		}
 
 		if runErr == nil {
-			if isNilMessage(result) {
-				return zero, fmt.Errorf("activity %q returned a nil result", activityID)
-			}
 			attempts = append(attempts, &temporalessv1.ActivityAttempt{
 				Attempt:     attemptIdx,
 				StartedAt:   timestamppb.New(startedAt),
@@ -1514,7 +1530,7 @@ func runActivity[T proto.Message](
 			Failure:     failure,
 		})
 
-		nonRetryable := plan.nonRetryable[failure.GetCode()]
+		nonRetryable := invalidResult || plan.nonRetryable[failure.GetCode()]
 		if attemptIdx >= plan.maxAttempts || nonRetryable {
 			failedRecord := &temporalessv1.ActivityRecord{
 				SchemaVersion: storage.ActivityRecordSchemaVersion,
