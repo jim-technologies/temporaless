@@ -278,15 +278,35 @@ jobs:
 
       - name: Install Rust crate from Git SHA
         shell: bash
+        env:
+          # Cargo's built-in retry policy does not cover every registry/index
+          # transport failure. Release-tag verification has observed immediate
+          # transient failures before dependency resolution starts, so retry
+          # the entire clean consumer while keeping deterministic Git input.
+          CARGO_NET_RETRY: "10"
+          CARGO_HTTP_TIMEOUT: "120"
         run: |
           set -euo pipefail
           consumer="$RUNNER_TEMP/rust-git-install"
-          cargo init --lib --name temporaless_install_check "$consumer"
-          cd "$consumer"
-          cargo add temporaless \
-            --git "file://${TEMPORALESS_GIT_REPO}" \
-            --rev "$TEMPORALESS_GIT_SHA"
-          cargo check --locked
+          for attempt in 1 2 3; do
+            rm -rf "$consumer"
+            cargo init --lib --name temporaless_install_check "$consumer"
+            if (
+              cd "$consumer"
+              cargo add temporaless \
+                --git "file://${TEMPORALESS_GIT_REPO}" \
+                --rev "$TEMPORALESS_GIT_SHA" &&
+                cargo check --locked
+            ); then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Rust Git install attempt $attempt failed; retrying cleanly." >&2
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "Rust Git install failed after 3 clean attempts." >&2
+          exit 1
 
       - name: Install npm package from Git SHA
         shell: bash

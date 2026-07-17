@@ -1,13 +1,13 @@
 [project]
 name = "temporaless-prefectcompat"
-version = "0.7.1"
+version = "0.7.2"
 description = "Strict Prefect compatibility adapter for Temporaless unary protobuf handlers."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "temporaless==0.7.1",
+    "temporaless==0.7.2",
     "prefect>=3.7.8",
 ]
 
@@ -51,7 +51,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.21",
-    "temporaless-connectworkflow==0.7.1",
+    "temporaless-connectworkflow==0.7.2",
     "ty>=0.0.59",
     "types-protobuf>=7.34.1.20260518",
 ]

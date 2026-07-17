@@ -13,6 +13,24 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-07-16
+
+### Changed
+
+- The lockstep repository version is now 0.7.2.
+
+### Fixed
+
+- Git-SHA installation CI retries the Rust clean-consumer check from a fresh
+  consumer directory after bounded registry or transport failures. The exact
+  Temporaless commit remains immutable, and deterministic compile failures
+  still fail after three attempts.
+
+### Upgrade notes
+
+- There are no runtime, protobuf, storage, or SDK API changes from v0.7.1.
+  Git consumers only need to repin Temporaless.
+
 ## [0.7.1] — 2026-07-16
 
 ### Changed
