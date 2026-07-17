@@ -286,15 +286,16 @@ jobs:
           flox activate -d "$GITHUB_WORKSPACE" -- go build \
             "github.com/$GITHUB_REPOSITORY/core/go/workflow"
 
-      - name: Check Rust crate from Git SHA
+      - name: Check Rust workspace from Git SHA
         if: matrix.sdk == 'rust'
         shell: bash
         env:
           # Compile the immutable Git-delivered workspace against its committed
-          # lockfile. Generating a new consumer lock would resolve the latest
-          # registry state and make this source-boundary check nondeterministic.
+          # lockfile. The next step separately exercises fresh downstream
+          # resolution and rejects any registry identity outside this lock.
           CARGO_NET_RETRY: "10"
           CARGO_HTTP_TIMEOUT: "120"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rust-git-target
         run: |
           set -euo pipefail
           checkout="$RUNNER_TEMP/rust-git-checkout"
@@ -319,6 +320,152 @@ jobs:
           done
           echo "Rust Git check failed after 3 clean attempts." >&2
           exit 1
+
+      - name: Install Rust package from Git SHA in a downstream crate
+        if: matrix.sdk == 'rust'
+        shell: bash
+        env:
+          CARGO_NET_RETRY: "10"
+          CARGO_HTTP_TIMEOUT: "120"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rust-git-target
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/rust-git-consumer"
+          source_url="file://${TEMPORALESS_GIT_REPO}"
+          cargo new --quiet --lib --name temporaless-git-consumer "$consumer"
+
+          CONSUMER="$consumer" \
+          SOURCE_URL="$source_url" \
+          SOURCE_SHA="$TEMPORALESS_GIT_SHA" \
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          consumer = Path(os.environ["CONSUMER"])
+          source_url = os.environ["SOURCE_URL"]
+          source_sha = os.environ["SOURCE_SHA"]
+          manifest = consumer / "Cargo.toml"
+          manifest.write_text(
+              manifest.read_text()
+              + (
+                  'temporaless = { git = "'
+                  + source_url
+                  + '", rev = "'
+                  + source_sha
+                  + '" }\n'
+              )
+          )
+          (consumer / "src" / "lib.rs").write_text(
+              "pub fn workflow_key() -> temporaless::WorkflowKey {\n"
+              '    temporaless::WorkflowKey::new("consumer", "run")\n'
+              "}\n"
+          )
+          PY
+
+          # Resolve like a real downstream Git consumer. The following
+          # comparison permits only third-party registry and Git package
+          # identities already committed in the workspace lock. Mutable
+          # registry state can reject a yanked/unresolvable dependency but
+          # cannot silently select a different graph for this source-boundary
+          # proof.
+          cargo generate-lockfile --manifest-path "$consumer/Cargo.toml"
+          WORKSPACE_LOCK="$GITHUB_WORKSPACE/Cargo.lock" \
+          CONSUMER_LOCK="$consumer/Cargo.lock" \
+          python3 <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          def registry_packages(path: str) -> set[tuple[str, str, str, str]]:
+              with Path(path).open("rb") as file:
+                  lock = tomllib.load(file)
+              return {
+                  (
+                      package["name"],
+                      package["version"],
+                      package["source"],
+                      package["checksum"],
+                  )
+                  for package in lock["package"]
+                  if str(package.get("source", "")).startswith("registry+")
+              }
+
+          def third_party_git_packages(path: str) -> set[tuple[str, str, str]]:
+              with Path(path).open("rb") as file:
+                  lock = tomllib.load(file)
+              return {
+                  (
+                      package["name"],
+                      package["version"],
+                      package["source"],
+                  )
+                  for package in lock["package"]
+                  if package["name"] != "temporaless"
+                  and str(package.get("source", "")).startswith("git+")
+              }
+
+          committed = registry_packages(os.environ["WORKSPACE_LOCK"])
+          downstream = registry_packages(os.environ["CONSUMER_LOCK"])
+          unexpected_registry = sorted(downstream - committed)
+          committed_git = third_party_git_packages(os.environ["WORKSPACE_LOCK"])
+          downstream_git = third_party_git_packages(os.environ["CONSUMER_LOCK"])
+          unexpected_git = sorted(downstream_git - committed_git)
+          unexpected = [
+              *(f"registry {item!r}" for item in unexpected_registry),
+              *(f"git {item!r}" for item in unexpected_git),
+          ]
+          if unexpected:
+              lines = "\n".join(f"  {item}" for item in unexpected)
+              raise SystemExit(
+                  "downstream Cargo resolution drifted from Cargo.lock:\n" + lines
+              )
+          PY
+
+          cargo check --all-targets --locked --manifest-path "$consumer/Cargo.toml"
+          cargo metadata --locked --format-version 1 \
+            --manifest-path "$consumer/Cargo.toml" > "$consumer/metadata.json"
+          SOURCE_URL="$source_url" \
+          SOURCE_SHA="$TEMPORALESS_GIT_SHA" \
+          EXPECTED_VERSION="$(tr -d '\n' < "$GITHUB_WORKSPACE/VERSION")" \
+          METADATA="$consumer/metadata.json" \
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = json.loads(Path(os.environ["METADATA"]).read_text())
+          packages = [
+              package for package in metadata["packages"]
+              if package["name"] == "temporaless"
+          ]
+          if len(packages) != 1:
+              raise SystemExit(
+                  f"expected one downstream temporaless package, found {len(packages)}"
+              )
+          package = packages[0]
+          expected_source = (
+              "git+"
+              + os.environ["SOURCE_URL"]
+              + "?rev="
+              + os.environ["SOURCE_SHA"]
+              + "#"
+              + os.environ["SOURCE_SHA"]
+          )
+          if package["version"] != os.environ["EXPECTED_VERSION"]:
+              raise SystemExit(
+                  "downstream temporaless version is "
+                  + package["version"]
+                  + "; expected "
+                  + os.environ["EXPECTED_VERSION"]
+              )
+          if package["source"] != expected_source:
+              raise SystemExit(
+                  "downstream temporaless source is "
+                  + repr(package["source"])
+                  + "; expected "
+                  + repr(expected_source)
+              )
+          PY
 
       - name: Install npm package from Git SHA
         if: matrix.sdk == 'npm'

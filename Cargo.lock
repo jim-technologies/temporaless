@@ -751,8 +751,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "opendal"
 version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77d02c6564e376d3670aaf66ad886cd34f83c0aca407b6364777c624a63e0e2d"
+source = "git+https://github.com/apache/opendal.git?rev=13fb8bea0e29ad024540b35d4c834530b89976a1#13fb8bea0e29ad024540b35d4c834530b89976a1"
 dependencies = [
  "opendal-core",
  "opendal-service-fs",
@@ -761,8 +760,7 @@ dependencies = [
 [[package]]
 name = "opendal-core"
 version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8564bd76b75d2aea59178cb5b6e9f770be1da73b1bca062720ec151cc56215a"
+source = "git+https://github.com/apache/opendal.git?rev=13fb8bea0e29ad024540b35d4c834530b89976a1#13fb8bea0e29ad024540b35d4c834530b89976a1"
 dependencies = [
  "anyhow",
  "base64",
@@ -786,8 +784,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-fs"
 version = "0.58.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f26a923b72b96d1a3dbbe961fcad4d534bf586c3f48c583e9f35649b1b6175f"
+source = "git+https://github.com/apache/opendal.git?rev=13fb8bea0e29ad024540b35d4c834530b89976a1#13fb8bea0e29ad024540b35d4c834530b89976a1"
 dependencies = [
  "bytes",
  "log",
@@ -822,9 +819,9 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "portable-atomic"
-version = "1.13.1"
+version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
 
 [[package]]
 name = "portable-atomic-util"
@@ -1145,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "temporaless"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1191,9 +1188,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.52.4"
+version = "1.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317fafbbe3f02fc663dad00ea6186197de963cd4190e86a26d8d0fae095539af"
+checksum = "d988bcd52dbe076d3d46903332f58c912b87a2c49b1428419a5845154762ffee"
 dependencies = [
  "bytes",
  "pin-project-lite",
@@ -1202,9 +1199,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.7.0"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
+checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
 dependencies = [
  "proc-macro2",
  "quote",

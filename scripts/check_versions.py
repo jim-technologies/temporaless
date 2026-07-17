@@ -20,6 +20,8 @@ INVARIANT_SPEC = re.compile(
     rf"git\+https://{re.escape(INVARIANT_REPOSITORY)}#([0-9a-f]{{40}})"
 )
 INVARIANT_ALLOW_SCRIPT_PREFIX = "github:jim-technologies/invariantprotocol#"
+OPENDAL_REPOSITORY = "https://github.com/apache/opendal.git"
+FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 LICENSE = "Apache-2.0"
 PROJECT_URLS = {
     "Homepage": "https://github.com/jim-technologies/temporaless",
@@ -346,7 +348,8 @@ def main() -> int:
     actual_versions["Cargo.toml workspace.package"] = workspace["workspace"]["package"][
         "version"
     ]
-    rust_package = read_toml("core/rs/temporaless/Cargo.toml")["package"]
+    rust_manifest = read_toml("core/rs/temporaless/Cargo.toml")
+    rust_package = rust_manifest["package"]
     if rust_package.get("version") != {"workspace": True}:
         errors.append("core/rs/temporaless/Cargo.toml must inherit version.workspace")
     if rust_package.get("publish") is not False:
@@ -354,6 +357,36 @@ def main() -> int:
             "core/rs/temporaless/Cargo.toml must set publish=false; "
             "Temporaless installs from Git only"
         )
+    opendal_dependency = rust_manifest.get("dependencies", {}).get("opendal")
+    opendal_sha: str | None = None
+    if not isinstance(opendal_dependency, dict):
+        errors.append(
+            "core/rs/temporaless/Cargo.toml must pin opendal to an immutable Git commit"
+        )
+    else:
+        if opendal_dependency.get("git") != OPENDAL_REPOSITORY:
+            errors.append(
+                "core/rs/temporaless/Cargo.toml opendal git source is "
+                f"{opendal_dependency.get('git')!r}; expected {OPENDAL_REPOSITORY!r}"
+            )
+        candidate_sha = opendal_dependency.get("rev")
+        if (
+            not isinstance(candidate_sha, str)
+            or FULL_GIT_SHA.fullmatch(candidate_sha) is None
+        ):
+            errors.append(
+                "core/rs/temporaless/Cargo.toml opendal rev must be one full Git SHA"
+            )
+        else:
+            opendal_sha = candidate_sha
+        if opendal_dependency.get("default-features") is not False:
+            errors.append(
+                "core/rs/temporaless/Cargo.toml opendal must disable default features"
+            )
+        if opendal_dependency.get("features") != ["services-fs"]:
+            errors.append(
+                "core/rs/temporaless/Cargo.toml opendal must enable only services-fs"
+            )
     cargo_lock = read_toml("Cargo.lock")
     rust_entries = [
         item for item in cargo_lock["package"] if item["name"] == "temporaless"
@@ -364,6 +397,24 @@ def main() -> int:
         )
     else:
         actual_versions["Cargo.lock package temporaless"] = rust_entries[0]["version"]
+    expected_opendal_source = (
+        f"git+{OPENDAL_REPOSITORY}?rev={opendal_sha}#{opendal_sha}"
+        if opendal_sha is not None
+        else None
+    )
+    for package_name in ("opendal", "opendal-core", "opendal-service-fs"):
+        entries = [
+            item for item in cargo_lock["package"] if item["name"] == package_name
+        ]
+        if len(entries) != 1:
+            errors.append(
+                f"Cargo.lock must contain one {package_name} package, found {len(entries)}"
+            )
+        elif entries[0].get("source") != expected_opendal_source:
+            errors.append(
+                f"Cargo.lock package {package_name} source is "
+                f"{entries[0].get('source')!r}; expected {expected_opendal_source!r}"
+            )
 
     for source, actual in actual_versions.items():
         if actual != version:
@@ -426,6 +477,18 @@ def main() -> int:
         actual_tag = os.environ.get("GITHUB_REF_NAME")
         if actual_tag != expected_tag:
             errors.append(f"release tag is {actual_tag!r}; expected {expected_tag!r}")
+        changelog = (ROOT / "CHANGELOG.md").read_text()
+        unreleased = re.search(
+            r"^## \[Unreleased\]\s*(.*?)^## \[",
+            changelog,
+            re.MULTILINE | re.DOTALL,
+        )
+        if unreleased is None:
+            errors.append("CHANGELOG.md must start with an [Unreleased] section")
+        elif unreleased.group(1).strip():
+            errors.append(
+                "tagged release CHANGELOG.md must keep the [Unreleased] section empty"
+            )
         changelog_version = captured(
             "CHANGELOG.md", r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]"
         )

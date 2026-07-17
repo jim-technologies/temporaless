@@ -13,6 +13,59 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-17
+
+### Added
+
+- TypeScript integration coverage now sends a real `GetWorkflow` request
+  through Invariant Protocol's HTTP projection into a generated ConnectRPC
+  `RecordStoreService` over TCP.
+- Rust Git-install CI now creates an independent downstream crate, resolves
+  Temporaless from the exact repository commit, compiles a public SDK use, and
+  verifies the resolved Temporaless version, source SHA, and third-party lock
+  identities.
+
+### Changed
+
+- The lockstep repository version is now 0.8.1.
+- The experimental Rust SDK pins the official OpenDAL v0.58.0 release commit
+  by full HTTPS Git SHA. This preserves the existing 0.58 API and audited
+  dependency graph without relying on its yanked crates.io artifact.
+- Release checks enforce the OpenDAL repository, full commit SHA, minimal
+  filesystem feature set, lockfile sources, and an empty `Unreleased` section
+  for tags.
+- Invariant Protocol remains pinned to immutable public v0.8.1 commit
+  `973990f2a0dd3d70262497389da3c9a042b20aeb`; unreleased upstream work is
+  intentionally deferred to a later Temporaless patch.
+
+### Fixed
+
+- The TypeScript Invariant server wrapper now rejects simultaneous
+  `descriptorPath` and `descriptorBytes` inputs instead of silently choosing
+  one, and treats a supplied empty path as an explicit invalid path.
+- Python Temporal compatibility tests no longer turn embedded Temporal server
+  startup failures into local skips; engine-backed retry, timeout, sleep, and
+  portability coverage now fails closed.
+- Fresh Rust Git consumers no longer fail dependency resolution because of
+  OpenDAL's yanked registry artifact.
+- Active documentation now distinguishes Temporaless's framework-specific
+  Invariant helpers from Invariant Protocol's generic application-descriptor
+  projection.
+
+### Upgrade notes
+
+- Every Go, Python, Rust, and TypeScript Temporaless consumer must repin to the
+  new repository tag or commit; all SDKs and adapters continue to share one
+  release version.
+- TypeScript callers must provide at most one of `descriptorPath` and
+  `descriptorBytes` when constructing the Temporaless Invariant server.
+- Rust consumer lockfiles will record OpenDAL's immutable Git release source
+  instead of its yanked registry artifact; no OpenDAL API migration is
+  required.
+- There is no core protobuf schema, storage-key, stored-record, or workflow API
+  migration in this release. The checked-in descriptor changed only because a
+  source comment was corrected.
+
 ## [0.8.0] — 2026-07-17
 
 ### Added

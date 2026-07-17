@@ -128,19 +128,10 @@ async def _temporal_run(symbol: StringValue) -> StringValue:
 def test_same_activity_body_runs_identically_on_temporaless_and_temporal() -> None:
     """The locked invariant: identical input + identical activity body →
     identical output, regardless of runtime."""
-    import pytest
-
     symbol = StringValue(value="AAPL")
 
     temporaless_result = asyncio.run(_temporaless_run(symbol))
-    try:
-        temporal_result = asyncio.run(_temporal_run(symbol))
-    except RuntimeError as exc:
-        # Temporal's start_time_skipping downloads its embedded test-server
-        # binary on first run; CDN flakiness shouldn't fail this test.
-        if "Failed starting test server" in str(exc) or "error sending request" in str(exc):
-            pytest.skip(f"temporal test server unavailable (network): {exc}")
-        raise
+    temporal_result = asyncio.run(_temporal_run(symbol))
 
     assert temporaless_result.value == "AAPL 100.00"
     assert temporal_result.value == "AAPL 100.00"

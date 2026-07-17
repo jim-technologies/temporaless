@@ -17,10 +17,6 @@ autobenches = false
 path = "src/lib.rs"
 
 [dependencies]
-# OpenDAL is native Rust — the Go/Python bindings wrap this. Async API for
-# parity with the Python SDK's AsyncOperator.
-opendal = { version = "0.58", default-features = false, features = ["services-fs"] }
-
 # Protobuf runtime. `prost` is the Rust-native protobuf library; `prost-types`
 # carries the well-known types (Duration, Timestamp, Any).
 prost = "0.14"
@@ -38,6 +34,16 @@ thiserror = "2"
 # Async trait support for the Queue trait (until trait fns become stable
 # for trait objects). Tiny crate, no transitive deps.
 async-trait = "0.1"
+
+# OpenDAL is native Rust — the Go/Python bindings wrap this. Async API for
+# parity with the Python SDK's AsyncOperator. The official 0.58.0 registry
+# artifact is yanked, so pin its verified release commit to retain the audited
+# 0.58 API and dependency graph for fresh Git consumers.
+[dependencies.opendal]
+git = "https://github.com/apache/opendal.git"
+rev = "13fb8bea0e29ad024540b35d4c834530b89976a1"
+default-features = false
+features = ["services-fs"]
 
 [build-dependencies]
 # build.rs uses prost-build with the pure-Rust protox parser so no system

@@ -1,6 +1,6 @@
 {
   "name": "@jim-technologies/temporaless",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "TypeScript SDK for Temporaless protobuf, ConnectRPC, and Invariant Protocol projections.",
   "license": "Apache-2.0",
@@ -65,6 +65,7 @@
     }
   },
   "devDependencies": {
+    "@connectrpc/connect-node": "^2.1.2",
     "@types/node": "^24.13.3",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

@@ -1,16 +1,13 @@
-// temporaless is a thin operator CLI over the existing inspector / janitor /
-// store adapters. It exists as a transitional surface — once the protobuf
-// service is migrated to invariantprotocol, the CLI (and MCP) will be
-// generated automatically from the proto, and this binary will be retired.
+// temporaless is a thin local operator CLI over the existing inspector /
+// janitor / store adapters. Every subcommand maps 1:1 to a single adapter
+// function; no business logic lives here.
 //
-// To keep the eventual swap painless, every subcommand maps 1:1 to a single
-// adapter function. No business logic lives here.
-//
-// This transitional binary registers only OpenDAL `fs` via --store-scheme /
-// --store-root. Cloud deployments should use authenticated remote
-// RecordStoreService / RecordQueryService tooling instead of adding cloud
-// credentials and drivers to this local operator binary. Output is text by
-// default; --json switches to protojson for machine consumption.
+// This binary registers only OpenDAL `fs` via --store-scheme / --store-root.
+// Cloud deployments should use authenticated RecordStoreService /
+// RecordQueryService clients or Invariant Protocol's generic TypeScript
+// projection instead of adding cloud credentials and drivers to this local
+// binary. Output is text by default; --json switches to protojson for machine
+// consumption.
 //
 // Subcommands:
 //
@@ -52,8 +49,8 @@ import (
 )
 
 // schemeRegistry maps the user-facing --store-scheme flag to OpenDAL Schemes.
-// Only `fs` is wired into this transitional local CLI. Production cloud
-// operators should use authenticated remote tooling over RecordStoreService /
+// Only `fs` is wired into this local CLI. Production cloud operators should
+// use authenticated remote tooling over RecordStoreService /
 // RecordQueryService rather than embedding cloud drivers and credentials here.
 var schemeRegistry = map[string]opendal.Scheme{
 	"fs": fs.Scheme,
@@ -83,7 +80,7 @@ SUBCOMMANDS
 
 Run "temporaless <subcommand> --help" for subcommand-specific flags.
 
-This is a transitional local-filesystem CLI. For cloud stores, use
+This is a deliberately local-filesystem CLI. For cloud stores, use
 authenticated ConnectStore/RecordQueryService clients or generated remote
 operator tooling; this binary intentionally does not bundle cloud drivers.
 `

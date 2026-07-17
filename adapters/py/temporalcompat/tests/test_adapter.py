@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import timedelta
 from typing import Any, cast
 from uuid import uuid4
@@ -174,20 +173,7 @@ def test_execute_activity_validates_call_inputs() -> None:
 
 
 async def run_temporal_workflow(workflow_type: type, activities: list) -> StringValue:
-    try:
-        env = await WorkflowEnvironment.start_time_skipping()
-    except RuntimeError as exc:
-        # Temporal's WorkflowEnvironment.start_time_skipping downloads its
-        # embedded test-server binary from temporal.download on first run.
-        # When the CDN is unreachable the bridge raises "Failed starting
-        # test server: error sending request". Local development may be
-        # offline, but CI must prove the real SDK boundary rather than
-        # silently passing without engine-backed coverage.
-        if "Failed starting test server" in str(exc) or "error sending request" in str(exc):
-            if os.environ.get("CI") == "true":
-                raise
-            pytest.skip(f"temporal test server unavailable (network): {exc}")
-        raise
+    env = await WorkflowEnvironment.start_time_skipping()
     async with (
         env,
         Worker(

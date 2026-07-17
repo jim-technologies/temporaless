@@ -1032,7 +1032,7 @@ func (x *RetryPolicy) GetDurableBackoffThreshold() *durationpb.Duration {
 //  1. Every SDK reads them from the same place via generated code:
 //     Go:     (&pb.ReservedNames{}).GetConcurrencyWorkflowId()
 //     Python: pb.ReservedNames().concurrency_workflow_id
-//     Future invariantprotocol-generated CLI/MCP pick them up automatically.
+//     TypeScript: create(ReservedNamesSchema).concurrencyWorkflowId
 //
 //  2. Renaming or evolving any reserved string is a one-line proto change
 //     + regenerate; no parallel SDK constants can drift.

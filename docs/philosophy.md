@@ -17,7 +17,7 @@ There is no Temporaless-specific handler shape. You write a normal unary protobu
 Both Connect-specific wrappers live under `adapters/{py,go}/connectworkflow`;
 the workflow replay cores remain transport-agnostic.
 
-Trigger surface and framework surface are the **same surface**. Anything that speaks gRPC / ConnectRPC / gRPC-Web — your existing service mesh, your existing auth, your CLI runner, an `invariantprotocol`-style adapter for HTTP/CLI/MCP — drops in unchanged.
+Trigger surface and framework surface are the **same surface**. Anything that speaks gRPC / ConnectRPC / gRPC-Web — your existing service mesh, your existing auth, your CLI runner, or Invariant Protocol's generic TypeScript projection for HTTP/CLI/MCP — uses the same canonical protobuf service.
 
 ## 2. Storage is the source of truth
 

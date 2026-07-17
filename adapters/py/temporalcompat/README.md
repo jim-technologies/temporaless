@@ -91,8 +91,10 @@ an import-only mapping to Temporaless's explicit protobuf record model.
 
 The adapter tests async workflow/activity bodies, retry policies, durable
 timers, timeouts, input validation, and dynamic class identity. They run
-against `temporalio.testing.WorkflowEnvironment.start_time_skipping()` so no
-Temporal server is required.
+against `temporalio.testing.WorkflowEnvironment.start_time_skipping()`, so no
+separately deployed Temporal cluster is required. The Temporal SDK downloads
+and starts its embedded time-skipping server; inability to start that server
+fails the suite rather than silently skipping engine-backed coverage.
 
 ```sh
 uv run --project adapters/py/temporalcompat pytest adapters/py/temporalcompat/tests

@@ -1,6 +1,6 @@
 [project]
 name = "temporaless"
-version = "0.8.0"
+version = "0.8.1"
 description = "Storage-first serverless workflow replay for protobuf activities."
 readme = "README.md"
 license = "Apache-2.0"
@@ -70,8 +70,8 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "protoc-gen-connectrpc @ git+https://github.com/connectrpc/connect-py.git@ea19bf7530468e8aa1cdcca8bea0795a034d0f41#subdirectory=protoc-gen-connectrpc",
     "ruff>=0.15.21",
-    "temporaless-connectworkflow==0.8.0",
-    "temporaless-indexstore==0.8.0",
+    "temporaless-connectworkflow==0.8.1",
+    "temporaless-indexstore==0.8.1",
     "ty>=0.0.59",
     "types-protobuf>=7.34.1.20260518",
     "uvicorn>=0.51.0",

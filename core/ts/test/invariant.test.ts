@@ -1,6 +1,8 @@
 import { createServer as createNodeServer } from "node:http";
 
+import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { describe, expect, it } from "vitest";
+import { RecordStoreService } from "../src/gen/temporaless/v1/temporaless_pb.js";
 import {
   TEMPORALESS_RECORD_QUERY_SERVICE,
   TEMPORALESS_RECORD_STORE_SERVICE,
@@ -23,6 +25,21 @@ describe("Temporaless invariantprotocol integration", () => {
     expect(server.parsed.services.has(TEMPORALESS_RECORD_QUERY_SERVICE)).toBe(
       true,
     );
+  });
+
+  it("rejects ambiguous descriptor sources before reading either one", () => {
+    expect(() =>
+      createTemporalessInvariantServer({
+        descriptorPath: "must-not-be-read.binpb",
+        descriptorBytes: new Uint8Array([0]),
+      }),
+    ).toThrow("descriptorPath and descriptorBytes are mutually exclusive.");
+  });
+
+  it("does not treat an explicitly supplied empty descriptor path as absent", () => {
+    expect(() =>
+      createTemporalessInvariantServer({ descriptorPath: "" }),
+    ).toThrow();
   });
 
   it("builds a descriptor-backed HTTP proxy tool catalog", () => {
@@ -88,6 +105,52 @@ describe("Temporaless invariantprotocol integration", () => {
 
       expect(response.status).toBe(404);
       await expect(response.json()).resolves.toMatchObject({ code: "not_found" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        nodeServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("proxies an allowed RPC through a generated Connect service", async () => {
+    let observedWorkflowId: string | undefined;
+    const handler = connectNodeAdapter({
+      routes(router) {
+        router.service(RecordStoreService, {
+          getWorkflow(request) {
+            observedWorkflowId = request.key?.workflowId;
+            return { found: false };
+          },
+        });
+      },
+    });
+    const nodeServer = createNodeServer(handler);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        nodeServer.once("error", reject);
+        nodeServer.listen(0, "127.0.0.1", resolve);
+      });
+      const address = nodeServer.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("generated Connect service did not bind a TCP port");
+      }
+
+      const proxy = createTemporalessInvariantHttpProxy(
+        `http://127.0.0.1:${address.port}`,
+        { includeQuery: false },
+      );
+      const response = await proxy.invoke("RecordStoreService.GetWorkflow", {
+        key: {
+          namespace: "default",
+          workflowId: "prices:aapl",
+          runId: "2026-07-17T00:00:00Z",
+        },
+      });
+
+      expect(observedWorkflowId).toBe("prices:aapl");
+      expect(response.found).toBe(false);
+      expect(response.$typeName).toBe("temporaless.v1.GetWorkflowResponse");
     } finally {
       await new Promise<void>((resolve, reject) => {
         nodeServer.close((error) => (error ? reject(error) : resolve()));

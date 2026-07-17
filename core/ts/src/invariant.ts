@@ -99,7 +99,13 @@ export function temporalessDescriptorBytes(): Uint8Array {
 export function createTemporalessInvariantServer(
   options: TemporalessInvariantServerOptions = {},
 ): TemporalessInvariantServer {
-  const server = options.descriptorPath
+  if (
+    options.descriptorPath !== undefined &&
+    options.descriptorBytes !== undefined
+  ) {
+    throw new Error("descriptorPath and descriptorBytes are mutually exclusive.");
+  }
+  const server = options.descriptorPath !== undefined
     ? Server.fromDescriptor(options.descriptorPath)
     : Server.fromBytes(options.descriptorBytes ?? temporalessDescriptorBytes());
   includeTemporalessServices(server, options);

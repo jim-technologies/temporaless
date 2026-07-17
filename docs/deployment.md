@@ -179,7 +179,7 @@ The bundled stores are create-only. Workflow claims are deleted on orderly exits
 
 ## 2. Mounting workflows as gRPC / ConnectRPC methods
 
-The framework's design is: **you write a normal gRPC handler, the framework decorates it as a workflow**. There is no Temporaless-specific handler shape. The same handler can be triggered over gRPC, ConnectRPC, gRPC-Web, or — once an `invariantprotocol`-style adapter is wrapped — CLI / HTTP / MCP.
+The framework's design is: **you write a normal gRPC handler, the framework decorates it as a workflow**. There is no Temporaless-specific handler shape. The same handler can be triggered over gRPC, ConnectRPC, or gRPC-Web. Invariant Protocol's generic TypeScript projection loads the same application descriptor to expose it through CLI, HTTP, and MCP.
 
 For application services, keep that normal handler callable directly. Temporaless should be an opt-in durable wrapper around idempotent, retriable, scheduled, or long-running work; it should not sit on the critical path for ordinary API reads or routine synchronous actions. If the Temporaless store, timer scanner, query index, or background operators are unavailable, the service should continue serving direct in-process APIs and return an explicit unavailable/deferred result only for the workflow-backed operation.
 
