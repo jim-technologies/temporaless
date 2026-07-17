@@ -3,7 +3,7 @@ members = ["core/rs/temporaless"]
 resolver = "3"
 
 [workspace.package]
-version = "0.7.2"
+version = "0.7.3"
 
 # The workspace root owns profiles; member-level profiles are ignored by
 # Cargo. Keep release codegen optimized for protobuf-heavy I/O workloads.

@@ -13,6 +13,24 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-07-16
+
+### Changed
+
+- The lockstep repository version is now 0.7.3.
+- Invariant Protocol is pinned to the immutable v0.8.0 commit. Its server,
+  projection, registration, MCP, CLI, HTTP, and tool-catalog APIs used by
+  Temporaless remain compatible; the reported Invariant server version is now
+  0.8.0.
+
+### Upgrade notes
+
+- There are no Temporaless runtime, protobuf, storage, or SDK API changes from
+  v0.7.2. Git consumers only need to repin Temporaless.
+- Invariant Protocol's separate data-schema bundle format moved from IR and
+  mapping version 1 to version 2. Temporaless neither consumes nor re-exports
+  those data-schema APIs, so this does not require a Temporaless migration.
+
 ## [0.7.2] — 2026-07-16
 
 ### Changed
