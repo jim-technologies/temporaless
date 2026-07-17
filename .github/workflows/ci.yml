@@ -192,28 +192,36 @@ jobs:
             git /repo --no-banner --redact=100
 
   git-install:
-    # Package each SDK from an immutable Git commit in a clean consumer
-    # environment. A local bare origin keeps this exact for pull-request merge
-    # commits too, which are not guaranteed to be fetchable by raw SHA from the
-    # public repository URL.
-    name: git-sha-install
+    # Package every SDK from an immutable Git commit on an isolated runner.
+    # Per-SDK runners prevent large Python, Go, Rust, and npm caches from
+    # competing for the same ephemeral disk. A local bare origin keeps the
+    # source exact for pull-request merge commits too, which are not guaranteed
+    # to be fetchable by raw SHA from the public repository URL.
+    name: git-sha-install-${{ matrix.sdk }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [python, go, rust, npm]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.sdk == 'npm'
         with:
           node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        if: matrix.sdk == 'rust'
         with:
           toolchain: 1.97.0
 
       - name: Install Flox
+        if: matrix.sdk == 'python' || matrix.sdk == 'go'
         uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
 
       - name: Create immutable Git source
@@ -231,6 +239,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install Python packages from Git SHA with pip
+        if: matrix.sdk == 'python'
         shell: bash
         run: |
           set -euo pipefail
@@ -252,6 +261,7 @@ jobs:
             'import importlib.metadata, os; packages = ("temporaless", "temporaless-connectworkflow", "temporaless-indexstore", "temporaless-prefectcompat", "temporaless-temporalcompat"); expected = os.environ["TEMPORALESS_EXPECTED_VERSION"]; actual = {name: importlib.metadata.version(name) for name in packages}; assert set(actual.values()) == {expected}, (expected, actual)'
 
       - name: Install Go module from Git SHA
+        if: matrix.sdk == 'go'
         shell: bash
         run: |
           set -euo pipefail
@@ -277,6 +287,7 @@ jobs:
             "github.com/$GITHUB_REPOSITORY/core/go/workflow"
 
       - name: Check Rust crate from Git SHA
+        if: matrix.sdk == 'rust'
         shell: bash
         env:
           # Compile the immutable Git-delivered workspace against its committed
@@ -290,8 +301,8 @@ jobs:
           for attempt in 1 2 3; do
             if (
               rm -rf "$checkout" &&
-                git -c protocol.file.allow=always clone --quiet --no-checkout \
-                  "file://${TEMPORALESS_GIT_REPO}" "$checkout" &&
+                git clone --quiet --no-checkout \
+                  "$TEMPORALESS_GIT_REPO" "$checkout" &&
                 git -C "$checkout" checkout --quiet --detach \
                   "$TEMPORALESS_GIT_SHA" &&
                 test "$(git -C "$checkout" rev-parse HEAD)" = \
@@ -310,6 +321,7 @@ jobs:
           exit 1
 
       - name: Install npm package from Git SHA
+        if: matrix.sdk == 'npm'
         shell: bash
         run: |
           set -euo pipefail

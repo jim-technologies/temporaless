@@ -25,7 +25,10 @@ lockstep policy.
 
 ### Fixed
 
-- Rust Git-source CI now checks out the exact immutable commit from the local
+- Git-source CI now runs Python, Go, Rust, and npm installation checks on
+  isolated runners so their large tool and dependency caches cannot exhaust a
+  shared ephemeral disk or prevent later SDK checks from running.
+- The Rust Git-source job checks out the exact immutable commit from the local
   bare origin and compiles every target against the repository's committed
   lockfile. This preserves the Git distribution boundary without introducing
   a fresh, externally mutable registry resolution into the release gate.
