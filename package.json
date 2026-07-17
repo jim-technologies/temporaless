@@ -1,6 +1,6 @@
 {
   "name": "@jim-technologies/temporaless",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "private": true,
   "description": "TypeScript SDK for Temporaless protobuf, ConnectRPC, and Invariant Protocol projections.",
   "license": "Apache-2.0",
@@ -50,7 +50,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.1",
     "@connectrpc/connect": "^2.1.2",
-    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#54eac42ae9e12255c0f802dc63bebc27ff8370b1"
+    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#973990f2a0dd3d70262497389da3c9a042b20aeb"
   },
   "peerDependencies": {
     "@connectrpc/connect-node": ">=2.1.2",
@@ -70,7 +70,7 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "github:jim-technologies/invariantprotocol#54eac42ae9e12255c0f802dc63bebc27ff8370b1": true,
+    "github:jim-technologies/invariantprotocol#973990f2a0dd3d70262497389da3c9a042b20aeb": true,
     "protobufjs": false
   }
 }

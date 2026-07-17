@@ -1,5 +1,7 @@
 from temporaless_prefectcompat.adapter import (
     ActivityWrapOptions,
+    PrefectActivity,
+    ProtobufFlow,
     WorkflowWrapOptions,
     wrap_activity,
     wrap_workflow,
@@ -7,6 +9,8 @@ from temporaless_prefectcompat.adapter import (
 
 __all__ = [
     "ActivityWrapOptions",
+    "PrefectActivity",
+    "ProtobufFlow",
     "WorkflowWrapOptions",
     "wrap_activity",
     "wrap_workflow",

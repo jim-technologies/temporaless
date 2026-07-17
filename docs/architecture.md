@@ -100,7 +100,12 @@ core workflow replay remains transport-agnostic.
 
 The core provides one options-driven workflow wrapper and one options-driven activity wrapper. The options carry either fixed IDs/options or a per-request resolver. Separate fixed and dynamic wrapper variants are intentionally avoided.
 
-Workflow IDs, run IDs, and activity IDs are still explicit. For real RPC servers, use the per-request option resolver and extract IDs from protobuf fields, headers, or routing code owned by the application. Temporaless must not generate them.
+Workflow IDs, run IDs, and activity IDs are still explicit. For real RPC
+servers, the Python method-wrapper resolver receives the application service
+and protobuf request, so IDs should come from request fields or an
+application-owned routing closure. A custom transport boundary may resolve
+authenticated metadata before calling the core wrapper. Temporaless must not
+generate IDs or implicitly read transport headers.
 
 ## Domain Boundary
 

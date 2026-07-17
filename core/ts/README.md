@@ -67,6 +67,15 @@ The `@jim-technologies/temporaless/invariant` subpath uses
 `@jim-technologies/invariant-protocol` to project Temporaless RPCs into MCP,
 CLI, HTTP/Connect, and descriptor-backed tool catalogs.
 
+Application workflows are not limited to Temporaless's system descriptor.
+Load the application's generated descriptor with Invariant's generic
+`Server.fromDescriptor(...)`, then `connectHttp(...)` to the generated
+ConnectRPC service whose methods are wrapped as workflows. The application RPC
+remains the single canonical request/response contract. The
+Temporaless-specific helpers below are conveniences only for
+`RecordStoreService` and `RecordQueryService`; they are not a workflow
+registry.
+
 ```ts
 import {
   createTemporalessInvariantHttpProxy,

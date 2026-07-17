@@ -14,6 +14,12 @@ The Python adapter in `adapters/py/temporalcompat` follows the same boundary. It
 
 The Python `wrap_workflow` helper generates a workflow class around an existing unary protobuf function, so it disables Temporal's Python workflow sandbox for that generated class. Native sandboxed workflows should be written directly with Temporal's `@workflow.defn` and can still call this adapter's `execute_activity`, `sleep`, and wrapped activities.
 
+Both adapters are outbound: Temporaless-shaped handlers run on the real
+Temporal worker runtime. Temporal owns history and coordination in that mode.
+The adapters do not execute arbitrary existing Temporal workflows on
+Temporaless object storage, and they do not provide an import-only inverse
+migration layer.
+
 ## Core Rules
 
 A Temporal adapter may translate familiar usage into Temporaless conventions, but it must not weaken these rules:
@@ -55,7 +61,8 @@ Do not add Temporal or Temporalite as a hard dependency of the core. If we want 
 
 Current tests:
 
-- same unary protobuf workflow shape runs under Temporal SDK test environments
+- wrapped unary protobuf workflow and activity values register with Temporal's
+  SDK test environments
 - activity execution delegates to Temporal SDK activity scheduling
 - timer/sleep delegates to Temporal SDK timers
 - retry policies are honored by the SDK

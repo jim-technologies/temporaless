@@ -387,7 +387,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.7.3"
+version = "0.8.0"
 source = { editable = "../../../core/py" }
 dependencies = [
     { name = "connectrpc" },
@@ -423,7 +423,7 @@ dev = [
 
 [[package]]
 name = "temporaless-connectworkflow"
-version = "0.7.3"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "connectrpc" },

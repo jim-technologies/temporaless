@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "temporaless"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",

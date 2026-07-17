@@ -13,6 +13,63 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-17
+
+### Added
+
+- Canonical-workflow guidance now shows how an application-generated unary
+  protobuf service method becomes a durable Temporaless workflow through the
+  existing ConnectRPC wrappers, and how Invariant Protocol projects that same
+  application descriptor into tools without introducing a second workflow
+  schema or registry.
+- Prefect deployment, schedule, event-trigger, async-dispatch, and
+  fresh-process entrypoint coverage now proves that deployment models retain
+  a concrete request as deterministic protobuf binary and reload the declared
+  protobuf response boundary.
+- Integration tests now execute a wrapped Python workflow through a generated
+  ConnectRPC ASGI service and register both Go wrapper values with Temporal's
+  real SDK test environment.
+
+### Changed
+
+- The lockstep repository version is now 0.8.0.
+- Invariant Protocol is pinned to the immutable v0.8.1 release commit. The
+  generated-service registration, Connect HTTP, MCP, CLI, and tool-catalog
+  APIs used by Temporaless remain compatible.
+- Orchestrator documentation now defines the shipped Temporal and Prefect
+  adapters as outbound adapters for Temporaless-shaped handlers. Arbitrary
+  framework-native workflows do not become Temporaless workflows through an
+  import substitution.
+- Dagster integration is explicitly process-isolated through the canonical
+  application ConnectRPC service while Dagster 1.13.14 requires protobuf
+  below version 7.
+
+### Fixed
+
+- Prefect deployments no longer persist protobuf inputs as display
+  placeholders. The adapter validates a versioned, typed, JSON-safe envelope,
+  decodes only the declared request message, preserves Prefect's sync/async
+  deployment APIs, and keeps worker entrypoints importable.
+- The Python getting-started guide now mounts the generated application
+  service rather than incorrectly mounting Temporaless's framework
+  `RecordStoreService` ASGI application as the application workflow service.
+- Temporal and Prefect compatibility claims now distinguish reusable unary
+  protobuf activity/business bodies from orchestration code that still needs
+  a small runtime-specific rewrite.
+
+### Upgrade notes
+
+- Every Go, Python, Rust, and TypeScript Temporaless consumer must repin to the
+  new repository tag or commit; all SDKs and adapters continue to share one
+  release version.
+- Prefect workflow and activity handlers must declare exactly one concrete
+  protobuf request annotation and one concrete protobuf response annotation.
+  Deployment callers that bypass the wrapped flow and call
+  `run_deployment` directly must first use the wrapped flow's
+  `serialize_parameters` method.
+- There is no core protobuf schema, storage-key, or stored-record migration in
+  this release.
+
 ## [0.7.3] — 2026-07-16
 
 ### Changed

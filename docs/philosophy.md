@@ -72,7 +72,10 @@ Things this framework does *not* try to be:
 
 - **A control plane.** No scheduler binary, no API to call. The trigger is gRPC; the state is storage.
 - **A queue.** Durable timers and events are records, not queues. If you need a queue, put one in front of `workflow.run`.
-- **A 1-to-1 Temporal replacement.** Use the `temporalcompat` adapter when you need Temporal semantics; use Temporal directly when you need the whole platform.
+- **A 1-to-1 Temporal replacement.** The `temporalcompat` adapter delegates its
+  documented narrow surface to a real Temporal worker. Use native Temporal
+  workflows for signals, queries, children, converters, and the rest of the
+  platform.
 - **An ID generator.** Workflow IDs, run IDs, activity IDs, claim owner IDs are caller-provided. The framework rejects ambiguous defaults.
 
 ## 9. The shape, in one paragraph

@@ -1,12 +1,12 @@
-"""Portability proof: the same activity/workflow body runs under both
-Temporaless and Prefect with identical outputs.
+"""Portability proof: the same activity body runs under both Temporaless and
+Prefect with identical outputs.
 
 This locks in the contract documented in `docs/adapter-portability.md`:
-activity and workflow bodies are vanilla async functions; only the
-dispatch wiring differs per runtime. If we ever break that property
-(e.g. add framework-only helpers a body must call), this test fails.
+unary protobuf activity bodies can be vanilla async functions while workflow
+dispatch wiring differs per runtime. If we ever require a framework-specific
+helper inside an activity body, this test fails.
 
-The bodies are defined once and consumed twice:
+The activity body is defined once and consumed twice:
 
 - Temporaless side: invoked via ``Workflow.execute_activity`` / ``run`` against
   an ``OpenDALStore``.
@@ -79,7 +79,7 @@ _fetch_price_prefect_task = wrap_activity(
 
 
 async def _prefect_workflow_body(symbol: StringValue) -> StringValue:
-    # Same body as temporaless side, just wrapped as a Prefect flow externally.
+    # Prefect-specific workflow glue invokes the shared activity body.
     result = await _fetch_price_prefect_task(symbol)
     assert isinstance(result, StringValue)
     return result
@@ -99,9 +99,9 @@ async def _prefect_run(symbol: StringValue) -> StringValue:
 # ---- the test -----------------------------------------------------------
 
 
-def test_same_body_runs_identically_on_temporaless_and_prefect() -> None:
-    """The locked invariant: identical input + identical body → identical
-    output, regardless of runtime."""
+def test_same_activity_body_runs_identically_on_temporaless_and_prefect() -> None:
+    """The locked invariant: identical input + identical activity body
+    produces identical output through either runtime's orchestration glue."""
     symbol = StringValue(value="AAPL")
 
     temporaless_result = asyncio.run(_temporaless_run(symbol))

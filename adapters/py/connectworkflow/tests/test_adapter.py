@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import opendal
 import pytest
@@ -9,7 +10,7 @@ from connectrpc.errors import ConnectError
 from google.protobuf.wrappers_pb2 import StringValue
 from temporaless.backfill import backfill
 from temporaless.storage import OpenDALStore
-from temporaless.v1 import temporaless_pb2
+from temporaless.v1 import temporaless_connect, temporaless_pb2
 from temporaless.workflow import (
     ActivityConflictError,
     ActivityError,
@@ -78,6 +79,65 @@ async def test_wrap_workflow_method_replays_connect_handler(store: OpenDALStore)
     assert first.value == "vendor:AAPL"
     assert second.value == "vendor:AAPL"
     assert service.vendor_calls == 1
+
+
+async def test_generated_asgi_service_executes_and_replays_workflow(
+    store: OpenDALStore,
+) -> None:
+    """Prove the decorator on a generated service method across real ASGI
+    Connect framing, not only through a direct Python method call.
+    """
+
+    class WorkflowQueryService(temporaless_connect.RecordQueryService):
+        def __init__(self, workflow_store: OpenDALStore) -> None:
+            self._store = workflow_store
+            self.body_calls = 0
+
+        @wrap_workflow_method(
+            WorkflowMethodWrapOptions(
+                store=lambda self: self._store,  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+                result_type=temporaless_pb2.ListWorkflowsResponse,
+                options_for=lambda _self, request: Options(
+                    workflow_id=f"query:{request.workflow_id}",
+                    run_id=request.page_token,
+                    code_version="v1",
+                    claim_owner_id="connect-asgi-test",
+                ),
+            )
+        )
+        async def list_workflows(
+            self,
+            request: temporaless_pb2.ListWorkflowsRequest,
+            _ctx: object = None,
+        ) -> temporaless_pb2.ListWorkflowsResponse:
+            self.body_calls += 1
+            return temporaless_pb2.ListWorkflowsResponse(
+                next_page_token=f"seen:{request.namespace}"
+            )
+
+    service = WorkflowQueryService(store)
+    app = temporaless_connect.RecordQueryServiceASGIApplication(service)
+    request = temporaless_pb2.ListWorkflowsRequest(
+        namespace="tenant",
+        workflow_id="prices",
+        page_token="run-1",
+    )
+
+    responses = [
+        await _call_connect_asgi(
+            app,
+            "/temporaless.v1.RecordQueryService/ListWorkflows",
+            request.SerializeToString(deterministic=True),
+        )
+        for _ in range(2)
+    ]
+
+    for status, body in responses:
+        assert status == 200
+        response = temporaless_pb2.ListWorkflowsResponse()
+        response.ParseFromString(body)
+        assert response.next_page_token == "seen:tenant"
+    assert service.body_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -214,3 +274,51 @@ async def test_remote_backfill_opts_into_connect_pending_classification() -> Non
 
     assert len(default_report.failed()) == 1
     assert len(opted_in_report.pending()) == 1
+
+
+async def _call_connect_asgi(
+    app: object,
+    path: str,
+    body: bytes,
+) -> tuple[int, bytes]:
+    """Send one Connect unary protobuf request through an ASGI callable."""
+    request_pending = True
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_pending
+        if request_pending:
+            request_pending = False
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    await app(  # type: ignore[operator]  # ty: ignore[call-non-callable]
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [
+                (b"content-type", b"application/proto"),
+                (b"connect-protocol-version", b"1"),
+            ],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        },
+        receive,
+        send,
+    )
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    response_body = b"".join(
+        cast(bytes, message.get("body", b""))
+        for message in sent
+        if message["type"] == "http.response.body"
+    )
+    return cast(int, start["status"]), response_body

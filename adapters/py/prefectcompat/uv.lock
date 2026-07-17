@@ -1811,7 +1811,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.7.3"
+version = "0.8.0"
 source = { editable = "../../../core/py" }
 dependencies = [
     { name = "connectrpc" },
@@ -1847,7 +1847,7 @@ dev = [
 
 [[package]]
 name = "temporaless-connectworkflow"
-version = "0.7.3"
+version = "0.8.0"
 source = { editable = "../connectworkflow" }
 dependencies = [
     { name = "connectrpc" },
@@ -1871,7 +1871,7 @@ dev = [
 
 [[package]]
 name = "temporaless-prefectcompat"
-version = "0.7.3"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "prefect" },
@@ -1891,7 +1891,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "prefect", specifier = ">=3.7.8" },
+    { name = "prefect", specifier = "==3.7.8" },
     { name = "temporaless", editable = "../../../core/py" },
 ]
 

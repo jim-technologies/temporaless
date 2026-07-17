@@ -10,6 +10,7 @@ Terminal duplicate calls replay from storage. Live duplicate calls are single-fl
 > Not a Temporal replacement. A narrower framework for data workflows where activities are mostly fetch / normalize / persist and storage can be the durable coordination point.
 
 - [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough: store, workflow, retries, sleep, events, schedule, inspect, sweep
+- [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — make a generated protobuf service method a durable workflow and project it through Invariant Protocol
 - [`docs/deployment.md`](docs/deployment.md) — production patterns (S3/GCS, ConnectRPC, multi-process, multi-region)
 
 ## Application Service Adoption
@@ -54,6 +55,9 @@ Historical tags remain immutable and predate this unified release policy.
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
 pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
 pip install "temporaless-connectworkflow @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
+pip install "temporaless-temporalcompat @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/temporalcompat"
+pip install "temporaless-prefectcompat @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/prefectcompat"
+pip install "temporaless-indexstore @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/indexstore"
 npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
@@ -77,7 +81,7 @@ work without a package registry; its source stays under `core/ts`.
 | [`adapters/go/gocdkclaims`](adapters/go/gocdkclaims) | Create-only workflow/activity claims via GoCDK Blob `IfNotExist` (S3, GCS native atomicity) |
 | [`adapters/go/temporalcompat`](adapters/go/temporalcompat) | Run Temporaless-shaped handlers on the real Temporal Go SDK (worker direction) |
 | [`adapters/py/temporalcompat`](adapters/py/temporalcompat) | Same for Python via `temporalio` |
-| [`adapters/py/prefectcompat`](adapters/py/prefectcompat) | Run Temporaless-shaped handlers as Prefect 3 flows / tasks; keep Prefect's UI + scheduling, keep our storage-first replay |
+| [`adapters/py/prefectcompat`](adapters/py/prefectcompat) | Run Temporaless-shaped unary protobuf handlers as Prefect 3 flows / tasks; Temporaless replay applies only when the handler invokes the Temporaless runtime |
 | [`adapters/py/indexstore`](adapters/py/indexstore) | Optional SQLite query index for workflow/activity listing, retention sweeps, and indexed due-timer queries |
 | [`adapters/go/timerscanner`](adapters/go/timerscanner) | Find due durable timers belonging to in-flight workflows |
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
@@ -120,6 +124,7 @@ credentials.
 - [`docs/philosophy.md`](docs/philosophy.md) — design tenets in one page (read first)
 - [`docs/comparisons.md`](docs/comparisons.md) — honest comparison vs Temporal / n8n / Prefect / Dagster
 - [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough
+- [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — canonical application protobuf service, workflow wrapping, Invariant projection, and migration boundaries
 - [`docs/deployment.md`](docs/deployment.md) — production deployment patterns
 - [`docs/production-checklist.md`](docs/production-checklist.md) — pre-launch checklist (storage, ConnectStore, workflow service, operators, observability, failure modes)
 - [`docs/runbook.md`](docs/runbook.md) — operator runbook for common incidents (stuck workflows, claim leaks, storage outages, DR)
@@ -175,7 +180,7 @@ The core storage contract is generated from `temporaless.v1.RecordStoreService`:
 
 **Generic core (in scope):** workflow + activity replay, retry policy with `RETRYING`-record persistence, durable timers and signals via `EventRecord`, claim-based coordination tiers, durable structured annotations, in-process scheduler with O(1) latest-run pointer seeding, run-scoped prefetch/deletion, and comprehensive proto-typed errors.
 
-**Temporal-flavored knobs (adapter-only or out of scope):** activity timeouts, heartbeats, sticky task queues, signal-channel select, workflow-level retry policy, child workflows, payload converters. Use `adapters/{go,py}/temporalcompat` if you need any of those.
+**Temporal-flavored knobs (adapter-only or out of scope):** the Temporal adapters delegate activity timeouts and heartbeats to the real SDK. Sticky task queues, signal-channel select, workflow-level retry policy, child workflows, and payload converters are not emulated; use native Temporal code when those semantics are required.
 
 **Search and retention (optional index):** bucket-only deployments run workflows, scheduling, durable timers, and lifecycle-based retention without a database. Listing workflows, inspector views, and indexed sweeps require a derived query index or an offline scan.
 

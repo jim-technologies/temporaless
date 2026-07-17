@@ -19,13 +19,46 @@ import (
 
 var retryActivityAttempts int
 
-func TestExecuteActivityUsesTemporalSDK(t *testing.T) {
+func TestWrappedHandlersRegisterAndExecuteThroughTemporalSDK(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterWorkflow(priceWorkflow)
-	env.RegisterActivity(fetchPriceActivity)
+	wrappedActivity := WrapActivity(
+		ActivityWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
+			Execute: fetchPriceActivity,
+		},
+	)
+	wrappedWorkflow := WrapWorkflow(
+		WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
+			Execute: func(
+				ctx workflow.Context,
+				input *wrapperspb.StringValue,
+			) (*wrapperspb.StringValue, error) {
+				return ExecuteActivity(
+					ctx,
+					ActivityCall[*wrapperspb.StringValue, *wrapperspb.StringValue]{
+						Activity: wrappedActivity,
+						Options: workflow.ActivityOptions{
+							StartToCloseTimeout: time.Minute,
+						},
+						NewResult: func() *wrapperspb.StringValue {
+							return &wrapperspb.StringValue{}
+						},
+					},
+					input,
+				)
+			},
+		},
+	)
+	env.RegisterWorkflowWithOptions(
+		wrappedWorkflow,
+		workflow.RegisterOptions{Name: "WrappedPriceWorkflow"},
+	)
+	env.RegisterActivityWithOptions(
+		wrappedActivity,
+		activity.RegisterOptions{Name: "WrappedFetchPriceActivity"},
+	)
 
-	env.ExecuteWorkflow(priceWorkflow, wrapperspb.String("AAPL"))
+	env.ExecuteWorkflow("WrappedPriceWorkflow", wrapperspb.String("AAPL"))
 
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -92,6 +125,9 @@ func TestTimeoutUsesTemporalSDK(t *testing.T) {
 		}
 		if activityInfo.StartToCloseTimeout != time.Minute {
 			t.Fatalf("start-to-close timeout = %s, want %s", activityInfo.StartToCloseTimeout, time.Minute)
+		}
+		if activityInfo.HeartbeatTimeout != 5*time.Second {
+			t.Fatalf("heartbeat timeout = %s, want %s", activityInfo.HeartbeatTimeout, 5*time.Second)
 		}
 	})
 	env.OnActivity(fetchPriceActivity, mock.Anything, mock.Anything).
@@ -177,20 +213,6 @@ func TestWrappersRejectNonTemporalessShape(t *testing.T) {
 	}
 }
 
-func priceWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-	return ExecuteActivity(
-		ctx,
-		ActivityCall[*wrapperspb.StringValue, *wrapperspb.StringValue]{
-			Activity: fetchPriceActivity,
-			Options: workflow.ActivityOptions{
-				StartToCloseTimeout: time.Minute,
-			},
-			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
-		},
-		input,
-	)
-}
-
 func sleepWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 	if err := Sleep(ctx, time.Hour); err != nil {
 		return nil, err
@@ -224,7 +246,9 @@ func timeoutWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrap
 			Activity: fetchPriceActivity,
 			Options: workflow.ActivityOptions{
 				ScheduleToCloseTimeout: time.Minute,
+				ScheduleToStartTimeout: 30 * time.Second,
 				StartToCloseTimeout:    time.Minute,
+				HeartbeatTimeout:       5 * time.Second,
 				RetryPolicy: &temporal.RetryPolicy{
 					MaximumAttempts: 1,
 				},

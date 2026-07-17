@@ -331,7 +331,13 @@ from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow
 
 
 def _store_of(svc): return svc._store
-def _options_for(_svc, req): return Options(workflow_id=f"prices:{req.value}", run_id="2026-05-04", code_version="v1")
+def _options_for(_svc, req):
+    return Options(
+        workflow_id=f"prices:{req.value}",
+        run_id="2026-05-04",
+        code_version="v1",
+        claim_owner_id="price-service",
+    )
 
 
 class PriceService:
@@ -352,13 +358,18 @@ class PriceService:
         )
 
 
-# Mount on uvicorn:
-from temporaless import asgi_application
+# Mount the generated application service on uvicorn:
+from your_pkg.gen import PriceServiceASGIApplication
 import uvicorn
-uvicorn.run(asgi_application(PriceService(store)._store), port=8080)
+
+uvicorn.run(PriceServiceASGIApplication(PriceService(store)), port=8080)
 ```
 
-The "any server can trigger a workflow" model is literal — there is no Temporaless server. Standard ConnectRPC interceptors (auth, rate-limit, tracing) plug in unchanged.
+`temporaless.asgi_application(store)` serves the framework's
+`RecordStoreService`; it is not an application workflow service. Mount the
+generated application ASGI class as above. The "any server can trigger a
+workflow" model is literal—there is no Temporaless workflow server. Standard
+ConnectRPC interceptors (auth, rate-limit, tracing) plug in unchanged.
 
 ## What you do not get
 

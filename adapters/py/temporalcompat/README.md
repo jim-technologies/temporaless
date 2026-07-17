@@ -2,7 +2,11 @@
 
 Strict compatibility adapter that runs Temporaless-shaped unary protobuf handlers on the real Temporal Python SDK.
 
-It does not emulate the Temporal server. It delegates activities, retries, timeouts, and durable timers to `temporalio`. Existing protobuf-shaped Python functions can be wrapped as Temporal workflows and activities without rewriting them.
+It does not emulate the Temporal server. It delegates activities, retries,
+timeouts, and durable timers to `temporalio`. Async unary protobuf business and
+activity functions can be wrapped without rewriting their bodies. Workflow
+orchestration must already use this adapter's Temporal execution helpers or be
+rewritten mechanically from another runtime's helpers.
 
 ## Why use this
 
@@ -42,7 +46,10 @@ async with Worker(client, task_queue="...", workflows=[PriceWorkflow], activitie
     ...
 ```
 
-The wrapped functions retain their unary protobuf shape; Temporal handles execution, retries, timeouts, sleeps, and history.
+The wrapped functions retain their unary protobuf shape; Temporal handles
+execution, retries, timeouts, sleeps, and history. Temporaless object storage,
+claims, and replay records are not involved in this mode unless the
+application separately invokes a Temporaless workflow boundary.
 
 ## Supported
 
@@ -75,7 +82,10 @@ Those features should use the Temporal SDK directly until this adapter can prove
 
 This adapter is compatible **by wiring to the Temporal SDK** rather than approximating Temporal semantics in Temporaless core. It is intentionally narrow: it lets a Temporaless unary protobuf handler shape run inside a Temporal worker, and it keeps Temporal-specific behavior out of the core runtime.
 
-For the inverse direction — running Temporal-shaped code against a Temporaless storage backend — see PRD entry D5. That is a separate, larger project.
+The inverse direction—running arbitrary Temporal-shaped code against a
+Temporaless storage backend—is not supported. Temporal signals, queries,
+children, converters, history, and implicit SDK-generated identity do not have
+an import-only mapping to Temporaless's explicit protobuf record model.
 
 ## Testing
 

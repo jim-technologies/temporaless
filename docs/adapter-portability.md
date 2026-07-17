@@ -1,6 +1,11 @@
 # Adapter Portability
 
-How portable is your code between Temporaless and Temporal / Dagster / Prefect / Airflow? **Activity bodies are 100% portable** — they're vanilla async functions. **Workflow bodies need a small, mechanical shim per runtime** because each framework has its own way to invoke activities, sleep, and wait for events. This page shows what changes and what doesn't.
+How portable is your code between Temporaless and Temporal / Dagster / Prefect
+/ Airflow? An async unary protobuf activity or business body is portable when
+it does not call framework-specific APIs. Workflow orchestration needs a small,
+mechanical shim per runtime because each framework has its own activity,
+sleep, event, and identity semantics. General import-only migration is not
+possible.
 
 The framework adapter contract is documented in `docs/adapter-contract.md`. This page is the practical "I want to move my code" guide.
 
@@ -18,12 +23,14 @@ async def fetch_price(symbol: StringValue) -> StringValue:
     return StringValue(value=f"{symbol.value} 100.00")
 ```
 
-This same function works as:
+This body can be reused as:
+
 - A Temporaless activity (`Workflow.execute_activity` with `_fetch_price` as the body).
 - A Temporal SDK activity (`@temporalio.activity.defn` decoration via `temporaless_temporalcompat.wrap_activity`).
-- A Dagster `@op` (wrap into the framework's task model).
-- A Prefect `@task` (same).
-- An Airflow `PythonOperator` (call directly from a `python_callable`).
+- A Prefect `@task` through `temporaless_prefectcompat.wrap_activity`.
+- Code behind a Dagster or Airflow boundary, provided that process owns
+  compatible generated application protobuf types. Dagster currently cannot
+  import Temporaless in the same Python environment.
 
 If your activity bodies don't import framework-specific helpers (no `temporalio.workflow.now()`, no Dagster context, no Prefect logger), you've got runtime-portable activity code by construction.
 
@@ -95,24 +102,32 @@ result = await client.execute_workflow(
 )
 ```
 
-### Dagster (illustrative pattern; bring your own `dagster` install)
+### Dagster (process-isolated)
 
 ```python
 import dagster
+from price.v1.price_connect import PriceServiceClient
+from price.v1.price_pb2 import FetchPriceRequest
+
 
 @dagster.op
-async def fetch_price_op(context, symbol: str) -> str:
-    # The same activity body, adapted to Dagster's positional arg shape.
-    result = await fetch_price(StringValue(value=symbol))
-    return result.value
-
-
-@dagster.job
-def price_job():
-    fetch_price_op()
+async def fetch_price_op(context) -> str:
+    async with PriceServiceClient("https://workflow.example.com") as client:
+        response = await client.fetch_price(
+            FetchPriceRequest(
+                symbol="AAPL",
+                workflow_id="prices:AAPL",
+                run_id=context.run_id,
+            )
+        )
+    return response.price
 ```
 
-For replay / persistence semantics that match Temporaless, you'd `@op` the activity bodies and let Dagster's IO managers persist outputs. Dagster's asset-graph mode is what you give up by switching to Temporaless; the workflow-shaped subset is mechanical.
+Dagster 1.13.14 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
+or newer. Generate the Dagster client and Temporaless server independently
+from the same application `.proto`, run them in separate environments, and
+exchange only protobuf wire bytes. Dagster remains responsible for asset/job
+state and lineage; Temporaless remains responsible for workflow replay.
 
 ### Prefect (via `adapters/py/prefectcompat`)
 
@@ -135,18 +150,21 @@ async def price_flow_body(symbol: StringValue) -> StringValue:
     return await fetch_price_task(symbol)
 
 
-# Same workflow body — wrapped as a Prefect flow. Visible in Prefect UI;
-# Temporaless storage-first replay still applies inside the body.
+# Prefect flow wrapper around the runtime-specific orchestration body.
 PriceFlow = wrap_workflow(
     price_flow_body,
     WorkflowWrapOptions(name="PriceFlow"),
 )
 
-# Run via Prefect's runtime — Prefect tracks the run, storage records still go to S3/GCS.
+# Direct and deployed calls enter Prefect with a protobuf-safe parameter.
 result = await PriceFlow(StringValue(value="AAPL"))
 ```
 
-Prefect's `@flow` / `@task` model maps cleanly to the `adapters/py/connectworkflow` trigger wrapper plus core `execute_activity`; the adapter does the wiring. The protobuf contract is enforced both ways. The compatibility surface deliberately exposes only names and retry settings; use native Prefect definitions for other decorator options. See `adapters/py/prefectcompat/tests/test_integration.py` for backfill + cross-pipeline-dep composition tested end-to-end through Prefect.
+Prefect owns the flow/task run in this example. Temporaless object-store replay
+applies only if `price_flow_body` invokes `temporaless.run` or calls a
+canonical Temporaless ConnectRPC workflow service. The Prefect adapter enforces
+the protobuf contract and uses a protobuf-binary deployment envelope; it does
+not silently turn a normal Prefect flow into a Temporaless workflow.
 
 ### Airflow (illustrative pattern)
 
@@ -201,7 +219,19 @@ Going from Temporaless to another framework:
 
 ## What's tested
 
-- `adapters/py/temporalcompat/tests/test_adapter.py` exercises the Temporaless→Temporal direction end-to-end with `WorkflowEnvironment.start_time_skipping()`. Activity bodies, workflow bodies, retries, sleep, timeout, async activity bodies, validation paths — all ten scenarios.
-- `adapters/py/temporalcompat/tests/test_portability.py` (this iteration) shows the **same activity body** running under both Temporaless's `Workflow.execute_activity` and Temporal SDK's worker, asserting identical outputs.
+- `adapters/py/temporalcompat/tests` exercises the outbound
+  Temporaless-to-Temporal direction with the real SDK test environment,
+  including registration, activity execution, retries, sleep, timeouts, and
+  validation.
+- `adapters/go/temporalcompat` registers values returned by both wrapper
+  functions in Temporal's SDK test environment and proves execution through
+  the wrapped activity.
+- `adapters/py/prefectcompat/tests` exercises direct flows/tasks, retries,
+  Temporaless replay composition, and protobuf deployment-parameter
+  serialization.
+- `adapters/py/connectworkflow/tests` sends a binary protobuf request through
+  a generated ConnectRPC ASGI service method and proves terminal replay. That
+  transport boundary is also the supported Dagster integration boundary.
 
-If you need Dagster / Prefect / Airflow integration tests, they're a small `@op` / `@task` / `PythonOperator` shim away — copy the patterns above and bring the framework's package as a dev dep.
+There is no same-process Dagster test because the official dependency ranges
+are unsatisfiable. Do not install with `--no-deps` or suppress that conflict.

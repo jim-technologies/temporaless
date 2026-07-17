@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import timedelta
 from typing import Any, cast
 from uuid import uuid4
@@ -179,9 +180,12 @@ async def run_temporal_workflow(workflow_type: type, activities: list) -> String
         # Temporal's WorkflowEnvironment.start_time_skipping downloads its
         # embedded test-server binary from temporal.download on first run.
         # When the CDN is unreachable the bridge raises "Failed starting
-        # test server: error sending request". That's a network/CDN issue,
-        # not a framework regression — skip cleanly so CI stays green.
+        # test server: error sending request". Local development may be
+        # offline, but CI must prove the real SDK boundary rather than
+        # silently passing without engine-backed coverage.
         if "Failed starting test server" in str(exc) or "error sending request" in str(exc):
+            if os.environ.get("CI") == "true":
+                raise
             pytest.skip(f"temporal test server unavailable (network): {exc}")
         raise
     async with (

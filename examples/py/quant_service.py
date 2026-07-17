@@ -71,6 +71,7 @@ def _options_for_fetch_prices(_service: object, request: StringValue) -> Options
         workflow_id=f"prices:{request.value}",
         run_id="2026-05-04",
         code_version="example",
+        claim_owner_id="quant-service",
     )
 
 
@@ -79,6 +80,7 @@ def _options_for_compose_signal(_service: object, request: StringValue) -> Optio
         workflow_id="signals:batch",
         run_id=request.value,
         code_version="example",
+        claim_owner_id="quant-service",
     )
 
 

@@ -35,7 +35,7 @@ Honest positioning against the workflow frameworks teams actually evaluate. Read
 
 ## Don't use Temporaless if
 
-- You need **rich in-flight workflow interaction**: multi-signal channels with `select` semantics, query RPCs against running workflows, workflow update RPCs, child workflows, history rewinding to arbitrary points. Use **Temporal**. (We provide `temporalcompat` adapters for incremental migration in either direction.)
+- You need **rich in-flight workflow interaction**: multi-signal channels with `select` semantics, query RPCs against running workflows, workflow update RPCs, child workflows, history rewinding to arbitrary points. Use **Temporal**. The `temporalcompat` adapters run Temporaless-shaped handlers on the real Temporal SDK; they do not emulate these features on Temporaless storage.
 - You need **sub-second timer accuracy**. Our timer-scanner cadence is ~1 minute (set by your CronJob). Temporal pushes timer events from the server; ours polls.
 - You think in **assets and lineage**, not workflows. A "compute artifact X from Y" mental model with first-class type system and asset metadata is **Dagster**'s job.
 - You want a **visual builder** for non-engineers to compose flows. **n8n** or **Zapier**.
@@ -54,7 +54,7 @@ We **both** support long-running durable workflows. A workflow that sleeps 7 day
 - **Sub-second timer accuracy.** Their server pushes timer events; ours polls (typically every minute). Fine for quant/ML cadences, wrong for HFT or sub-second SLAs.
 - **History rewinding to arbitrary points.** Reset to event N. We can delete record-by-record to reset specific boundaries, but not point-in-time replay of an in-flight workflow.
 
-The cost of all that is operating the Temporal cluster (frontend + matching + history + worker, with Postgres or Cassandra). We deliberately don't try to compete on multi-actor orchestration patterns — but we **do** support long-running workflows. A 7-day approval workflow with one yes/no signal works identically in both. A 30-day support escalation with five signal channels and a query API for the dashboard is Temporal's job.
+The cost of all that is operating the Temporal cluster (frontend + matching + history + worker, with Postgres or Cassandra). We deliberately don't try to compete on multi-actor orchestration patterns—but we **do** support long-running workflows. A 7-day approval workflow with one yes/no event fits Temporaless, with timer/event records and scanner-driven redelivery rather than Temporal's pushed history semantics. A 30-day support escalation with five signal channels and a query API for the dashboard is Temporal's job.
 
 ### Prefect
 
@@ -82,7 +82,7 @@ These would all be reasonable additions; we've chosen not to:
 - **A scheduler service.** The cron scheduler is a Python class you call from a Kubernetes CronJob or a `while true: tick(); sleep(60s)` loop. There's no scheduler binary.
 - **A control plane.** No "register a workflow definition" step. The decorator IS the registration.
 - **An asset / lineage system.** Use Dagster.
-- **Workflow query / update / signal-channel RPCs.** These are Temporal's conceptual model. Use Temporal or `temporalcompat` if you need them.
+- **Workflow query / update / signal-channel RPCs.** These are Temporal's conceptual model. Use a native Temporal workflow if you need them; `temporalcompat` deliberately does not emulate them.
 - **A graphical workflow editor.** Use n8n or Zapier.
 
 ## Data-pipelining patterns (Airflow / Luigi / Dagster / Prefect)
@@ -120,11 +120,11 @@ If your pipelining needs are **lineage-aware** (Dagster's whole identity) or **v
 
 ## Migration paths
 
-- **From Temporal**: workflows that don't use signal-channels, queries, or child workflows port cleanly. `adapters/{go,py}/temporalcompat` lets you run either direction (Temporaless-shaped handlers on the real Temporal SDK, or in the future, Temporal handlers on Temporaless storage).
+- **From Temporal**: unary protobuf activity/business bodies that do not call Temporal APIs can stay unchanged. Workflow orchestration still needs a mechanical rewrite for Temporaless activity dispatch, sleeps, events, and caller-owned IDs. `adapters/{go,py}/temporalcompat` is only the opposite, outbound direction: it runs Temporaless-shaped handlers on the real Temporal SDK.
 - **From Prefect**: their `@flow` / `@task` model is conceptually similar to the `adapters/py/connectworkflow` decorator plus core `execute_activity`. Rewriting decorators is mechanical; storage cutover is the harder part.
 - **From Airflow**: each task becomes an activity; the DAG body becomes a workflow body composed with `await`. `dag_run.conf` parameters become the protobuf request message. Pools become `asyncio.Semaphore`. The scheduler service becomes a `cronscheduler.Scheduler` you tick from a Kubernetes CronJob.
 - **From Luigi**: each `Task.run()` becomes an activity; output `Target` becomes a stored protobuf record. Luigi's `requires()` chain becomes regular `await` in the workflow body.
-- **From Dagster**: if your assets are simple "fetch → transform → persist" without complex lineage, the asset DAG flattens into a workflow with N parallel activities. If your asset graph is rich, you probably shouldn't migrate.
+- **From Dagster**: if your assets are simple "fetch → transform → persist" without complex lineage, the asset DAG can be rewritten as a workflow with N parallel activities. If Dagster remains the control plane, invoke the canonical Temporaless application RPC across a process boundary; current Dagster and Temporaless protobuf runtime requirements cannot share one supported Python environment. If your asset graph is rich, you probably should not migrate.
 - **From n8n**: your nodes become activities; your trigger node becomes the gRPC handler. This is a rewrite, not a port — the no-code surface is gone.
 
 ## What "modern common cases" means here
