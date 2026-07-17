@@ -25,9 +25,10 @@ lockstep policy.
 
 ### Fixed
 
-- Rust Git-install CI now retries clean consumer initialization as well as
-  dependency resolution and compilation, so a transient runner bootstrap
-  failure cannot bypass the bounded retry policy.
+- Rust Git-source CI now checks out the exact immutable commit from the local
+  bare origin and compiles every target against the repository's committed
+  lockfile. This preserves the Git distribution boundary without introducing
+  a fresh, externally mutable registry resolution into the release gate.
 
 ### Upgrade notes
 
