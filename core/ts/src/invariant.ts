@@ -64,9 +64,12 @@ export type TemporalessInvariantServerOptions = {
   includeQuery?: boolean;
   /**
    * Include mutation, claim-coordination, timer-repair, retention, and delete
-   * methods. Defaults to false so an ordinary MCP/CLI projection is
-   * inspection-only. Enabling this requires an operator-scoped backend
-   * credential and an authenticated inbound boundary.
+   * methods in optional MCP, CLI, HTTP/Connect, and tool-catalog projections.
+   * Defaults to false so those projections are inspection-only. This is not a
+   * native-gRPC authorization control: `Server.grpcServer()` exposes the
+   * registered native service surface and must be secured independently.
+   * Enabling this option requires an operator-scoped backend credential and an
+   * authenticated inbound boundary.
    */
   includeOperatorMethods?: boolean;
 };

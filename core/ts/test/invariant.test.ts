@@ -1,3 +1,5 @@
+import { createServer as createNodeServer } from "node:http";
+
 import { describe, expect, it } from "vitest";
 import {
   TEMPORALESS_RECORD_QUERY_SERVICE,
@@ -56,6 +58,41 @@ describe("Temporaless invariantprotocol integration", () => {
     expect(names).toContain("RecordStoreService.DueTimers");
     expect(names).toContain("RecordStoreService.DeleteRun");
     expect(names).toContain("RecordQueryService.Sweep");
+  });
+
+  it("does not serve operator methods through the default HTTP projection", async () => {
+    const server = createTemporalessInvariantHttpProxy("https://temporaless.example");
+    const handler = server.httpHandler();
+    const nodeServer = createNodeServer((request, response) => {
+      void handler(request, response);
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        nodeServer.once("error", reject);
+        nodeServer.listen(0, "127.0.0.1", resolve);
+      });
+      const address = nodeServer.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("HTTP projection did not bind a TCP port");
+      }
+
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/${TEMPORALESS_RECORD_STORE_SERVICE}/PutWorkflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        },
+      );
+
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({ code: "not_found" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        nodeServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("can scope invariant projection to query services only", () => {

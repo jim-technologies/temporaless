@@ -84,6 +84,13 @@ console.log(await runCli(server, ["RecordQueryService", "ListWorkflows"]));
 The default catalog is inspection-only. It includes point reads, run-scoped
 lists, and query reads, but excludes record writes, claim creation/deletion,
 point-store `DueTimers` repair, retention `Sweep`, and all delete RPCs.
+The same filter governs the optional MCP, CLI, and HTTP/Connect projections.
+
+`includeOperatorMethods` is not native-gRPC authorization. Invariant's
+`server.grpcServer()` exposes the registered native service surface regardless
+of projection filters. Do not expose that server expecting the default catalog
+to make it read-only; use separate native-gRPC authentication and per-RPC
+authorization, or avoid serving native gRPC from this facade.
 
 Operator methods require an explicit opt-in:
 
@@ -101,7 +108,7 @@ const operatorServer = createTemporalessInvariantHttpProxy(
 );
 ```
 
-That opt-in is intentionally dangerous. Use a narrowly scoped backend
+That projection opt-in is intentionally dangerous. Use a narrowly scoped backend
 credential, authenticate and authorize the inbound MCP/HTTP/CLI boundary, and
 do not expose the operator catalog to untrusted users or a general-purpose
 agent. The outbound `auth` option authenticates the proxy to ConnectRPC; it

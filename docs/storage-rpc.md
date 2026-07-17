@@ -50,7 +50,10 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
   into MCP, CLI, HTTP/Connect, and descriptor-backed tool catalogs. Its default
   catalog is read-only; mutations, point-store timer repair, retention sweeps,
   and deletes require `includeOperatorMethods: true` plus an authenticated,
-  least-privilege operator boundary. It is not a workflow runtime.
+  least-privilege operator boundary. This option filters those projections; it
+  does not authorize a native gRPC server created from the same Invariant
+  object. Native gRPC requires separate authentication and per-RPC
+  authorization. It is not a workflow runtime.
 - The protobuf definitions and generated request/response types live under `api/temporaless/v1`.
 
 ## Core Surface

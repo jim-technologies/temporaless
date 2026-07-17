@@ -13,6 +13,28 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-07-16
+
+### Changed
+
+- The lockstep repository version is now 0.7.1.
+- Invariant Protocol is pinned to the immutable v0.7.1 commit. Temporaless now
+  inherits its stricter MCP validation, absolute Connect deadlines and
+  disconnect cancellation, bounded responses, preserved rich errors and
+  metadata, and corrected remote-service reflection. The server, projection,
+  registration, and tool-catalog APIs used by Temporaless remain compatible.
+
+### Upgrade notes
+
+- There are no Temporaless protobuf, storage, Go, Python, or runtime API
+  migrations in this patch. Git consumers only need to repin Temporaless.
+- TypeScript callers constructing the re-exported `JsonRpcRequest` must omit
+  `id` for notifications instead of setting it to `null`, matching strict MCP
+  JSON-RPC request semantics.
+- `includeOperatorMethods` filters MCP, CLI, HTTP/Connect, and tool-catalog
+  projections; it is not native-gRPC authorization. Secure any native gRPC
+  server separately with per-RPC authorization.
+
 ## [0.7.0] — 2026-07-16
 
 ### Added
