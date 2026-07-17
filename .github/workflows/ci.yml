@@ -289,11 +289,12 @@ jobs:
           set -euo pipefail
           consumer="$RUNNER_TEMP/rust-git-install"
           for attempt in 1 2 3; do
-            rm -rf "$consumer"
-            cargo init --lib --name temporaless_install_check "$consumer"
             if (
-              cd "$consumer"
-              cargo add temporaless \
+              rm -rf "$consumer" &&
+                cargo init --vcs none --lib \
+                  --name temporaless_install_check "$consumer" &&
+                cd "$consumer" &&
+                cargo add temporaless \
                 --git "file://${TEMPORALESS_GIT_REPO}" \
                 --rev "$TEMPORALESS_GIT_SHA" &&
                 cargo check --locked

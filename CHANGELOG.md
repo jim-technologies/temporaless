@@ -23,6 +23,12 @@ lockstep policy.
   Temporaless remain compatible; the reported Invariant server version is now
   0.8.0.
 
+### Fixed
+
+- Rust Git-install CI now retries clean consumer initialization as well as
+  dependency resolution and compilation, so a transient runner bootstrap
+  failure cannot bypass the bounded retry policy.
+
 ### Upgrade notes
 
 - There are no Temporaless runtime, protobuf, storage, or SDK API changes from
