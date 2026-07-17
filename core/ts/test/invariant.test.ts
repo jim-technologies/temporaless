@@ -8,9 +8,12 @@ import {
   TEMPORALESS_RECORD_STORE_SERVICE,
   TEMPORALESS_READ_ONLY_QUERY_METHODS,
   TEMPORALESS_READ_ONLY_STORE_METHODS,
+  MCP_PROTOCOL_VERSION,
   createTemporalessInvariantHttpProxy,
   createTemporalessInvariantServer,
   registerTemporalessInvariantServices,
+  runCli,
+  serveMcpStdio,
   temporalessDescriptorBytes,
 } from "../src/invariant.js";
 
@@ -189,6 +192,107 @@ describe("Temporaless invariantprotocol integration", () => {
     });
 
     expect(response.found).toBe(false);
+  });
+
+  it("executes a registered Temporaless service through the CLI projection", async () => {
+    const server = createTemporalessInvariantServer({ includeQuery: false });
+    let observedWorkflowId: string | undefined;
+    registerTemporalessInvariantServices(server, {
+      recordStore: {
+        getWorkflow(request) {
+          observedWorkflowId = request.key?.workflowId;
+          return { found: true };
+        },
+      },
+    });
+
+    const output = await runCli(server, [
+      "RecordStoreService",
+      "GetWorkflow",
+      "-r",
+      JSON.stringify({
+        key: {
+          namespace: "default",
+          workflowId: "prices:aapl",
+          runId: "2026-07-17T00:00:00Z",
+        },
+      }),
+    ]);
+
+    expect(observedWorkflowId).toBe("prices:aapl");
+    expect(JSON.parse(output)).toEqual({ found: true });
+  });
+
+  it("serves the filtered Temporaless projection over MCP stdio", async () => {
+    const server = createTemporalessInvariantServer({ includeQuery: false });
+    let observedWorkflowId: string | undefined;
+    registerTemporalessInvariantServices(server, {
+      recordStore: {
+        getWorkflow(request) {
+          observedWorkflowId = request.key?.workflowId;
+          return { found: true };
+        },
+      },
+    });
+
+    const requests = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "temporaless-test", version: "1.0.0" },
+        },
+      },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "RecordStoreService.GetWorkflow",
+          arguments: {
+            key: {
+              namespace: "default",
+              workflowId: "prices:msft",
+              runId: "2026-07-17T00:00:00Z",
+            },
+          },
+        },
+      },
+    ];
+    async function* input(): AsyncIterable<string> {
+      yield `${requests.map((request) => JSON.stringify(request)).join("\n")}\n`;
+    }
+    const output: string[] = [];
+
+    await serveMcpStdio(server, input(), {
+      write(chunk) {
+        output.push(chunk);
+      },
+    });
+
+    const responses = output
+      .join("")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const byId = new Map(responses.map((response) => [response.id, response]));
+
+    expect(byId.get(1)?.result).toMatchObject({
+      protocolVersion: MCP_PROTOCOL_VERSION,
+    });
+    const toolNames = byId
+      .get(2)
+      ?.result.tools.map((tool: { name: string }) => tool.name);
+    expect(toolNames).toContain("RecordStoreService.GetWorkflow");
+    expect(toolNames).not.toContain("RecordStoreService.PutWorkflow");
+    expect(observedWorkflowId).toBe("prices:msft");
+    expect(JSON.parse(byId.get(3)?.result.content[0].text)).toEqual({
+      found: true,
+    });
   });
 
   it("rejects empty generated service registration", () => {
