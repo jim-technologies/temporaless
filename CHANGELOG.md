@@ -13,6 +13,67 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-07-17
+
+### Added
+
+- TypeScript integration coverage now executes generated Temporaless service
+  implementations through the real Invariant Protocol CLI and MCP stdio
+  projections, including MCP initialization, filtered tool discovery, and a
+  protobuf request/response call.
+- Cross-language Rust tests now inspect Rust-authored workflow and activity
+  records and reject replay records whose protobuf `Any` type URL does not
+  match the declared response message.
+- Dispatcher lifecycle coverage now exercises repeated and concurrent
+  shutdown, external producer flush failures, and submissions already active
+  when shutdown begins.
+
+### Changed
+
+- The lockstep repository version is now 0.8.2.
+- Invariant Protocol is pinned to the immutable v0.8.3 commit
+  `e1fb753ae72b0eb33f9de00fe319a1a2ab55dffd`. Its main and annotated-tag
+  release gates are green, and Temporaless now inherits its stricter
+  descriptor validation, cross-runtime hardening, and deterministic outbound
+  deadline ownership.
+- Active operator documentation now describes `cmd/temporaless` as the
+  deliberately local-filesystem CLI it is; production cloud operation remains
+  behind authenticated RecordStore/RecordQuery clients or generated remote
+  tooling.
+
+### Fixed
+
+- Rust now writes canonical protobuf `Any` URLs using the descriptor full name
+  and validates stored result URLs before workflow or activity replay. Records
+  authored in Rust are therefore consumable by Go and Python without a
+  shortened Rust-only message name.
+- Go, Python, and Rust dispatch shutdown now closes an external queue exactly
+  once so buffered sends and producer resources are not abandoned. Repeated or
+  concurrent shutdown shares one finalization path, and queue-close failures
+  cannot bypass handler draining. All three SDKs account for producer
+  submissions admitted before shutdown and report sends that remain blocked
+  after queue close.
+- Go dispatcher shutdown is genuinely idempotent; repeated calls no longer
+  risk closing the tracker stop channel twice.
+
+### Upgrade notes
+
+- Every Go, Python, Rust, and TypeScript Temporaless consumer must repin to the
+  new repository tag or commit; all SDKs and adapters continue to share one
+  release version.
+- Custom dispatcher queues should expect `Close` / `close` to be invoked once
+  during shutdown and must make overlap with an already-admitted producer send
+  safe. Go queues must honor the shutdown context and release blocked `Submit`
+  calls; Python and Rust queue close is bounded by `drain_timeout`, and their
+  close implementations must be cancellation-safe.
+- Experimental Rust records authored by v0.8.1 or earlier used shortened
+  `Any.type_url` values. v0.8.2 fails closed when replaying those noncanonical
+  results; drain/export them with the old SDK or reset and recompute the
+  affected Rust-authored workflow/activity record. Go/Python-authored records
+  already used canonical URLs.
+- There is no protobuf schema, storage-key, or first-class Go/Python workflow
+  API migration in this release.
+
 ## [0.8.1] — 2026-07-17
 
 ### Added

@@ -18,7 +18,9 @@ use prost::{Message, Name};
 use tempfile::TempDir;
 use temporaless::storage::{ActivityKey, OpenDALStore, Store, WorkflowKey, proto_timestamp};
 use temporaless::v1;
-use temporaless::workflow::{Workflow, WorkflowOptions, run};
+use temporaless::workflow::{
+    ActivityError, ActivityOptions, RunError, Workflow, WorkflowOptions, execute_activity, run,
+};
 
 fn new_store() -> (TempDir, OpenDALStore) {
     let tmp = TempDir::new().unwrap();
@@ -250,6 +252,153 @@ async fn rust_replays_python_authored_workflow_record() {
         .await
         .expect("replay should succeed");
     assert_eq!(result.value, "normalized:AAPL");
+}
+
+/// Rust-authored records must be directly consumable by Go/Python. In
+/// particular, every Any uses the protobuf descriptor full name rather than
+/// Rust's short type name.
+#[tokio::test]
+async fn rust_authored_records_use_canonical_any_type_urls() {
+    let (_tmp, store) = new_store();
+    let store = Arc::new(store);
+    let options = WorkflowOptions::new("prices:aapl", "rust-authored").with_code_version("v1");
+
+    let result: TestStringValue = run(
+        store.clone(),
+        options,
+        ts("AAPL"),
+        |_workflow, input| async move {
+            execute_activity(
+                ActivityOptions::new("fetch"),
+                input,
+                |request: TestStringValue| async move {
+                    Ok::<TestStringValue, ActivityError>(ts(&format!(
+                        "normalized:{}",
+                        request.value
+                    )))
+                },
+            )
+            .await
+        },
+    )
+    .await
+    .expect("fresh Rust-authored workflow should complete");
+    assert_eq!(result.value, "normalized:AAPL");
+
+    let expected = "type.googleapis.com/google.protobuf.StringValue";
+    let workflow = store
+        .get_workflow(&WorkflowKey::new("prices:aapl", "rust-authored"))
+        .await
+        .unwrap()
+        .expect("workflow record");
+    assert_eq!(workflow.input.as_ref().unwrap().type_url, expected);
+    assert_eq!(workflow.result.as_ref().unwrap().type_url, expected);
+
+    let activity = store
+        .get_activity(&ActivityKey::new("prices:aapl", "rust-authored", "fetch"))
+        .await
+        .unwrap()
+        .expect("activity record");
+    assert_eq!(activity.input.as_ref().unwrap().type_url, expected);
+    assert_eq!(activity.result.as_ref().unwrap().type_url, expected);
+}
+
+#[tokio::test]
+async fn rust_rejects_replayed_result_with_wrong_any_type_url() {
+    let (_tmp, store) = new_store();
+    let store = Arc::new(store);
+    let key = WorkflowKey::new("prices:aapl", "wrong-type-url");
+    let now = proto_timestamp(SystemTime::now());
+    store
+        .put_workflow(&v1::WorkflowRecord {
+            schema_version: v1::RecordSchemaVersion::Workflow as i32,
+            key: Some(key.to_proto()),
+            workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue"
+                .into(),
+            code_version: "v1".into(),
+            input: Some(prost_types::Any {
+                type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
+                value: encode_string_value("AAPL"),
+            }),
+            status: v1::WorkflowStatus::Completed as i32,
+            result: Some(prost_types::Any {
+                type_url: "type.googleapis.com/google.protobuf.Int32Value".into(),
+                // These bytes would decode as StringValue if replay ignored
+                // the Any type URL.
+                value: encode_string_value("not-an-int"),
+            }),
+            created_at: Some(now),
+            completed_at: Some(now),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let err = run::<TestStringValue, TestStringValue, _, _>(
+        store,
+        WorkflowOptions::new("prices:aapl", "wrong-type-url").with_code_version("v1"),
+        ts("AAPL"),
+        |_workflow, _input| async { panic!("body must not run for a completed workflow record") },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RunError::WorkflowConflict(ref message) if message.contains("type URL")),
+        "wrong Any type URL must be rejected, got {err:?}",
+    );
+}
+
+#[tokio::test]
+async fn rust_rejects_replayed_activity_result_with_wrong_any_type_url() {
+    let (_tmp, store) = new_store();
+    let store = Arc::new(store);
+    let now = proto_timestamp(SystemTime::now());
+    store
+        .put_activity(&v1::ActivityRecord {
+            schema_version: v1::RecordSchemaVersion::Activity as i32,
+            key: Some(
+                ActivityKey::new("prices:aapl", "wrong-activity-type-url", "fetch").to_proto(),
+            ),
+            activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue"
+                .into(),
+            code_version: "v1".into(),
+            input: Some(prost_types::Any {
+                type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
+                value: encode_string_value("AAPL"),
+            }),
+            status: v1::ActivityStatus::Completed as i32,
+            result: Some(prost_types::Any {
+                type_url: "type.googleapis.com/google.protobuf.Int32Value".into(),
+                value: encode_string_value("not-an-int"),
+            }),
+            created_at: Some(now),
+            completed_at: Some(now),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let err = run(
+        store,
+        WorkflowOptions::new("prices:aapl", "wrong-activity-type-url").with_code_version("v1"),
+        ts("AAPL"),
+        |_workflow, input| async move {
+            execute_activity(
+                ActivityOptions::new("fetch"),
+                input,
+                |request: TestStringValue| async move {
+                    Ok::<TestStringValue, ActivityError>(request)
+                },
+            )
+            .await
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, RunError::ActivityConflict(ref message) if message.contains("type URL")),
+        "wrong activity Any type URL must be rejected, got {err:?}",
+    );
 }
 
 // ---------------------------------------------------------------------------

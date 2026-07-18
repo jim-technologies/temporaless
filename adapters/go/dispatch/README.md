@@ -12,10 +12,10 @@ is lost. When you need durability across crashes, write a workflow
 instead — this package is for at-most-once + best-effort.
 
 **Managed graceful shutdown.** `Shutdown(ctx)` stops accepting new
-submissions, waits up to `DrainTimeout` (default 15s) for in-flight
-goroutines to finish, then cancels the per-handler context. Always waits
-for every goroutine to return — orphaning a handler mid-vendor-call is
-worse than waiting a few extra seconds for it to notice cancellation.
+submissions, gives admitted producer sends a bounded drain window, calls
+`Queue.Close` exactly once, and drains in-flight handler goroutines. Handlers
+still running after `DrainTimeout` (default 15s) receive context cancellation.
+Use a deadline on `ctx` as the overall shutdown bound.
 
 ```go
 import "github.com/jim-technologies/temporaless/adapters/go/dispatch"
@@ -126,6 +126,12 @@ off the bus and calls `dispatcher.Invoke(ctx, method, payload)`
 — which looks up the registered handler, unmarshals the bytes back into
 the typed `Req`, and runs the handler synchronously on the consumer
 goroutine. Use the returned error to drive your queue's ack / nack.
+
+On shutdown, already-admitted `Submit` calls get one `DrainTimeout` window to
+finish naturally. The dispatcher then calls `Close(ctx)` exactly once; `Close`
+must safely flush, release, or fail any producer send that is still blocked and
+must honor `ctx`. A submission that remains blocked after a second bounded
+window makes `Shutdown` return `ErrSubmissionDrainTimeout`.
 
 The framework intentionally doesn't ship Kafka / Rabbit adapters — each
 has its own connection management, consumer-group semantics, and

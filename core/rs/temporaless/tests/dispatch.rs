@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use prost::Message;
 use prost_types::Duration as ProtoDuration;
-use temporaless::dispatch::{DispatchError, Dispatcher, DispatcherOptions};
+use temporaless::dispatch::{DispatchError, Dispatcher, DispatcherOptions, Queue};
 use temporaless::v1;
 use tokio::sync::Notify;
 
@@ -436,7 +436,6 @@ async fn invoke_unknown_method() {
 #[tokio::test]
 async fn custom_queue_receives_submission() {
     use async_trait::async_trait;
-    use temporaless::dispatch::Queue;
 
     // A test Queue that captures (method, payload) without running the
     // handler. The contract Kafka/Rabbit/SQS adapters follow.
@@ -486,4 +485,304 @@ async fn custom_queue_receives_submission() {
     // share the wire format.
     let decoded = StringValue::decode(cap[0].1.as_slice()).unwrap();
     assert_eq!(decoded.value, "payload");
+}
+
+struct ShutdownQueue {
+    close_calls: AtomicUsize,
+    close_started: Option<Arc<Notify>>,
+    close_release: Option<Arc<Notify>>,
+}
+
+#[async_trait::async_trait]
+impl Queue for ShutdownQueue {
+    async fn submit(
+        &self,
+        _method: &str,
+        _payload: &[u8],
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        self.close_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(started) = &self.close_started {
+            started.notify_one();
+        }
+        if let Some(release) = &self.close_release {
+            release.notified().await;
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn repeated_shutdown_closes_queue_once() {
+    let queue = Arc::new(ShutdownQueue {
+        close_calls: AtomicUsize::new(0),
+        close_started: None,
+        close_release: None,
+    });
+    let dispatcher = Dispatcher::new(DispatcherOptions {
+        queue: Some(queue.clone()),
+        ..Default::default()
+    });
+
+    dispatcher.shutdown().await;
+    dispatcher.shutdown().await;
+
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_shutdown_closes_queue_once() {
+    let close_started = Arc::new(Notify::new());
+    let close_release = Arc::new(Notify::new());
+    let queue = Arc::new(ShutdownQueue {
+        close_calls: AtomicUsize::new(0),
+        close_started: Some(close_started.clone()),
+        close_release: Some(close_release.clone()),
+    });
+    let dispatcher = Arc::new(Dispatcher::new(DispatcherOptions {
+        queue: Some(queue.clone()),
+        ..Default::default()
+    }));
+
+    let first_dispatcher = dispatcher.clone();
+    let first = tokio::spawn(async move {
+        first_dispatcher.shutdown().await;
+    });
+    close_started.notified().await;
+
+    let second_dispatcher = dispatcher.clone();
+    let second = tokio::spawn(async move {
+        second_dispatcher.shutdown().await;
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(
+        queue.close_calls.load(Ordering::SeqCst),
+        1,
+        "the concurrent finalizer must wait instead of closing again"
+    );
+
+    close_release.notify_one();
+    first.await.unwrap();
+    second.await.unwrap();
+    dispatcher.shutdown().await;
+
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancelled_shutdown_waiter_does_not_cancel_queue_close() {
+    let close_started = Arc::new(Notify::new());
+    let close_release = Arc::new(Notify::new());
+    let queue = Arc::new(ShutdownQueue {
+        close_calls: AtomicUsize::new(0),
+        close_started: Some(close_started.clone()),
+        close_release: Some(close_release.clone()),
+    });
+    let dispatcher = Arc::new(Dispatcher::new(DispatcherOptions {
+        proto: Some(drain_opts(Duration::from_secs(2))),
+        queue: Some(queue.clone()),
+        ..Default::default()
+    }));
+
+    let first_dispatcher = dispatcher.clone();
+    let first = tokio::spawn(async move {
+        first_dispatcher.shutdown().await;
+    });
+    close_started.notified().await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+
+    let second_dispatcher = dispatcher.clone();
+    let second = tokio::spawn(async move {
+        second_dispatcher.shutdown().await;
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !second.is_finished(),
+        "later shutdown must share the still-running queue finalizer"
+    );
+
+    close_release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), second)
+        .await
+        .expect("shared queue close should finish")
+        .unwrap();
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+}
+
+struct BlockedSubmitQueue {
+    submit_started: Arc<Notify>,
+    submit_release: Arc<Notify>,
+    close_started: Arc<Notify>,
+    close_calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Queue for BlockedSubmitQueue {
+    async fn submit(
+        &self,
+        _method: &str,
+        _payload: &[u8],
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        self.submit_started.notify_one();
+        self.submit_release.notified().await;
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        self.close_calls.fetch_add(1, Ordering::SeqCst);
+        self.close_started.notify_one();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn shutdown_waits_after_close_for_admitted_external_submission() {
+    let submit_started = Arc::new(Notify::new());
+    let submit_release = Arc::new(Notify::new());
+    let close_started = Arc::new(Notify::new());
+    let queue = Arc::new(BlockedSubmitQueue {
+        submit_started: submit_started.clone(),
+        submit_release: submit_release.clone(),
+        close_started: close_started.clone(),
+        close_calls: AtomicUsize::new(0),
+    });
+    let dispatcher = Arc::new(Dispatcher::new(DispatcherOptions {
+        proto: Some(drain_opts(Duration::from_millis(25))),
+        queue: Some(queue.clone()),
+        ..Default::default()
+    }));
+    dispatcher.register::<StringValue, _, _>("/x/BlockedSubmit", |_| async {
+        Ok::<(), Box<dyn StdError + Send + Sync>>(())
+    });
+
+    let submit_dispatcher = dispatcher.clone();
+    let submit = tokio::spawn(async move {
+        submit_dispatcher
+            .do_async("/x/BlockedSubmit", sv("payload"))
+            .await
+    });
+    submit_started.notified().await;
+
+    let shutdown_dispatcher = dispatcher.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_dispatcher.shutdown().await;
+    });
+    close_started.notified().await;
+    tokio::task::yield_now().await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown returned while an admitted Queue::submit was still active"
+    );
+
+    submit_release.notify_one();
+    submit.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("shutdown should finish once the admitted submit returns")
+        .unwrap();
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn stuck_external_submission_is_bounded_and_reported() {
+    let submit_started = Arc::new(Notify::new());
+    let submit_release = Arc::new(Notify::new());
+    let close_started = Arc::new(Notify::new());
+    let queue = Arc::new(BlockedSubmitQueue {
+        submit_started: submit_started.clone(),
+        submit_release,
+        close_started,
+        close_calls: AtomicUsize::new(0),
+    });
+    let errors = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let errors_for_hook = errors.clone();
+    let dispatcher = Arc::new(Dispatcher::new(DispatcherOptions {
+        proto: Some(drain_opts(Duration::from_millis(25))),
+        queue: Some(queue.clone()),
+        on_error: Some(Arc::new(move |method, err| {
+            errors_for_hook
+                .lock()
+                .unwrap()
+                .push((method.to_string(), err.to_string()));
+        })),
+    }));
+    dispatcher.register::<StringValue, _, _>("/x/StuckSubmit", |_| async {
+        Ok::<(), Box<dyn StdError + Send + Sync>>(())
+    });
+
+    let submit_dispatcher = dispatcher.clone();
+    let submit = tokio::spawn(async move {
+        submit_dispatcher
+            .do_async("/x/StuckSubmit", sv("payload"))
+            .await
+    });
+    submit_started.notified().await;
+
+    tokio::time::timeout(Duration::from_secs(1), dispatcher.shutdown())
+        .await
+        .expect("a broken queue must not hang shutdown forever");
+    assert!(
+        !submit.is_finished(),
+        "fixture submission should still be stuck after queue close"
+    );
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+    {
+        let errors = errors.lock().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, "<queue-submit>");
+        assert!(
+            errors[0]
+                .1
+                .contains("queue submissions remained active after post-close drain timeout"),
+            "unexpected submission timeout: {}",
+            errors[0].1
+        );
+    }
+
+    submit.abort();
+    assert!(submit.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn queue_close_timeout_is_bounded_and_reported_once() {
+    let close_release = Arc::new(Notify::new());
+    let queue = Arc::new(ShutdownQueue {
+        close_calls: AtomicUsize::new(0),
+        close_started: None,
+        close_release: Some(close_release),
+    });
+    let errors = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let errors_for_hook = errors.clone();
+    let dispatcher = Dispatcher::new(DispatcherOptions {
+        proto: Some(drain_opts(Duration::from_millis(25))),
+        queue: Some(queue.clone()),
+        on_error: Some(Arc::new(move |method, err| {
+            errors_for_hook
+                .lock()
+                .unwrap()
+                .push((method.to_string(), err.to_string()));
+        })),
+    });
+
+    let started = Instant::now();
+    dispatcher.shutdown().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "queue close must be bounded by drain_timeout"
+    );
+    dispatcher.shutdown().await;
+
+    assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+    let errors = errors.lock().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].0, "<queue-close>");
+    assert!(
+        errors[0].1.contains("queue close exceeded drain timeout"),
+        "unexpected close timeout: {}",
+        errors[0].1
+    );
 }

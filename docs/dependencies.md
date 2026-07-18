@@ -102,7 +102,7 @@ The npm package entry is at the repository root because npm git dependencies
 install from the repository package root; TypeScript source remains under
 `core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
 `core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
-backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.8.1
+backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.8.3
 rather than a mutable branch. The root TypeScript export stays a lightweight
 generated-types + Connect-client surface. The facade uses Invariant's
 generated-service registration and unified Connect interceptor API.

@@ -113,8 +113,8 @@ a complete authorization model. Production deployments should authorize each
 RPC and give workflow runtimes and mutation-capable operators separate,
 least-privilege identities.
 
-The bundled `cmd/temporaless` operator CLI is a transitional local-filesystem
-tool and registers only OpenDAL `fs`. Operate cloud stores through
+The bundled `cmd/temporaless` operator CLI is deliberately local-filesystem
+only and registers only OpenDAL `fs`. Operate cloud stores through
 authenticated ConnectStore/RecordQueryService clients or generated remote
 operator tooling; the CLI intentionally does not bundle cloud drivers or
 credentials.

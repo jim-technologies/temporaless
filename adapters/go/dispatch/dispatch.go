@@ -79,9 +79,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// DefaultDrainTimeout is how long `Shutdown` waits for in-flight goroutines
-// to finish before cancelling their context. Chosen to match common SIGTERM
-// grace periods (Kubernetes preStop / terminationGracePeriodSeconds).
+// DefaultDrainTimeout is the per-phase bound `Shutdown` uses while draining
+// admitted producer submissions and in-flight handler goroutines. Chosen to
+// fit common SIGTERM grace periods when callers also put an overall deadline
+// on the shutdown context.
 const DefaultDrainTimeout = 15 * time.Second
 
 // DefaultTaskTTL is how long completed (DONE/FAILED) TaskInfo records stay
@@ -106,6 +107,12 @@ var ErrUnknownMethod = errors.New("no handler registered for method")
 // is not the type the registered handler expects. Recovers from gRPC method
 // name typos that happen to collide.
 var ErrTypeMismatch = errors.New("request type does not match registered handler")
+
+// ErrSubmissionDrainTimeout is returned by Shutdown when an external Queue
+// still has a producer Submit call in progress after Queue.Close has returned
+// and a second DrainTimeout window has elapsed. Queue implementations should
+// make Close release or fail outstanding Submit calls.
+var ErrSubmissionDrainTimeout = errors.New("dispatch submissions did not drain")
 
 // Options configures a `Dispatcher`. The serializable knobs
 // (`DrainTimeout`, `MaxInflight`) live in the proto-declared
@@ -137,9 +144,10 @@ type Options struct {
 }
 
 // Dispatcher is a goroutine pool keyed by gRPC-style method names. Submissions
-// route through `Queue` (default: in-process). Drain semantics apply only to
-// the in-process queue — external queue adapters own their own delivery and
-// retry semantics.
+// route through `Queue` (default: in-process). All queues get producer
+// admission, bounded Submit draining, and exactly one Close call. Handler
+// goroutine draining applies only to the in-process queue; external adapters
+// own their remote delivery, retry, and consumer lifecycles.
 type Dispatcher struct {
 	drainTimeout time.Duration
 	taskTTL      time.Duration
@@ -189,14 +197,20 @@ type Dispatcher struct {
 	// rejected from then on.
 	closed atomic.Bool
 
-	// submitMu serializes the "is the dispatcher closed?" check with
-	// `wg.Add(1)` so that no Add can land after Shutdown has begun calling
-	// `wg.Wait()`. Submit takes RLock for the full submission (multiple
-	// concurrent submits are fine); Shutdown takes the write Lock as a
-	// barrier AFTER signalling close+shutdownCh and BEFORE wg.Wait().
-	// Without this, the WaitGroup hits an Add-during-Wait data race that
-	// shows up under `go test -race -count=N`.
-	submitMu sync.RWMutex
+	// submitMu is a short admission lock. It serializes the final closed check
+	// with incrementing activeSubmissions, but is never held while Queue.Submit
+	// performs I/O. Shutdown snapshots submissionsDone after closing admission,
+	// then waits with shutdownCtx rather than blocking on an uninterruptible
+	// mutex. For the in-process queue, Submit returns only after wg.Add(1), so a
+	// drained submissionsDone is also the barrier that makes wg.Wait safe.
+	submitMu          sync.Mutex
+	activeSubmissions int
+	submissionsDone   chan struct{}
+
+	shutdownMu      sync.Mutex
+	shutdownStarted bool
+	shutdownDone    chan struct{}
+	shutdownErr     error
 }
 
 type handlerEntry struct {
@@ -243,6 +257,7 @@ func New(opts Options) *Dispatcher {
 		inflightCtx:    ctx,
 		inflightCancel: cancel,
 		shutdownCh:     make(chan struct{}),
+		shutdownDone:   make(chan struct{}),
 		gcStop:         make(chan struct{}),
 		gcDone:         make(chan struct{}),
 	}
@@ -356,6 +371,18 @@ func (d *Dispatcher) DoAsync(ctx context.Context, method string, req proto.Messa
 	}
 	taskID := newTaskID()
 	d.markPending(taskID, method)
+	d.submitMu.Lock()
+	if d.closed.Load() {
+		d.submitMu.Unlock()
+		d.markFailed(taskID, ErrShuttingDown)
+		return "", ErrShuttingDown
+	}
+	d.activeSubmissions++
+	if d.activeSubmissions == 1 {
+		d.submissionsDone = make(chan struct{})
+	}
+	d.submitMu.Unlock()
+	defer d.finishSubmission()
 	if err := d.queue.Submit(ctx, method, taskID, payload); err != nil {
 		// Submission rejected — surface as a FAILED record so a caller
 		// polling Status doesn't see PENDING forever.
@@ -516,35 +543,76 @@ func typeMatches(got, expected proto.Message) bool {
 		expected.ProtoReflect().Descriptor().FullName()
 }
 
-// Shutdown stops accepting new submissions, waits up to `DrainTimeout` for
-// in-flight goroutines to finish, then cancels their context to signal
-// cooperative cancellation. Blocks until every goroutine has returned OR
-// `shutdownCtx` is itself cancelled — whichever comes first.
+// Shutdown stops accepting new submissions, gives admitted Queue.Submit calls
+// a bounded drain window, closes the queue exactly once, then drains in-flight
+// handler goroutines. Handlers still running after `DrainTimeout` receive
+// cooperative context cancellation. The caller's `shutdownCtx` is the overall
+// bound for every phase.
 //
 // Returns `context.DeadlineExceeded` (or whatever `shutdownCtx.Err()`
 // returns) if `shutdownCtx` cancelled before all goroutines drained.
 // Returns nil on clean drain.
 //
-// Calling `Shutdown` twice is safe; the second call observes the already-
-// cancelled state and returns immediately.
+// Calling `Shutdown` repeatedly or concurrently is safe. One caller performs
+// finalization; the rest wait for and receive that same result (unless their
+// own shutdownCtx is cancelled first).
 func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
-	// Phase A — signal: mark closed, wake any parked submitters. Done
-	// WITHOUT submitMu so parked submitters can wake and release their
-	// RLock before we try to take the write Lock as a barrier.
-	if !d.closed.Swap(true) {
-		close(d.shutdownCh)
+	d.shutdownMu.Lock()
+	if d.shutdownStarted {
+		done := d.shutdownDone
+		d.shutdownMu.Unlock()
+		select {
+		case <-done:
+			d.shutdownMu.Lock()
+			err := d.shutdownErr
+			d.shutdownMu.Unlock()
+			return err
+		case <-shutdownCtx.Done():
+			return shutdownCtx.Err()
+		}
 	}
-	// Phase B — barrier: take the write Lock once, then drop it. This
-	// blocks until every concurrent submit that started before our
-	// `closed.Swap(true)` has finished its `wg.Add(1)` (or bailed out).
-	// After we return, no further `wg.Add(1)` can happen, so the
-	// subsequent `wg.Wait()` inside waitDrain is race-free.
-	d.submitMu.Lock()
-	d.submitMu.Unlock() //nolint:staticcheck // intentional barrier-only lock
+	d.shutdownStarted = true
+	d.shutdownMu.Unlock()
+
+	err := d.shutdown(shutdownCtx)
+	d.shutdownMu.Lock()
+	d.shutdownErr = err
+	close(d.shutdownDone)
+	d.shutdownMu.Unlock()
+	return err
+}
+
+func (d *Dispatcher) shutdown(shutdownCtx context.Context) error {
+	// Phase A — signal: mark closed, wake any parked submitters. Done
+	// before taking the short admission lock so no later DoAsync can enter.
+	d.closed.Store(true)
+	close(d.shutdownCh)
+	// Phase B — give sends that were admitted before shutdown one bounded
+	// window to acknowledge naturally. Do not consume the caller's entire
+	// shutdown deadline here: Queue.Close may be the operation that releases
+	// a blocked Submit.
+	submissionsDrained := d.waitSubmissions(shutdownCtx, d.drainTimeout)
+
+	// Phase C — flush and close the producer while shutdownCtx still has its
+	// remaining budget. Queue.Close is called exactly once even when the
+	// initial submission window elapsed or the context is already cancelled.
+	closeErr := d.queue.Close(shutdownCtx)
+	if !submissionsDrained {
+		// A well-behaved external queue releases outstanding sends from Close.
+		// Give those calls one final bounded window, then surface an explicit
+		// error rather than hanging forever when shutdownCtx is Background.
+		submissionsDrained = d.waitSubmissions(shutdownCtx, d.drainTimeout)
+	}
+
+	var submissionErr error
+	if !submissionsDrained {
+		submissionErr = ErrSubmissionDrainTimeout
+	}
 
 	// Phase 1: best-effort drain. Wait for either the wg to clear or the
 	// drain timeout to elapse.
-	if !d.waitDrain(shutdownCtx, d.drainTimeout) {
+	handlersDrained := submissionsDrained && d.waitDrain(shutdownCtx, d.drainTimeout)
+	if !handlersDrained {
 		// Drain window expired — signal cancellation to running handlers
 		// so they can bail out cooperatively.
 		d.inflightCancel()
@@ -553,17 +621,18 @@ func (d *Dispatcher) Shutdown(shutdownCtx context.Context) error {
 	// Phase 2: wait for the rest unconditionally, bounded only by
 	// shutdownCtx. We never abandon goroutines — orphaning a handler
 	// mid-vendor-call is worse than waiting a few extra seconds.
-	drained := d.waitDrain(shutdownCtx, 0)
+	if submissionsDrained {
+		// Waiting on the WaitGroup is safe only after every admitted Submit
+		// has returned: the in-process Queue performs wg.Add inside Submit.
+		d.waitDrain(shutdownCtx, 0)
+	}
 
 	// Phase 3: stop the tracker GC. Done last so any handlers that flipped
 	// tasks to DONE/FAILED during drain have already updated the map.
 	close(d.gcStop)
 	<-d.gcDone
 
-	if !drained {
-		return shutdownCtx.Err()
-	}
-	return nil
+	return errors.Join(submissionErr, shutdownCtx.Err(), closeErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -596,10 +665,12 @@ type Queue interface {
 	// implementations should propagate it alongside the payload (e.g.
 	// as a message header or attribute) so consumers can correlate.
 	Submit(ctx context.Context, method, taskID string, payload []byte) error
-	// Close releases any resources held by the queue. Called by
-	// `Dispatcher.Shutdown` after the drain. In-process queues use this
-	// to drain spawned goroutines; external queues should flush any
-	// pending sends and close producer connections.
+	// Close releases any resources held by the queue. Dispatcher.Shutdown
+	// calls it exactly once after a bounded wait for admitted Submit calls;
+	// if a Submit is still blocked, Close must safely release or fail it.
+	// External queues should flush pending sends and close producer
+	// connections. The in-process queue is a no-op because the dispatcher
+	// drains its handler goroutines separately.
 	Close(ctx context.Context) error
 }
 
@@ -611,14 +682,6 @@ type inProcessQueue struct {
 
 func (q *inProcessQueue) Submit(ctx context.Context, method, taskID string, payload []byte) error {
 	d := q.d
-
-	// The submitMu RLock acts as the happens-before barrier between
-	// `wg.Add(1)` and the `wg.Wait()` in Shutdown. Held for the entire
-	// submission — including the optional semaphore wait — so any submit
-	// that's parked on the slot signal is part of the "in-flight" set
-	// Shutdown waits to clear before flipping `closed` for good.
-	d.submitMu.RLock()
-	defer d.submitMu.RUnlock()
 
 	if d.closed.Load() {
 		return ErrShuttingDown
@@ -664,6 +727,45 @@ func (q *inProcessQueue) Close(context.Context) error {
 	// The dispatcher's Shutdown owns the wg-drain; nothing extra to do
 	// for the in-process backend.
 	return nil
+}
+
+func (d *Dispatcher) finishSubmission() {
+	d.submitMu.Lock()
+	defer d.submitMu.Unlock()
+	d.activeSubmissions--
+	if d.activeSubmissions == 0 {
+		close(d.submissionsDone)
+		d.submissionsDone = nil
+	}
+}
+
+// waitSubmissions waits for every Queue.Submit admitted before Shutdown.
+// timeout <= 0 means only shutdownCtx bounds the wait.
+func (d *Dispatcher) waitSubmissions(shutdownCtx context.Context, timeout time.Duration) bool {
+	d.submitMu.Lock()
+	done := d.submissionsDone
+	d.submitMu.Unlock()
+	if done == nil {
+		return true
+	}
+	if timeout <= 0 {
+		select {
+		case <-done:
+			return true
+		case <-shutdownCtx.Done():
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	case <-shutdownCtx.Done():
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------

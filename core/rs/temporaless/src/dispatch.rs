@@ -39,6 +39,11 @@
 //! 3. **Final wait**: continue draining until every task has returned.
 //!    Never abandon a task — orphaning a handler mid-vendor-call is worse
 //!    than waiting a few extra seconds for it to notice cancellation.
+//! 4. **Producer drain + close**: give admitted external submissions one
+//!    drain window, close the producer exactly once in an owned task, then
+//!    give admitted submissions a final drain window. Close failures and
+//!    timeouts flow through [`DispatcherOptions::on_error`] under stable
+//!    `"<queue-close>"` and `"<queue-submit>"` labels.
 //!
 //! # Usage
 //!
@@ -81,8 +86,9 @@
 //! # }
 //! ```
 //!
-//! Handler errors flow through [`DispatcherOptions::on_error`] (default:
-//! log at WARN via `eprintln!` since we don't pull in a logging facade).
+//! Handler errors and external queue-close failures flow through
+//! [`DispatcherOptions::on_error`] (default: log at WARN via `eprintln!`
+//! since we don't pull in a logging facade).
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -90,7 +96,7 @@ use std::error::Error as StdError;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -137,9 +143,10 @@ pub enum DispatchError {
     Queue(String),
 }
 
-/// What [`Dispatcher::on_error`] sees. `None` is propagated for the
-/// success path so a single channel can report both completion and error
-/// — we choose to keep the surface simple: only errors flow through.
+/// What [`DispatcherOptions::on_error`] sees. Handler failures use their
+/// registered method name. External queue-close failures and timeouts use
+/// the stable `"<queue-close>"` label; submissions that remain active after
+/// the post-close drain window use `"<queue-submit>"`.
 pub type OnErrorHook = Arc<dyn Fn(&str, Box<dyn StdError + Send + Sync>) + Send + Sync + 'static>;
 
 /// Options for constructing a [`Dispatcher`]. The serializable knobs
@@ -156,10 +163,10 @@ pub struct DispatcherOptions {
     /// Pluggable queue backend. Default: in-process tokio-task pool.
     /// Implement [`Queue`] to plug in Kafka, RabbitMQ, NATS, SQS, etc.
     pub queue: Option<Arc<dyn Queue>>,
-    /// Invoked when a handler returns `Err` or is aborted at shutdown.
-    /// Default: write a one-line WARN to stderr. Used only by the
-    /// in-process queue path; external queue adapters surface their own
-    /// errors via the queue's native ack / nack semantics.
+    /// Invoked when a handler returns `Err`, is aborted at shutdown, an
+    /// external queue fails or times out while closing, or an admitted queue
+    /// submission remains active after close. Default: write a one-line WARN
+    /// to stderr.
     pub on_error: Option<OnErrorHook>,
 }
 
@@ -196,10 +203,24 @@ pub trait Queue: Send + Sync + 'static {
         payload: &[u8],
     ) -> Result<(), Box<dyn StdError + Send + Sync>>;
 
-    /// Close releases any resources held by the queue. Called by
-    /// [`Dispatcher::shutdown`] after the drain. In-process queues use
-    /// this to drain spawned tasks; external queues should flush any
-    /// pending sends and close producer connections.
+    /// Close releases any resources held by the queue. Called exactly once
+    /// by [`Dispatcher::shutdown`] in an owned producer-finalization task,
+    /// concurrently with tracked-handler drain, and bounded by the configured
+    /// drain timeout. External queues should flush pending sends and close
+    /// producer connections. An error or timeout is reported through
+    /// [`DispatcherOptions::on_error`] as `"<queue-close>"`.
+    ///
+    /// A [`submit`](Queue::submit) call admitted just before shutdown may
+    /// still be awaiting its producer acknowledgement when close begins.
+    /// Implementations must make that overlap safe and release or fail the
+    /// pending send. Temporaless reports `"<queue-submit>"` and completes
+    /// shutdown if the send remains active for a second drain window.
+    ///
+    /// Once polling begins, shutdown never retries this method. Cancelling an
+    /// individual shutdown waiter does not cancel close; the owned task keeps
+    /// running and later shutdown calls share its completion. A close timeout
+    /// does drop the close future, so implementations must make timeout
+    /// cancellation safe.
     async fn close(&self) -> Result<(), Box<dyn StdError + Send + Sync>>;
 }
 
@@ -225,6 +246,95 @@ struct HandlerEntry {
     decode: ErasedDecoder,
 }
 
+struct SubmissionTracker {
+    active: AtomicUsize,
+    drained: Notify,
+}
+
+impl SubmissionTracker {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active: AtomicUsize::new(0),
+            drained: Notify::new(),
+        })
+    }
+
+    fn admit(self: &Arc<Self>) -> SubmissionGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        SubmissionGuard {
+            tracker: self.clone(),
+        }
+    }
+
+    async fn wait(&self) {
+        loop {
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            let notified = self.drained.notified();
+            tokio::pin!(notified);
+            // Register before the second state check. Without `enable`, a
+            // final submission could finish between that check and the first
+            // poll, losing notify_waiters and parking shutdown forever.
+            notified.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct SubmissionGuard {
+    tracker: Arc<SubmissionTracker>,
+}
+
+impl Drop for SubmissionGuard {
+    fn drop(&mut self) {
+        if self.tracker.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.tracker.drained.notify_waiters();
+        }
+    }
+}
+
+struct AsyncCompletion {
+    done: AtomicBool,
+    notify: Notify,
+}
+
+impl AsyncCompletion {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            done: AtomicBool::new(false),
+            notify: Notify::new(),
+        })
+    }
+
+    async fn wait(&self) {
+        loop {
+            if self.done.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.done.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct CompletionGuard(Arc<AsyncCompletion>);
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::Release);
+        self.0.notify.notify_waiters();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
@@ -238,20 +348,27 @@ pub struct Dispatcher {
     on_error: OnErrorHook,
     handlers: RwLock<HashMap<String, HandlerEntry>>,
     tasks: Mutex<JoinSet<HandlerOutcome>>,
+    /// Serializes the complete shutdown lifecycle. Concurrent callers wait
+    /// for the first caller to finish draining handlers and closing the
+    /// external queue instead of running competing finalizers.
+    shutdown: Mutex<()>,
+    submissions: Arc<SubmissionTracker>,
     /// `Some` when `max_inflight > 0`; the in-process path awaits a
     /// permit from this semaphore before spawning. Held as
     /// `Arc<Semaphore>` so the permit's lifetime can outlive
     /// `do_async` and bind to the spawned task.
     sem: Option<Arc<Semaphore>>,
-    /// Notified by [`Dispatcher::shutdown`] to wake any submitter parked
-    /// on a semaphore permit. Without this, a SIGTERM would leave
-    /// submitters waiting until their own awaiter is cancelled.
-    shutdown_notify: Arc<Notify>,
     closed: AtomicBool,
     /// Optional external queue. When `Some`, `do_async` proto-marshals
     /// the request and delegates to `queue.submit(method, payload)`.
     /// When `None`, the built-in in-process tokio-task pool is used.
     queue: Option<Arc<dyn Queue>>,
+    /// Set immediately before the owned external queue-close task is spawned.
+    /// This is separate from `closed`: `closed` gates new submissions, while
+    /// this flag makes queue finalization exactly-once across every shutdown
+    /// call, including a later waiter after a cancelled shutdown future.
+    queue_close_started: AtomicBool,
+    queue_close_completion: Arc<AsyncCompletion>,
 }
 
 /// What each spawned task reports back through the [`JoinSet`]. Carries
@@ -293,10 +410,13 @@ impl Dispatcher {
             on_error,
             handlers: RwLock::new(HashMap::new()),
             tasks: Mutex::new(JoinSet::new()),
+            shutdown: Mutex::new(()),
+            submissions: SubmissionTracker::new(),
             sem,
-            shutdown_notify: Arc::new(Notify::new()),
             closed: AtomicBool::new(false),
             queue: opts.queue,
+            queue_close_started: AtomicBool::new(false),
+            queue_close_completion: AsyncCompletion::new(),
         }
     }
 
@@ -407,26 +527,28 @@ impl Dispatcher {
         // consumer side when invoke() decodes and downcasts).
         if let Some(queue) = &self.queue {
             let payload = req.encode_to_vec();
-            queue
-                .submit(method, &payload)
-                .await
-                .map_err(|e| DispatchError::Queue(e.to_string()))?;
+            let submission = self.submissions.admit();
+            // Two-phase admission closes the race between the initial check
+            // and incrementing the active counter. If shutdown won that race,
+            // retract the count without touching the queue. Otherwise this
+            // guard remains live across the full producer acknowledgement.
+            if self.closed.load(Ordering::SeqCst) {
+                drop(submission);
+                return Err(DispatchError::ShuttingDown);
+            }
+            let result = queue.submit(method, &payload).await;
+            drop(submission);
+            result.map_err(|e| DispatchError::Queue(e.to_string()))?;
             return Ok(());
         }
 
-        // In-process path: acquire a concurrency permit when bounded,
-        // racing the acquire against shutdown so a SIGTERM-during-burst
-        // wakes parked submitters with ShuttingDown.
+        // In-process path: acquire a concurrency permit when bounded.
+        // Shutdown closes the semaphore, which persistently wakes both
+        // already-parked and not-yet-polled acquisitions.
         let permit: Option<OwnedSemaphorePermit> = if let Some(sem) = &self.sem {
-            let acquire = sem.clone().acquire_owned();
-            let notify = self.shutdown_notify.clone();
-            tokio::select! {
-                biased;
-                p = acquire => match p {
-                    Ok(p) => Some(p),
-                    Err(_) => return Err(DispatchError::ShuttingDown),
-                },
-                _ = notify.notified() => return Err(DispatchError::ShuttingDown),
+            match sem.clone().acquire_owned().await {
+                Ok(permit) => Some(permit),
+                Err(_) => return Err(DispatchError::ShuttingDown),
             }
         } else {
             None
@@ -494,25 +616,43 @@ impl Dispatcher {
 
     /// Stop accepting new submissions; drain in-flight tasks.
     ///
-    /// 1. Marks the dispatcher closed so further [`do_async`] calls
-    ///    return [`DispatchError::ShuttingDown`].
+    /// 1. Marks the dispatcher closed so further [`do_async`] calls return
+    ///    [`DispatchError::ShuttingDown`] and starts the owned external
+    ///    producer finalizer.
     /// 2. Waits up to `drain_timeout` for tasks to finish on their own.
     /// 3. If any are still running, calls [`tokio::task::JoinHandle::abort`]
     ///    on each. Tokio injects a cancellation at the next `.await` —
     ///    equivalent to context cancellation in Go.
     /// 4. Waits for the remaining tasks to actually return. Never abandons
     ///    a task.
+    /// 5. In parallel, gives admitted external submissions one drain window,
+    ///    closes the queue exactly once, then gives active submissions a
+    ///    second drain window. Close and submission-drain failures are routed
+    ///    through [`DispatcherOptions::on_error`].
     ///
-    /// Safe to call twice; the second call observes the already-closed
-    /// state and returns once any remaining tasks finish.
+    /// Repeated and concurrent calls are safe. One caller performs
+    /// finalization while the others wait for it to finish.
+    ///
+    /// Cancelling one shutdown waiter does not cancel queue close: later
+    /// callers await the same owned finalizer. Close itself remains bounded by
+    /// `drain_timeout`; a timeout drops the queue's close future, so adapters
+    /// must make timeout cancellation safe.
     ///
     /// [`do_async`]: Self::do_async
     pub async fn shutdown(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        // Wake any callers parked in do_async waiting for a semaphore
-        // permit; they'll observe the closed flag (via the notify branch
-        // in their select) and return ShuttingDown.
-        self.shutdown_notify.notify_waiters();
+        // Semaphore closure is persistent: it wakes current waiters and makes
+        // every future acquire fail, so there is no one-shot notification
+        // window for a bounded submitter to miss.
+        if let Some(sem) = &self.sem {
+            sem.close();
+        }
+        // Spawn producer finalization before this method's first await. Once a
+        // shutdown future has been polled, cancelling that individual waiter
+        // cannot cancel or skip external queue close.
+        self.start_queue_finalizer();
+
+        let _shutdown = self.shutdown.lock().await;
         let mut tasks = self.tasks.lock().await;
 
         // Phase 1: best-effort drain. Wait either for the JoinSet to
@@ -523,7 +663,7 @@ impl Dispatcher {
             }
         };
         match tokio::time::timeout(self.drain_timeout, drain).await {
-            Ok(()) => return, // clean drain
+            Ok(()) => {} // clean drain
             Err(_) => {
                 // Drain window expired — abort the rest.
                 tasks.abort_all();
@@ -535,6 +675,72 @@ impl Dispatcher {
         // on_error as a "cancelled" notice for observability.
         while let Some(joined) = tasks.join_next().await {
             self.handle_joined(joined);
+        }
+        drop(tasks);
+
+        if self.queue.is_some() {
+            self.queue_close_completion.wait().await;
+        }
+    }
+
+    fn start_queue_finalizer(&self) {
+        let Some(queue) = &self.queue else {
+            return;
+        };
+        if self
+            .queue_close_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let queue = queue.clone();
+            let on_error = self.on_error.clone();
+            let drain_timeout = self.drain_timeout;
+            let submissions = self.submissions.clone();
+            let completion = CompletionGuard(self.queue_close_completion.clone());
+            let finalizer = tokio::spawn(async move {
+                // This guard is captured before spawning, so runtime
+                // cancellation still publishes completion to every waiter.
+                let _completion = completion;
+                // Give producer acknowledgements one natural drain window.
+                // Close may be what releases a stuck send, so expiry here
+                // deliberately proceeds instead of completing shutdown.
+                let _ = tokio::time::timeout(drain_timeout, submissions.wait()).await;
+
+                let mut close = tokio::spawn(async move { queue.close().await });
+                let close_error = match tokio::time::timeout(drain_timeout, &mut close).await {
+                    Ok(Ok(Ok(()))) => None,
+                    Ok(Ok(Err(err))) => Some(err),
+                    Ok(Err(join_err)) => {
+                        Some(Box::new(JoinErrorWrapper(join_err)) as Box<dyn StdError + Send + Sync>)
+                    }
+                    Err(_) => {
+                        close.abort();
+                        let _ = close.await;
+                        Some(Box::new(QueueCloseTimeout(drain_timeout))
+                            as Box<dyn StdError + Send + Sync>)
+                    }
+                };
+
+                // Queue::close is the adapter's cancellation/flush boundary.
+                // Give any send it released one final bounded window. A
+                // broken adapter must not hang process shutdown forever.
+                let submission_error =
+                    match tokio::time::timeout(drain_timeout, submissions.wait()).await {
+                        Ok(()) => None,
+                        Err(_) => Some(Box::new(QueueSubmissionDrainTimeout(drain_timeout))
+                            as Box<dyn StdError + Send + Sync>),
+                    };
+                if let Some(err) = close_error {
+                    on_error("<queue-close>", err);
+                }
+                if let Some(err) = submission_error {
+                    on_error("<queue-submit>", err);
+                }
+            });
+            // Dropping a Tokio JoinHandle detaches the owned close task. The
+            // completion object above is the shared, cancellation-safe join
+            // point for this and every later shutdown caller.
+            drop(finalizer);
         }
     }
 
@@ -572,8 +778,107 @@ impl Dispatcher {
 #[error("join error: {0}")]
 struct JoinErrorWrapper(tokio::task::JoinError);
 
+#[derive(Debug, Error)]
+#[error("queue close exceeded drain timeout of {0:?}")]
+struct QueueCloseTimeout(Duration);
+
+#[derive(Debug, Error)]
+#[error("queue submissions remained active after post-close drain timeout of {0:?}")]
+struct QueueSubmissionDrainTimeout(Duration);
+
 fn default_on_error() -> OnErrorHook {
     Arc::new(|method: &str, err: Box<dyn StdError + Send + Sync>| {
         eprintln!("dispatch: handler {method:?} returned error: {err}");
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use super::*;
+
+    struct FailingCloseQueue {
+        close_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Queue for FailingCloseQueue {
+        async fn submit(
+            &self,
+            _method: &str,
+            _payload: &[u8],
+        ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
+            Err(Box::new(io::Error::other("flush failed")))
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_close_error_does_not_skip_active_handler_drain() {
+        let handler_finished = Arc::new(AtomicBool::new(false));
+        let queue = Arc::new(FailingCloseQueue {
+            close_calls: AtomicUsize::new(0),
+        });
+        let errors = Arc::new(StdMutex::new(Vec::<(String, String)>::new()));
+        let errors_for_hook = errors.clone();
+        let dispatcher = Dispatcher::new(DispatcherOptions {
+            queue: Some(queue.clone()),
+            on_error: Some(Arc::new(move |method, err| {
+                errors_for_hook
+                    .lock()
+                    .unwrap()
+                    .push((method.to_string(), err.to_string()));
+            })),
+            ..Default::default()
+        });
+
+        let finished_for_task = handler_finished.clone();
+        dispatcher.tasks.lock().await.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            finished_for_task.store(true, Ordering::SeqCst);
+            HandlerOutcome {
+                method: "/x/Active".to_string(),
+                result: Ok(()),
+            }
+        });
+
+        dispatcher.shutdown().await;
+
+        assert!(handler_finished.load(Ordering::SeqCst));
+        assert_eq!(queue.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            errors.lock().unwrap().as_slice(),
+            &[("<queue-close>".to_string(), "flush failed".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_semaphore_close_persists_for_late_waiter() {
+        let dispatcher = Dispatcher::new(DispatcherOptions {
+            proto: Some(v1::DispatchOptions {
+                max_inflight: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let sem = dispatcher.sem.as_ref().unwrap().clone();
+        let held = sem.clone().acquire_owned().await.unwrap();
+        // Construct the acquisition before shutdown but deliberately do not
+        // poll it until after the shutdown signal. A one-shot Notify could be
+        // lost in this gap; Semaphore::close is persistent.
+        let late_waiter = sem.clone().acquire_owned();
+
+        dispatcher.shutdown().await;
+
+        assert!(sem.is_closed());
+        assert!(late_waiter.await.is_err());
+        drop(held);
+    }
 }

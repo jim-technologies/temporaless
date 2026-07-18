@@ -519,6 +519,259 @@ func (q queueFunc) Submit(ctx context.Context, method, taskID string, payload []
 }
 func (q queueFunc) Close(context.Context) error { return nil }
 
+type shutdownQueue struct {
+	closeCalls   atomic.Int32
+	closeErr     error
+	closeStarted chan struct{}
+	closeRelease chan struct{}
+	startOnce    sync.Once
+}
+
+func (q *shutdownQueue) Submit(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (q *shutdownQueue) Close(ctx context.Context) error {
+	q.closeCalls.Add(1)
+	if q.closeStarted != nil {
+		q.startOnce.Do(func() { close(q.closeStarted) })
+	}
+	if q.closeRelease != nil {
+		select {
+		case <-q.closeRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return q.closeErr
+}
+
+func TestShutdownClosesExternalQueueExactlyOnce(t *testing.T) {
+	closeFailure := errors.New("flush failed")
+	tests := []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "success"},
+		{name: "error", closeErr: closeFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queue := &shutdownQueue{closeErr: test.closeErr}
+			d := New(Options{Queue: queue})
+
+			first := d.Shutdown(context.Background())
+			second := d.Shutdown(context.Background())
+			if !errors.Is(first, test.closeErr) {
+				t.Fatalf("first Shutdown error = %v, want %v", first, test.closeErr)
+			}
+			if !errors.Is(second, test.closeErr) {
+				t.Fatalf("second Shutdown error = %v, want %v", second, test.closeErr)
+			}
+			if got := queue.closeCalls.Load(); got != 1 {
+				t.Fatalf("Queue.Close calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestConcurrentShutdownSharesOneQueueClose(t *testing.T) {
+	queue := &shutdownQueue{
+		closeStarted: make(chan struct{}),
+		closeRelease: make(chan struct{}),
+	}
+	d := New(Options{Queue: queue})
+	results := make(chan error, 2)
+	go func() { results <- d.Shutdown(context.Background()) }()
+	<-queue.closeStarted
+	go func() { results <- d.Shutdown(context.Background()) }()
+	close(queue.closeRelease)
+
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := queue.closeCalls.Load(); got != 1 {
+		t.Fatalf("Queue.Close calls = %d, want 1", got)
+	}
+}
+
+type blockedSubmitQueue struct {
+	submitStarted chan struct{}
+	releaseSubmit chan struct{}
+	closeCalls    atomic.Int32
+	releaseOnce   sync.Once
+}
+
+func (q *blockedSubmitQueue) Submit(context.Context, string, string, []byte) error {
+	close(q.submitStarted)
+	<-q.releaseSubmit
+	return nil
+}
+
+func (q *blockedSubmitQueue) Close(context.Context) error {
+	q.closeCalls.Add(1)
+	q.releaseOnce.Do(func() { close(q.releaseSubmit) })
+	return nil
+}
+
+func TestShutdownDeadlineBoundsBlockedExternalSubmission(t *testing.T) {
+	queue := &blockedSubmitQueue{
+		submitStarted: make(chan struct{}),
+		releaseSubmit: make(chan struct{}),
+	}
+	d := New(Options{Queue: queue})
+	Register(d, "/x/Submit", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return req, nil
+	})
+
+	submitDone := make(chan error, 1)
+	go func() {
+		_, err := d.DoAsync(context.Background(), "/x/Submit", wrapperspb.String("payload"))
+		submitDone <- err
+	}()
+	<-queue.submitStarted
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := d.Shutdown(shutdownCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Shutdown took %v despite its deadline", elapsed)
+	}
+	if got := queue.closeCalls.Load(); got != 1 {
+		t.Fatalf("Queue.Close calls = %d, want 1", got)
+	}
+	select {
+	case err := <-submitDone:
+		if err != nil {
+			t.Fatalf("blocked submission returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Queue.Close did not release the blocked submission")
+	}
+}
+
+type stubbornSubmitQueue struct {
+	submitStarted chan struct{}
+	releaseSubmit chan struct{}
+	closeCalls    atomic.Int32
+}
+
+func (q *stubbornSubmitQueue) Submit(context.Context, string, string, []byte) error {
+	close(q.submitStarted)
+	<-q.releaseSubmit
+	return nil
+}
+
+func (q *stubbornSubmitQueue) Close(context.Context) error {
+	q.closeCalls.Add(1)
+	return nil
+}
+
+func TestShutdownReportsSubmissionThatRemainsBlockedAfterClose(t *testing.T) {
+	queue := &stubbornSubmitQueue{
+		submitStarted: make(chan struct{}),
+		releaseSubmit: make(chan struct{}),
+	}
+	d := New(Options{Proto: drain(10 * time.Millisecond), Queue: queue})
+	Register(d, "/x/Submit", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		return req, nil
+	})
+
+	submitDone := make(chan error, 1)
+	go func() {
+		_, err := d.DoAsync(context.Background(), "/x/Submit", wrapperspb.String("payload"))
+		submitDone <- err
+	}()
+	<-queue.submitStarted
+
+	started := time.Now()
+	err := d.Shutdown(context.Background())
+	if !errors.Is(err, ErrSubmissionDrainTimeout) {
+		t.Fatalf("Shutdown error = %v, want ErrSubmissionDrainTimeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Shutdown took %v despite bounded submission drains", elapsed)
+	}
+	if got := queue.closeCalls.Load(); got != 1 {
+		t.Fatalf("Queue.Close calls = %d, want 1", got)
+	}
+
+	close(queue.releaseSubmit)
+	select {
+	case err := <-submitDone:
+		if err != nil {
+			t.Fatalf("released submission returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("released submission did not return")
+	}
+}
+
+type failingInProcessQueue struct {
+	d          *Dispatcher
+	closeCalls atomic.Int32
+	closeErr   error
+}
+
+func (q *failingInProcessQueue) Submit(
+	ctx context.Context,
+	method string,
+	taskID string,
+	payload []byte,
+) error {
+	return (&inProcessQueue{d: q.d}).Submit(ctx, method, taskID, payload)
+}
+
+func (q *failingInProcessQueue) Close(context.Context) error {
+	q.closeCalls.Add(1)
+	return q.closeErr
+}
+
+func TestQueueCloseFailureDoesNotSkipHandlerDrain(t *testing.T) {
+	closeFailure := errors.New("flush failed")
+	queue := &failingInProcessQueue{closeErr: closeFailure}
+	d := New(Options{Proto: drain(time.Second), Queue: queue})
+	queue.d = d
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var completed atomic.Bool
+	Register(d, "/x/Work", func(ctx context.Context, req *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		close(started)
+		<-release
+		completed.Store(true)
+		return req, nil
+	})
+	if _, err := d.DoAsync(context.Background(), "/x/Work", wrapperspb.String("payload")); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+	}()
+
+	err := d.Shutdown(context.Background())
+	if !errors.Is(err, closeFailure) {
+		t.Fatalf("Shutdown error = %v, want close failure", err)
+	}
+	if !completed.Load() {
+		t.Fatal("Shutdown returned the queue close error before draining its handler")
+	}
+	if got := queue.closeCalls.Load(); got != 1 {
+		t.Fatalf("Queue.Close calls = %d, want 1", got)
+	}
+	if second := d.Shutdown(context.Background()); !errors.Is(second, closeFailure) {
+		t.Fatalf("second Shutdown error = %v, want close failure", second)
+	}
+}
+
 // TestStatusTracksLifecycle — DoAsync returns a task_id; Status walks
 // PENDING → RUNNING → DONE and surfaces the handler's response wrapped
 // in Any.
@@ -629,23 +882,54 @@ func TestConcurrentSubmissionsAndShutdown(t *testing.T) {
 		return wrapperspb.String("ok"), nil
 	})
 
+	var admitted atomic.Int64
+	if _, err := d.DoAsync(context.Background(), "/x/Quick", wrapperspb.String("\x01")); err != nil {
+		t.Fatalf("initial submission: %v", err)
+	}
+	admitted.Add(1)
+
 	const n = 200
+	start := make(chan struct{})
+	unexpected := make(chan error, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
 		i := i
 		go func() {
 			defer wg.Done()
-			// Mix of accepted-before-shutdown and rejected-during-shutdown.
-			_, _ = d.DoAsync(context.Background(), "/x/Quick", wrapperspb.String(string(rune(1+(i%10)))))
+			<-start
+			_, err := d.DoAsync(
+				context.Background(),
+				"/x/Quick",
+				wrapperspb.String(string(rune(1+(i%10)))),
+			)
+			switch {
+			case err == nil:
+				admitted.Add(1)
+			case errors.Is(err, ErrShuttingDown):
+				// Expected when shutdown wins the admission race.
+			default:
+				unexpected <- err
+			}
 		}()
 	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		<-start
+		shutdownDone <- d.Shutdown(context.Background())
+	}()
+
+	close(start)
 	wg.Wait()
-	if err := d.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
+	close(unexpected)
+	for err := range unexpected {
+		t.Errorf("submission returned unexpected error: %v", err)
 	}
-	// We can't assert completed == n because some submissions race with
-	// Shutdown and may be rejected. But every accepted submission MUST
-	// complete (Shutdown drains them all).
-	t.Logf("completed=%d of %d submissions (rest rejected after shutdown)", completed.Load(), n)
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if got, want := completed.Load(), admitted.Load(); got != want {
+		t.Fatalf("completed handlers = %d, successfully admitted submissions = %d", got, want)
+	}
 }

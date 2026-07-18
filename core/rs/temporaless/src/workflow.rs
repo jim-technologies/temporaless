@@ -656,38 +656,43 @@ fn assert_activity_identity(
     Ok(())
 }
 
-fn decode_workflow_result<Resp: Message + Default>(
+fn decode_workflow_result<Resp: Message + Name + Default>(
     record: &v1::WorkflowRecord,
 ) -> Result<Resp, RunError> {
     let any = record.result.as_ref().ok_or(RunError::MissingResult)?;
+    assert_any_type::<Resp>(any).map_err(RunError::WorkflowConflict)?;
     Resp::decode(any.value.as_slice()).map_err(RunError::from)
 }
 
-fn decode_activity_result<Resp: Message + Default>(
+fn decode_activity_result<Resp: Message + Name + Default>(
     record: &v1::ActivityRecord,
 ) -> Result<Resp, RunError> {
     let any = record.result.as_ref().ok_or(RunError::MissingResult)?;
+    assert_any_type::<Resp>(any).map_err(RunError::ActivityConflict)?;
     Resp::decode(any.value.as_slice()).map_err(RunError::from)
 }
 
-fn pack_any<M: Message>(message: &M) -> Result<prost_types::Any, RunError> {
+fn pack_any<M: Message + Name>(message: &M) -> Result<prost_types::Any, RunError> {
     let bytes = message.encode_to_vec();
     Ok(prost_types::Any {
-        type_url: format!("type.googleapis.com/{}", message_type_url::<M>()),
+        type_url: format!("type.googleapis.com/{}", M::full_name()),
         value: bytes,
     })
 }
 
-/// Best-effort proto type-URL from a Rust type name. The wire format only
-/// cares that this round-trips; for cross-language replay where another
-/// SDK reads our `Any`, pass `Resp` types that share full_name with the
-/// proto descriptor (which prost types do via `Default::default()`).
-fn message_type_url<M: Message>() -> String {
-    // Strip the Rust path so the URL contains just the short type name.
-    // prost doesn't expose ProtoMessage::full_name, so this is a best-effort
-    // shim that's still good enough for round-tripping within Rust.
-    let raw = std::any::type_name::<M>();
-    raw.rsplit("::").next().unwrap_or(raw).to_string()
+fn assert_any_type<M: Name>(any: &prost_types::Any) -> Result<(), String> {
+    let expected = M::full_name();
+    if any
+        .type_url
+        .strip_suffix(expected.as_str())
+        .is_some_and(|prefix| prefix.ends_with('/'))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "stored result type URL {:?} does not name protobuf type {:?}",
+        any.type_url, expected
+    ))
 }
 
 fn next_interval(prev: Duration, plan: &RetryPolicy) -> Duration {

@@ -269,6 +269,37 @@ async def test_max_inflight_unblocks_on_shutdown():
     await shutdown_task
 
 
+async def test_cancelling_parked_submitter_does_not_leak_permit():
+    """Cancelling a semaphore waiter must not consume a later handler's slot."""
+    disp = _disp(max_inflight=1)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def handler(req: StringValue) -> StringValue:
+        if req.value == "first":
+            first_started.set()
+            await release_first.wait()
+        return req
+
+    disp.register("/x/Work", StringValue, handler)
+    await disp.do_async("/x/Work", StringValue(value="first"))
+    await first_started.wait()
+
+    parked = asyncio.create_task(disp.do_async("/x/Work", StringValue(value="cancelled")))
+    await asyncio.sleep(0)
+    parked.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parked
+
+    release_first.set()
+    await asyncio.sleep(0)
+    await asyncio.wait_for(
+        disp.do_async("/x/Work", StringValue(value="after-cancel")),
+        timeout=1,
+    )
+    await disp.shutdown()
+
+
 async def test_invoke_runs_registered_handler_from_bytes():
     """External-queue consumer path: bytes → method lookup → handler."""
     disp = _disp()
@@ -321,6 +352,232 @@ async def test_custom_queue_receives_submission():
     rt = StringValue()
     rt.ParseFromString(payload)
     assert rt.value == "payload"
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_concurrent_shutdown_closes_external_queue_exactly_once(
+    close_fails: bool,
+):
+    class ClosingQueue(Queue):
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def submit(self, method: str, payload: bytes) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            await asyncio.sleep(0)
+            if close_fails:
+                raise RuntimeError("flush failed")
+
+    queue = ClosingQueue()
+    disp = _disp(queue=queue)
+    results = await asyncio.gather(
+        disp.shutdown(),
+        disp.shutdown(),
+        return_exceptions=True,
+    )
+
+    assert queue.close_calls == 1
+    if close_fails:
+        assert all(isinstance(result, RuntimeError) for result in results)
+        assert [str(result) for result in results] == ["flush failed", "flush failed"]
+        with pytest.raises(RuntimeError, match="flush failed"):
+            await disp.shutdown()
+    else:
+        assert results == [None, None]
+        await disp.shutdown()
+        assert queue.close_calls == 1
+
+
+async def test_cancelling_one_shutdown_waiter_does_not_cancel_finalization():
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+
+    class ClosingQueue(Queue):
+        close_calls = 0
+
+        async def submit(self, method: str, payload: bytes) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            close_started.set()
+            await close_release.wait()
+
+    queue = ClosingQueue()
+    disp = _disp(queue=queue)
+    first = asyncio.create_task(disp.shutdown())
+    await close_started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    close_release.set()
+    await disp.shutdown()
+    assert queue.close_calls == 1
+
+
+async def test_queue_timeout_error_is_not_misclassified_as_close_timeout():
+    """A queue's own TimeoutError must propagate with its original context."""
+
+    class TimeoutQueue(Queue):
+        async def submit(self, method: str, payload: bytes) -> None:
+            return None
+
+        async def close(self) -> None:
+            raise TimeoutError("broker acknowledgement timed out")
+
+    disp = _disp(queue=TimeoutQueue())
+    with pytest.raises(TimeoutError, match="broker acknowledgement timed out"):
+        await disp.shutdown()
+
+
+async def test_shutdown_waits_for_external_submission_before_closing_queue():
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+    submit_finished = False
+    close_calls = 0
+
+    class BlockingQueue(Queue):
+        async def submit(self, method: str, payload: bytes) -> None:
+            nonlocal submit_finished
+            submit_started.set()
+            await release_submit.wait()
+            submit_finished = True
+
+        async def close(self) -> None:
+            nonlocal close_calls
+            assert submit_finished
+            close_calls += 1
+
+    disp = _disp(queue=BlockingQueue())
+
+    async def handler(req: StringValue) -> StringValue:
+        return req
+
+    disp.register("/x/Submit", StringValue, handler)
+    submit = asyncio.create_task(disp.do_async("/x/Submit", StringValue(value="payload")))
+    await submit_started.wait()
+    shutdown = asyncio.create_task(disp.shutdown())
+    await asyncio.sleep(0)
+    assert close_calls == 0
+
+    release_submit.set()
+    await submit
+    await shutdown
+    assert close_calls == 1
+
+
+async def test_queue_close_releases_blocked_external_submission():
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+    close_calls = 0
+
+    class BlockingQueue(Queue):
+        async def submit(self, method: str, payload: bytes) -> None:
+            submit_started.set()
+            await release_submit.wait()
+
+        async def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            release_submit.set()
+
+    disp = _disp(
+        queue=BlockingQueue(),
+        drain_timeout=timedelta(milliseconds=10),
+    )
+
+    async def handler(req: StringValue) -> StringValue:
+        return req
+
+    disp.register("/x/Submit", StringValue, handler)
+    submit = asyncio.create_task(disp.do_async("/x/Submit", StringValue(value="payload")))
+    await submit_started.wait()
+
+    await disp.shutdown()
+    await submit
+    assert close_calls == 1
+
+
+async def test_shutdown_reports_submission_still_blocked_after_close():
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+    close_calls = 0
+
+    class StubbornQueue(Queue):
+        async def submit(self, method: str, payload: bytes) -> None:
+            submit_started.set()
+            await release_submit.wait()
+
+        async def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+
+    disp = _disp(
+        queue=StubbornQueue(),
+        drain_timeout=timedelta(milliseconds=10),
+    )
+
+    async def handler(req: StringValue) -> StringValue:
+        return req
+
+    disp.register("/x/Submit", StringValue, handler)
+    submit = asyncio.create_task(disp.do_async("/x/Submit", StringValue(value="payload")))
+    await submit_started.wait()
+
+    with pytest.raises(
+        TimeoutError,
+        match="submissions remained active after queue close",
+    ):
+        await disp.shutdown()
+    assert close_calls == 1
+
+    release_submit.set()
+    await submit
+
+
+async def test_queue_close_failure_does_not_skip_handler_drain():
+    close_failure = RuntimeError("flush failed")
+
+    class FailingInProcessQueue(Queue):
+        dispatcher: Dispatcher
+        close_calls = 0
+
+        async def submit(self, method: str, payload: bytes) -> None:
+            await self.dispatcher._submit_in_process(method, payload)  # noqa: SLF001
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            raise close_failure
+
+    queue = FailingInProcessQueue()
+    disp = _disp(queue=queue, drain_timeout=timedelta(seconds=1))
+    queue.dispatcher = disp
+    started = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(req: StringValue) -> StringValue:
+        started.set()
+        await release.wait()
+        completed.set()
+        return req
+
+    disp.register("/x/Work", StringValue, handler)
+    await disp.do_async("/x/Work", StringValue(value="payload"))
+    await started.wait()
+    asyncio.get_running_loop().call_later(0.02, release.set)
+
+    with pytest.raises(RuntimeError, match="flush failed"):
+        await disp.shutdown()
+    assert completed.is_set()
+    assert queue.close_calls == 1
+    with pytest.raises(RuntimeError, match="flush failed"):
+        await disp.shutdown()
+    assert queue.close_calls == 1
 
 
 async def test_options_default_when_none():

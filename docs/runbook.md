@@ -4,8 +4,8 @@ What to do when things go wrong in production. Each entry: **symptom**, **diagno
 
 The framework's design means most operator work is **reading records out of object storage and selectively deleting/resetting them**. There's no engine state to repair, no leader to evict, no quorum to fix.
 
-The bundled `cmd/temporaless` binary is a transitional local-filesystem tool
-and registers only OpenDAL `fs`. For S3, GCS, and other cloud stores, perform
+The bundled `cmd/temporaless` binary is deliberately local-filesystem only and
+registers only OpenDAL `fs`. For S3, GCS, and other cloud stores, perform
 these procedures through authenticated ConnectStore/RecordQueryService clients
 or generated remote operator tooling. Do not put cloud credentials into the
 local CLI.

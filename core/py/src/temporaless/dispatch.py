@@ -46,9 +46,8 @@ RequestT = TypeVar("RequestT", bound=Message)
 ResponseT = TypeVar("ResponseT", bound=Message)
 
 DEFAULT_DRAIN_TIMEOUT = timedelta(seconds=15)
-"""How long :meth:`Dispatcher.shutdown` waits for in-flight tasks to finish
-before cancelling them. Chosen to match common SIGTERM grace periods
-(Kubernetes preStop / terminationGracePeriodSeconds)."""
+"""Per-phase bound for draining admitted producer sends and in-flight tasks.
+Chosen to fit common SIGTERM grace periods."""
 
 _log = logging.getLogger("temporaless.dispatch")
 
@@ -108,9 +107,11 @@ class Queue(ABC):
     async def close(self) -> None:
         """Release any resources held by the queue.
 
-        Called by :meth:`Dispatcher.shutdown` after the drain. In-process
-        queues use this to drain spawned tasks; external queues should
-        flush any pending sends and close producer connections.
+        :meth:`Dispatcher.shutdown` calls this exactly once after a bounded
+        wait for admitted :meth:`submit` calls. If a submit is still blocked,
+        ``close`` must safely release or fail it. External queues should flush
+        pending sends and close producer connections; the in-process queue is
+        a no-op because the dispatcher drains its tasks separately.
         """
 
 
@@ -177,6 +178,10 @@ class Dispatcher:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closed = False
         self._shutdown_event = asyncio.Event()
+        self._submissions_drained = asyncio.Event()
+        self._submissions_drained.set()
+        self._active_submissions = 0
+        self._shutdown_task: asyncio.Task[None] | None = None
         # When max_inflight > 0, the in-process queue awaits this semaphore
         # before scheduling. When 0, the semaphore is None and the queue
         # never blocks on the slot dimension.
@@ -258,7 +263,18 @@ class Dispatcher:
             )
 
         payload = req.SerializeToString(deterministic=True)
-        await self._queue.submit(method, payload)
+        # No await occurs between the closed check above and this increment,
+        # so shutdown can atomically stop new submissions and wait for every
+        # producer acknowledgement already in progress before closing the
+        # external queue.
+        self._active_submissions += 1
+        self._submissions_drained.clear()
+        try:
+            await self._queue.submit(method, payload)
+        finally:
+            self._active_submissions -= 1
+            if self._active_submissions == 0:
+                self._submissions_drained.set()
 
     async def _submit_in_process(self, method: str, payload: bytes) -> None:
         """In-process submission path used by the default :class:`Queue`.
@@ -276,21 +292,39 @@ class Dispatcher:
         if self._sem is not None:
             acquire = asyncio.create_task(self._sem.acquire())
             shutdown_wait = asyncio.create_task(self._shutdown_event.wait())
-            done, pending = await asyncio.wait(
-                {acquire, shutdown_wait},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            if shutdown_wait in done:
-                # Surrender any racy permit we may have actually picked up
-                # so a follow-on shutdown doesn't see a phantom inflight.
-                if acquire in done and not acquire.cancelled():
-                    self._sem.release()
-                raise DispatcherShuttingDownError(
-                    "dispatcher is shutting down; new submissions are rejected"
+            permit_transferred = False
+            try:
+                done, _ = await asyncio.wait(
+                    {acquire, shutdown_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            acquire.result()
+                if shutdown_wait in done:
+                    raise DispatcherShuttingDownError(
+                        "dispatcher is shutting down; new submissions are rejected"
+                    )
+                acquire.result()
+                # No await may occur between acquiring the permit and handing
+                # it to a handler. That keeps caller cancellation from
+                # stranding a slot during the ownership transfer.
+                self._spawn_local(method, payload)
+                permit_transferred = True
+            finally:
+                # A cancelled do_async must not strand either child task. In
+                # particular, an orphan semaphore acquire could later consume
+                # a permit without ever transferring it to a handler.
+                for task in (acquire, shutdown_wait):
+                    if not task.done():
+                        task.cancel()
+                if not permit_transferred and acquire.done() and not acquire.cancelled():
+                    try:
+                        acquire.result()
+                    except BaseException:  # noqa: BLE001 - cleanup only
+                        pass
+                    else:
+                        self._sem.release()
+                await asyncio.gather(acquire, shutdown_wait, return_exceptions=True)
+            return
+
         self._spawn_local(method, payload)
 
     async def invoke(self, method: str, payload: bytes) -> None:
@@ -349,44 +383,93 @@ class Dispatcher:
     async def shutdown(self) -> None:
         """Stop accepting new submissions; drain in-flight tasks.
 
-        Phase 1: wait up to ``drain_timeout`` for tasks to finish on their
-        own. Phase 2: if any are still running, ``cancel()`` them and
-        await their completion (a well-behaved handler observes
-        :class:`asyncio.CancelledError` and bails). Always awaits every
-        task -- orphaning a handler mid-vendor-call is the failure mode
-        we're avoiding.
+        Stop admission, give producer submissions one bounded window to
+        finish, then close the queue exactly once so an external producer can
+        flush and release blocked sends. In-process tasks get their own
+        bounded drain window before cancellation. Queue-close failures are
+        re-raised only after handler draining finishes; a producer submission
+        still blocked after close raises :class:`TimeoutError`.
 
-        Safe to call twice; the second call observes the already-closed
-        state and returns once any remaining tasks finish.
+        Repeated and concurrent calls await the same finalization task and
+        receive the same queue-close exception, if any. Cancelling one caller
+        does not cancel finalization.
         """
+        # Close admission before the first await. Creating the shared
+        # finalization task must not leave an event-loop turn where a new
+        # submission can slip in.
         self._closed = True
-        # Wake any callers blocked on the MaxInflight semaphore so they
-        # raise DispatcherShuttingDownError instead of waiting on permits
-        # that will never come.
         self._shutdown_event.set()
-        if not self._tasks:
-            return
-
-        # Snapshot the current set so callbacks discarding from it during
-        # iteration don't surprise us.
-        inflight = list(self._tasks)
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(asyncio.gather(*inflight, return_exceptions=True)),
-                timeout=self._drain_timeout.total_seconds(),
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(
+                self._shutdown(),
+                name="temporaless-dispatch-shutdown",
             )
-            return
-        except TimeoutError:
-            pass
+        await asyncio.shield(self._shutdown_task)
 
-        # Drain window expired -- signal cancellation so cooperative
-        # handlers can bail, then wait for them to actually return.
-        for task in inflight:
-            if not task.done():
-                task.cancel()
-        # Unbounded wait: never abandon a goroutine. asyncio.gather with
-        # return_exceptions=True swallows CancelledError per task.
-        await asyncio.gather(*inflight, return_exceptions=True)
+    async def _shutdown(self) -> None:
+        timeout = self._drain_timeout.total_seconds()
+
+        submissions_drained = True
+        try:
+            await asyncio.wait_for(self._submissions_drained.wait(), timeout=timeout)
+        except TimeoutError:
+            submissions_drained = False
+
+        close_error: BaseException | None = None
+        close_task = asyncio.create_task(
+            self._queue.close(),
+            name="temporaless-dispatch-queue-close",
+        )
+        close_done, _ = await asyncio.wait({close_task}, timeout=timeout)
+        if close_task not in close_done:
+            close_task.cancel()
+            await asyncio.gather(close_task, return_exceptions=True)
+            close_error = TimeoutError("dispatch queue close exceeded drain_timeout")
+        else:
+            try:
+                close_task.result()
+            except BaseException as err:  # noqa: BLE001 - re-raise after drain
+                close_error = err
+
+        submission_error: TimeoutError | None = None
+        if not submissions_drained:
+            # Queue.close is the producer-side cancellation/flush boundary and
+            # may be what releases a submit awaiting network acknowledgement.
+            try:
+                await asyncio.wait_for(
+                    self._submissions_drained.wait(),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                submission_error = TimeoutError(
+                    "dispatch submissions remained active after queue close"
+                )
+
+        if self._tasks:
+            # Snapshot the current set so callbacks discarding from it during
+            # iteration don't surprise us.
+            inflight = list(self._tasks)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(*inflight, return_exceptions=True)),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                # Drain window expired -- signal cancellation so cooperative
+                # handlers can bail, then wait for them to actually return.
+                for task in inflight:
+                    if not task.done():
+                        task.cancel()
+                # Unbounded wait: never abandon a task. asyncio.gather with
+                # return_exceptions=True swallows CancelledError per task.
+                await asyncio.gather(*inflight, return_exceptions=True)
+
+        if submission_error is not None:
+            if close_error is not None:
+                raise submission_error from close_error
+            raise submission_error
+        if close_error is not None:
+            raise close_error
 
 
 def _default_on_error(method: str, err: BaseException) -> None:
