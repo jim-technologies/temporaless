@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import opendal
 import pytest
+from google.protobuf.duration_pb2 import Duration
 from google.protobuf.wrappers_pb2 import StringValue
+from protovalidate import ValidationError
 
 from temporaless import (
     Options,
+    PollOptions,
     Workflow,
     WorkflowDependencyFailedError,
     WorkflowDependencyPendingError,
@@ -15,8 +20,14 @@ from temporaless import (
     run,
 )
 from temporaless.dependencies import wait_for_workflow
-from temporaless.storage import OpenDALStore
-from temporaless.workflow import WorkflowConflictError
+from temporaless.storage import (
+    OpenDALStore,
+    RunRecordValidationError,
+    TimerKey,
+    WorkflowKey,
+)
+from temporaless.v1 import temporaless_pb2
+from temporaless.workflow import WorkflowConflictError, WorkflowInfrastructureError
 
 
 @pytest.fixture
@@ -30,7 +41,7 @@ async def _seed_completed_upstream(store: OpenDALStore, run_id: str, value: str)
 
     await run(
         store,
-        Options(workflow_id="upstream", run_id=run_id, code_version="v1"),
+        Options(workflow_id="upstream", run_id=run_id),
         StringValue(value="seed"),
         StringValue,
         body,
@@ -76,7 +87,7 @@ async def test_wait_for_workflow_raises_failed_when_upstream_failed(
     with pytest.raises(RuntimeError, match="upstream broke"):
         await run(
             store,
-            Options(workflow_id="upstream", run_id="2026-05-04", code_version="v1"),
+            Options(workflow_id="upstream", run_id="2026-05-04"),
             StringValue(value="seed"),
             StringValue,
             failing_body,
@@ -116,7 +127,7 @@ async def test_wait_for_workflow_inside_workflow_body_uses_current_store(
 
     first = await run(
         store,
-        Options(workflow_id="signal", run_id="2026-05-04", code_version="v1"),
+        Options(workflow_id="signal", run_id="2026-05-04"),
         StringValue(value="2026-05-04"),
         StringValue,
         downstream,
@@ -127,7 +138,7 @@ async def test_wait_for_workflow_inside_workflow_body_uses_current_store(
     # Replay: workflow record exists, body doesn't re-execute.
     second = await run(
         store,
-        Options(workflow_id="signal", run_id="2026-05-04", code_version="v1"),
+        Options(workflow_id="signal", run_id="2026-05-04"),
         StringValue(value="2026-05-04"),
         StringValue,
         downstream,
@@ -152,3 +163,144 @@ async def test_wait_for_workflow_raises_conflict_on_result_type_mismatch(
             run_id="2026-05-04",
             result_factory=Int32Value,
         )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "malformed"])
+async def test_wait_for_workflow_rejects_corrupt_completed_result(
+    store: OpenDALStore,
+    corruption: str,
+) -> None:
+    await _seed_completed_upstream(store, corruption, "AAPL:100")
+    key = WorkflowKey(workflow_id="upstream", run_id=corruption)
+    record = await store.get_workflow(key)
+    assert record is not None
+    if corruption == "missing":
+        record.ClearField("result")
+    else:
+        record.result.type_url = "type.googleapis.com/google.protobuf.StringValue"
+        record.result.value = b"\xff"
+    await store.put_workflow(record)
+
+    with pytest.raises(RunRecordValidationError):
+        await wait_for_workflow(
+            store,
+            workflow_id="upstream",
+            run_id=corruption,
+            result_factory=StringValue,
+        )
+
+
+async def test_wait_for_workflow_poll_schedules_and_terminally_acknowledges(
+    store: OpenDALStore,
+) -> None:
+    interval = Duration()
+    interval.FromTimedelta(timedelta(hours=1))
+    poll = PollOptions(timer_id="poll:upstream", interval=interval)
+    options = Options(workflow_id="downstream", run_id="run")
+
+    async def downstream(_workflow: Workflow, _request: StringValue) -> StringValue:
+        return await wait_for_workflow(
+            current_workflow().store,
+            workflow_id="upstream",
+            run_id="partition",
+            result_factory=StringValue,
+            poll_options=poll,
+        )
+
+    with pytest.raises(WorkflowDependencyPendingError) as captured:
+        await run(
+            store,
+            options,
+            StringValue(value="request"),
+            StringValue,
+            downstream,
+        )
+    assert captured.value.wake_at is not None
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=poll.timer_id,
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.timer_kind == temporaless_pb2.TIMER_KIND_POLL
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+    await _seed_completed_upstream(store, "partition", "ready")
+    result = await run(
+        store,
+        options,
+        StringValue(value="request"),
+        StringValue,
+        downstream,
+    )
+    assert result.value == "ready"
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_FIRED
+
+
+async def test_wait_for_workflow_read_outage_leaves_parent_in_progress(
+    store: OpenDALStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_get = store.get_workflow
+
+    async def fail_upstream(key: WorkflowKey):
+        if key.workflow_id == "upstream":
+            raise RuntimeError("dependency store unavailable")
+        return await original_get(key)
+
+    monkeypatch.setattr(store, "get_workflow", fail_upstream)
+    options = Options(workflow_id="downstream", run_id="outage")
+
+    async def downstream(_workflow: Workflow, _request: StringValue) -> StringValue:
+        return await wait_for_workflow(
+            current_workflow().store,
+            workflow_id="upstream",
+            run_id="partition",
+            result_factory=StringValue,
+        )
+
+    with pytest.raises(WorkflowInfrastructureError, match="dependency store unavailable"):
+        await run(
+            store,
+            options,
+            StringValue(value="request"),
+            StringValue,
+            downstream,
+        )
+    record = await original_get(WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id))
+    assert record is not None
+    assert record.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS
+
+
+async def test_wait_for_workflow_validates_key_and_factory_before_read(
+    store: OpenDALStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads = 0
+
+    async def count_read(_key: WorkflowKey):
+        nonlocal reads
+        reads += 1
+        return None
+
+    monkeypatch.setattr(store, "get_workflow", count_read)
+    with pytest.raises(ValidationError):
+        await wait_for_workflow(
+            store,
+            workflow_id=".",
+            run_id="run",
+            result_factory=StringValue,
+        )
+    assert reads == 0
+
+    with pytest.raises(TypeError, match="protobuf message"):
+        await wait_for_workflow(
+            store,
+            workflow_id="upstream",
+            run_id="run",
+            result_factory=lambda: "not-protobuf",  # type: ignore[return-value]
+        )
+    assert reads == 0

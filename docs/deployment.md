@@ -68,8 +68,9 @@ uvicorn.run(app, host="0.0.0.0", port=8080)
 ```
 
 `asgi_application(store)` exposes the core `RecordStoreService`: point
-GET/PUT/DELETE operations, run-scoped lists, latest-run pointer reads, and the
-due-timer ledger. If you also deploy a query index, mount
+GET/PUT/DELETE operations, atomic event delivery when the store advertises it,
+run-scoped lists, latest-run pointer reads, and the due-timer ledger. If you
+also deploy a query index, mount
 `query_asgi_application(indexed_store)` separately for `RecordQueryService`.
 
 ### Auth, rate limiting, tracing — standard ConnectRPC interceptors
@@ -161,11 +162,38 @@ S3 and GCS provide atomic `PutObject` (the new object becomes visible only after
 
 The OpenDAL `fs` scheme is intentionally not safe for concurrent writers; it's for development and small single-process deployments only. See `docs/hard-cases.md` for details.
 
+### Atomic event delivery in production
+
+Webhook and approval handlers should call `SendEvent` / `send_event`, which
+uses `RecordStoreService.DeliverEvent`. The RPC atomically establishes the
+first protobuf payload for an event key. An identical retry is idempotent; a
+different payload is a typed conflict. Never emulate this with `GetEvent`
+followed by `PutEvent`, because two writers can both observe a miss.
+
+Preflight `GetStoreCapabilities.event_delivery_capability` during deployment:
+
+- `EVENT_DELIVERY_CAPABILITY_CREATE_ONLY` is safe for application delivery.
+- `EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE` or `UNSPECIFIED` makes
+  `SendEvent` fail closed.
+- Python `OpenDALStore` reports create-only delivery only when the selected
+  operator advertises `write_with_if_not_exists`.
+- Direct Go `OpenDALStore` reports no atomic create because the current Go
+  binding exposes only unconditional writes. Use a Go `ConnectStore` backed
+  by an atomic-capable remote `RecordStoreService`, or a narrow native
+  conditional-write `EventDeliveryStore`.
+
+ConnectStore preserves the server's capability and typed
+unsupported/conflict failures; the transport itself does not add atomicity.
+Keep low-level `PutEvent` behind an operator identity for migrations, explicit
+repairs, and fixtures. A webhook principal normally needs `DeliverEvent` and
+the application workflow trigger, not arbitrary record replacement or delete
+permissions.
+
 ### Claim coordination in production
 
 Set `WorkflowOptions.claim_owner_id` to opt a run into workflow-execution and activity claims. The runtime creates `claim/workflow:execution.binpb` before entering missing or `IN_PROGRESS` workflow work. Another live invocation of the same `(namespace, workflow_id, run_id)` gets `ClaimBusyError` (`ALREADY_EXISTS`); a terminal workflow record still replays without waiting for the claim. Supplying a claim store alone does not opt in, and an empty `claim_owner_id` retains at-least-once overlapping execution.
 
-The runtime first checks `GetStoreCapabilities`. A store reporting `NO_CLAIMS` or `UNSPECIFIED` rejects `claim_owner_id` and `concurrency_key` with a failed-precondition error; requested coordination is never silently ignored. `concurrency_key` requires `claim_owner_id`, and that caller-owned value is stored on its slot claim too. It is diagnostic metadata, not a re-entry token—matching owners still contend.
+The runtime first checks `GetStoreCapabilities`. A store reporting `NO_CLAIMS` or `UNSPECIFIED` rejects `claim_owner_id` and `concurrency_key` with a failed-precondition error; requested coordination is never silently ignored. The reserved `CAS_CLAIMS` value is also rejected by the current create-only interface rather than advertised without fencing, conditional release, and takeover operations. `concurrency_key` requires `claim_owner_id`, and that caller-owned value is stored on its slot claim too. It is diagnostic metadata, not a re-entry token—matching owners still contend.
 
 For claim coordination across processes:
 
@@ -206,9 +234,8 @@ func (s *pricesService) FetchPrices(
         Store: s.store,
         OptionsFor: func(_ context.Context, r *pricesv1.FetchRequest) (*workflow.Options, error) {
             return &workflow.Options{
-                WorkflowId:  "prices:" + r.GetSymbol(),
-                RunId:       r.GetRunId(),  // caller-provided
-                CodeVersion: codeVersion(),
+                WorkflowId: "prices:" + r.GetSymbol(),
+                RunId:      r.GetRunId(),  // caller-provided
             }, nil
         },
         NewResult: func() *pricesv1.FetchResponse { return &pricesv1.FetchResponse{} },
@@ -254,7 +281,6 @@ class PriceService:
             options_for=lambda self, r: Options(
                 workflow_id=f"prices:{r.symbol}",
                 run_id=r.run_id,
-                code_version="v1",
             ),
         )
     )
@@ -309,7 +335,6 @@ scheduler, _ := cronscheduler.New(
         _, err := workflow.Run(ctx, store, &workflow.Options{
             WorkflowId:   scheduleID,
             RunId:        fireTime.UTC().Format(time.RFC3339),
-            CodeVersion:  codeVersion(),
             RunOrderTime: timestamppb.New(fireTime),
         }, nil, /* input */, /* newResult */, /* body */)
         return err
@@ -348,7 +373,6 @@ async def dispatch(schedule_id: str, fire_time: datetime) -> None:
         Options(
             workflow_id=schedule_id,
             run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            code_version=code_version(),
             run_order_time=run_order_time,
         ),
         input_message,
@@ -379,9 +403,9 @@ Two cron-scheduler processes may dispatch the same fire concurrently. Terminal r
 
 ### Timer scanner
 
-For workflows that use `workflow.Sleep` (durable timers), the core writes a
-deterministic prepared timer object alongside each timer. Scanners list that
-ledger, not the whole workflow tree:
+For workflow sleeps, durable activity-retry backoffs, and waits that opt into
+`PollOptions`, the core writes a deterministic prepared timer object alongside
+each timer. Scanners list that ledger, not the whole workflow tree:
 
 ```go
 due, _ := timerscanner.DueTimers(ctx, store, time.Now(), "tenant-a")
@@ -393,12 +417,18 @@ for _, t := range due {
 ```
 
 Run on a cadence (every minute, every 30s — depends on the smallest timer
-interval you care about). Each logical timer has one prepared object containing
-its full protobuf state. A scan repairs a missing, stale, or corrupt canonical
-timer from that prepared record, then waits until the next scan sees an exact
-pair before dispatching. This preserves the original deadline across a
-ledger-first crash at the cost of at most one scan interval. `CANCELED`
+or poll interval you care about). Each logical timer has one prepared object
+containing its full protobuf state. A scan repairs a missing, stale, or corrupt
+canonical timer from that prepared record, then waits until the next scan sees
+an exact pair before dispatching. This preserves the original deadline across
+a ledger-first crash at the cost of at most one scan interval. `CANCELED`
 tombstones suppress interrupted deletes and are retained until offline cleanup.
+
+`WaitEvent(..., nil)` and `WaitForWorkflow(..., nil)` remain manual and create
+no timer. Their event-delivery/upstream-completion path must dispatch the
+workflow itself. Supplying caller-owned `PollOptions` creates a
+`TIMER_KIND_POLL` wake; an unresolved replay rearms the same ID, while a
+resolved wait consumes the poll only after the next durable boundary.
 
 Scanner delivery is at-least-once. The same due wake can be returned on every
 tick until replay crosses a later durable boundary, and two scanners can
@@ -494,8 +524,9 @@ service where the timer dispatcher can call a real handler; do not add a
 no-op scanner to the storage server.
 
 Each loop is independently toggleable: a deployment might enable only
-the timer scanner on every replica (because durable sleeps are
-latency-sensitive) and keep cron + janitor on a single operator replica.
+the timer scanner on every replica (because sleeps, retry backoffs, or
+timer-backed polls are latency-sensitive) and keep cron + janitor on a single
+operator replica.
 
 **Why this is opt-in, not leader-elected.** Coordination dances add
 complexity the framework explicitly rejects. The simpler answer: deployers
@@ -530,13 +561,24 @@ Conflict points:
 
 If multi-region is overkill, run hot in one region with regular S3/GCS replication to a backup region. On failover: point the Store at the backup. No state migration needed — records are the state.
 
-## 5. Code versioning
+## 5. Application rollout
 
-Set `TEMPORALESS_CODE_VERSION` to an immutable build identity (git SHA, release tag). On rolling deploys, both old and new versions run concurrently for a window:
+Temporaless resumes `IN_PROGRESS` runs with whichever handler receives the
+current invocation. It does not retain or route to historical application
+builds. Terminal workflow and activity records remain authoritative; completed
+activities replay their stored protobuf results, while unrecorded work runs the
+current body.
 
-- Each version writes records with its own `code_version`.
-- Records written by old code are not replayable by new code if the workflow type or input shape changed (mismatch fails loudly).
-- For breaking workflow changes, bump `workflow_id` (e.g. `prices:aapl@v2`) to fork the run history.
+For compatible changes, keep the same IDs and preserve the meaning of every
+existing activity and timer ID. For intentionally incompatible behavior, use a
+new caller-owned workflow/run identity (for example,
+`workflow_id="prices:aapl:v2"`) or quiesce and reset the old run. Merely renaming
+a function or RPC method does not change storage identity.
+
+During an ordinary rolling application deploy, old and new replicas can both
+receive wakes. Route a workflow identity to one deployment generation or drain
+old replicas when alternating bodies would be unsafe. Record the Git SHA in
+annotations, logs, or traces when build provenance is useful.
 
 ## 6. Observability
 
@@ -584,6 +626,12 @@ For activity-level spans inside a workflow body, use your tracer directly inline
 - **Process crash with a create-only execution claim**: `workflow:execution` may remain and later invocations return `ClaimBusyError`, even after its lease timestamp. After confirming the old worker is gone, delete the exact claim through `ClaimStore.delete_claim` / `DeleteClaim`. CAS takeover is future-only.
 - **Storage unavailable**: `workflow.Run` returns the storage error. Caller's responsibility to retry.
 - **Schedule missed during outage**: `cronscheduler.Tick` catches up — it dispatches every fire time between `last_fire` and `now`.
+- **Manual event/dependency wait never re-invoked**: no timer exists unless the
+  wait supplied `PollOptions`. Dispatch from the event/upstream completion path
+  or enable durable polling with a stable timer ID.
+- **Event delivery rejected**: `NO_ATOMIC_CREATE` means the backend cannot
+  safely establish the first payload; a conflict means the same event key
+  already has a different payload. Do not fall back to `PutEvent`.
 - **Query index unavailable**: workflow execution, cron pointer seeding, and durable timer resumption continue. Listing, inspector search, and indexed sweeps fail until the index is back or rebuilt.
 
 ## 8. Deployment shape
@@ -593,10 +641,9 @@ The framework is platform-agnostic. The pieces you actually deploy:
 ```
 Workflow service     N replicas    serves the ConnectRPC trigger surface
 Cron scheduler tick  1/min         calls Scheduler.tick(now)
-Timer scanner tick   1/min         calls DueTimers + dispatches re-invocations
+Timer scanner tick   1/min         dispatches due sleep, retry, and poll wakes
 Janitor (optional)   1/day         quiesces eligible runs, then calls claim-aware RecordQueryService.Sweep
 Query index           optional      SQLite adapter for search and indexed retention
-Code version env     git short SHA bumped on breaking workflow body changes
 Storage credentials  S3 / GCS / Azure Blob via your secret manager
 Bucket               production-temporaless
 ```

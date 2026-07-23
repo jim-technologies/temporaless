@@ -37,6 +37,12 @@ option go_package = "github.com/jim-technologies/temporaless/core/go/gen/tempora
 // generates them — the application owns the ID scheme (e.g. `prices:aapl`,
 // `tweet:12345`, `llm:answer`).
 message WorkflowOptions {
+  // Field 3 was code_version. Temporaless deliberately resumes IN_PROGRESS
+  // runs with the currently registered handler; applications that need
+  // versioned behavior use distinct workflow identities or caller-owned IDs.
+  reserved 3;
+  reserved code_version;
+
   // Stable identifier for the workflow definition. Reused across runs.
   string workflow_id = 1 [
     (buf.validate.field).string = {
@@ -68,10 +74,6 @@ message WorkflowOptions {
       expression: "this != '.' && this != '..'"
     }
   ];
-  // Application-supplied build identity (git SHA, release tag, immutable build
-  // ID). Bumping it invalidates stored results because the digest changes.
-  // Defaults to the `TEMPORALESS_CODE_VERSION` env var, or `dev` when unset.
-  string code_version = 3;
   // Caller-supplied identity for workflow-execution, activity, and
   // concurrency-slot claims.
   // Non-empty opts the run into storage-backed single-flight execution and
@@ -173,6 +175,28 @@ message ActivityOptions {
   };
 }
 
+// PollOptions opts an event or workflow-dependency wait into durable polling.
+// The caller owns the timer ID. When absent, wait primitives preserve their
+// legacy storage-only behavior and rely on an application-triggered
+// re-invocation.
+message PollOptions {
+  string timer_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:=-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.poll_options.timer_id.not_dot_path"
+      message: "timer_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  google.protobuf.Duration interval = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration.gt = {}
+  ];
+}
+
 // DispatchOptions configures an in-process fire-and-forget dispatcher (the
 // `dispatch` adapter in each SDK). Native runtime knobs that can't be
 // expressed as data — the `OnError` hook, the pluggable `Queue` adapter for
@@ -201,6 +225,148 @@ message DispatchOptions {
   // entirely is intentionally not exposed: it's the framework's
   // opinionated default, the cost is one map entry per submission.
   google.protobuf.Duration task_ttl = 3;
+}
+
+// WorkflowPlan is an optional, display-oriented description of a workflow.
+//
+// It is deliberately not an execution language. Applications may place this
+// message inside their own workflow request, render it for approval, and then
+// compile it into ordinary Temporaless workflow code. The plan is
+// authoritative for intended topology; durable workflow/activity/timer/event
+// records are authoritative for what actually executed.
+//
+// A plan can describe loops without pretending every workflow is a DAG:
+// ordinary forward edges must remain acyclic, while an explicit LOOP_BACK edge
+// must touch a LOOP node. Adapter validators enforce those cross-field rules.
+message WorkflowPlan {
+  string plan_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:=-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_plan.plan_id.not_dot_path"
+      message: "plan_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  // Application-owned revision. A changed approved plan must use a new
+  // revision and a caller-owned execution identity that cannot replay records
+  // from the previous revision.
+  uint64 revision = 2 [(buf.validate.field).uint64.gt = 0];
+  repeated WorkflowPlanNode nodes = 3 [(buf.validate.field).repeated.min_items = 1];
+  repeated WorkflowPlanEdge edges = 4;
+  // Display/filter metadata only. Execution decisions must come from typed
+  // request fields or recorded activity results, never from annotations.
+  map<string, string> annotations = 5;
+}
+
+// WorkflowPlanNodeKind identifies the visual role of one node. These values do
+// not add new core execution primitives: adapters map them to existing
+// activities, sleeps, events, fan-out helpers, and workflow dependencies.
+enum WorkflowPlanNodeKind {
+  WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED = 0;
+  // A local unary protobuf handler or a remote protobuf RPC executed as an
+  // activity. Both use the same request -> response shape.
+  WORKFLOW_PLAN_NODE_KIND_ACTIVITY = 1;
+  // A decision activity whose protobuf response selects a conditional edge.
+  WORKFLOW_PLAN_NODE_KIND_BRANCH = 2;
+  // A structural grouping for concurrently executed activity nodes.
+  WORKFLOW_PLAN_NODE_KIND_FAN_OUT = 3;
+  // An explicit bounded loop. Iterations still need caller-supplied stable
+  // activity IDs; a LOOP_BACK edge is visualization metadata, not a scheduler.
+  WORKFLOW_PLAN_NODE_KIND_LOOP = 4;
+  // A durable workflow sleep; node_id conventionally equals timer_id.
+  WORKFLOW_PLAN_NODE_KIND_SLEEP = 5;
+  // A create-once event wait; node_id conventionally equals event_id.
+  WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT = 6;
+  // A wait for an explicitly identified workflow run. This is a dependency,
+  // not a claim of child-workflow lifecycle or cancellation semantics.
+  WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW = 7;
+}
+
+// WorkflowPlanNode describes one box in a visual workflow. Callable nodes name
+// their unary protobuf operation and concrete request/response descriptors.
+// The application registry or generated RPC descriptor remains authoritative;
+// validators reject a mismatch before execution.
+message WorkflowPlanNode {
+  // Stable application-owned identity. For activity, sleep, and event nodes,
+  // use this exact value as the corresponding activity_id, timer_id, or
+  // event_id so a UI can join the plan to durable records without inference.
+  string node_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:=-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_plan_node.node_id.not_dot_path"
+      message: "node_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string display_name = 2 [(buf.validate.field).string.min_len = 1];
+  string description = 3;
+  WorkflowPlanNodeKind kind = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Fully-qualified protobuf RPC procedure or application registry key for
+  // callable ACTIVITY and BRANCH nodes. Examples:
+  // `prices.v1.PriceService.Fetch` or `normalize:tweet`.
+  string operation = 5;
+  // Fully-qualified protobuf message names for callable nodes. These are
+  // metadata for validation/UI display; payloads remain concrete protobuf
+  // messages and are never converted to JSON or generic objects.
+  string request_type = 6 [(buf.validate.field).string = {pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"}];
+  string response_type = 7 [(buf.validate.field).string = {pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"}];
+  map<string, string> annotations = 8;
+}
+
+// WorkflowPlanEdgeKind describes why two visual nodes are connected.
+enum WorkflowPlanEdgeKind {
+  WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED = 0;
+  // Ordering dependency with no implied payload transfer.
+  WORKFLOW_PLAN_EDGE_KIND_CONTROL = 1;
+  // The complete protobuf response from the source becomes the complete
+  // protobuf request to the target. Validators require exact descriptor-name
+  // equality. Insert a typed transformation activity when shapes differ.
+  WORKFLOW_PLAN_EDGE_KIND_DATA = 2;
+  // A labelled route selected by a recorded branch-decision activity.
+  WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL = 3;
+  // Explicit loop visualization. The graph remains acyclic when LOOP_BACK
+  // edges are removed.
+  WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK = 4;
+}
+
+message WorkflowPlanEdge {
+  string source_node_id = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:=-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_plan_edge.source_node_id.not_dot_path"
+      message: "source_node_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  string target_node_id = 2 [
+    (buf.validate.field).string = {
+      min_len: 1
+      pattern: "^[A-Za-z0-9._:=-]+$"
+    },
+    (buf.validate.field).cel = {
+      id: "temporaless.workflow_plan_edge.target_node_id.not_dot_path"
+      message: "target_node_id must not be . or .."
+      expression: "this != '.' && this != '..'"
+    }
+  ];
+  WorkflowPlanEdgeKind kind = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Required for CONDITIONAL edges, optional display text otherwise.
+  string label = 4;
 }
 
 // TaskStatus mirrors the lifecycle of one `DoAsync` submission.
@@ -335,6 +501,11 @@ enum TimerKind {
   // from the next attempt. Its timer ID is supplied explicitly through
   // ActivityOptions.retry_timer_id.
   TIMER_KIND_ACTIVITY_RETRY = 2;
+  // Durable polling wake used by event and workflow-dependency waits. The
+  // caller supplies the timer ID through PollOptions. If the condition is
+  // still unresolved when the timer becomes due, the same timer is rearmed
+  // for the next interval.
+  TIMER_KIND_POLL = 3;
 }
 
 // ReservedNames is the canonical source of framework-reserved string
@@ -451,6 +622,36 @@ enum ClaimCapability {
   // release, and stale-claim takeover. The current core claim RPCs do not yet
   // expose those CAS operations.
   CLAIM_CAPABILITY_CAS_CLAIMS = 3;
+}
+
+// EventDeliveryCapability declares whether a store can atomically establish
+// the first payload for an EventKey. Adapters must not implement this with a
+// check-then-write sequence.
+enum EventDeliveryCapability {
+  EVENT_DELIVERY_CAPABILITY_UNSPECIFIED = 0;
+  EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE = 1;
+  EVENT_DELIVERY_CAPABILITY_CREATE_ONLY = 2;
+}
+
+// EventDeliveryDisposition describes a successful DeliverEvent operation.
+enum EventDeliveryDisposition {
+  EVENT_DELIVERY_DISPOSITION_UNSPECIFIED = 0;
+  EVENT_DELIVERY_DISPOSITION_CREATED = 1;
+  // The key already contained the same protobuf Any payload. The original
+  // EventRecord, including its received_at timestamp, remains authoritative.
+  EVENT_DELIVERY_DISPOSITION_IDEMPOTENT = 2;
+}
+
+enum EventDeliveryFailureReason {
+  EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED = 0;
+  EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED = 1;
+  EVENT_DELIVERY_FAILURE_REASON_CONFLICT = 2;
+}
+
+// Structured ConnectRPC error detail returned by DeliverEvent failures.
+message EventDeliveryErrorDetail {
+  EventDeliveryFailureReason reason = 1;
+  EventKey key = 2;
 }
 
 // WorkflowKey addresses a single workflow run.
@@ -772,9 +973,11 @@ message ActivityAttempt {
 // ActivityRecord captures everything the runtime needs to replay or resume an
 // activity. Stored at `activity/{activity_id}.binpb` under the workflow run.
 message ActivityRecord {
+  // Field 4 was code_version. Current handlers resume IN_PROGRESS runs.
   // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
-  reserved 5;
+  reserved 4, 5;
+  reserved code_version, input_digest;
 
   RecordSchemaVersion schema_version = 1;
   ActivityKey key = 2;
@@ -782,10 +985,6 @@ message ActivityRecord {
   // checked against the stored value on replay so a code change that swaps
   // input/output types fails loudly rather than returning a stale result.
   string activity_type = 3;
-  // Caller-supplied build identity. Replay compares stored vs current and
-  // rejects mismatch so a bumped code_version triggers re-execution (with
-  // a fresh activity_id or run_id) rather than silently replaying stale data.
-  string code_version = 4;
   google.protobuf.Any input = 6;
   ActivityStatus status = 7;
   // Set when status is COMPLETED.
@@ -810,7 +1009,7 @@ message ActivityRecord {
   // Normalized effective retry policy used to create this record. Absent
   // means single-attempt execution. RETRYING replay requires this policy to
   // match the caller's current policy so a deploy cannot silently change the
-  // remaining attempt count or backoff schedule under the same code_version.
+  // remaining attempt count or backoff schedule for the same activity.
   // Terminal records remain authoritative and retain the policy for audit.
   RetryPolicy retry_policy = 15;
   // Caller-supplied ID of the durable retry timer paired with this activity.
@@ -823,14 +1022,15 @@ message ActivityRecord {
 // WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
 // under the workflow run.
 message WorkflowRecord {
+  // Field 4 was code_version. Current handlers resume IN_PROGRESS runs.
   // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
-  reserved 5;
+  reserved 4, 5;
+  reserved code_version, input_digest;
 
   RecordSchemaVersion schema_version = 1;
   WorkflowKey key = 2;
   string workflow_type = 3;
-  string code_version = 4;
   google.protobuf.Any input = 6;
   WorkflowStatus status = 7;
   // Set when status is COMPLETED.
@@ -850,17 +1050,19 @@ message WorkflowRecord {
   google.protobuf.Timestamp run_order_time = 13;
 }
 
-// TimerRecord backs `workflow.Sleep`. Stored at `timer/{timer_id}.binpb`.
+// TimerRecord backs durable sleep, activity-retry backoff, and polling wakes.
+// Stored at `timer/{timer_id}.binpb`.
 message TimerRecord {
+  // Field 4 was code_version. Current handlers resume IN_PROGRESS runs.
   // Field 5 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
-  reserved 5;
+  reserved 4, 5;
+  reserved code_version, input_digest;
 
   RecordSchemaVersion schema_version = 1;
   TimerKey key = 2;
   TimerKind timer_kind = 3;
-  string code_version = 4;
-  // Original duration the workflow body asked to sleep for.
+  // Canonical interval for a sleep, activity retry, or poll timer.
   google.protobuf.Duration duration = 6;
   TimerStatus status = 7;
   // Wall-clock instant at which the timer becomes due. Schedulers compare this
@@ -871,7 +1073,8 @@ message TimerRecord {
   // terminal workflow record. A due timer remains SCHEDULED until that durable
   // boundary so a crash cannot consume its only wakeup.
   google.protobuf.Timestamp fired_at = 10;
-  // Activity paired with TIMER_KIND_ACTIVITY_RETRY. Empty for sleep timers.
+  // Activity paired with TIMER_KIND_ACTIVITY_RETRY. Empty for sleep and poll
+  // timers.
   // This reciprocal link lets replay reject two activities that accidentally
   // reuse one caller-supplied retry_timer_id.
   string retry_activity_id = 11;
@@ -879,12 +1082,15 @@ message TimerRecord {
 
 // EventRecord delivers an external signal payload to a waiting workflow.
 // Written by external services (webhook handlers, approval flows) via
-// `SendEvent` / `PutEvent`. Stored at `event/{event_id}.binpb`.
+// `DeliverEvent`. `PutEvent` is reserved for operators and migrations.
+// Stored at `event/{event_id}.binpb`.
 message EventRecord {
   RecordSchemaVersion schema_version = 1;
   EventKey key = 2;
-  // Application-typed payload packed as Any. The waiting workflow declares
-  // the expected message type via `WaitEvent`'s payload factory.
+  // Application-typed payload packed as Any. DeliverEvent helpers use
+  // deterministic protobuf bytes so byte-identical retries are idempotent.
+  // The waiting workflow declares the expected message type via `WaitEvent`'s
+  // payload factory.
   google.protobuf.Any payload = 3;
   google.protobuf.Timestamp received_at = 4;
 }
@@ -893,9 +1099,11 @@ message EventRecord {
 // at `claim/{claim_id}.binpb`. Write semantics depend on the backend's
 // `ClaimCapability`.
 message ClaimRecord {
+  // Field 6 was code_version. Build identity is not claim identity.
   // Field 7 was input_digest (SHA-256 fingerprint). Removed in v0.4: user-
   // supplied IDs are the contract; replay reuses by id, not by input bytes.
-  reserved 7;
+  reserved 6, 7;
+  reserved code_version, input_digest;
 
   RecordSchemaVersion schema_version = 1;
   ClaimKey key = 2;
@@ -906,7 +1114,6 @@ message ClaimRecord {
   ClaimResourceType resource_type = 4;
   // Domain ID of the resource being claimed (activity_id, timer_id, etc.).
   string resource_id = 5;
-  string code_version = 6;
   google.protobuf.Timestamp lease_expires_at = 8;
   google.protobuf.Timestamp created_at = 9;
   // Updated by CAS-capable adapters to extend the lease. Create-only adapters
@@ -1020,6 +1227,16 @@ message PutEventRequest {
 }
 
 message PutEventResponse {}
+
+// DeliverEventRequest atomically establishes the first payload for an event.
+// Unlike PutEvent, this operation never replaces an existing payload.
+message DeliverEventRequest {
+  EventRecord record = 1 [(buf.validate.field).required = true];
+}
+
+message DeliverEventResponse {
+  EventDeliveryDisposition disposition = 1;
+}
 
 // ListWorkflowsRequest filters by namespace, workflow_id, and status.
 message ListWorkflowsRequest {
@@ -1192,6 +1409,8 @@ message GetStoreCapabilitiesResponse {
   // workflows that omit those options retain at-least-once semantics and use
   // external idempotency keys for side effects.
   ClaimCapability claim_capability = 1;
+  // Whether DeliverEvent has distributed atomic create-if-absent semantics.
+  EventDeliveryCapability event_delivery_capability = 2;
 }
 
 // SweepRequest deletes every externally quiesced COMPLETED workflow run whose
@@ -1298,8 +1517,14 @@ service RecordStoreService {
   // Read a single signal/event record by key.
   rpc GetEvent(GetEventRequest) returns (GetEventResponse);
   // Deliver a signal payload to a waiting workflow. External services
-  // (webhooks, approvals) call this to wake up a `WaitEvent`.
+  // that intentionally need replace semantics may call this low-level point
+  // write. Prefer DeliverEvent for create-once external delivery.
   rpc PutEvent(PutEventRequest) returns (PutEventResponse);
+  // Atomically establish the first payload for an EventKey. An identical
+  // duplicate is idempotent; a different payload fails with
+  // FAILED_PRECONDITION. Backends without conditional creation reject the
+  // operation rather than emulating it with check-then-write.
+  rpc DeliverEvent(DeliverEventRequest) returns (DeliverEventResponse);
 
   // List all activity records under a single workflow run.
   rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);

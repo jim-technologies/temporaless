@@ -44,7 +44,6 @@ func TestRemoteWorkflowSingleFlightBusyReleaseAndReplay(t *testing.T) {
 	options := &workflow.Options{
 		WorkflowId:   "remote:singleflight",
 		RunId:        "run:1",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "worker:shared",
 	}
 	entered := make(chan struct{})
@@ -138,7 +137,6 @@ func TestRemoteWorkflowRejectsMissingClaimBackendBeforeWriting(t *testing.T) {
 	options := &workflow.Options{
 		WorkflowId:   "remote:no-claims",
 		RunId:        "run:1",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "worker",
 	}
 	bodyCalled := false

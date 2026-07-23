@@ -27,9 +27,8 @@ func BenchmarkWorkflowRunFreshExecution(b *testing.B) {
 			ctx,
 			store,
 			&workflow.Options{
-				WorkflowId:  "bench:fresh",
-				RunId:       fmt.Sprintf("run-%05d", i),
-				CodeVersion: "v1",
+				WorkflowId: "bench:fresh",
+				RunId:      fmt.Sprintf("run-%05d", i),
 			},
 			nil,
 			wrapperspb.String("input"),
@@ -60,9 +59,8 @@ func BenchmarkWorkflowRunReplay(b *testing.B) {
 	ctx := context.Background()
 
 	options := &workflow.Options{
-		WorkflowId:  "bench:replay",
-		RunId:       "shared",
-		CodeVersion: "v1",
+		WorkflowId: "bench:replay",
+		RunId:      "shared",
 	}
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		return workflow.ExecuteActivity(
@@ -121,9 +119,8 @@ func BenchmarkRetryLoopInProcess(b *testing.B) {
 			ctx,
 			store,
 			&workflow.Options{
-				WorkflowId:  "bench:retry",
-				RunId:       fmt.Sprintf("run-%05d", i),
-				CodeVersion: "v1",
+				WorkflowId: "bench:retry",
+				RunId:      fmt.Sprintf("run-%05d", i),
 			},
 			nil,
 			wrapperspb.String("input"),

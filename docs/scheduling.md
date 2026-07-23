@@ -1,6 +1,8 @@
 # Scheduling
 
-Temporaless does not keep a worker process alive for durable sleeps. A long sleep is a protobuf timer record.
+Temporaless does not keep a worker process alive for durable waits. Sleeps,
+activity-retry backoffs, and optional event/dependency polls are protobuf timer
+records.
 
 When workflow code calls sleep:
 
@@ -21,6 +23,7 @@ The core owns:
 - timer protobuf records
 - timer conflict detection
 - pending/fired state transitions during workflow replay
+- caller-identified `TIMER_KIND_POLL` rearming for opted-in waits
 
 Schedulers are adapters. A scheduler can be:
 
@@ -32,7 +35,7 @@ Schedulers are adapters. A scheduler can be:
 
 SQL is useful for interactive queries and very large operational views, but it should stay optional. The core should remain storage-first and stateless. In v2 storage, workflow IDs and namespaces beginning with `_` are reserved for system prefixes such as `_latest` and `_due`.
 
-The bundled scanner lists the compact due-timer ledger under `temporaless/v2/{namespace}/_due/`, returns timers with `TIMER_STATUS_SCHEDULED` and `fire_at <= now`, and attaches each timer's workflow record so callers have enough context to dispatch a re-invocation. Re-invocation itself is left to the caller because the right transport (HTTP, queue, in-process) varies by deployment.
+The bundled scanner lists the compact due-timer ledger under `temporaless/v2/{namespace}/_due/`, returns sleep, activity-retry, and poll timers with `TIMER_STATUS_SCHEDULED` and `fire_at <= now`, and attaches each timer's workflow record so callers have enough context to dispatch a re-invocation. Re-invocation itself is left to the caller because the right transport (HTTP, queue, in-process) varies by deployment.
 
 The scanner is an at-least-once wake source, not a queue acknowledgement
 protocol. A due timer remains visible across ticks until workflow replay
@@ -43,12 +46,53 @@ domain idempotency for external side effects.
 
 The same operation is exposed as the `DueTimers` RPC on `RecordStoreService`. When the storage backend lives behind ConnectRPC (`ConnectStore`), the client makes one round-trip and the server reads the due ledger locally.
 
+## Manual Waits And Optional Durable Polling
+
+Event and workflow-dependency waits do not create a timer by default. With
+`poll_options=None` in Python or a final `nil` in Go, the typed pending result
+leaves the workflow `IN_PROGRESS`, and the application must invoke it again.
+An event-delivery webhook will usually call `send_event` / `SendEvent` and then
+dispatch that same workflow run. A dependency wait can be retried by its
+upstream completion path, a backfill, or another application trigger.
+
+Callers that prefer scanner-driven rechecks can pass `PollOptions` with an
+explicit, stable timer ID and positive interval:
+
+```python
+await workflow.wait_event(
+    "approval",
+    Approval,
+    PollOptions(timer_id="poll:approval", interval=interval),
+)
+```
+
+```go
+workflow.WaitEvent(ctx, "approval", newApproval, &workflow.PollOptions{
+    TimerId:  "poll:approval",
+    Interval: durationpb.New(time.Minute),
+})
+```
+
+While the condition is unresolved, the wait writes or rearms that
+`TIMER_KIND_POLL` timer and returns a pending error containing the next wake
+time. `DueTimers` exposes it through the same at-least-once scanner as every
+other timer. Re-invocation rereads the authoritative event or upstream
+workflow; if it is still unresolved, Temporaless rearms the same caller-owned
+timer from the current time. Once resolved, the poll timer is consumed only
+after a later durable boundary, so a crash cannot remove its only wakeup.
+
+The timer ID and interval are replay contracts. Reusing the ID for another
+timer kind or changing the interval under the same run fails as a timer
+conflict. Polling controls re-invocation latency, not event delivery:
+`SendEvent` remains the atomic create-once write, and an application may still
+invoke immediately after delivery instead of waiting for the next poll tick.
+
 Every timer transition first overwrites one deterministic `_due` object for its
 `TimerKey`, including the full prepared `TimerRecord`, and then writes the
 canonical run-scoped timer point. The prepared object is a write-ahead overlay:
 `GetTimer` and `ListTimers` prefer it if a process dies between those writes, so
-replay retains the exact timer kind, duration, code version, status, and original
-deadline. Deletion writes a `CANCELED` tombstone before removing the point.
+replay retains the exact timer kind, duration, status, and original deadline.
+Deletion writes a `CANCELED` tombstone before removing the point.
 
 The scanner reconciles a missing, stale, or corrupt canonical point from that
 exact prepared record and does not dispatch it in the same scan. A later scan

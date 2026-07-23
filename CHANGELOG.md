@@ -13,6 +13,133 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-23
+
+### Added
+
+- `PollOptions` and `TIMER_KIND_POLL` let event and workflow-dependency waits
+  opt into a caller-identified durable polling wake. Omitting the options keeps
+  the existing storage-only/manual re-invocation model. Poll timers use the
+  same compact due ledger and crash-safe acknowledgement protocol as durable
+  sleeps, so no coordinator or always-on scheduler is required.
+- `DeliverEvent`, event-delivery capabilities, success dispositions, and
+  structured failure details provide an atomic create-once signal boundary.
+  Identical deterministic protobuf payloads are idempotent, conflicting
+  payloads fail closed, and backends without conditional creation report the
+  limitation instead of emulating it with check-then-write.
+- Python `gather_activities` and Go `AllActivities` provide structured,
+  all-settled parallel activity fan-out. They preserve input order, wait for
+  every started branch to reach its durable boundary, retain continuation
+  semantics, and aggregate multiple terminal failures.
+- Go, Python, and TypeScript storage clients now expose the event-delivery
+  capability and operation generated from `RecordStoreService`.
+- Optional protobuf-native visual workflow support adds `WorkflowPlan`
+  node/edge metadata, deterministic cross-SDK plan validation and digests, and
+  plan-versus-record projections for Go, Python, and TypeScript dashboards.
+  The plan is an approval/topology contract rather than a second execution
+  language; existing workflow activities, timers, events, and dependencies
+  remain the runtime.
+
+### Changed
+
+- The lockstep repository version is now 0.9.0 for every Go, Python,
+  TypeScript, and Rust SDK or adapter.
+- Invariant Protocol is pinned to the immutable v0.10.0 release commit
+  `44ba977dab0c9f43700b652c3b6b3dce62081fba`. Temporaless projections now use
+  Invariant's globally unambiguous `package.Service.Method` identities, and
+  the shared Protobuf-ES runtime advances to 2.13.0.
+- The experimental Rust gate now uses Rust 1.97.1, the patch release that fixes
+  an LLVM miscompilation affecting 1.97.0. Cargo's committed graph was
+  refreshed under that exact compiler and is aligned with a clean downstream
+  Git-SHA consumer.
+- Compatible Go, Python, Rust, and TypeScript dependency locks were refreshed
+  to their current patch or minor releases.
+- Application-facing `SendEvent` / `send_event` now require an
+  `EventDeliveryStore` and use atomic create-once semantics. `PutEvent` /
+  `put_event` remain explicit low-level replace operations for storage
+  services, migrations, and operator repair.
+- Core claim coordination now accepts only the capability its current
+  lifecycle RPCs can prove: atomic create-only claims. The CAS enum remains
+  reserved on the wire, but adapters that advertise it are rejected until
+  fencing and conditional refresh/release operations exist.
+- Caller cancellation, deadline expiry, and dependency-store outages are
+  workflow continuations: the parent remains `IN_PROGRESS` and can be
+  re-invoked instead of recording a misleading terminal business failure.
+- Application `code_version` fields and replay gates are removed. An
+  `IN_PROGRESS` run resumes with the handler supplied by its current
+  invocation, completed activity results remain authoritative, and
+  applications create incompatible/versioned behavior with caller-owned
+  workflow, run, or activity IDs. Build provenance belongs in annotations,
+  logs, or traces rather than durable identity.
+
+### Fixed
+
+- A resolved sleep or poll wake remains scheduled until the invocation commits
+  a later durable wake or terminal workflow record. A crash between observing
+  the condition and committing its successor therefore cannot consume the
+  run's only redelivery path.
+- Poll validation rejects protobuf durations that cannot round-trip exactly
+  through Go's `time.Duration` or Python's `timedelta`, preventing overflow,
+  saturation, and sub-microsecond busy loops. Persisted poll records are
+  checked for complete identity, kind, interval, timestamps, and lifecycle
+  state before they can be reused or resolved.
+- Event delivery and consumption reject incomplete records, mismatched remote
+  error details, unknown capabilities or dispositions, typed-nil payloads, and
+  corrupt existing delivery state. Remote corruption is preserved as
+  `DATA_LOSS` rather than being mistaken for an ordinary conflict.
+- Workflow-dependency helpers validate keys, poll options, and protobuf result
+  factories before storage I/O, and preserve storage outages as retryable
+  infrastructure continuations. Completed upstream records with missing or
+  malformed results are now classified as storage corruption, while a valid
+  result of the wrong protobuf type is a workflow conflict.
+- Protobuf generation now has one reproducible `scripts/generate` command that
+  refreshes every generated SDK plus the checked-in descriptor consumed by
+  Invariant Protocol.
+- The Rust Git-SHA install gate and committed `Cargo.lock` now resolve the same
+  third-party graph.
+
+### Upgrade notes
+
+- Repin every Go, Python, TypeScript, and Rust consumer to the same Temporaless
+  v0.9.0 Git tag or, for production, its immutable commit SHA. Temporaless
+  packages remain Git-only and continue to share one release version.
+- Remove `code_version` / `CodeVersion` from workflow options and record
+  construction. The deleted protobuf field names and numbers are reserved;
+  v0.8 binary records remain readable because their old scalar fields decode
+  as unknown data. This is nevertheless an application API and protobuf-JSON
+  breaking change. Quiesce v0.8 workers, deploy v0.9 across all languages as
+  one cutover, and do not roll an old worker back after v0.9 has written
+  records.
+- Existing `IN_PROGRESS` runs may combine stored activity results with current
+  handler code and the current invocation's input. Preserve boundary/input
+  meaning for compatible deploys; use a fresh caller-owned ID or the quiesced
+  child-first reset procedure for incompatible reprocessing.
+- Go callers must pass a final `*PollOptions` argument to `WaitEvent` and
+  `dependencies.WaitForWorkflow`; pass `nil` to preserve manual
+  re-invocation. Python exposes the equivalent optional `poll_options`
+  keyword.
+- Implementers of generated `RecordStoreService` servers must add
+  `DeliverEvent` and return `event_delivery_capability` from
+  `GetStoreCapabilities`. Custom local stores used by application-facing event
+  delivery must implement the corresponding optional `EventDeliveryStore`
+  seam.
+- Python OpenDAL backends advertise event delivery only when the binding
+  reports native `if_not_exists` writes. Go OpenDAL does not currently expose
+  that conditional-write primitive, so direct Go `SendEvent` fails as
+  unsupported; use a `ConnectStore` backed by a genuinely conditional service
+  or a narrow backend-specific adapter.
+- Existing v2 storage keys and well-formed workflow, activity, timer, event,
+  and claim records remain readable. Event records consumed as deliveries must
+  now contain both `payload` and a valid `received_at`. An idempotent retry
+  against a pre-v0.9 map-bearing event can conflict if its previously stored
+  `Any` bytes were not canonical; quiesce the run and redeliver or repair that
+  event explicitly rather than replacing it concurrently.
+- Invariant Protocol tool allowlists and selectors must use fully qualified
+  `package.Service.Method` identities.
+- Adapters that previously advertised `CAS_CLAIMS` must report
+  `CREATE_ONLY_CLAIMS` only when they truly provide atomic create-if-absent,
+  or `NO_CLAIMS` otherwise.
+
 ## [0.8.2] — 2026-07-17
 
 ### Added

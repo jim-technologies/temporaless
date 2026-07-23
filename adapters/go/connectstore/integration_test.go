@@ -45,9 +45,8 @@ func TestRemoteWorkflowRunEndToEnd(t *testing.T) {
 	// First run: an activity that fails twice before succeeding. RETRYING
 	// records get persisted between attempts via remote PutActivity calls.
 	options := &workflow.Options{
-		WorkflowId:  "remote:retry",
-		RunId:       "2026-05-04",
-		CodeVersion: "test-version",
+		WorkflowId: "remote:retry",
+		RunId:      "2026-05-04",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		MaximumAttempts: 3,

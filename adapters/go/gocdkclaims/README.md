@@ -6,7 +6,8 @@ This is a decision adapter, not a Temporal compatibility adapter.
 
 The adapter exists only because GoCDK Blob exposes `WriterOptions.IfNotExist`, which maps to native object-store create-if-absent behavior in supported drivers.
 
-OpenDAL remains the default storage layer for workflow, activity, and timer records.
+OpenDAL remains the default storage layer for workflow, activity, timer, and
+event records.
 
 ## Capability
 

@@ -57,7 +57,6 @@ func acquireConcurrencySlot(
 	concurrencyKey string,
 	limit uint32,
 	ownerID string,
-	codeVersion string,
 	leaseDuration time.Duration,
 ) (string, error) {
 	for i := uint32(0); i < limit; i++ {
@@ -78,7 +77,6 @@ func acquireConcurrencySlot(
 			OwnerId:        ownerID,
 			ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
 			ResourceId:     concurrencyKey,
-			CodeVersion:    codeVersion,
 			LeaseExpiresAt: timestamppb.New(now.Add(leaseDuration)),
 			CreatedAt:      timestamppb.New(now),
 			HeartbeatAt:    timestamppb.New(now),

@@ -105,6 +105,28 @@ func ValidateEventRecord(record *temporalessv1.EventRecord, requested EventKey) 
 	return nil
 }
 
+// ValidateEventDeliveryRecord applies the stricter application-delivery
+// contract. Low-level PutEvent intentionally remains permissive for operators
+// and migrations, but DeliverEvent always requires a payload and timestamp.
+func ValidateEventDeliveryRecord(
+	record *temporalessv1.EventRecord,
+	requested EventKey,
+) error {
+	if err := ValidateEventRecord(record, requested); err != nil {
+		return err
+	}
+	if record.GetPayload() == nil {
+		return corruptRecordf("event delivery payload is required")
+	}
+	if record.GetReceivedAt() == nil {
+		return corruptRecordf("event delivery received_at is required")
+	}
+	if err := record.GetReceivedAt().CheckValid(); err != nil {
+		return corruptRecordf("event delivery has invalid received_at: %v", err)
+	}
+	return nil
+}
+
 // ValidateClaimRecord validates a point-read claim payload against the key the
 // caller requested.
 func ValidateClaimRecord(record *temporalessv1.ClaimRecord, requested ClaimKey) error {

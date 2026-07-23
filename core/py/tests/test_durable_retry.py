@@ -50,7 +50,7 @@ def store(tmp_path):
 
 
 def _workflow(store) -> Workflow:
-    return Workflow(store, Options(workflow_id="wf", run_id="r", code_version="test"))
+    return Workflow(store, Options(workflow_id="wf", run_id="r"))
 
 
 def _make_duration(td: timedelta) -> Duration:
@@ -188,7 +188,6 @@ async def test_replay_before_fire_at_returns_pending(store):
             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
             key=key.to_proto(),
             activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
-            code_version="test",
             status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
             next_attempt_at=next_at,
             retry_policy=policy,
@@ -252,7 +251,6 @@ async def test_replay_after_fire_at_resumes(store):
             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
             key=activity_key.to_proto(),
             activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
-            code_version="test",
             status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
             next_attempt_at=next_at,
             retry_policy=policy,
@@ -279,7 +277,6 @@ async def test_replay_after_fire_at_resumes(store):
             schema_version=TIMER_RECORD_SCHEMA_VERSION,
             key=timer_key.to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
-            code_version="test",
             duration=duration_ts,
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_ts,
@@ -744,7 +741,7 @@ async def test_retry_timer_write_failure_is_nonterminal_and_redeliverable(
             activity,
         )
 
-    options = Options(workflow_id="wf", run_id="r", code_version="test")
+    options = Options(workflow_id="wf", run_id="r")
     with pytest.raises(TimerPendingError) as first:
         await run(store, options, StringValue(value="x"), StringValue, execute)
     assert isinstance(first.value.__cause__, RuntimeError)
@@ -883,7 +880,6 @@ async def test_prepared_retry_timer_rejects_malformed_state(
         schema_version=TIMER_RECORD_SCHEMA_VERSION,
         key=TimerKey(workflow_id="wf", run_id="r", timer_id=retry_timer_id).to_proto(),
         timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
-        code_version="test",
         duration=_make_duration(timedelta(minutes=10)),
         status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
         retry_activity_id=activity_id,
@@ -952,7 +948,6 @@ async def test_fired_prepared_retry_timer_is_rearmed_before_waiting(
         schema_version=TIMER_RECORD_SCHEMA_VERSION,
         key=TimerKey(workflow_id="wf", run_id="r", timer_id=retry_timer_id).to_proto(),
         timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
-        code_version="test",
         duration=_make_duration(timedelta(minutes=10)),
         status=temporaless_pb2.TIMER_STATUS_FIRED,
         retry_activity_id=activity_id,
@@ -1006,7 +1001,6 @@ async def test_lagging_retry_record_honors_newer_prepared_timer(
         schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
         key=ActivityKey(workflow_id="wf", run_id="r", activity_id=activity_id).to_proto(),
         activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
         failure=failure,
         attempts=[attempt],
@@ -1020,7 +1014,6 @@ async def test_lagging_retry_record_honors_newer_prepared_timer(
         schema_version=TIMER_RECORD_SCHEMA_VERSION,
         key=TimerKey(workflow_id="wf", run_id="r", timer_id=retry_timer_id).to_proto(),
         timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
-        code_version="test",
         duration=_make_duration(timedelta(minutes=2)),
         status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
         retry_activity_id=activity_id,
@@ -1120,7 +1113,7 @@ async def test_retrying_replay_advances_stale_timer_after_overwrite_failure(
 
 @pytest.mark.parametrize(
     "corruption",
-    ["wrong_kind", "wrong_activity", "wrong_code", "canceled", "newer", "newer_short"],
+    ["wrong_kind", "wrong_activity", "canceled", "newer", "newer_short"],
 )
 async def test_retrying_replay_rejects_incompatible_retry_timer(
     store: OpenDALStore,
@@ -1160,8 +1153,6 @@ async def test_retrying_replay_rejects_incompatible_retry_timer(
         timer.timer_kind = temporaless_pb2.TIMER_KIND_SLEEP
     elif corruption == "wrong_activity":
         timer.retry_activity_id = "other:activity"
-    elif corruption == "wrong_code":
-        timer.code_version = "other"
     elif corruption == "canceled":
         timer.status = temporaless_pb2.TIMER_STATUS_CANCELED
     elif corruption in ("newer", "newer_short"):
@@ -1244,7 +1235,7 @@ async def test_due_retry_timer_stays_scheduled_until_resumed_attempt_is_durable(
             activity,
         )
 
-    options = Options(workflow_id="wf", run_id="r", code_version="test")
+    options = Options(workflow_id="wf", run_id="r")
     with pytest.raises(TimerPendingError):
         await run(store, options, StringValue(value="x"), StringValue, execute)
     await _rewind_retry(store, "act:lost-wakeup")
@@ -1297,7 +1288,6 @@ async def test_terminal_record_survives_timer_cleanup_error_and_replay_heals(
         Options(
             workflow_id="wf",
             run_id="r",
-            code_version="test",
             claim_owner_id="worker:one",
         ),
     )

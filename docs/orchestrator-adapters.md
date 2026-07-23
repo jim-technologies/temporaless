@@ -45,9 +45,11 @@ Temporaless replay applies only when the wrapped handler itself calls a
 Temporaless core or canonical ConnectRPC workflow boundary.
 
 `TimerPendingError` and `EventPendingError` are not mapped to a Prefect paused
-state. A Temporaless run remains `IN_PROGRESS` and resumes through its scanner,
-while the invoking Prefect run observes an error. Use Prefect retries with the
-same application workflow/run IDs for short redelivery, or call the canonical
+state. A Temporaless run remains `IN_PROGRESS` while the invoking Prefect run
+observes an error. Sleeps and waits with explicit `PollOptions` can receive a
+later scanner dispatch; manual event/dependency waits need their application
+delivery/completion path to invoke the run. Use Prefect retries with the same
+application workflow/run IDs for short redelivery, or call the canonical
 ConnectRPC workflow from Prefect and treat `UNAVAILABLE` as pending. Do not
 claim that the two run-state machines are one lifecycle.
 

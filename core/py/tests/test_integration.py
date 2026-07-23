@@ -121,7 +121,6 @@ async def test_remote_workflow_run_end_to_end(remote_store) -> None:
     options = Options(
         workflow_id="remote:retry",
         run_id="2026-05-04",
-        code_version="test-version",
         claim_owner_id="remote-worker",
     )
     duration = Duration()
@@ -207,7 +206,6 @@ async def test_remote_workflow_singleflight_busy_release_and_replay(remote_store
     options = Options(
         workflow_id="remote:singleflight",
         run_id="run:1",
-        code_version="v1",
         claim_owner_id="worker:shared",
     )
     entered = asyncio.Event()
@@ -293,7 +291,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:
                 schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                 key=WorkflowKey(workflow_id="remote:sweep", run_id=run_id).to_proto(),
                 workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-                code_version="v1",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
                 completed_at=completed_at,
             )
@@ -316,7 +313,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:
             schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
             key=wf_key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-            code_version="v1",
             status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
         )
     )
@@ -325,7 +321,6 @@ async def test_remote_sweep_and_due_timers_round_trip(remote_store) -> None:
             schema_version=TIMER_RECORD_SCHEMA_VERSION,
             key=timer_key.to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
-            code_version="v1",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at,
         )

@@ -44,9 +44,22 @@ aws s3 ls s3://your-bucket/temporaless/v2/default/<wf_id>/<run_id>/
 
 **Common causes & fixes:**
 
-- **Pending timer that never fired** — the timer scanner stopped ticking. Verify your scheduler/CronJob is alive; restart it. The next tick will pick up overdue timers.
-- **Pending event that nothing's delivered** — find the event_id, deliver via `temporaless.send_event(store, key, payload)`.
-- **Pending dependency** (`WorkflowDependencyPendingError` mapped to `Unavailable`) — the upstream workflow hasn't completed. Check it with the same procedure recursively.
+- **Pending timer that never fired** — the timer scanner stopped ticking. Verify your scheduler/CronJob is alive; restart it. The next tick will pick up overdue sleep, activity-retry, and poll timers.
+- **Pending event that nothing's delivered** — find the event ID and deliver via
+  `temporaless.send_event(store, key, payload)`. It requires
+  `EVENT_DELIVERY_CAPABILITY_CREATE_ONLY`: unsupported means the deployed
+  backend lacks atomic create, while conflict means that key already contains
+  another payload. Do not overwrite it with `put_event`; inspect the canonical
+  event and fix the sender/key or follow a quiesced operator reset.
+- **Pending event with no wake after delivery** — a wait without `PollOptions`
+  is manual. Dispatch the same workflow run from the webhook after
+  `send_event`. If that integration cannot dispatch, add a stable poll timer
+  and ensure the scanner is running.
+- **Pending dependency** (`WorkflowDependencyPendingError` mapped to
+  `Unavailable`) — the upstream workflow has not completed. Check it with the
+  same procedure recursively. A dependency wait is also manual unless it
+  supplied `PollOptions`; either dispatch from upstream completion or operate
+  its poll timer.
 - **Worker crashed mid-execution without workflow claims** — re-invoke the workflow. Existing activity records replay; the body resumes from the first not-yet-recorded boundary with at-least-once execution at the missing boundary.
 - **Worker crashed while holding `workflow:execution`** — a create-only claim can remain after the process is gone. Confirm that no worker is still executing, then delete that exact key through `ClaimStore.delete_claim` / `DeleteClaim` before re-invoking. Its lease timestamp does not free it automatically.
 - **Activity claim retained after an ambiguous exit** — cancellation may have arrived after an external side effect, or storage may have failed after the activity returned. Confirm the old invocation is gone and reconcile the external side effect before deleting `activity:{activity_id}`. If the activity record is terminal or `RETRYING` with its timer present, normal cleanup should have released the claim; a retained claim then indicates cleanup failure.
@@ -234,21 +247,23 @@ guessing an ordering value from an opaque run ID.
 
 ---
 
-## 5. Workflow re-running its activity body on every call
+## 5. Changed code replayed an older activity result
 
-**Symptom:** A workflow that used to replay cleanly now returns an identity conflict after a deployment.
+**Symptom:** After a deployment, an `IN_PROGRESS` workflow uses a result written
+by the previous build instead of executing the changed activity body.
 
-**Cause:** `code_version` on the workflow `Options` changed. Activities replay
-on `(workflow_id, run_id, activity_id, code_version)`; a stored record with a
-different version is rejected rather than silently executed or reused.
+**Cause:** Activity IDs are replay identity. Current code resumes the workflow,
+but a terminal record for the same activity ID remains authoritative.
 
 **Fix:**
 
-- **If the change was intentional** (you deployed a body change that's
-  incompatible with old records): quiesce the run and use the child-first
-  reset procedure above, or start a new run ID.
-- **If the change was accidental** (you mistyped a version, or your deploy tool
-  injected a new SHA without you meaning it to): roll back `code_version`.
+- If the old result is still semantically valid, keep the ID and let it replay.
+- If the changed operation must execute, start a new run or use a new activity
+  ID.
+- To reprocess an existing run, stop all dispatchers and scanners for that
+  exact run, then use the child-first reset procedure above.
+- Use annotations, logs, or traces if operators need build-SHA provenance; it
+  does not affect replay.
 
 ---
 
@@ -260,14 +275,20 @@ different version is rejected rather than silently executed or reused.
 
 **Fix:**
 
-- For sleeps: ensure a timer-scanner tick is calling `due_timers` / `DueTimers`
+- For sleeps and durable retries: ensure a timer-scanner tick is calling
+  `due_timers` / `DueTimers`
   and dispatching every returned wake to the application workflow handler.
   The ConnectStore production server does not do this itself. Core
   `DueTimers` is unpaginated and materializes its selected namespace; partition
   namespaces and use an indexed due query or external scheduler when a timer
   backlog is too large for one bounded response.
-- For events: trace the workflow body to find the event_id it's waiting on, deliver it.
-- For upstream deps: backfill the upstream pipeline first, then re-run the dependent backfill. Backfill is idempotent — re-running the same set is free for already-`SUCCEEDED` entries.
+- For events: trace the workflow body to find the event ID, deliver it through
+  create-once `send_event`, then re-run the pending backfill entry. If the wait
+  supplied `PollOptions`, the timer scanner can perform that recheck instead.
+- For upstream deps: backfill the upstream pipeline first, then re-run the
+  dependent backfill. A dependency with `PollOptions` can be scanner-rechecked;
+  without it, re-running is required. Backfill is idempotent — re-running the
+  same set is free for already-`SUCCEEDED` entries.
 
 ```python
 report = await backfill(invoke, run_ids, concurrency=10)

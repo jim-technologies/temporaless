@@ -43,10 +43,9 @@ func TestDurableRetry_ShortBackoffStaysInProcess(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Millisecond),
@@ -101,10 +100,9 @@ func TestDurableRetry_ShortBackoffPersistsTimerIDAndResumes(t *testing.T) {
 	baseStore := newTestStore(t)
 	store := &cancelAfterRetryingStore{Store: baseStore, cancel: cancel}
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "short-resume",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "short-resume",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(time.Second),
@@ -191,10 +189,9 @@ func TestDurableRetry_LongBackoffPersistsAndBails(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(30 * time.Minute),
@@ -287,13 +284,12 @@ func TestDurableRetry_ReplayBeforeFireAtReturnsPending(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
-	// Seed a RETRYING record with next_attempt_at in the future. Activity
-	// type + code_version must match what runActivity will compute below.
+	// Seed a RETRYING record with next_attempt_at in the future. Activity type
+	// must match what runActivity will compute below.
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Minute),
 		BackoffCoefficient:      1.0,
@@ -311,7 +307,6 @@ func TestDurableRetry_ReplayBeforeFireAtReturnsPending(t *testing.T) {
 		SchemaVersion: storage.ActivityRecordSchemaVersion,
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   wf.codeVersion,
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 		NextAttemptAt: timestamppb.New(future),
 		CreatedAt:     timestamppb.Now(),
@@ -356,10 +351,9 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 
 	policy := &temporalessv1.RetryPolicy{
@@ -379,7 +373,6 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 		SchemaVersion: storage.ActivityRecordSchemaVersion,
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   wf.codeVersion,
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 		NextAttemptAt: timestamppb.New(past),
 		CreatedAt:     timestamppb.Now(),
@@ -408,7 +401,6 @@ func TestDurableRetry_ReplayAfterFireAtResumes(t *testing.T) {
 		SchemaVersion:   storage.TimerRecordSchemaVersion,
 		Key:             timerKey.Proto(),
 		TimerKind:       temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
-		CodeVersion:     wf.codeVersion,
 		Duration:        durationpb.New(time.Minute),
 		Status:          temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:          timestamppb.New(past),
@@ -466,10 +458,9 @@ func TestDurableRetry_SecondLongBackoffOverwritesTimer(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Minute),
@@ -564,10 +555,9 @@ func TestDurableRetry_PriorRetryAfterDoesNotCompoundNextPolicyDelay(t *testing.T
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "retry-after-resume",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "retry-after-resume",
 	}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Minute),
@@ -700,7 +690,7 @@ func TestRetryingActivityRejectsNegativePersistedRetryAfter(t *testing.T) {
 func TestDurableRetry_RetryingPolicyChangeConflictsBeforeExecution(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "policy-change", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "policy-change"}
 	original := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(time.Hour),
 		BackoffCoefficient:      2,
@@ -748,7 +738,7 @@ func TestDurableRetry_RetryingPolicyChangeConflictsBeforeExecution(t *testing.T)
 func TestDurableRetry_RetryTimerIDChangeConflictsBeforeExecution(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "timer-id-change", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "timer-id-change"}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(time.Hour),
 		BackoffCoefficient:      1,
@@ -808,10 +798,9 @@ func TestDurableRetry_CrashDuringDueAttemptLeavesWakeupScheduled(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			wf := &Workflow{
-				store:       store,
-				workflowID:  "wf",
-				runID:       "crash-" + strings.ReplaceAll(test.name, " ", "-"),
-				codeVersion: "test",
+				store:      store,
+				workflowID: "wf",
+				runID:      "crash-" + strings.ReplaceAll(test.name, " ", "-"),
 			}
 			if test.withClaims {
 				wf.claimStore = newTestClaimStore(t)
@@ -950,7 +939,7 @@ func TestDurableRetry_TimerCleanupFailurePreservesTerminalResultAndReplayRepairs
 	base := newTestStore(t)
 	cleanupErr := errors.New("timer cleanup write failed")
 	store := &retryTimerCleanupFailStore{Store: base, err: cleanupErr}
-	wf := &Workflow{store: store, workflowID: "wf", runID: "cleanup-failure", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "cleanup-failure"}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(time.Hour),
 		BackoffCoefficient:      1,
@@ -1060,7 +1049,7 @@ func TestDurableRetry_TimerCleanupFailureDoesNotFailCompletedWorkflow(t *testing
 		Store: base,
 		err:   errors.New("timer cleanup write failed"),
 	}
-	options := &Options{WorkflowId: "retry-cleanup-workflow", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "retry-cleanup-workflow", RunId: "run"}
 	policy := &RetryPolicy{
 		InitialInterval:         durationpb.New(time.Hour),
 		BackoffCoefficient:      1,
@@ -1149,10 +1138,9 @@ func TestSleepAllowsCallerChosenTimerIDWithoutFrameworkPrefixReservation(t *test
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	ctx = context.WithValue(ctx, workflowContextKey{}, wf)
 

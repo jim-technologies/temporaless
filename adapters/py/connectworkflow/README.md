@@ -17,7 +17,6 @@ class PriceService:
             options_for=lambda _service, request: Options(
                 workflow_id=f"prices:{request.symbol}",
                 run_id=request.run_id,
-                code_version="v1",
             ),
         )
     )

@@ -68,10 +68,11 @@ type CronConfig struct {
 	Interval time.Duration
 }
 
-// DueTimerDispatcher is invoked once per due timer the scanner finds. Typically
-// re-invokes the workflow handler so a durable workflow.Sleep resumes. Return
-// cleanly; the loop logs and continues on per-timer errors so one bad workflow
-// doesn't stall the whole scanner.
+// DueTimerDispatcher is invoked once per due sleep, activity-retry, or poll
+// timer the scanner finds. It typically re-invokes the workflow handler so
+// replay can cross that durable wake. Return cleanly; the loop logs and
+// continues on per-timer errors so one bad workflow doesn't stall the whole
+// scanner.
 type DueTimerDispatcher func(ctx context.Context, timer timerscanner.DueTimer) error
 
 // TimerScannerConfig polls timerscanner.DueTimers and invokes Dispatch for

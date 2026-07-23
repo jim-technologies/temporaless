@@ -27,7 +27,6 @@ func TestConcurrencyAcquireWhenFree(t *testing.T) {
 	opts := &temporalessv1.WorkflowOptions{
 		WorkflowId:       "wf",
 		RunId:            "r-1",
-		CodeVersion:      "test",
 		ClaimOwnerId:     "worker:free",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 3,
@@ -95,7 +94,6 @@ func TestConcurrencyBusyWhenFull(t *testing.T) {
 	opts := &temporalessv1.WorkflowOptions{
 		WorkflowId:       "wf",
 		RunId:            "r-1",
-		CodeVersion:      "test",
 		ClaimOwnerId:     "worker:busy",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 2,
@@ -144,7 +142,6 @@ func TestConcurrencyReleasedOnFailure(t *testing.T) {
 	opts := &temporalessv1.WorkflowOptions{
 		WorkflowId:       "wf",
 		RunId:            "r-failed",
-		CodeVersion:      "test",
 		ClaimOwnerId:     "worker:failure",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 2,
@@ -203,7 +200,6 @@ func TestConcurrencyMultipleWorkflowsObeyLimit(t *testing.T) {
 			opts := &temporalessv1.WorkflowOptions{
 				WorkflowId:       "wf",
 				RunId:            "r-" + intToASCII(int32(i)),
-				CodeVersion:      "test",
 				ClaimOwnerId:     "worker:" + intToASCII(int32(i)),
 				ConcurrencyKey:   "vendor:test",
 				ConcurrencyLimit: limit,
@@ -286,7 +282,6 @@ func TestConcurrencyStaleSameOwnerSlotIsNotReacquired(t *testing.T) {
 	opts := &temporalessv1.WorkflowOptions{
 		WorkflowId:       "wf",
 		RunId:            "r-1",
-		CodeVersion:      "test",
 		ClaimOwnerId:     ownerID,
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 1,
@@ -324,7 +319,6 @@ func TestConcurrencyRequiresClaimStore(t *testing.T) {
 	opts := &temporalessv1.WorkflowOptions{
 		WorkflowId:       "wf",
 		RunId:            "r",
-		CodeVersion:      "test",
 		ClaimOwnerId:     "worker:no-store",
 		ConcurrencyKey:   "vendor:test",
 		ConcurrencyLimit: 1,
@@ -366,7 +360,6 @@ func TestConcurrencyValidationPaired(t *testing.T) {
 			opts := &temporalessv1.WorkflowOptions{
 				WorkflowId:       "wf",
 				RunId:            "r",
-				CodeVersion:      "test",
 				ClaimOwnerId:     tc.owner,
 				ConcurrencyKey:   tc.key,
 				ConcurrencyLimit: tc.lim,

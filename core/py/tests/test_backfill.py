@@ -47,7 +47,6 @@ class _FetchService:
             options_for=lambda _self, request: Options(
                 workflow_id="prices",
                 run_id=request.value,
-                code_version="v1",
             ),
         )
     )
@@ -104,7 +103,6 @@ async def test_backfill_respects_concurrency_limit(store: OpenDALStore) -> None:
                 options_for=lambda _self, request: Options(
                     workflow_id="slow",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )
@@ -138,7 +136,6 @@ async def test_backfill_continues_past_failures_by_default(store: OpenDALStore) 
                 options_for=lambda _self, request: Options(
                     workflow_id="flaky",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )
@@ -175,7 +172,6 @@ async def test_backfill_halt_on_error_stops_after_first_failure(
                 options_for=lambda _self, request: Options(
                     workflow_id="halt",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )
@@ -219,7 +215,6 @@ async def test_backfill_reports_pending_for_workflows_that_stay_in_progress(
                 options_for=lambda _self, request: Options(
                     workflow_id="pending",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )

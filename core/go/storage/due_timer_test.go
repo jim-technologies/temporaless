@@ -36,7 +36,6 @@ func putDueTimerTestWorkflow(
 		SchemaVersion: WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        status,
 		CreatedAt:     timestamppb.New(now.Add(-time.Minute)),
 	}
@@ -54,7 +53,6 @@ func dueTimerTestRecord(key TimerKey, fireAt time.Time, status temporalessv1.Tim
 		SchemaVersion: TimerRecordSchemaVersion,
 		Key:           key.Proto(),
 		TimerKind:     SleepTimerKind,
-		CodeVersion:   "v1",
 		Duration:      durationpb.New(time.Minute),
 		Status:        status,
 		FireAt:        timestamppb.New(fireAt),
@@ -458,7 +456,6 @@ func TestOpenDALStoreLedgerFirstCrashPreservesExactTimer(t *testing.T) {
 	timerKey := TimerKey{Namespace: "alpha", WorkflowID: "workflow", RunID: "run", TimerID: "wake"}
 	putDueTimerTestWorkflow(t, store, workflowKey, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS, now)
 	prepared := dueTimerTestRecord(timerKey, now, temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED)
-	prepared.CodeVersion = "exact-version"
 	prepared.Duration = durationpb.New(10 * 365 * 24 * time.Hour)
 
 	ledgerPath, err := store.putDueEntry(ctx, prepared)
@@ -504,7 +501,8 @@ func TestOpenDALStoreDueTimersRecoversFromCorruptCanonicalPoint(t *testing.T) {
 	if err := store.PutTimer(ctx, dueTimerTestRecord(validKey, now, temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.putDueEntry(ctx, dueTimerTestRecord(corruptKey, now, temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED)); err != nil {
+	corruptPrepared := dueTimerTestRecord(corruptKey, now, temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED)
+	if _, err := store.putDueEntry(ctx, corruptPrepared); err != nil {
 		t.Fatal(err)
 	}
 	corruptPath, err := corruptKey.Path()
@@ -522,7 +520,7 @@ func TestOpenDALStoreDueTimersRecoversFromCorruptCanonicalPoint(t *testing.T) {
 		t.Fatalf("repaired due=%+v err=%v, want both prepared timers", due, err)
 	}
 	recovered, found, err := store.GetTimer(ctx, corruptKey)
-	if err != nil || !found || recovered.GetCodeVersion() != "v1" {
+	if err != nil || !found || !proto.Equal(recovered, corruptPrepared) {
 		t.Fatalf("corrupt point recovery=%v found=%v err=%v", recovered, found, err)
 	}
 }
@@ -550,7 +548,6 @@ func TestOpenDALStoreDueTimersReportsCorruptParentWorkflow(t *testing.T) {
 						RunID:      "other-run",
 					}).Proto(),
 					WorkflowType: "workflow:test",
-					CodeVersion:  "v1",
 					Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 					CreatedAt:    timestamppb.New(now.Add(-time.Minute)),
 				}

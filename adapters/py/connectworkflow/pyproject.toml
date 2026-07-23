@@ -1,6 +1,6 @@
 [project]
 name = "temporaless-connectworkflow"
-version = "0.8.2"
+version = "0.9.0"
 description = "ConnectRPC workflow handler adapter for Temporaless."
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,7 +8,7 @@ requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "connectrpc>=0.11.1",
-    "temporaless==0.8.2",
+    "temporaless==0.9.0",
 ]
 
 [project.urls]

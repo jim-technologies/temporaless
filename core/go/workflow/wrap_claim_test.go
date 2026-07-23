@@ -17,7 +17,6 @@ func TestWrapWorkflowPassesSingleFlightClaimStore(t *testing.T) {
 		Options: &Options{
 			WorkflowId:   "wrapped:claims",
 			RunId:        "run:1",
-			CodeVersion:  "v1",
 			ClaimOwnerId: "worker",
 		},
 		NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },

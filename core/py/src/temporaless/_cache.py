@@ -23,23 +23,31 @@ import asyncio
 from datetime import datetime
 
 from temporaless.storage import (
+    NO_ATOMIC_EVENT_DELIVERY,
     ActivityKey,
     ClaimCapability,
     ClaimKey,
     ClaimRunStore,
     ClaimStore,
     DueTimer,
+    EventDeliveryStore,
+    EventDeliveryUnsupportedError,
     EventKey,
+    RunRecordValidationError,
     Store,
     TimerKey,
     WorkflowKey,
     _activity_keys_for_run,
     _claim_keys_for_run,
+    _current_claim_capability,
     _event_keys_for_run,
+    _same_event_payload,
     _timer_keys_for_run,
     _validate_activity_record,
     _validate_claim_record,
     _validate_due_timer,
+    _validate_event_delivery_disposition,
+    _validate_event_delivery_record,
     _validate_event_record,
     _validate_latest_workflow_run_pointer,
     _validate_latest_workflow_run_reference,
@@ -365,6 +373,38 @@ class RunScopedCache:
             async with self._lock:
                 self._events[key.event_id] = record
 
+    async def event_delivery_capability(
+        self,
+    ) -> temporaless_pb2.EventDeliveryCapability:
+        if not isinstance(self._inner, EventDeliveryStore):
+            return NO_ATOMIC_EVENT_DELIVERY
+        return await self._inner.event_delivery_capability()
+
+    async def deliver_event(
+        self,
+        record: temporaless_pb2.EventRecord,
+    ) -> temporaless_pb2.EventDeliveryDisposition:
+        key = _validate_event_delivery_record(record)
+        if not isinstance(self._inner, EventDeliveryStore):
+            raise EventDeliveryUnsupportedError(
+                "underlying store does not support atomic event delivery"
+            )
+        disposition = _validate_event_delivery_disposition(await self._inner.deliver_event(record))
+        stored = await self._inner.get_event(key)
+        if stored is None:
+            raise RunRecordValidationError(
+                "atomic event delivery succeeded but the stored event could not be read"
+            )
+        _validate_event_delivery_record(stored, expected_key=key)
+        if not _same_event_payload(stored, record):
+            raise RunRecordValidationError(
+                "atomic event delivery succeeded with a different stored payload"
+            )
+        if self._in_scope(key.namespace, key.workflow_id, key.run_id):
+            async with self._lock:
+                self._events[key.event_id] = stored
+        return disposition
+
     async def list_events(self, key: WorkflowKey) -> list[temporaless_pb2.EventRecord]:
         if not self._in_scope(key.namespace, key.workflow_id, key.run_id):
             records = await self._inner.list_events(key)
@@ -398,7 +438,7 @@ class RunScopedCache:
 
     async def claim_capability(self) -> ClaimCapability:
         inner = self._require_claim_store()
-        return await inner.claim_capability()
+        return _current_claim_capability(await inner.claim_capability())
 
     async def get_claim(self, key: ClaimKey) -> temporaless_pb2.ClaimRecord | None:
         inner = self._require_claim_store()
@@ -409,11 +449,17 @@ class RunScopedCache:
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
         inner = self._require_claim_store()
+        capability = _current_claim_capability(await inner.claim_capability())
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
+            raise ValueError("configured claim store does not support atomic claim creation")
         _validate_claim_record(record)
         return await inner.try_create_claim(record)
 
     async def delete_claim(self, key: ClaimKey) -> bool:
         inner = self._require_claim_store()
+        capability = _current_claim_capability(await inner.claim_capability())
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
+            raise ValueError("configured claim store does not support claim release")
         return await inner.delete_claim(key)
 
     async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:

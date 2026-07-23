@@ -43,21 +43,30 @@ An activity execution is identified by:
 When workflow code starts or reaches an activity:
 
 1. Read the workflow or activity record from storage, keyed by the caller-supplied id (`workflow_id+run_id` for workflows; `activity_id` under the run for activities).
-2. If a completed record exists and the stored `workflow_type` / `activity_type` and `code_version` still match the current call, unmarshal and return the stored protobuf result.
+2. If a completed record exists and the stored `workflow_type` /
+   `activity_type` matches the current call, unmarshal and return the stored
+   protobuf result.
 3. If a failed record exists and the same identity checks pass, replay the stored failure rather than re-executing.
 4. If no record exists, write an `IN_PROGRESS` workflow record and execute. Activities follow the retry policy on `ActivityOptions` and persist completion or terminal failure with the full attempt log.
-5. If a record exists with a different `workflow_type` / `activity_type` (i.e. the request/response message types swapped) or a bumped `code_version`, fail loudly instead of returning stale data — bumping `code_version` is the explicit way to invalidate stored records.
+5. If a record exists with a different `workflow_type` / `activity_type`
+   (i.e. the request/response message types swapped), fail loudly instead of
+   returning stale data. To intentionally execute again, use a new caller-owned
+   activity or run ID, or perform the quiesced reset procedure.
 
 Workflow records can be observed mid-flight: an `IN_PROGRESS` record is written before the body runs and stays through timer/event/dependency pending, claim contention, and activity-claim cleanup failures that interrupt the body. On other body errors, the runtime updates the record to `FAILED` and replays that failure on subsequent invocations. If invocation-claim cleanup fails after a terminal record was already persisted, the cleanup error is surfaced but the record remains terminal. Claim-capability rejection happens before the `IN_PROGRESS` write.
 
 Activities and workflows can attach durable structured metadata via `workflow.Annotate(ctx, key, value)` (Go) or `temporaless.workflow.annotate(key, value)` (Python). Annotations are scoped to whichever record is currently being written — activity annotations land on the `ActivityRecord`, workflow-body annotations land on the `WorkflowRecord` — and survive replay because they are persisted alongside the result.
 
-External services deliver signals by writing `EventRecord` payloads at
+External services deliver signals with create-once `DeliverEvent` /
+`SendEvent` at
 `temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb`.
+Identical delivery retries are idempotent; a different payload conflicts, and
+a store without atomic create-if-absent support rejects the operation.
 Workflow code calls `WaitEvent` (Go) or `Workflow.wait_event` (Python) and gets
-either the typed payload or an `EventPendingError` that the caller treats just
-like a timer pending — re-invoke later. This stays storage-first and requires no
-signal server.
+either the typed payload or an `EventPendingError`. With no `PollOptions`, the
+application must re-invoke the run after delivery. With caller-owned poll
+options, the pending wait persists a timer that the ordinary due scanner uses
+to recheck the event. This stays storage-first and requires no signal server.
 
 The activity ID is the primary workflow authoring responsibility. It must be stable and meaningful. Reusing the same activity ID intentionally replays the stored result regardless of the new input bytes — pick a distinct id when you want a distinct execution.
 
@@ -67,9 +76,24 @@ Every workflow and activity accepts exactly one protobuf request and returns exa
 
 Shared runtime options are protobuf messages. Go and Python both use generated `WorkflowOptions` and `ActivityOptions` instead of parallel handwritten option classes.
 
-Shared framework constants are protobuf enums. Record schema versions, timer kinds, claim resource types, and claim capabilities are declared once in `temporaless.v1` and consumed from generated Go and Python code.
+Shared framework constants are protobuf enums. Record schema versions, timer
+kinds, claim resource types/capabilities, and event-delivery
+capabilities/dispositions are declared once in `temporaless.v1` and consumed
+from generated Go and Python code.
 
-The point-storage RPC layer is defined by `temporaless.v1.RecordStoreService`. It includes workflow, activity, timer, event, claim, latest-pointer, due-ledger, and capability calls. Local OpenDAL stores still need small language-specific infrastructure code to render object paths and invoke each binding, but the records, keys, statuses, capabilities, and RPC messages are generated from protobuf.
+`temporaless.v1.WorkflowPlan` is an optional visualization and approval
+contract. It describes application-owned nodes and edges but is not interpreted
+by core replay. A visual product validates and approves the plan, compiles it
+to ordinary workflow code, and projects the resulting activity/timer/event
+records back onto stable node IDs. This keeps graph editors optional and avoids
+adding a JSON expression language or control plane to the core.
+
+The point-storage RPC layer is defined by
+`temporaless.v1.RecordStoreService`. It includes workflow, activity, timer,
+create-once event delivery, claim, latest-pointer, due-ledger, and capability
+calls. Local OpenDAL stores still need small language-specific infrastructure
+code to render object paths and invoke each binding, but the records, keys,
+statuses, capabilities, and RPC messages are generated from protobuf.
 
 `RecordStoreService` is the cross-language core durability contract. Treat the generated protobuf request/response service shape as canonical, not the network hop. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as an in-process service client or use generated ConnectRPC clients for remote storage. Cross-run listing, inspector search, and indexed retention live on optional `RecordQueryService` implementations. SQL and DuckLake-style stores should implement these service contracts as adapters rather than changing replay semantics. Local bucket-backed query fallbacks are for development and small deployments only; production query/search/retention should use an indexed `RecordQueryService`.
 
@@ -152,8 +176,21 @@ ConnectRPC is the transport layer for boundaries that need RPC:
 
 The first version can work directly with storage without a server. ConnectRPC is still in the protobuf contract so the boundary is clear when we need it.
 
-## Versioning Convention
+## Application Changes
 
-Records carry `code_version` and the runtime rejects replay when it changes — that's the explicit invalidation lever for any change incompatible with stored records. Production deployments should set `TEMPORALESS_CODE_VERSION` to a git SHA, release tag, or immutable build ID.
+Temporaless does not pin runs to historical application builds. An
+`IN_PROGRESS` run executes the handler supplied by its current invocation;
+terminal workflow and activity records remain authoritative replay. Completed
+activities therefore retain their stored protobuf results while previously
+unrecorded work uses current code.
 
-The default value is `dev`, which is useful locally but intentionally unsafe as a long-term production convention.
+Applications that need two implementations to coexist use distinct
+caller-owned workflow/run/activity IDs or distinct protobuf message identities.
+Changing only a function or RPC method name does not change storage identity.
+Build SHAs belong in annotations, logs, or traces for diagnostics, not in replay
+identity.
+
+This convention favors small, stateless deployments over an executable-artifact
+catalog. Deploy workflow changes additively, preserve the meaning of existing
+boundary IDs, and use a new run identity or an explicit quiesced reset for
+incompatible behavior.

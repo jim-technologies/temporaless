@@ -67,7 +67,6 @@ async def _temporaless_run(symbol: StringValue) -> StringValue:
         temporaless.Options(
             workflow_id="prices:portability",
             run_id="2026-05-04",
-            code_version="test",
         ),
         symbol,
         StringValue,

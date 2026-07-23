@@ -6,6 +6,7 @@ import pytest
 from google.protobuf.any_pb2 import Any
 from google.protobuf.duration_pb2 import Duration
 from google.protobuf.message import DecodeError
+from google.protobuf.struct_pb2 import Struct
 from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import Int32Value, StringValue
 from protovalidate import ValidationError
@@ -13,14 +14,18 @@ from protovalidate import ValidationError
 from temporaless.storage import (
     CLAIM_RECORD_SCHEMA_VERSION,
     CREATE_ONLY_CLAIMS,
+    CREATE_ONLY_EVENT_DELIVERY,
     EVENT_RECORD_SCHEMA_VERSION,
     ActivityKey,
     ClaimKey,
+    EventDeliveryConflictError,
     EventKey,
     OpenDALStore,
+    RunRecordValidationError,
     TimerKey,
     WorkflowKey,
     _due_entry_path,
+    deliver_event,
 )
 from temporaless.timerscanner import due_timers
 from temporaless.v1 import temporaless_pb2
@@ -32,6 +37,7 @@ from temporaless.workflow import (
     ClaimBusyError,
     EventPendingError,
     Options,
+    PollOptions,
     RetryPolicy,
     TimerConflictError,
     TimerPendingError,
@@ -40,6 +46,7 @@ from temporaless.workflow import (
     WorkflowInfrastructureError,
     WorkflowWrapOptions,
     annotate,
+    gather_activities,
     run,
     wrap_activity,
     wrap_workflow,
@@ -76,7 +83,7 @@ async def test_activity_replay(
 ) -> None:
     workflow = Workflow(
         store,
-        Options(workflow_id="prices:symbol", run_id="2026-05-02", code_version="test"),
+        Options(workflow_id="prices:symbol", run_id="2026-05-02"),
     )
     executions = 0
 
@@ -122,7 +129,7 @@ async def test_activity_replay_rejects_failed_record_without_failure(
 ) -> None:
     workflow = Workflow(
         store,
-        Options(workflow_id="prices:malformed-activity", run_id="run", code_version="test"),
+        Options(workflow_id="prices:malformed-activity", run_id="run"),
     )
     key = ActivityKey(
         workflow_id="prices:malformed-activity",
@@ -134,7 +141,6 @@ async def test_activity_replay_rejects_failed_record_without_failure(
             schema_version=temporaless_pb2.RECORD_SCHEMA_VERSION_ACTIVITY,
             key=key.to_proto(),
             activity_type=("activity:google.protobuf.StringValue->google.protobuf.StringValue"),
-            code_version="test",
             status=temporaless_pb2.ACTIVITY_STATUS_FAILED,
         )
     )
@@ -183,7 +189,6 @@ async def test_activity_claim_busy_and_expired(
         owner_id="other-owner",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
         resource_id="fetch:symbol",
-        code_version="test",
         lease_expires_at=expires_at,
         created_at=created_at,
         heartbeat_at=created_at,
@@ -195,7 +200,6 @@ async def test_activity_claim_busy_and_expired(
         Options(
             workflow_id="prices:claims",
             run_id="2026-05-02",
-            code_version="test",
             claim_owner_id="this-owner",
         ),
     )
@@ -256,7 +260,7 @@ async def test_workflow_replay(
 
     first = await run(
         store,
-        Options(workflow_id="prices:symbol", run_id="2026-05-02", code_version="test"),
+        Options(workflow_id="prices:symbol", run_id="2026-05-02"),
         StringValue(value=first_input),
         StringValue,
         execute,
@@ -267,7 +271,7 @@ async def test_workflow_replay(
         with pytest.raises(want_error):
             await run(
                 store,
-                Options(workflow_id="prices:symbol", run_id="2026-05-02", code_version="test"),
+                Options(workflow_id="prices:symbol", run_id="2026-05-02"),
                 StringValue(value=next_input),
                 StringValue,
                 execute,
@@ -277,7 +281,7 @@ async def test_workflow_replay(
 
     second = await run(
         store,
-        Options(workflow_id="prices:symbol", run_id="2026-05-02", code_version="test"),
+        Options(workflow_id="prices:symbol", run_id="2026-05-02"),
         StringValue(value=next_input),
         StringValue,
         execute,
@@ -303,7 +307,6 @@ async def test_activity_rejects_wrong_response_type_without_persisting_success(
         Options(
             workflow_id=f"prices:wrong-activity-result:{case_id}",
             run_id="run",
-            code_version="test",
         ),
     )
     executions = 0
@@ -363,7 +366,6 @@ async def test_workflow_rejects_wrong_response_type_and_replays_terminal_failure
     options = Options(
         workflow_id=f"prices:wrong-workflow-result:{case_id}",
         run_id="run",
-        code_version="test",
     )
     executions = 0
 
@@ -395,7 +397,6 @@ async def test_corrupt_primitive_record_is_terminal_not_retryable_infrastructure
     options = Options(
         workflow_id=f"prices:corrupt-{primitive}",
         run_id="run",
-        code_version="test",
     )
     if primitive == "activity":
         corrupt_key = ActivityKey(
@@ -459,7 +460,6 @@ async def test_run_order_time_is_persisted_and_immutable(store: OpenDALStore) ->
     options = Options(
         workflow_id="prices:ordered",
         run_id="opaque:run",
-        code_version="test",
         run_order_time=first_order,
     )
     with pytest.raises(EventPendingError):
@@ -481,7 +481,6 @@ async def test_run_order_time_is_persisted_and_immutable(store: OpenDALStore) ->
             Options(
                 workflow_id="prices:ordered",
                 run_id="opaque:run",
-                code_version="test",
                 run_order_time=changed_order,
             ),
             StringValue(value="AAPL"),
@@ -499,12 +498,11 @@ async def test_activity_key_rejects_invalid_workflow_ids(workflow_id: str) -> No
 @pytest.mark.parametrize(
     ("options", "want_error"),
     [
-        (Options(workflow_id="prices:ids", run_id="", code_version="test"), ValidationError),
+        (Options(workflow_id="prices:ids", run_id=""), ValidationError),
         (
             Options(
                 workflow_id="prices:ids",
                 run_id="2026-05-02",
-                code_version="test",
                 claim_owner_id=".",
             ),
             ValidationError,
@@ -556,7 +554,6 @@ async def test_rpc_workflow_decorators(
                 options=Options(
                     workflow_id="prices:wrapped",
                     run_id="2026-05-02",
-                    code_version="test",
                     claim_owner_id="decorator-worker",
                 ),
             ),
@@ -569,7 +566,6 @@ async def test_rpc_workflow_decorators(
                 options_for=lambda request: Options(
                     workflow_id=f"prices:{request.value}",
                     run_id="2026-05-02",
-                    code_version="test",
                 ),
             ),
             StringValue,
@@ -603,7 +599,6 @@ async def test_rpc_activity_decorators(
         Options(
             workflow_id="prices:activity-wrapper",
             run_id=decorator_name,
-            code_version="test",
         ),
     )
     executions = 0
@@ -662,7 +657,7 @@ async def test_sleep(
         with pytest.raises(want_error):
             await run(
                 store,
-                Options(workflow_id="prices:sleep", run_id="2026-05-02", code_version="test"),
+                Options(workflow_id="prices:sleep", run_id="2026-05-02"),
                 StringValue(value="AAPL"),
                 StringValue,
                 execute,
@@ -672,7 +667,7 @@ async def test_sleep(
 
     result = await run(
         store,
-        Options(workflow_id="prices:sleep", run_id="2026-05-02", code_version="test"),
+        Options(workflow_id="prices:sleep", run_id="2026-05-02"),
         StringValue(value="AAPL"),
         StringValue,
         execute,
@@ -686,7 +681,7 @@ async def test_sleep_rejects_negative_duration_without_writing_timer(
 ) -> None:
     workflow = Workflow(
         store,
-        Options(workflow_id="prices:negative-sleep", run_id="run", code_version="test"),
+        Options(workflow_id="prices:negative-sleep", run_id="run"),
     )
 
     with pytest.raises(ValueError, match="must not be negative"):
@@ -731,7 +726,7 @@ async def test_sleep_replay_rejects_malformed_timer_state(
     store = OpenDALStore(operator)
     workflow = Workflow(
         store,
-        Options(workflow_id="prices:malformed-sleep", run_id="run", code_version="test"),
+        Options(workflow_id="prices:malformed-sleep", run_id="run"),
     )
     timer_id = "wait:malformed"
     duration = timedelta(hours=1)
@@ -799,7 +794,7 @@ async def test_sleep_resumes_after_stored_timer_is_due(store: OpenDALStore) -> N
     with pytest.raises(TimerPendingError):
         await run(
             store,
-            Options(workflow_id="prices:sleep", run_id="2026-05-02", code_version="test"),
+            Options(workflow_id="prices:sleep", run_id="2026-05-02"),
             StringValue(value="AAPL"),
             StringValue,
             execute,
@@ -817,7 +812,7 @@ async def test_sleep_resumes_after_stored_timer_is_due(store: OpenDALStore) -> N
 
     result = await run(
         store,
-        Options(workflow_id="prices:sleep", run_id="2026-05-02", code_version="test"),
+        Options(workflow_id="prices:sleep", run_id="2026-05-02"),
         StringValue(value="AAPL"),
         StringValue,
         execute,
@@ -832,7 +827,6 @@ async def test_due_sleep_stays_redeliverable_through_crash_and_claim_busy(
     options = Options(
         workflow_id="prices:sleep-redelivery",
         run_id="2026-05-02",
-        code_version="test",
         claim_owner_id="worker:one",
     )
     entered_suffix = asyncio.Event()
@@ -905,7 +899,6 @@ async def test_activity_claim_busy_after_due_sleep_keeps_wakeup_scheduled(
     options = Options(
         workflow_id="prices:sleep-activity-busy",
         run_id="2026-05-02",
-        code_version="test",
         claim_owner_id="workflow-worker",
     )
     activity_calls = 0
@@ -954,7 +947,6 @@ async def test_activity_claim_busy_after_due_sleep_keeps_wakeup_scheduled(
             owner_id="other-activity-worker",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
             resource_id="fetch",
-            code_version="test",
             lease_expires_at=expires_at,
             created_at=now,
             heartbeat_at=now,
@@ -986,7 +978,6 @@ async def test_later_sleep_is_durable_successor_before_due_timer_ack(
     options = Options(
         workflow_id="prices:sleep-successor",
         run_id="2026-05-02",
-        code_version="test",
     )
 
     async def execute(workflow: Workflow, request: StringValue) -> StringValue:
@@ -1040,7 +1031,6 @@ async def test_failed_terminal_write_leaves_due_sleep_redeliverable(
     options = Options(
         workflow_id="prices:sleep-terminal-write",
         run_id="2026-05-02",
-        code_version="test",
     )
 
     async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
@@ -1119,7 +1109,6 @@ async def test_sleep_ack_failure_does_not_replace_terminal_outcome(
     options = Options(
         workflow_id="prices:sleep-ack-failure",
         run_id="2026-05-02",
-        code_version="test",
     )
 
     async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
@@ -1195,7 +1184,6 @@ async def test_annotations_persist_on_workflow_and_activity(store: OpenDALStore)
         Options(
             workflow_id="prices:annotations",
             run_id="2026-05-02",
-            code_version="test",
         ),
         StringValue(value="AAPL"),
         StringValue,
@@ -1236,7 +1224,6 @@ async def test_workflow_annotations_survive_continuation_replay(
     options = Options(
         workflow_id=f"annotations:{type(pending_error).__name__}",
         run_id="run",
-        code_version="v1",
     )
 
     async def execute(_workflow: Workflow, _request: StringValue) -> StringValue:
@@ -1267,7 +1254,6 @@ async def test_workflow_accessors_expose_ids(store: OpenDALStore) -> None:
     async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
         assert workflow.workflow_id == "prices:accessors"
         assert workflow.run_id == "2026-05-02"
-        assert workflow.code_version == "v42"
         return StringValue(value="ok")
 
     await run(
@@ -1275,7 +1261,6 @@ async def test_workflow_accessors_expose_ids(store: OpenDALStore) -> None:
         Options(
             workflow_id="prices:accessors",
             run_id="2026-05-02",
-            code_version="v42",
         ),
         StringValue(value="AAPL"),
         StringValue,
@@ -1301,6 +1286,71 @@ async def test_send_event_delivers_waitable_event(store: OpenDALStore) -> None:
     assert record.received_at.seconds > 0
 
 
+async def test_deliver_event_is_create_once_idempotent_and_canonical(
+    store: OpenDALStore,
+) -> None:
+    assert await store.event_delivery_capability() == CREATE_ONLY_EVENT_DELIVERY
+    key = EventKey(
+        workflow_id="prices:deliver-event",
+        run_id="2026-05-02",
+        event_id="approval",
+    )
+    first_payload = Struct()
+    first_payload.update(
+        {
+            "symbol": "AAPL",
+            "prices": {"open": 200.0, "close": 204.0},
+        }
+    )
+    first = await deliver_event(store, key, first_payload)
+    assert first == temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED
+    original = await store.get_event(key)
+    assert original is not None
+
+    retry_payload = Struct()
+    retry_payload.update(
+        {
+            "prices": {"close": 204.0, "open": 200.0},
+            "symbol": "AAPL",
+        }
+    )
+    retry = await deliver_event(store, key, retry_payload)
+    assert retry == temporaless_pb2.EVENT_DELIVERY_DISPOSITION_IDEMPOTENT
+    retained = await store.get_event(key)
+    assert retained is not None
+    assert retained.received_at == original.received_at
+
+    with pytest.raises(EventDeliveryConflictError) as captured:
+        await deliver_event(store, key, StringValue(value="different"))
+    assert captured.value.key == key
+
+
+async def test_deliver_event_concurrent_conflict_has_one_winner(
+    store: OpenDALStore,
+) -> None:
+    key = EventKey(
+        workflow_id="prices:deliver-race",
+        run_id="2026-05-02",
+        event_id="approval",
+    )
+    outcomes = await asyncio.gather(
+        deliver_event(store, key, StringValue(value="approved")),
+        deliver_event(store, key, StringValue(value="rejected")),
+        return_exceptions=True,
+    )
+    assert (
+        sum(
+            item == temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED
+            for item in outcomes
+            if isinstance(item, int)
+        )
+        == 1
+    )
+    conflicts = [item for item in outcomes if isinstance(item, EventDeliveryConflictError)]
+    assert len(conflicts) == 1
+    assert conflicts[0].key == key
+
+
 async def test_wait_event_returns_pending_then_resumes(store: OpenDALStore) -> None:
     executions = 0
 
@@ -1310,7 +1360,7 @@ async def test_wait_event_returns_pending_then_resumes(store: OpenDALStore) -> N
         payload = await workflow.wait_event("approval", StringValue)
         return StringValue(value=f"approved:{payload.value}")
 
-    options = Options(workflow_id="prices:event", run_id="2026-05-02", code_version="test")
+    options = Options(workflow_id="prices:event", run_id="2026-05-02")
     with pytest.raises(EventPendingError):
         await run(store, options, StringValue(value="AAPL"), StringValue, execute)
 
@@ -1341,6 +1391,366 @@ async def test_wait_event_returns_pending_then_resumes(store: OpenDALStore) -> N
     assert executions == 2
 
 
+async def test_wait_event_without_poll_remains_manual(store: OpenDALStore) -> None:
+    options = Options(
+        workflow_id="prices:event-manual",
+        run_id="run",
+    )
+
+    async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue)
+
+    with pytest.raises(EventPendingError) as captured:
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    assert captured.value.wake_at is None
+    assert (
+        await store.list_timers(
+            WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id),
+            temporaless_pb2.TIMER_STATUS_UNSPECIFIED,
+        )
+        == []
+    )
+
+
+async def test_wait_event_poll_schedules_reuses_and_rearms_due_timer(
+    store: OpenDALStore,
+) -> None:
+    options = Options(
+        workflow_id="prices:event-poll",
+        run_id="run",
+    )
+    poll = PollOptions(timer_id="poll:approval", interval=_duration(timedelta(hours=1)))
+
+    async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, poll)
+
+    async def run_once() -> EventPendingError:
+        with pytest.raises(EventPendingError) as captured:
+            await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+        return captured.value
+
+    first = await run_once()
+    assert first.wake_at is not None
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=poll.timer_id,
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.timer_kind == temporaless_pb2.TIMER_KIND_POLL
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+    first_fire_at = timer.fire_at.ToDatetime(tzinfo=UTC)
+    due = await due_timers(store, first_fire_at + timedelta(seconds=1))
+    assert [item.key for item in due] == [timer_key]
+    assert due[0].workflow.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS
+
+    second = await run_once()
+    assert second.wake_at == first.wake_at
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.fire_at.ToDatetime(tzinfo=UTC) == first_fire_at
+
+    timer.fire_at.FromDatetime(datetime.now(UTC) - timedelta(minutes=1))
+    await store.put_timer(timer)
+    rearm_started = datetime.now(UTC)
+    third = await run_once()
+    assert third.wake_at is not None
+    assert third.wake_at > rearm_started
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+    assert not timer.HasField("fired_at")
+    assert timer.fire_at.ToDatetime(tzinfo=UTC) == third.wake_at
+
+
+async def test_resolved_poll_retains_crash_wake_then_terminal_acknowledges(
+    store: OpenDALStore,
+) -> None:
+    from temporaless.storage import send_event
+
+    options = Options(
+        workflow_id="prices:event-poll-resolve",
+        run_id="run",
+    )
+    poll = PollOptions(timer_id="poll:approval", interval=_duration(timedelta(hours=1)))
+
+    async def pending(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, poll)
+
+    with pytest.raises(EventPendingError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, pending)
+    await send_event(
+        store,
+        EventKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            event_id="approval",
+        ),
+        StringValue(value="approved"),
+    )
+
+    async def crash_after_resolve(
+        workflow: Workflow,
+        _request: StringValue,
+    ) -> StringValue:
+        await workflow.wait_event("approval", StringValue, poll)
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run(
+            store,
+            options,
+            StringValue(value="AAPL"),
+            StringValue,
+            crash_after_resolve,
+        )
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=poll.timer_id,
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+    result = await run(store, options, StringValue(value="AAPL"), StringValue, pending)
+    assert result.value == "approved"
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_FIRED
+    assert timer.HasField("fired_at")
+
+
+@pytest.mark.parametrize(
+    ("kind", "next_interval"),
+    [
+        (temporaless_pb2.TIMER_KIND_SLEEP, timedelta(hours=1)),
+        (temporaless_pb2.TIMER_KIND_POLL, timedelta(hours=2)),
+    ],
+    ids=["kind-collision", "interval-drift"],
+)
+async def test_wait_event_poll_rejects_collision_and_drift(
+    store: OpenDALStore,
+    kind: temporaless_pb2.TimerKind,
+    next_interval: timedelta,
+) -> None:
+    options = Options(
+        workflow_id="prices:event-poll-conflict",
+        run_id=str(kind),
+    )
+    initial = PollOptions(
+        timer_id="poll:approval",
+        interval=_duration(timedelta(hours=1)),
+    )
+
+    async def first(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, initial)
+
+    with pytest.raises(EventPendingError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, first)
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=initial.timer_id,
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    timer.timer_kind = kind
+    await store.put_timer(timer)
+    changed = PollOptions(
+        timer_id=initial.timer_id,
+        interval=_duration(next_interval),
+    )
+
+    async def replay(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, changed)
+
+    with pytest.raises(TimerConflictError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, replay)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["submicrosecond-interval", "non-message-factory"],
+)
+async def test_wait_event_poll_rejects_invalid_boundary_before_timer_mutation(
+    store: OpenDALStore,
+    invalid: str,
+) -> None:
+    options = Options(
+        workflow_id="prices:event-poll-validation",
+        run_id=invalid,
+    )
+    if invalid == "submicrosecond-interval":
+        poll = PollOptions(
+            timer_id="poll:approval",
+            interval=Duration(nanos=1),
+        )
+
+        async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+            return await workflow.wait_event("approval", StringValue, poll)
+
+        expected: type[BaseException] = ValueError
+    else:
+        poll = PollOptions(
+            timer_id="poll:approval",
+            interval=_duration(timedelta(hours=1)),
+        )
+
+        async def execute(workflow: Workflow, _request: StringValue) -> StringValue:  # type: ignore[no-redef]
+            return await workflow.wait_event(  # type: ignore[invalid-return-type]
+                "approval",
+                lambda: "not-protobuf",  # type: ignore[return-value]
+                poll,
+            )
+
+        expected = TypeError
+
+    with pytest.raises(expected):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    assert (
+        await store.list_timers(
+            WorkflowKey(workflow_id=options.workflow_id, run_id=options.run_id),
+            temporaless_pb2.TIMER_STATUS_UNSPECIFIED,
+        )
+        == []
+    )
+
+
+async def test_resolved_poll_rejects_corrupt_timer_without_acknowledging(
+    store: OpenDALStore,
+) -> None:
+    from temporaless.storage import send_event
+
+    options = Options(
+        workflow_id="prices:event-poll-corrupt-resolve",
+        run_id="run",
+    )
+    poll = PollOptions(timer_id="poll:approval", interval=_duration(timedelta(hours=1)))
+
+    async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, poll)
+
+    with pytest.raises(EventPendingError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=poll.timer_id,
+    )
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    timer.ClearField("created_at")
+    await store.put_timer(timer)
+    await send_event(
+        store,
+        EventKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            event_id="approval",
+        ),
+        StringValue(value="approved"),
+    )
+
+    with pytest.raises(TimerConflictError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+
+async def test_wait_event_rejects_corrupt_event_before_resolving_poll(
+    store: OpenDALStore,
+) -> None:
+    options = Options(
+        workflow_id="prices:event-poll-corrupt-event",
+        run_id="run",
+    )
+    poll = PollOptions(timer_id="poll:approval", interval=_duration(timedelta(hours=1)))
+
+    async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, poll)
+
+    with pytest.raises(EventPendingError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    payload = Any()
+    payload.Pack(StringValue(value="approved"), deterministic=True)
+    await store.put_event(
+        temporaless_pb2.EventRecord(
+            schema_version=EVENT_RECORD_SCHEMA_VERSION,
+            key=EventKey(
+                workflow_id=options.workflow_id,
+                run_id=options.run_id,
+                event_id="approval",
+            ).to_proto(),
+            payload=payload,
+            # Missing received_at is accepted only by low-level put_event.
+        )
+    )
+
+    with pytest.raises(RunRecordValidationError) as captured:
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    assert "received_at is required" in str(captured.value)
+    timer = await store.get_timer(
+        TimerKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            timer_id=poll.timer_id,
+        )
+    )
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+
+@pytest.mark.parametrize("commit_before_error", [False, True])
+async def test_poll_ambiguous_write_is_verified_and_remains_resumable(
+    store: OpenDALStore,
+    monkeypatch: pytest.MonkeyPatch,
+    commit_before_error: bool,
+) -> None:
+    options = Options(
+        workflow_id="prices:event-poll-ambiguous",
+        run_id=str(commit_before_error),
+    )
+    poll = PollOptions(timer_id="poll:approval", interval=_duration(timedelta(hours=1)))
+    original_put_timer = store.put_timer
+    injected = False
+
+    async def ambiguous_put(record: temporaless_pb2.TimerRecord) -> None:
+        nonlocal injected
+        if (
+            not injected
+            and record.timer_kind == temporaless_pb2.TIMER_KIND_POLL
+            and record.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+        ):
+            injected = True
+            if commit_before_error:
+                await original_put_timer(record)
+            raise RuntimeError("ambiguous poll timer write")
+        await original_put_timer(record)
+
+    monkeypatch.setattr(store, "put_timer", ambiguous_put)
+
+    async def execute(workflow: Workflow, _request: StringValue) -> StringValue:
+        return await workflow.wait_event("approval", StringValue, poll)
+
+    with pytest.raises(WorkflowInfrastructureError, match="ambiguous poll timer write"):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    timer_key = TimerKey(
+        workflow_id=options.workflow_id,
+        run_id=options.run_id,
+        timer_id=poll.timer_id,
+    )
+    assert (await store.get_timer(timer_key) is not None) is commit_before_error
+
+    with pytest.raises(EventPendingError):
+        await run(store, options, StringValue(value="AAPL"), StringValue, execute)
+    timer = await store.get_timer(timer_key)
+    assert timer is not None
+    assert timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED
+
+
 async def test_run_writes_in_progress_before_execution(store: OpenDALStore) -> None:
     captured: dict[str, temporaless_pb2.WorkflowStatus] = {}
 
@@ -1357,7 +1767,6 @@ async def test_run_writes_in_progress_before_execution(store: OpenDALStore) -> N
         Options(
             workflow_id="prices:in-progress",
             run_id="2026-05-02",
-            code_version="test",
         ),
         StringValue(value="AAPL"),
         StringValue,
@@ -1380,7 +1789,7 @@ async def test_run_stores_failed_record_on_non_pending_error(store: OpenDALStore
     with pytest.raises(ActivityError):
         await run(
             store,
-            Options(workflow_id="prices:fails", run_id="2026-05-02", code_version="test"),
+            Options(workflow_id="prices:fails", run_id="2026-05-02"),
             StringValue(value="AAPL"),
             StringValue,
             execute,
@@ -1401,7 +1810,7 @@ async def test_run_stores_failed_record_on_non_pending_error(store: OpenDALStore
     with pytest.raises(ActivityError) as captured:
         await run(
             store,
-            Options(workflow_id="prices:fails", run_id="2026-05-02", code_version="test"),
+            Options(workflow_id="prices:fails", run_id="2026-05-02"),
             StringValue(value="AAPL"),
             StringValue,
             replay_execute,
@@ -1417,7 +1826,6 @@ async def test_run_rejects_failed_record_without_failure(store: OpenDALStore) ->
             schema_version=temporaless_pb2.RECORD_SCHEMA_VERSION_WORKFLOW,
             key=key.to_proto(),
             workflow_type=("workflow:google.protobuf.StringValue->google.protobuf.StringValue"),
-            code_version="test",
             status=temporaless_pb2.WORKFLOW_STATUS_FAILED,
         )
     )
@@ -1431,7 +1839,7 @@ async def test_run_rejects_failed_record_without_failure(store: OpenDALStore) ->
     with pytest.raises(WorkflowConflictError, match="has no failure"):
         await run(
             store,
-            Options(workflow_id=key.workflow_id, run_id=key.run_id, code_version="test"),
+            Options(workflow_id=key.workflow_id, run_id=key.run_id),
             StringValue(value="AAPL"),
             StringValue,
             should_not_run,
@@ -1447,7 +1855,7 @@ async def test_run_sleep_leaves_in_progress_for_resume(store: OpenDALStore) -> N
     with pytest.raises(TimerPendingError):
         await run(
             store,
-            Options(workflow_id="prices:resume", run_id="2026-05-02", code_version="test"),
+            Options(workflow_id="prices:resume", run_id="2026-05-02"),
             StringValue(value="AAPL"),
             StringValue,
             execute,
@@ -1456,6 +1864,78 @@ async def test_run_sleep_leaves_in_progress_for_resume(store: OpenDALStore) -> N
     record = await store.get_workflow(WorkflowKey(workflow_id="prices:resume", run_id="2026-05-02"))
     assert record is not None
     assert record.status == temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS
+
+
+async def test_in_progress_run_resumes_with_current_handler(store: OpenDALStore) -> None:
+    options = Options(workflow_id="prices:current-handler", run_id="run")
+    old_activity_calls = 0
+    new_activity_calls = 0
+    current_handler_calls = 0
+
+    async def old_handler(workflow: Workflow, request: StringValue) -> StringValue:
+        async def old_activity(_request: StringValue) -> StringValue:
+            nonlocal old_activity_calls
+            old_activity_calls += 1
+            return StringValue(value="stored-by-old-handler")
+
+        await workflow.execute_activity(
+            ActivityOptions(activity_id="fetch"),
+            request,
+            StringValue,
+            old_activity,
+        )
+        await workflow.wait_event("approval", StringValue)
+        return StringValue(value="old-handler-finished")
+
+    with pytest.raises(EventPendingError):
+        await run(
+            store,
+            options,
+            StringValue(value="AAPL"),
+            StringValue,
+            old_handler,
+        )
+
+    await deliver_event(
+        store,
+        EventKey(
+            workflow_id=options.workflow_id,
+            run_id=options.run_id,
+            event_id="approval",
+        ),
+        StringValue(value="approved"),
+    )
+
+    async def current_handler(workflow: Workflow, request: StringValue) -> StringValue:
+        nonlocal current_handler_calls, new_activity_calls
+        current_handler_calls += 1
+
+        async def new_activity(_request: StringValue) -> StringValue:
+            nonlocal new_activity_calls
+            new_activity_calls += 1
+            return StringValue(value="new-handler-activity")
+
+        replayed = await workflow.execute_activity(
+            ActivityOptions(activity_id="fetch"),
+            request,
+            StringValue,
+            new_activity,
+        )
+        approval = await workflow.wait_event("approval", StringValue)
+        return StringValue(value=f"current:{replayed.value}:{approval.value}")
+
+    result = await run(
+        store,
+        options,
+        StringValue(value="AAPL"),
+        StringValue,
+        current_handler,
+    )
+
+    assert result.value == "current:stored-by-old-handler:approved"
+    assert old_activity_calls == 1
+    assert new_activity_calls == 0
+    assert current_handler_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -1470,7 +1950,6 @@ async def test_activity_retries_until_success(
         Options(
             workflow_id="prices:retry",
             run_id=f"retry-success-{failures}",
-            code_version="test",
         ),
     )
     calls = 0
@@ -1513,7 +1992,6 @@ async def test_activity_retries_exhausted_surfaces_failure(store: OpenDALStore) 
         Options(
             workflow_id="prices:retry-exhausted",
             run_id="2026-05-02",
-            code_version="test",
         ),
     )
     calls = 0
@@ -1578,7 +2056,6 @@ async def test_activity_persists_retrying_record_between_attempts(store: OpenDAL
         Options(
             workflow_id="prices:retry-persist",
             run_id="2026-05-04",
-            code_version="test",
         ),
     )
 
@@ -1647,7 +2124,6 @@ async def test_annotations_persist_across_retry_resume(store: OpenDALStore) -> N
         Options(
             workflow_id="prices:annotated-resume",
             run_id="2026-05-04",
-            code_version="test",
         ),
     )
     activity_id = "fetch:annotated-resume"
@@ -1676,7 +2152,6 @@ async def test_annotations_persist_across_retry_resume(store: OpenDALStore) -> N
             activity_id=activity_id,
         ).to_proto(),
         activity_type=activity_type,
-        code_version="test",
         input=input_any,
         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
         failure=seeded_attempt.failure,
@@ -1719,7 +2194,6 @@ async def test_activity_resumes_retry_from_seeded_retrying_record(store: OpenDAL
         Options(
             workflow_id="prices:retry-resume",
             run_id="2026-05-04",
-            code_version="test",
         ),
     )
 
@@ -1749,7 +2223,6 @@ async def test_activity_resumes_retry_from_seeded_retrying_record(store: OpenDAL
             activity_id=activity_id,
         ).to_proto(),
         activity_type=activity_type,
-        code_version="test",
         input=input_any,
         status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
         failure=seeded_attempt.failure,
@@ -1795,7 +2268,6 @@ async def test_activity_non_retryable_error_fails_fast(store: OpenDALStore) -> N
         Options(
             workflow_id="prices:non-retryable",
             run_id="2026-05-02",
-            code_version="test",
         ),
     )
     calls = 0
@@ -1896,7 +2368,6 @@ async def test_activity_invalid_retry_policy_rejected(
         Options(
             workflow_id="prices:bad-policy",
             run_id=f"bad-policy-{policy.maximum_attempts}",
-            code_version="test",
         ),
     )
     with pytest.raises(ValueError, match=message):
@@ -1927,7 +2398,6 @@ async def test_try_create_claim_is_atomic_create_only(store: OpenDALStore) -> No
         owner_id="first-owner",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
         resource_id="fetch:symbol",
-        code_version="test",
         lease_expires_at=expires_at,
         created_at=created_at,
         heartbeat_at=created_at,
@@ -1944,10 +2414,10 @@ async def test_try_create_claim_is_atomic_create_only(store: OpenDALStore) -> No
     assert stored.owner_id == "first-owner"
 
 
-async def test_partial_gather_persists_completed_activities_when_one_branch_fails(
+async def test_partial_fanout_persists_completed_activities_when_one_branch_fails(
     store: OpenDALStore,
 ) -> None:
-    """A workflow body using asyncio.gather where one branch's activity fails
+    """A structured fan-out where one branch's activity fails
     after retries leaves the SUCCEEDED branches with persisted COMPLETED
     records. The workflow as a whole becomes FAILED, but on reset+rerun the
     succeeded branches replay from storage rather than re-executing.
@@ -1955,8 +2425,6 @@ async def test_partial_gather_persists_completed_activities_when_one_branch_fail
     This is the production case for parallel-fanout pipelines: a single bad
     partition shouldn't redo the entire fan-out.
     """
-    import asyncio
-
     duration = Duration()
     duration.FromTimedelta(timedelta(milliseconds=1))
     policy = RetryPolicy(maximum_attempts=2, initial_interval=duration)
@@ -1978,18 +2446,16 @@ async def test_partial_gather_persists_completed_activities_when_one_branch_fail
                 fetch,
             )
 
-        results = await asyncio.gather(
+        results = await gather_activities(
             fetch_one("AAPL"),
             fetch_one("MSFT"),
             fetch_one("BAD"),
-            return_exceptions=False,
         )
         return StringValue(value=",".join(r.value for r in results))
 
     options = Options(
         workflow_id="prices:partial-gather",
         run_id="2026-05-04",
-        code_version="test",
     )
     with pytest.raises(ActivityError):
         await run(store, options, StringValue(value="batch"), StringValue, execute)
@@ -2025,12 +2491,8 @@ async def test_cross_workflow_dependency_via_record_read(
     EventPendingError and stays IN_PROGRESS. When A completes, B's next
     invocation finds the COMPLETED record and proceeds.
     """
-    upstream_options = Options(
-        workflow_id="upstream:fetch", run_id="2026-05-04", code_version="test"
-    )
-    downstream_options = Options(
-        workflow_id="downstream:transform", run_id="2026-05-04", code_version="test"
-    )
+    upstream_options = Options(workflow_id="upstream:fetch", run_id="2026-05-04")
+    downstream_options = Options(workflow_id="downstream:transform", run_id="2026-05-04")
 
     async def upstream_workflow(workflow: Workflow, request: StringValue) -> StringValue:
         async def fetch() -> StringValue:
@@ -2117,7 +2579,6 @@ async def test_long_running_workflow_durable_across_simulated_process_deaths(
     options = Options(
         workflow_id="prices:long-running",
         run_id="2026-05-04",
-        code_version="test",
     )
 
     fetch_calls = 0
@@ -2254,7 +2715,7 @@ async def test_current_workflow_propagates_through_asyncio_gather(
         results = await asyncio.gather(*(branch(s) for s in ("AAPL", "MSFT", "GOOG")))
         return StringValue(value=",".join(r.value for r in results))
 
-    options = Options(workflow_id="prices:gather", run_id="2026-05-04", code_version="test")
+    options = Options(workflow_id="prices:gather", run_id="2026-05-04")
     result = await run(store, options, StringValue(value="batch"), StringValue, execute)
     assert result.value == "price:AAPL,price:MSFT,price:GOOG"
     assert sorted(seen) == ["AAPL", "GOOG", "MSFT"]
@@ -2281,7 +2742,7 @@ async def test_cancellation_does_not_persist_failed_records(store: OpenDALStore)
             slow_fetch,
         )
 
-    options = Options(workflow_id="prices:cancel", run_id="2026-05-04", code_version="test")
+    options = Options(workflow_id="prices:cancel", run_id="2026-05-04")
     task = asyncio.create_task(run(store, options, StringValue(value="AAPL"), StringValue, execute))
     await asyncio.wait_for(entered.wait(), timeout=1)
     task.cancel()
@@ -2334,7 +2795,7 @@ async def test_parallel_activities_via_asyncio_gather(store: OpenDALStore) -> No
         prices = await asyncio.gather(*(fetch_one(s) for s in symbols))
         return StringValue(value=",".join(p.value for p in prices))
 
-    options = Options(workflow_id="prices:fanout", run_id="2026-05-04", code_version="test")
+    options = Options(workflow_id="prices:fanout", run_id="2026-05-04")
     first = await run(store, options, StringValue(value="batch"), StringValue, execute)
     assert first.value == "price:AAPL,price:MSFT,price:GOOG,price:TSLA,price:NVDA"
     assert fetch_count == len(symbols)
@@ -2363,7 +2824,6 @@ async def test_sleep_ambiguous_write_is_verified_and_remains_resumable(
     options = Options(
         workflow_id=f"prices:sleep-ambiguous:{commit_before_error}",
         run_id="run",
-        code_version="test",
     )
     original_put_timer = store.put_timer
     injected = False
@@ -2425,7 +2885,6 @@ async def test_sleep_ledger_first_crash_replays_exact_original_deadline(
     options = Options(
         workflow_id="prices:sleep-ledger-first",
         run_id="run",
-        code_version="release:exact-timer",
     )
     duration = timedelta(days=30)
     captured = temporaless_pb2.TimerRecord()
@@ -2459,8 +2918,8 @@ async def test_sleep_ledger_first_crash_replays_exact_original_deadline(
     )
     assert not await store._operator.exists(timer_key.path())
     recovered = await store.get_timer(timer_key)
+    assert recovered is not None
     assert recovered == captured
-    assert recovered.code_version == options.code_version
     assert recovered.timer_kind == temporaless_pb2.TIMER_KIND_SLEEP
     assert recovered.duration.ToTimedelta() == duration
     assert recovered.fire_at == captured.fire_at
@@ -2489,7 +2948,6 @@ async def test_workflow_primitive_storage_failure_remains_in_progress(
     options = Options(
         workflow_id=f"prices:primitive-storage:{primitive}",
         run_id="run",
-        code_version="test",
     )
 
     async def fail_read(_key: ActivityKey | EventKey) -> None:
@@ -2537,7 +2995,6 @@ async def test_activity_business_error_cannot_masquerade_as_workflow_pending(
     options = Options(
         workflow_id="prices:activity-business-pending",
         run_id="run",
-        code_version="test",
     )
 
     async def execute(workflow: Workflow, request: StringValue) -> StringValue:

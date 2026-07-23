@@ -99,9 +99,7 @@ async def main() -> None:
         "fs", root=tempfile.mkdtemp(prefix="temporaless-approval-")
     )
     store = OpenDALStore(operator)
-    options = Options(
-        workflow_id="export:user42", run_id="2026-05-04", code_version="example"
-    )
+    options = Options(workflow_id="export:user42", run_id="2026-05-04")
     request = StringValue(value="data-export-request")
 
     # Process 1: validate runs, sleep raises TimerPendingError. Workflow

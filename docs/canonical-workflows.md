@@ -3,6 +3,8 @@
 An application workflow starts as an ordinary unary protobuf service method:
 
 ```proto
+package prices.v1;
+
 service PriceService {
   rpc FetchPrices(FetchPricesRequest) returns (FetchPricesResponse);
 }
@@ -43,7 +45,6 @@ class PriceService:
             options_for=lambda _service, request: Options(
                 workflow_id=request.workflow_id,
                 run_id=request.run_id,
-                code_version="prices-v1",
                 claim_owner_id="price-service",
             ),
         )
@@ -92,10 +93,11 @@ server.connectHttp("https://workflow.example.com");
 console.log(server.toolCatalog());
 ```
 
-The same `PriceService.FetchPrices` method can then be exposed through
-Invariant's typed tool catalog, MCP, CLI, or HTTP projections while its actual
-execution still crosses the generated ConnectRPC boundary and runs through
-Temporaless. No Temporaless-specific tool schema is maintained.
+The same `prices.v1.PriceService.FetchPrices` method can then be exposed
+through Invariant's typed tool catalog, MCP, CLI, or HTTP projections while
+its actual execution still crosses the generated ConnectRPC boundary and runs
+through Temporaless. Projection identities are always package-qualified; no
+Temporaless-specific tool schema is maintained.
 
 `registerTemporalessInvariantServices` is only a convenience for
 Temporaless's own `RecordStoreService` and `RecordQueryService`. Application
@@ -123,14 +125,17 @@ Temporaless storage.
 ## Showing Users What Will Execute
 
 The protobuf request is also the clean UI contract. If an AI proposes a plan,
-model that plan as application protobuf fields—such as repeated typed steps,
-dependencies, and an approval token—render that message in the UI, and submit
-the exact confirmed message to the workflow RPC. Store the proposed/confirmed
-plan in the application's own service schema when it must be queried before
-execution.
+embed the optional `temporaless.v1.WorkflowPlan` in the application's own
+request beside its concrete business input and approval digest. Render that
+message in the UI, verify the deterministic digest, and submit the exact
+confirmed request to the workflow RPC. Store the proposed/confirmed plan in
+the application's own service when it must be queried before execution.
 
 Temporaless records the request and each executed activity boundary. It does
 not infer a static DAG from arbitrary Python or Go control flow, so a UI should
 not claim that an inferred graph is authoritative. The confirmed protobuf plan
 is authoritative before execution; workflow and activity records are
-authoritative after execution.
+authoritative after execution. The optional visualization adapters validate
+the plan and join its node IDs to activity, timer, event, and claim evidence;
+they do not execute an arbitrary graph language. See
+[`visual-workflows.md`](visual-workflows.md).

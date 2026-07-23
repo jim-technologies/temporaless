@@ -16,9 +16,8 @@
 //
 // Caveats:
 //
-//   - Bumping `code_version` does NOT change the key. If the rationale for
-//     a code bump is "the previous result is invalid", also rotate the
-//     activity_id (or the run_id for the whole pipeline).
+//   - Deploying new handler code does NOT change the key. If a previous result
+//     is invalid, rotate the activity_id (or the run_id for the whole pipeline).
 //   - The key is per-activity, not per-attempt. Vendors that don't support
 //     idempotency at all should rely on their natural keys (DB upsert,
 //     S3 object name) instead.

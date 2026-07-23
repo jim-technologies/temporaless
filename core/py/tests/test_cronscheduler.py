@@ -240,7 +240,6 @@ async def test_last_fire_from_runs_derives_state_from_storage(tmp_path) -> None:
             Options(
                 workflow_id="prices:aapl",
                 run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                code_version="test",
                 run_order_time=_timestamp(fire_time),
             ),
             StringValue(value="AAPL"),
@@ -270,7 +269,6 @@ async def test_last_fire_from_runs_reads_latest_pointer_once(tmp_path) -> None:
         Options(
             workflow_id="prices:aapl",
             run_id="2026-05-04T09:32:00Z",
-            code_version="test",
             run_order_time=_timestamp(datetime(2026, 5, 4, 9, 32, tzinfo=UTC)),
         ),
         StringValue(value="AAPL"),
@@ -293,7 +291,6 @@ async def test_last_fires_from_runs_skips_unknown_schedules(tmp_path) -> None:
         Options(
             workflow_id="prices:aapl",
             run_id="2026-05-04T09:32:00Z",
-            code_version="test",
             run_order_time=_timestamp(datetime(2026, 5, 4, 9, 32, tzinfo=UTC)),
         ),
         StringValue(value="AAPL"),

@@ -30,7 +30,6 @@ func BenchmarkPutGetWorkflow(b *testing.B) {
 			RunID:      "run",
 		}.Proto(),
 		WorkflowType: "test:type",
-		CodeVersion:  "v1",
 		Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		Result:       resultAny,
 	}
@@ -63,7 +62,6 @@ func BenchmarkPutGetActivity(b *testing.B) {
 			ActivityID: "fetch",
 		}.Proto(),
 		ActivityType: "test:activity",
-		CodeVersion:  "v1",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		Result:       resultAny,
 	}

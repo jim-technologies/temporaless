@@ -13,6 +13,8 @@ import (
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -26,7 +28,7 @@ func TestListActivitiesAndResetHelpers(t *testing.T) {
 	t.Cleanup(operator.Close)
 	store := storage.NewOpenDALStore(operator)
 
-	options := &workflow.Options{WorkflowId: "prices:reset", RunId: "2026-05-04", CodeVersion: "test-version"}
+	options := &workflow.Options{WorkflowId: "prices:reset", RunId: "2026-05-04"}
 	calls := 0
 	wfBody := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		out, err := workflow.ExecuteActivity(
@@ -117,7 +119,16 @@ func TestResetEventForcesEventPendingAgain(t *testing.T) {
 		RunID:      "2026-05-04",
 		EventID:    "approval",
 	}
-	if err := storage.SendEvent(ctx, store, eventKey, wrapperspb.String("manager")); err != nil {
+	payload, err := anypb.New(wrapperspb.String("manager"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutEvent(ctx, &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           eventKey.Proto(),
+		Payload:       payload,
+		ReceivedAt:    timestamppb.Now(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +182,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 	if _, err := workflow.Run(
 		ctx,
 		store,
-		&workflow.Options{WorkflowId: "prices:done", RunId: "2026-05-04", CodeVersion: "test-version"},
+		&workflow.Options{WorkflowId: "prices:done", RunId: "2026-05-04"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -186,7 +197,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 	_, runErr := workflow.Run(
 		ctx,
 		store,
-		&workflow.Options{WorkflowId: "prices:waiting", RunId: "2026-05-04", CodeVersion: "test-version"},
+		&workflow.Options{WorkflowId: "prices:waiting", RunId: "2026-05-04"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -205,7 +216,7 @@ func TestListInFlightAndFailedWorkflows(t *testing.T) {
 	_, failErr := workflow.Run(
 		ctx,
 		store,
-		&workflow.Options{WorkflowId: "prices:broken", RunId: "2026-05-04", CodeVersion: "test-version"},
+		&workflow.Options{WorkflowId: "prices:broken", RunId: "2026-05-04"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },

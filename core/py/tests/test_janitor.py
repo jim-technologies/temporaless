@@ -95,7 +95,7 @@ async def test_sweep_skips_in_progress_and_failed_records(
     with pytest.raises(ActivityError):
         await run(
             store,
-            Options(workflow_id="prices:broken", run_id="2026-05-03", code_version="test"),
+            Options(workflow_id="prices:broken", run_id="2026-05-03"),
             StringValue(value="AAPL"),
             StringValue,
             boom,
@@ -137,7 +137,7 @@ async def _run_workflow(store: Store, workflow_id: str, run_id: str) -> None:
 
     await run(
         store,
-        Options(workflow_id=workflow_id, run_id=run_id, code_version="test"),
+        Options(workflow_id=workflow_id, run_id=run_id),
         StringValue(value="AAPL"),
         StringValue,
         execute,
@@ -152,7 +152,7 @@ async def _leave_in_progress(store: Store, workflow_id: str, run_id: str) -> Non
     with pytest.raises(TimerPendingError):
         await run(
             store,
-            Options(workflow_id=workflow_id, run_id=run_id, code_version="test"),
+            Options(workflow_id=workflow_id, run_id=run_id),
             StringValue(value="AAPL"),
             StringValue,
             execute,

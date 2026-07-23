@@ -20,7 +20,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check version-check version-set public-surface-check fmt fmt-check vet lint test ts-check gate tidy-check
+.PHONY: help check version-check version-set generate public-surface-check fmt fmt-check vet lint test ts-check gate tidy-check
 
 ## help: show available make targets.
 help:
@@ -37,6 +37,10 @@ version-check:
 version-set:
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 2; }
 	python3 scripts/set_version.py "$(VERSION)"
+
+## generate: regenerate protobuf SDK sources and the checked-in descriptor.
+generate:
+	scripts/generate
 
 ## public-surface-check: fail on private/internal wording in public docs/examples.
 public-surface-check:

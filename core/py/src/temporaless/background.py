@@ -69,10 +69,10 @@ class CronConfig:
     interval: timedelta = timedelta(seconds=60)
 
 
-# Callback invoked once per due timer the scanner finds. Typically re-invokes
-# the workflow handler so a durable ``workflow.sleep`` resumes. Return cleanly
-# from your dispatcher; the loop logs and continues on per-timer errors so one
-# bad workflow doesn't stall the whole scanner.
+# Callback invoked once per due sleep, activity-retry, or poll timer the
+# scanner finds. Typically re-invokes the workflow handler so replay crosses
+# that durable wake. Return cleanly from your dispatcher; the loop logs and
+# continues on per-timer errors so one bad workflow doesn't stall the scanner.
 DueTimerDispatcher = Callable[[DueTimer], Awaitable[None]]
 
 

@@ -19,6 +19,10 @@ var (
 	// ErrClaimRunListingUnsupported means a claim-capable store cannot enumerate
 	// one run. Sweeping is rejected before mutation rather than leaking claims.
 	ErrClaimRunListingUnsupported = errors.New("claim store does not support run-scoped claim listing")
+	// ErrClaimCapabilityUnsupported means a store reported a reserved or
+	// unknown capability that the current create/get/delete interface cannot
+	// enforce. Sweeping fails closed before mutating the run.
+	ErrClaimCapabilityUnsupported = errors.New("claim capability is unsupported by the current claim interface")
 	// ErrRunListingDataLoss means a bounded listing returned an invalid key or a
 	// payload whose embedded key belongs to another workflow run.
 	ErrRunListingDataLoss = errors.New("run listing contains invalid or misplaced record key")
@@ -177,8 +181,12 @@ func preflightClaimStore(
 	if err != nil {
 		return nil, nil, err
 	}
-	if capability != storage.CreateOnlyClaims && capability != storage.CASClaims {
+	if capability == temporalessv1.ClaimCapability_CLAIM_CAPABILITY_UNSPECIFIED ||
+		capability == storage.NoClaims {
 		return claimStore, nil, nil
+	}
+	if capability != storage.CreateOnlyClaims {
+		return nil, nil, fmt.Errorf("%w: %s", ErrClaimCapabilityUnsupported, capability)
 	}
 	claimRunStore, ok := claimStore.(storage.ClaimRunStore)
 	if !ok {

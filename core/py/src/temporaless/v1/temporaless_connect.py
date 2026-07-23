@@ -18,7 +18,7 @@ from connectrpc.protocol import ProtocolType
 from connectrpc.server import ConnectASGIApplication, Endpoint
 from pyqwest import Client
 
-from .temporaless_pb2 import DeleteActivityRequest, DeleteActivityResponse, DeleteClaimRequest, DeleteClaimResponse, DeleteEventRequest, DeleteEventResponse, DeleteRunRequest, DeleteRunResponse, DeleteTimerRequest, DeleteTimerResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DueTimersRequest, DueTimersResponse, GetActivityRequest, GetActivityResponse, GetClaimRequest, GetClaimResponse, GetEventRequest, GetEventResponse, GetLatestWorkflowRunRequest, GetLatestWorkflowRunResponse, GetStoreCapabilitiesRequest, GetStoreCapabilitiesResponse, GetTimerRequest, GetTimerResponse, GetWorkflowRequest, GetWorkflowResponse, ListActivitiesRequest, ListActivitiesResponse, ListClaimsRequest, ListClaimsResponse, ListEventsRequest, ListEventsResponse, ListTimersRequest, ListTimersResponse, ListWorkflowsRequest, ListWorkflowsResponse, PutActivityRequest, PutActivityResponse, PutEventRequest, PutEventResponse, PutTimerRequest, PutTimerResponse, PutWorkflowRequest, PutWorkflowResponse, RecordQueryServiceDueTimersRequest, RecordQueryServiceDueTimersResponse, RecordQueryServiceListActivitiesRequest, RecordQueryServiceListActivitiesResponse, SweepRequest, SweepResponse, TryCreateClaimRequest, TryCreateClaimResponse
+from .temporaless_pb2 import DeleteActivityRequest, DeleteActivityResponse, DeleteClaimRequest, DeleteClaimResponse, DeleteEventRequest, DeleteEventResponse, DeleteRunRequest, DeleteRunResponse, DeleteTimerRequest, DeleteTimerResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeliverEventRequest, DeliverEventResponse, DueTimersRequest, DueTimersResponse, GetActivityRequest, GetActivityResponse, GetClaimRequest, GetClaimResponse, GetEventRequest, GetEventResponse, GetLatestWorkflowRunRequest, GetLatestWorkflowRunResponse, GetStoreCapabilitiesRequest, GetStoreCapabilitiesResponse, GetTimerRequest, GetTimerResponse, GetWorkflowRequest, GetWorkflowResponse, ListActivitiesRequest, ListActivitiesResponse, ListClaimsRequest, ListClaimsResponse, ListEventsRequest, ListEventsResponse, ListTimersRequest, ListTimersResponse, ListWorkflowsRequest, ListWorkflowsResponse, PutActivityRequest, PutActivityResponse, PutEventRequest, PutEventResponse, PutTimerRequest, PutTimerResponse, PutWorkflowRequest, PutWorkflowResponse, RecordQueryServiceDueTimersRequest, RecordQueryServiceDueTimersResponse, RecordQueryServiceListActivitiesRequest, RecordQueryServiceListActivitiesResponse, SweepRequest, SweepResponse, TryCreateClaimRequest, TryCreateClaimResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -72,6 +72,9 @@ class RecordStoreService(Protocol):
         raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
 
     async def put_event(self, request: PutEventRequest, ctx: RequestContext[PutEventRequest, PutEventResponse]) -> PutEventResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def deliver_event(self, request: DeliverEventRequest, ctx: RequestContext[DeliverEventRequest, DeliverEventResponse]) -> DeliverEventResponse:
         raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
 
     async def list_activities(self, request: ListActivitiesRequest, ctx: RequestContext[ListActivitiesRequest, ListActivitiesResponse]) -> ListActivitiesResponse:
@@ -247,6 +250,16 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=svc.put_event,
+                ),
+                "/temporaless.v1.RecordStoreService/DeliverEvent": Endpoint.unary(
+                    method=MethodInfo(
+                        name="DeliverEvent",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=DeliverEventRequest,
+                        output=DeliverEventResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.deliver_event,
                 ),
                 "/temporaless.v1.RecordStoreService/ListActivities": Endpoint.unary(
                     method=MethodInfo(
@@ -640,6 +653,26 @@ class RecordStoreServiceClient(ConnectClient):
                 service_name="temporaless.v1.RecordStoreService",
                 input=PutEventRequest,
                 output=PutEventResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def deliver_event(
+        self,
+        request: DeliverEventRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> DeliverEventResponse:
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeliverEvent",
+                service_name="temporaless.v1.RecordStoreService",
+                input=DeliverEventRequest,
+                output=DeliverEventResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

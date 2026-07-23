@@ -4,13 +4,14 @@ This is a decision adapter that finds due timer records so a serverless or worke
 
 ## Purpose
 
-Temporaless workflows return `ErrTimerPending` when they reach a future durable
-sleep. Some caller has to re-invoke them after `fire_at`. This adapter reads the
-core due-timer ledger, returns due wakes whose `fire_at` has passed, and
-includes the associated workflow record so callers can dispatch it. A
-ledger-first process crash leaves the full prepared `TimerRecord`; the first
-scan repairs its canonical point and a later scan dispatches only after both
-copies match exactly.
+Temporaless workflows return a typed pending result when they reach a future
+sleep, durable activity retry, or opted-in event/dependency poll. Some caller
+has to re-invoke them after `fire_at`. This adapter reads the core due-timer
+ledger, returns due wakes whose `fire_at` has passed, and includes the
+associated workflow record so callers can dispatch it. A ledger-first process
+crash leaves the full prepared `TimerRecord`; the first scan repairs its
+canonical point and a later scan dispatches only after both copies match
+exactly.
 
 ## Position
 
@@ -26,10 +27,13 @@ are written.
 - backend-agnostic: works against any `storage.Store`, including a remote `connectstore.ClientStore`
 - at-least-once delivery: a wake may be returned on consecutive ticks until
   replay persists a later wake-bearing or terminal boundary
+- all core timer kinds: sleep, activity retry, and `PollOptions` rechecks
 
 ## Rejected Behavior
 
 - no re-invocation built in: callers decide how to dispatch (HTTP, queue, in-process)
+- no timer for manual event/dependency waits: callers must supply
+  `PollOptions` or dispatch from the application completion/delivery path
 - no claim coordination between concurrent scanners: set `claim_owner_id` on
   the dispatched workflow and use an atomic claim store to single-flight
   cooperating invocations; external side effects still require idempotency

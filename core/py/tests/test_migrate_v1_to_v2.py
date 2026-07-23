@@ -160,7 +160,6 @@ def _workflow_record(
             run_id=run_id,
         ),
         workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         created_at=created,
         completed_at=completed,

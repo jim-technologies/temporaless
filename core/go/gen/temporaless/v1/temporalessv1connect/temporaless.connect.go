@@ -91,6 +91,9 @@ const (
 	// RecordStoreServicePutEventProcedure is the fully-qualified name of the RecordStoreService's
 	// PutEvent RPC.
 	RecordStoreServicePutEventProcedure = "/temporaless.v1.RecordStoreService/PutEvent"
+	// RecordStoreServiceDeliverEventProcedure is the fully-qualified name of the RecordStoreService's
+	// DeliverEvent RPC.
+	RecordStoreServiceDeliverEventProcedure = "/temporaless.v1.RecordStoreService/DeliverEvent"
 	// RecordStoreServiceListActivitiesProcedure is the fully-qualified name of the RecordStoreService's
 	// ListActivities RPC.
 	RecordStoreServiceListActivitiesProcedure = "/temporaless.v1.RecordStoreService/ListActivities"
@@ -167,8 +170,14 @@ type RecordStoreServiceClient interface {
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
 	// Deliver a signal payload to a waiting workflow. External services
-	// (webhooks, approvals) call this to wake up a `WaitEvent`.
+	// that intentionally need replace semantics may call this low-level point
+	// write. Prefer DeliverEvent for create-once external delivery.
 	PutEvent(context.Context, *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error)
+	// Atomically establish the first payload for an EventKey. An identical
+	// duplicate is idempotent; a different payload fails with
+	// FAILED_PRECONDITION. Backends without conditional creation reject the
+	// operation rather than emulating it with check-then-write.
+	DeliverEvent(context.Context, *connect.Request[v1.DeliverEventRequest]) (*connect.Response[v1.DeliverEventResponse], error)
 	// List all activity records under a single workflow run.
 	ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error)
 	// List timer records under a single workflow run, optionally filtered by status.
@@ -286,6 +295,12 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(recordStoreServiceMethods.ByName("PutEvent")),
 			connect.WithClientOptions(opts...),
 		),
+		deliverEvent: connect.NewClient[v1.DeliverEventRequest, v1.DeliverEventResponse](
+			httpClient,
+			baseURL+RecordStoreServiceDeliverEventProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("DeliverEvent")),
+			connect.WithClientOptions(opts...),
+		),
 		listActivities: connect.NewClient[v1.ListActivitiesRequest, v1.ListActivitiesResponse](
 			httpClient,
 			baseURL+RecordStoreServiceListActivitiesProcedure,
@@ -364,6 +379,7 @@ type recordStoreServiceClient struct {
 	deleteClaim          *connect.Client[v1.DeleteClaimRequest, v1.DeleteClaimResponse]
 	getEvent             *connect.Client[v1.GetEventRequest, v1.GetEventResponse]
 	putEvent             *connect.Client[v1.PutEventRequest, v1.PutEventResponse]
+	deliverEvent         *connect.Client[v1.DeliverEventRequest, v1.DeliverEventResponse]
 	listActivities       *connect.Client[v1.ListActivitiesRequest, v1.ListActivitiesResponse]
 	listTimers           *connect.Client[v1.ListTimersRequest, v1.ListTimersResponse]
 	listEvents           *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
@@ -439,6 +455,11 @@ func (c *recordStoreServiceClient) GetEvent(ctx context.Context, req *connect.Re
 // PutEvent calls temporaless.v1.RecordStoreService.PutEvent.
 func (c *recordStoreServiceClient) PutEvent(ctx context.Context, req *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error) {
 	return c.putEvent.CallUnary(ctx, req)
+}
+
+// DeliverEvent calls temporaless.v1.RecordStoreService.DeliverEvent.
+func (c *recordStoreServiceClient) DeliverEvent(ctx context.Context, req *connect.Request[v1.DeliverEventRequest]) (*connect.Response[v1.DeliverEventResponse], error) {
+	return c.deliverEvent.CallUnary(ctx, req)
 }
 
 // ListActivities calls temporaless.v1.RecordStoreService.ListActivities.
@@ -523,8 +544,14 @@ type RecordStoreServiceHandler interface {
 	// Read a single signal/event record by key.
 	GetEvent(context.Context, *connect.Request[v1.GetEventRequest]) (*connect.Response[v1.GetEventResponse], error)
 	// Deliver a signal payload to a waiting workflow. External services
-	// (webhooks, approvals) call this to wake up a `WaitEvent`.
+	// that intentionally need replace semantics may call this low-level point
+	// write. Prefer DeliverEvent for create-once external delivery.
 	PutEvent(context.Context, *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error)
+	// Atomically establish the first payload for an EventKey. An identical
+	// duplicate is idempotent; a different payload fails with
+	// FAILED_PRECONDITION. Backends without conditional creation reject the
+	// operation rather than emulating it with check-then-write.
+	DeliverEvent(context.Context, *connect.Request[v1.DeliverEventRequest]) (*connect.Response[v1.DeliverEventResponse], error)
 	// List all activity records under a single workflow run.
 	ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error)
 	// List timer records under a single workflow run, optionally filtered by status.
@@ -638,6 +665,12 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		connect.WithSchema(recordStoreServiceMethods.ByName("PutEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
+	recordStoreServiceDeliverEventHandler := connect.NewUnaryHandler(
+		RecordStoreServiceDeliverEventProcedure,
+		svc.DeliverEvent,
+		connect.WithSchema(recordStoreServiceMethods.ByName("DeliverEvent")),
+		connect.WithHandlerOptions(opts...),
+	)
 	recordStoreServiceListActivitiesHandler := connect.NewUnaryHandler(
 		RecordStoreServiceListActivitiesProcedure,
 		svc.ListActivities,
@@ -726,6 +759,8 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 			recordStoreServiceGetEventHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutEventProcedure:
 			recordStoreServicePutEventHandler.ServeHTTP(w, r)
+		case RecordStoreServiceDeliverEventProcedure:
+			recordStoreServiceDeliverEventHandler.ServeHTTP(w, r)
 		case RecordStoreServiceListActivitiesProcedure:
 			recordStoreServiceListActivitiesHandler.ServeHTTP(w, r)
 		case RecordStoreServiceListTimersProcedure:
@@ -805,6 +840,10 @@ func (UnimplementedRecordStoreServiceHandler) GetEvent(context.Context, *connect
 
 func (UnimplementedRecordStoreServiceHandler) PutEvent(context.Context, *connect.Request[v1.PutEventRequest]) (*connect.Response[v1.PutEventResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.PutEvent is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) DeliverEvent(context.Context, *connect.Request[v1.DeliverEventRequest]) (*connect.Response[v1.DeliverEventResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.DeliverEvent is not implemented"))
 }
 
 func (UnimplementedRecordStoreServiceHandler) ListActivities(context.Context, *connect.Request[v1.ListActivitiesRequest]) (*connect.Response[v1.ListActivitiesResponse], error) {

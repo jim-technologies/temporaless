@@ -16,9 +16,9 @@ by deriving the key the framework already has the information to produce.
 
 Caveats:
 
-- Bumping ``code_version`` does NOT change the key. If the rationale for a code
-  bump is "the previous result is invalid", also rotate the ``activity_id``
-  (or the ``run_id`` for the whole pipeline).
+- The current handler implementation does not change the key. If the previous
+  result or side effect is no longer the same logical activity, rotate the
+  ``activity_id`` (or the ``run_id`` for the whole pipeline).
 - The key is per-activity, not per-attempt. Vendors that don't support
   idempotency at all should rely on their natural keys (DB upsert, S3 object
   name) instead.

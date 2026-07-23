@@ -50,20 +50,23 @@ describe("Temporaless invariantprotocol integration", () => {
     const tools = server.toolCatalog();
     const names = tools.map((tool) => tool.name);
 
-    expect(names).toContain("RecordStoreService.GetWorkflow");
-    expect(names).toContain("RecordQueryService.ListWorkflows");
-    expect(names).not.toContain("RecordStoreService.PutWorkflow");
-    expect(names).not.toContain("RecordStoreService.DueTimers");
-    expect(names).not.toContain("RecordStoreService.DeleteRun");
-    expect(names).not.toContain("RecordQueryService.Sweep");
+    expect(names).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_QUERY_SERVICE}.ListWorkflows`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.PutWorkflow`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DeliverEvent`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DueTimers`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DeleteRun`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_QUERY_SERVICE}.Sweep`);
     expect(
-      names.filter((name) => name.startsWith("RecordStoreService.")),
+      names.filter((name) => name.startsWith(`${TEMPORALESS_RECORD_STORE_SERVICE}.`)),
     ).toHaveLength(TEMPORALESS_READ_ONLY_STORE_METHODS.length);
     expect(
-      names.filter((name) => name.startsWith("RecordQueryService.")),
+      names.filter((name) => name.startsWith(`${TEMPORALESS_RECORD_QUERY_SERVICE}.`)),
     ).toHaveLength(TEMPORALESS_READ_ONLY_QUERY_METHODS.length);
     expect(
-      tools.find((tool) => tool.name === "RecordStoreService.GetWorkflow")
+      tools.find(
+        (tool) => tool.name === `${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`,
+      )
         ?.description,
     ).toContain("Read a single workflow record");
   });
@@ -74,10 +77,11 @@ describe("Temporaless invariantprotocol integration", () => {
     });
     const names = server.toolCatalog().map((tool) => tool.name);
 
-    expect(names).toContain("RecordStoreService.PutWorkflow");
-    expect(names).toContain("RecordStoreService.DueTimers");
-    expect(names).toContain("RecordStoreService.DeleteRun");
-    expect(names).toContain("RecordQueryService.Sweep");
+    expect(names).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.PutWorkflow`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DeliverEvent`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DueTimers`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.DeleteRun`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_QUERY_SERVICE}.Sweep`);
   });
 
   it("does not serve operator methods through the default HTTP projection", async () => {
@@ -143,7 +147,7 @@ describe("Temporaless invariantprotocol integration", () => {
         `http://127.0.0.1:${address.port}`,
         { includeQuery: false },
       );
-      const response = await proxy.invoke("RecordStoreService.GetWorkflow", {
+      const response = await proxy.invoke(`${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`, {
         key: {
           namespace: "default",
           workflowId: "prices:aapl",
@@ -167,9 +171,9 @@ describe("Temporaless invariantprotocol integration", () => {
     });
     const names = server.toolCatalog().map((tool) => tool.name);
 
-    expect(names).not.toContain("RecordStoreService.GetWorkflow");
-    expect(names).toContain("RecordQueryService.ListWorkflows");
-    expect(names).not.toContain("RecordQueryService.Sweep");
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`);
+    expect(names).toContain(`${TEMPORALESS_RECORD_QUERY_SERVICE}.ListWorkflows`);
+    expect(names).not.toContain(`${TEMPORALESS_RECORD_QUERY_SERVICE}.Sweep`);
   });
 
   it("registers generated Temporaless service implementations", async () => {
@@ -183,7 +187,7 @@ describe("Temporaless invariantprotocol integration", () => {
       },
     });
 
-    const response = await server.invoke("RecordStoreService.GetWorkflow", {
+    const response = await server.invoke(`${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`, {
       key: {
         namespace: "default",
         workflowId: "prices:aapl",
@@ -207,7 +211,7 @@ describe("Temporaless invariantprotocol integration", () => {
     });
 
     const output = await runCli(server, [
-      "RecordStoreService",
+      TEMPORALESS_RECORD_STORE_SERVICE,
       "GetWorkflow",
       "-r",
       JSON.stringify({
@@ -252,7 +256,7 @@ describe("Temporaless invariantprotocol integration", () => {
         id: 3,
         method: "tools/call",
         params: {
-          name: "RecordStoreService.GetWorkflow",
+          name: `${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`,
           arguments: {
             key: {
               namespace: "default",
@@ -287,8 +291,8 @@ describe("Temporaless invariantprotocol integration", () => {
     const toolNames = byId
       .get(2)
       ?.result.tools.map((tool: { name: string }) => tool.name);
-    expect(toolNames).toContain("RecordStoreService.GetWorkflow");
-    expect(toolNames).not.toContain("RecordStoreService.PutWorkflow");
+    expect(toolNames).toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.GetWorkflow`);
+    expect(toolNames).not.toContain(`${TEMPORALESS_RECORD_STORE_SERVICE}.PutWorkflow`);
     expect(observedWorkflowId).toBe("prices:msft");
     expect(JSON.parse(byId.get(3)?.result.content[0].text)).toEqual({
       found: true,

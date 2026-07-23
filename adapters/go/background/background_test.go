@@ -95,7 +95,6 @@ func TestTimerScannerLoopDispatches(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           wfKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		CreatedAt:     now,
 	}); err != nil {
@@ -106,7 +105,6 @@ func TestTimerScannerLoopDispatches(t *testing.T) {
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           tKey.Proto(),
 		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_SLEEP,
-		CodeVersion:   "test",
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        past,
 		CreatedAt:     now,
@@ -200,7 +198,6 @@ func TestJanitorLoopSweeps(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,

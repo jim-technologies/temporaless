@@ -26,10 +26,10 @@ var ErrStaleLatestPointer = errors.New("stale latest workflow run pointer")
 
 // DueTimer pairs a SCHEDULED timer with the workflow that owns it. Returned
 // by [Store.DueTimers] so callers can re-invoke the parent workflow when its
-// sleep is up. The deterministic due-ledger object carries the exact prepared
-// TimerRecord and is written before the canonical run record. A scanner repairs
-// an interrupted write first and emits the wake only after a later scan observes
-// both copies in agreement.
+// sleep, activity retry, or poll is due. The deterministic due-ledger object
+// carries the exact prepared TimerRecord and is written before the canonical
+// run record. A scanner repairs an interrupted write first and emits the wake
+// only after a later scan observes both copies in agreement.
 type DueTimer struct {
 	Key      TimerKey
 	Record   *temporalessv1.TimerRecord
@@ -68,12 +68,32 @@ type EventStore interface {
 	DeleteEvent(context.Context, EventKey) (bool, error)
 }
 
+type EventDeliveryCapability = temporalessv1.EventDeliveryCapability
+type EventDeliveryDisposition = temporalessv1.EventDeliveryDisposition
+
+const (
+	NoAtomicEventDelivery   = temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE
+	CreateOnlyEventDelivery = temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_CREATE_ONLY
+)
+
+// EventDeliveryStore is the optional conditional-write seam used by
+// DeliverEvent. Implementations must not emulate create-if-absent with a
+// check-then-write sequence. When a key exists, implementations must strictly
+// validate the stored delivery before comparing canonical payload bytes;
+// corrupt records are errors, never idempotent/conflict outcomes.
+type EventDeliveryStore interface {
+	EventDeliveryCapability(context.Context) (EventDeliveryCapability, error)
+	DeliverEvent(context.Context, *temporalessv1.EventRecord) (EventDeliveryDisposition, error)
+}
+
 type ClaimCapability = temporalessv1.ClaimCapability
 
 const (
 	NoClaims         = temporalessv1.ClaimCapability_CLAIM_CAPABILITY_NO_CLAIMS
 	CreateOnlyClaims = temporalessv1.ClaimCapability_CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
-	CASClaims        = temporalessv1.ClaimCapability_CLAIM_CAPABILITY_CAS_CLAIMS
+	// CASClaims is reserved for future wire compatibility. The current
+	// ClaimStore interface cannot implement or advertise CAS semantics.
+	CASClaims = temporalessv1.ClaimCapability_CLAIM_CAPABILITY_CAS_CLAIMS
 )
 
 type ClaimStore interface {

@@ -62,7 +62,7 @@ async def test_backfill_drives_prefect_wrapped_flows(store: OpenDALStore) -> Non
         # gives us the dispatch + UI, Temporaless gives us replay.
         return await run(
             store,
-            Options(workflow_id="prices", run_id=request.value, code_version="v1"),
+            Options(workflow_id="prices", run_id=request.value),
             request,
             StringValue,
             workflow_body,
@@ -105,7 +105,7 @@ async def test_wait_for_workflow_inside_prefect_wrapped_flow(store: OpenDALStore
 
     await run(
         store,
-        Options(workflow_id="upstream", run_id="2026-05-04", code_version="v1"),
+        Options(workflow_id="upstream", run_id="2026-05-04"),
         StringValue(value="seed"),
         StringValue,
         upstream_body,
@@ -149,7 +149,6 @@ async def test_canonical_grpc_handler_wrapped_as_prefect_flow(store: OpenDALStor
                 options_for=lambda _self, request: Options(
                     workflow_id="prices",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )

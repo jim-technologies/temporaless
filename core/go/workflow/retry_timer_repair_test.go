@@ -131,7 +131,7 @@ func TestActivityRetryTimer_FirstWriteFailureRepairsBeforeAcknowledgingSleep(t *
 		failures: map[int]retryTimerWriteFailureMode{1: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
-	options := &Options{WorkflowId: "retry-timer-first-write", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "retry-timer-first-write", RunId: "run"}
 	policy := durableRepairPolicy()
 	activityCalls := 0
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -221,7 +221,7 @@ func TestActivityRetryTimer_AmbiguousWriteIsVerifiedByAuthoritativeRead(t *testi
 		failures: map[int]retryTimerWriteFailureMode{1: retryTimerWriteAfterCommit},
 		err:      writeErr,
 	}
-	wf := &Workflow{store: store, workflowID: "wf", runID: "ambiguous-write", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "ambiguous-write"}
 	executions := 0
 	_, err := runActivity(
 		ctx, wf, "act", activityClaimTestType, durableRepairPolicy(), testRetryTimerID("act"), wrapperspb.String("request"),
@@ -253,7 +253,7 @@ func TestActivityRetryTimer_LaterOverwriteFailureRepairsOnFutureReplay(t *testin
 		failures: map[int]retryTimerWriteFailureMode{2: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
-	wf := &Workflow{store: store, workflowID: "wf", runID: "later-overwrite", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "later-overwrite"}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Minute),
 		BackoffCoefficient:      2,
@@ -351,7 +351,7 @@ func TestActivityRetryTimer_NewerPreparedWakeSurvivesLaterActivityWriteFailure(t
 		failures: map[int]retryTimerWriteFailureMode{2: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
-	wf := &Workflow{store: store, workflowID: "wf", runID: "newer-prepare", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "newer-prepare"}
 	policy := &temporalessv1.RetryPolicy{
 		InitialInterval:         durationpb.New(10 * time.Minute),
 		BackoffCoefficient:      2,
@@ -464,12 +464,11 @@ func TestActivityRetryTimer_CancellationAfterPrepareStillReleasesActivityClaim(t
 	store := &cancelAfterRetryTimerStore{Store: base, cancel: cancel}
 	claimStore := newTestClaimStore(t)
 	wf := &Workflow{
-		store:       store,
-		claimStore:  claimStore,
-		workflowID:  "wf",
-		runID:       "cancel-after-prepare",
-		codeVersion: "v1",
-		claimOwner:  "worker-1",
+		store:      store,
+		claimStore: claimStore,
+		workflowID: "wf",
+		runID:      "cancel-after-prepare",
+		claimOwner: "worker-1",
 	}
 
 	_, err := runActivity(
@@ -507,7 +506,7 @@ func TestActivityRetryTimer_PreparedWakeSurvivesActivityWriteFailureAndCrash(t *
 		failures: map[int]retryTimerWriteFailureMode{1: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
-	options := &Options{WorkflowId: "retry-timer-due-crash", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "retry-timer-due-crash", RunId: "run"}
 	policy := durableRepairPolicy()
 	activityCalls := 0
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -621,7 +620,7 @@ func TestActivityRetryTimer_IncompatibleReservedIDCollisionIsRejected(t *testing
 		failures: map[int]retryTimerWriteFailureMode{1: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
-	wf := &Workflow{store: store, workflowID: "wf", runID: "collision", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "collision"}
 	policy := durableRepairPolicy()
 	_, err := runActivity(
 		ctx, wf, "act", activityClaimTestType, policy, testRetryTimerID("act"), wrapperspb.String("request"),
@@ -639,7 +638,6 @@ func TestActivityRetryTimer_IncompatibleReservedIDCollisionIsRejected(t *testing
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           retryKey.Proto(),
 		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_SLEEP,
-		CodeVersion:   wf.codeVersion,
 		Duration:      durationpb.New(time.Hour),
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(time.Now().UTC().Add(time.Hour)),
@@ -671,7 +669,7 @@ func TestActivityRetryTimer_IncompatibleReservedIDCollisionIsRejected(t *testing
 func TestActivityRetryTimer_CallerIDCannotBeSharedByTwoActivities(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "shared-timer-id", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "shared-timer-id"}
 	policy := durableRepairPolicy()
 	const sharedTimerID = "retry:shared"
 	_, err := runActivity(
@@ -712,7 +710,7 @@ func TestActivityRetryTimer_CallerIDCannotBeSharedByTwoActivities(t *testing.T) 
 func TestActivityRetryTimer_TerminalCleanupRefusesIncompatibleTimer(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "terminal-collision", codeVersion: "v1"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "terminal-collision"}
 	policy := durableRepairPolicy()
 	timerID := testRetryTimerID("act")
 	result, err := runActivity(
@@ -739,7 +737,6 @@ func TestActivityRetryTimer_TerminalCleanupRefusesIncompatibleTimer(t *testing.T
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           timerKey.Proto(),
 		TimerKind:     temporalessv1.TimerKind_TIMER_KIND_SLEEP,
-		CodeVersion:   wf.codeVersion,
 		Duration:      durationpb.New(time.Hour),
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(time.Now().UTC().Add(time.Hour)),

@@ -34,9 +34,8 @@ func (s *pricesService) FetchPrices(
 			Store: s.store,
 			OptionsFor: func(_ context.Context, r *wrapperspb.StringValue) (*workflow.Options, error) {
 				return &workflow.Options{
-					WorkflowId:  "prices:" + r.GetValue(),
-					RunId:       "2026-05-04",
-					CodeVersion: "v1",
+					WorkflowId: "prices:" + r.GetValue(),
+					RunId:      "2026-05-04",
 				}, nil
 			},
 			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -100,7 +99,7 @@ func TestHandleRejectsMissingRequest(t *testing.T) {
 	}
 	options := workflow.WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 		Options: &workflow.Options{
-			WorkflowId: "unused", RunId: "unused", CodeVersion: "v1",
+			WorkflowId: "unused", RunId: "unused",
 		},
 		NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		Execute: func(_ context.Context, request *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -194,9 +193,8 @@ func (s *pendingService) FetchPrices(
 			Store: s.store,
 			OptionsFor: func(_ context.Context, r *wrapperspb.StringValue) (*workflow.Options, error) {
 				return &workflow.Options{
-					WorkflowId:  "prices:" + r.GetValue(),
-					RunId:       "2026-05-04",
-					CodeVersion: "v1",
+					WorkflowId: "prices:" + r.GetValue(),
+					RunId:      "2026-05-04",
 				}, nil
 			},
 			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -256,7 +254,7 @@ func TestHandlePassesThroughUnknownErrors(t *testing.T) {
 		workflow.WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 			Store: store,
 			Options: &workflow.Options{
-				WorkflowId: "x", RunId: "y", CodeVersion: "v1",
+				WorkflowId: "x", RunId: "y",
 			},
 			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 			Execute: func(_ context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {

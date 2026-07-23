@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/gocdkclaims"
 	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
+	"github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/temporalessv1connect"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"gocloud.dev/blob/fileblob"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -24,6 +27,75 @@ import (
 
 type corruptBackendErrorStore struct {
 	storage.Store
+}
+
+type atomicEventBackend struct {
+	storage.Store
+	mu sync.Mutex
+}
+
+type unspecifiedEventBackend struct {
+	*atomicEventBackend
+}
+
+type eventDeliveryErrorClient struct {
+	temporalessv1connect.RecordStoreServiceClient
+	detail proto.Message
+}
+
+func (client *eventDeliveryErrorClient) DeliverEvent(
+	context.Context,
+	*connect.Request[temporalessv1.DeliverEventRequest],
+) (*connect.Response[temporalessv1.DeliverEventResponse], error) {
+	connectErr := connect.NewError(
+		connect.CodeFailedPrecondition,
+		errors.New("adversarial event delivery error"),
+	)
+	detail, err := connect.NewErrorDetail(client.detail)
+	if err != nil {
+		return nil, err
+	}
+	connectErr.AddDetail(detail)
+	return nil, connectErr
+}
+
+func (store *atomicEventBackend) EventDeliveryCapability(
+	context.Context,
+) (storage.EventDeliveryCapability, error) {
+	return storage.CreateOnlyEventDelivery, nil
+}
+
+func (store *unspecifiedEventBackend) EventDeliveryCapability(
+	context.Context,
+) (storage.EventDeliveryCapability, error) {
+	return temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED, nil
+}
+
+func (store *atomicEventBackend) DeliverEvent(
+	ctx context.Context,
+	record *temporalessv1.EventRecord,
+) (storage.EventDeliveryDisposition, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := storage.EventKeyFromProto(record.GetKey())
+	existing, found, err := store.GetEvent(ctx, key)
+	if err != nil {
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+	}
+	if found {
+		if err := storage.ValidateEventDeliveryRecord(existing, key); err != nil {
+			return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+		}
+		if storage.SameEventPayload(existing, record) {
+			return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_IDEMPOTENT, nil
+		}
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED,
+			&storage.EventDeliveryConflictError{Key: key}
+	}
+	if err := store.PutEvent(ctx, record); err != nil {
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+	}
+	return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_CREATED, nil
 }
 
 func (store *corruptBackendErrorStore) GetTimer(
@@ -62,7 +134,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						SchemaVersion: storage.WorkflowRecordSchemaVersion,
 						Key:           key.Proto(),
 						WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-						CodeVersion:   "test-version",
 						Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 						Result:        result,
 					},
@@ -88,7 +159,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						SchemaVersion: storage.ActivityRecordSchemaVersion,
 						Key:           key.Proto(),
 						ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-						CodeVersion:   "test-version",
 						Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 						Result:        result,
 					},
@@ -114,7 +184,6 @@ func TestHandlerRoundTrip(t *testing.T) {
 						SchemaVersion: storage.TimerRecordSchemaVersion,
 						Key:           key.Proto(),
 						TimerKind:     storage.SleepTimerKind,
-						CodeVersion:   "test-version",
 						Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 						FireAt:        timestamppb.Now(),
 					},
@@ -172,7 +241,6 @@ func TestClientStoreLatestWorkflowRunUsesPointRPC(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     completedAt,
 		CompletedAt:   completedAt,
@@ -216,7 +284,6 @@ func TestClientStoreUsesRecordStoreService(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test-version",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	})
 	if err != nil {
@@ -232,6 +299,215 @@ func TestClientStoreUsesRecordStoreService(t *testing.T) {
 	}
 	if record.GetWorkflowType() != "workflow:google.protobuf.StringValue->google.protobuf.StringValue" {
 		t.Fatalf("workflow type = %q", record.GetWorkflowType())
+	}
+}
+
+func TestClientStoreDeliverEventPropagatesCapabilityAndTypedOutcomes(t *testing.T) {
+	ctx := context.Background()
+	backend := &atomicEventBackend{Store: newTestStore(t)}
+	clientStore := NewClientStore(NewHandler(backend))
+
+	capability, err := clientStore.EventDeliveryCapability(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability != storage.CreateOnlyEventDelivery {
+		t.Fatalf("capability = %s, want %s", capability, storage.CreateOnlyEventDelivery)
+	}
+	key := storage.NewEventKey("workflow", "run", "approval")
+	first, err := storage.DeliverEvent(ctx, clientStore, key, wrapperspb.String("approved"))
+	if err != nil ||
+		first != temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_CREATED {
+		t.Fatalf("first disposition=%s err=%v", first, err)
+	}
+	retry, err := storage.DeliverEvent(ctx, clientStore, key, wrapperspb.String("approved"))
+	if err != nil ||
+		retry != temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_IDEMPOTENT {
+		t.Fatalf("retry disposition=%s err=%v", retry, err)
+	}
+	_, err = storage.DeliverEvent(ctx, clientStore, key, wrapperspb.String("rejected"))
+	if !errors.Is(err, storage.ErrEventDeliveryConflict) {
+		t.Fatalf("conflict error=%v, want ErrEventDeliveryConflict", err)
+	}
+	var conflict *storage.EventDeliveryConflictError
+	if !errors.As(err, &conflict) || conflict.Key != key {
+		t.Fatalf("conflict detail=%#v, want key %#v", conflict, key)
+	}
+}
+
+func TestClientStoreDeliverEventFailsClosedForGoOpenDAL(t *testing.T) {
+	ctx := context.Background()
+	clientStore := NewClientStore(NewHandler(newTestStore(t)))
+	capability, err := clientStore.EventDeliveryCapability(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability != storage.NoAtomicEventDelivery {
+		t.Fatalf("capability = %s, want %s", capability, storage.NoAtomicEventDelivery)
+	}
+	err = storage.SendEvent(
+		ctx,
+		clientStore,
+		storage.NewEventKey("workflow", "run", "approval"),
+		wrapperspb.String("approved"),
+	)
+	if !errors.Is(err, storage.ErrEventDeliveryUnsupported) {
+		t.Fatalf("SendEvent error=%v, want ErrEventDeliveryUnsupported", err)
+	}
+}
+
+func TestClientStoreTreatsUnspecifiedEventDeliveryCapabilityAsUnsupported(t *testing.T) {
+	ctx := context.Background()
+	backend := &unspecifiedEventBackend{
+		atomicEventBackend: &atomicEventBackend{Store: newTestStore(t)},
+	}
+	clientStore := NewClientStore(NewHandler(backend))
+
+	capability, err := clientStore.EventDeliveryCapability(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability != storage.NoAtomicEventDelivery {
+		t.Fatalf("capability = %s, want %s", capability, storage.NoAtomicEventDelivery)
+	}
+	err = storage.SendEvent(
+		ctx,
+		clientStore,
+		storage.NewEventKey("workflow", "run", "approval"),
+		wrapperspb.String("approved"),
+	)
+	if !errors.Is(err, storage.ErrEventDeliveryUnsupported) {
+		t.Fatalf("SendEvent error=%v, want ErrEventDeliveryUnsupported", err)
+	}
+}
+
+func TestClientStoreRejectsMalformedEventDeliveryErrorDetail(t *testing.T) {
+	ctx := context.Background()
+	key := storage.NewEventKey("workflow", "run", "approval")
+	payload, err := anypb.New(wrapperspb.String("approved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           key.Proto(),
+		Payload:       payload,
+		ReceivedAt:    timestamppb.Now(),
+	}
+	tests := []struct {
+		name   string
+		detail proto.Message
+	}{
+		{
+			name: "invalid key",
+			detail: &temporalessv1.EventDeliveryErrorDetail{
+				Reason: temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT,
+				Key: &temporalessv1.EventKey{
+					Namespace:  storage.DefaultNamespace,
+					WorkflowId: ".",
+					RunId:      "run",
+					EventId:    "approval",
+				},
+			},
+		},
+		{
+			name: "mismatched key",
+			detail: &temporalessv1.EventDeliveryErrorDetail{
+				Reason: temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT,
+				Key:    storage.NewEventKey("workflow", "run", "other").Proto(),
+			},
+		},
+		{
+			name: "unspecified reason",
+			detail: &temporalessv1.EventDeliveryErrorDetail{
+				Reason: temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED,
+				Key:    key.Proto(),
+			},
+		},
+		{
+			name: "undecodable detail",
+			detail: &anypb.Any{
+				TypeUrl: "type.googleapis.com/temporaless.v1.EventDeliveryErrorDetail",
+				Value:   []byte{0xff},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewClientStore(&eventDeliveryErrorClient{detail: test.detail})
+			_, err := store.DeliverEvent(ctx, record)
+			if !errors.Is(err, storage.ErrCorruptRecord) {
+				t.Fatalf("error=%v, want ErrCorruptRecord", err)
+			}
+		})
+	}
+}
+
+func TestHandlerDeliverEventRequiresPayloadAndReceivedAt(t *testing.T) {
+	handler := NewHandler(&atomicEventBackend{Store: newTestStore(t)})
+	key := storage.NewEventKey("workflow", "run", "approval")
+	payload, err := anypb.New(wrapperspb.String("approved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		record *temporalessv1.EventRecord
+	}{
+		{
+			name: "missing payload",
+			record: &temporalessv1.EventRecord{
+				SchemaVersion: storage.EventRecordSchemaVersion,
+				Key:           key.Proto(),
+				ReceivedAt:    timestamppb.Now(),
+			},
+		},
+		{
+			name: "missing received_at",
+			record: &temporalessv1.EventRecord{
+				SchemaVersion: storage.EventRecordSchemaVersion,
+				Key:           key.Proto(),
+				Payload:       payload,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := handler.DeliverEvent(
+				context.Background(),
+				connect.NewRequest(&temporalessv1.DeliverEventRequest{
+					Record: test.record,
+				}),
+			)
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("code=%s err=%v, want INVALID_ARGUMENT", connect.CodeOf(err), err)
+			}
+		})
+	}
+}
+
+func TestClientStoreDeliverEventMapsCorruptExistingRecord(t *testing.T) {
+	ctx := context.Background()
+	base := newTestStore(t)
+	backend := &atomicEventBackend{Store: base}
+	key := storage.NewEventKey("workflow", "run", "approval")
+	payload, err := anypb.New(wrapperspb.String("approved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.PutEvent(ctx, &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           key.Proto(),
+		Payload:       payload,
+		// Missing received_at is accepted only by low-level PutEvent.
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewClientStore(NewHandler(backend))
+	_, err = storage.DeliverEvent(ctx, client, key, wrapperspb.String("approved"))
+	if !errors.Is(err, storage.ErrCorruptRecord) {
+		t.Fatalf("error=%v, want ErrCorruptRecord", err)
 	}
 }
 
@@ -257,7 +533,6 @@ func TestLocalClientStoreUsesPointServiceWithoutHTTP(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test-version",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	}); err != nil {
 		t.Fatal(err)
@@ -387,7 +662,6 @@ func TestClientStoreListAndDeleteRoundTrip(t *testing.T) {
 			SchemaVersion: storage.WorkflowRecordSchemaVersion,
 			Key:           key.Proto(),
 			WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-			CodeVersion:   "test-version",
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		}); err != nil {
 			t.Fatal(err)
@@ -459,7 +733,6 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           timerKey.Proto(),
 		TimerKind:     storage.SleepTimerKind,
-		CodeVersion:   "v1",
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.Now(),
 	}); err != nil {
@@ -478,13 +751,24 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		t.Fatalf("DeleteTimer: deleted=%v err=%v", deleted, err)
 	}
 
-	// Event round-trip
-	if err := storage.SendEvent(ctx, clientStore, storage.EventKey{
+	// Low-level event point-record round-trip. Atomic external delivery has
+	// separate capability/DeliverEvent coverage below.
+	eventKey := storage.EventKey{
 		Namespace:  wfKey.Namespace,
 		WorkflowID: wfKey.WorkflowID,
 		RunID:      wfKey.RunID,
 		EventID:    "approval",
-	}, wrapperspb.String("manager")); err != nil {
+	}
+	payload, err := anypb.New(wrapperspb.String("manager"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientStore.PutEvent(ctx, &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           eventKey.Proto(),
+		Payload:       payload,
+		ReceivedAt:    timestamppb.Now(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	events, err := clientStore.ListEvents(ctx, wfKey)
@@ -498,12 +782,7 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 	if got.GetValue() != "manager" {
 		t.Fatalf("event payload = %q", got.GetValue())
 	}
-	deleted, err = clientStore.DeleteEvent(ctx, storage.EventKey{
-		Namespace:  wfKey.Namespace,
-		WorkflowID: wfKey.WorkflowID,
-		RunID:      wfKey.RunID,
-		EventID:    "approval",
-	})
+	deleted, err = clientStore.DeleteEvent(ctx, eventKey)
 	if err != nil || !deleted {
 		t.Fatalf("DeleteEvent: deleted=%v err=%v", deleted, err)
 	}
@@ -521,7 +800,6 @@ func TestClientStoreRoundTripsAllRecordTypes(t *testing.T) {
 		OwnerId:       "owner-1",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 		ResourceId:    "claim-1",
-		CodeVersion:   "v1",
 	})
 	if err != nil || !created {
 		t.Fatalf("TryCreateClaim first: created=%v err=%v", created, err)
@@ -555,7 +833,6 @@ func TestClientStoreDeleteRunDeletesClaimsFromExplicitStore(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	}); err != nil {
 		t.Fatal(err)
@@ -564,7 +841,6 @@ func TestClientStoreDeleteRunDeletesClaimsFromExplicitStore(t *testing.T) {
 		SchemaVersion: storage.ActivityRecordSchemaVersion,
 		Key:           activityKey.Proto(),
 		ActivityType:  "activity:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 	}); err != nil {
 		t.Fatal(err)
@@ -577,7 +853,6 @@ func TestClientStoreDeleteRunDeletesClaimsFromExplicitStore(t *testing.T) {
 			OwnerId:       "owner",
 			ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 			ResourceId:    claimID,
-			CodeVersion:   "v1",
 		})
 		if err != nil || !created {
 			t.Fatalf("create claim %q: created=%v err=%v", claimID, created, err)
@@ -621,7 +896,6 @@ func TestClientStoreSweepDeletesClaimsFromExplicitStore(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -635,7 +909,6 @@ func TestClientStoreSweepDeletesClaimsFromExplicitStore(t *testing.T) {
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	})
 	if err != nil || !created {
 		t.Fatalf("create claim: created=%v err=%v", created, err)
@@ -670,6 +943,15 @@ type noClaimsPointStore struct {
 
 func (store *noClaimsPointStore) ClaimCapability(context.Context) (storage.ClaimCapability, error) {
 	return storage.NoClaims, nil
+}
+
+type capabilityOverrideClaimStore struct {
+	storage.ClaimStore
+	capability storage.ClaimCapability
+}
+
+func (store *capabilityOverrideClaimStore) ClaimCapability(context.Context) (storage.ClaimCapability, error) {
+	return store.capability, nil
 }
 
 type corruptListingClaimStore struct {
@@ -757,7 +1039,6 @@ func TestHandlerDeleteRunRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	}); err != nil {
 		t.Fatal(err)
@@ -769,7 +1050,6 @@ func TestHandlerDeleteRunRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	})
 	if err != nil || !created {
 		t.Fatalf("create claim: created=%v err=%v", created, err)
@@ -804,7 +1084,6 @@ func TestClientStoreSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -818,7 +1097,6 @@ func TestClientStoreSweepRejectsPointOnlyClaimStoreBeforeMutation(t *testing.T) 
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	})
 	if err != nil || !created {
 		t.Fatalf("create claim: created=%v err=%v", created, err)
@@ -849,7 +1127,6 @@ func TestHandlerDeleteRunTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	}); err != nil {
 		t.Fatal(err)
@@ -884,7 +1161,6 @@ func TestHandlerDeleteRunValidatesEntireClaimListingBeforeDelete(t *testing.T) {
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	}
 	created, err := claims.TryCreateClaim(ctx, target)
 	if err != nil || !created {
@@ -900,7 +1176,6 @@ func TestHandlerDeleteRunValidatesEntireClaimListingBeforeDelete(t *testing.T) {
 				OwnerId:       "owner",
 				ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 				ResourceId:    key.WorkflowID,
-				CodeVersion:   "v1",
 			},
 		},
 	}
@@ -932,7 +1207,6 @@ func TestQueryHandlerSweepMapsCorruptClaimListingToDataLoss(t *testing.T) {
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	}
 	created, err := claims.TryCreateClaim(ctx, target)
 	if err != nil || !created {
@@ -950,7 +1224,6 @@ func TestQueryHandlerSweepMapsCorruptClaimListingToDataLoss(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -1104,7 +1377,6 @@ func TestHandlerDeleteRunValidatesEveryRecordSnapshotBeforeDelete(t *testing.T) 
 				SchemaVersion: storage.WorkflowRecordSchemaVersion,
 				Key:           key.Proto(),
 				WorkflowType:  "workflow:test",
-				CodeVersion:   "v1",
 				Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 			}); err != nil {
 				t.Fatal(err)
@@ -1119,7 +1391,6 @@ func TestHandlerDeleteRunValidatesEveryRecordSnapshotBeforeDelete(t *testing.T) 
 				OwnerId:       "owner",
 				ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 				ResourceId:    key.WorkflowID,
-				CodeVersion:   "v1",
 			})
 			if err != nil || !created {
 				t.Fatalf("create claim: created=%v err=%v", created, err)
@@ -1173,6 +1444,148 @@ func TestHandlerReportsNoClaimCapabilityWithoutClaimStore(t *testing.T) {
 	}
 	if resp.Msg.GetClaimCapability() != storage.NoClaims {
 		t.Fatalf("claim capability = %s, want %s", resp.Msg.GetClaimCapability(), storage.NoClaims)
+	}
+}
+
+func TestHandlerAndClientExposeOnlyCurrentClaimCapabilities(t *testing.T) {
+	tests := []struct {
+		name          string
+		capability    storage.ClaimCapability
+		want          storage.ClaimCapability
+		wantErrorCode connect.Code
+	}{
+		{
+			name:       "no claims remains no claims",
+			capability: storage.NoClaims,
+			want:       storage.NoClaims,
+		},
+		{
+			name:       "create only remains create only",
+			capability: storage.CreateOnlyClaims,
+			want:       storage.CreateOnlyClaims,
+		},
+		{
+			name:          "reserved CAS is rejected",
+			capability:    storage.CASClaims,
+			want:          storage.NoClaims,
+			wantErrorCode: connect.CodeFailedPrecondition,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			claims := &capabilityOverrideClaimStore{
+				ClaimStore: newClaimsBackend(t),
+				capability: test.capability,
+			}
+			handler := NewHandlerWithClaims(newTestStore(t), claims)
+
+			response, err := handler.GetStoreCapabilities(
+				context.Background(),
+				connect.NewRequest(&temporalessv1.GetStoreCapabilitiesRequest{}),
+			)
+			if test.wantErrorCode == 0 && err != nil {
+				t.Fatalf("handler returned unexpected error: %v", err)
+			}
+			if test.wantErrorCode != 0 && connect.CodeOf(err) != test.wantErrorCode {
+				t.Fatalf(
+					"handler code = %s, want %s (err=%v)",
+					connect.CodeOf(err),
+					test.wantErrorCode,
+					err,
+				)
+			}
+			if err == nil && response.Msg.GetClaimCapability() != test.want {
+				t.Fatalf(
+					"handler capability = %s, want %s",
+					response.Msg.GetClaimCapability(),
+					test.want,
+				)
+			}
+
+			got, clientErr := NewClientStore(handler).ClaimCapability(context.Background())
+			if test.wantErrorCode == 0 && clientErr != nil {
+				t.Fatalf("client returned unexpected error: %v", clientErr)
+			}
+			if test.wantErrorCode != 0 && connect.CodeOf(clientErr) != test.wantErrorCode {
+				t.Fatalf(
+					"client code = %s, want %s (err=%v)",
+					connect.CodeOf(clientErr),
+					test.wantErrorCode,
+					clientErr,
+				)
+			}
+			if got != test.want {
+				t.Fatalf("client capability = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerTryCreateClaimRejectsReservedCASCapability(t *testing.T) {
+	claims := &capabilityOverrideClaimStore{
+		ClaimStore: newClaimsBackend(t),
+		capability: storage.CASClaims,
+	}
+	key := storage.NewClaimKey("prices:cas", "run", "workflow:execution")
+	_, err := NewHandlerWithClaims(newTestStore(t), claims).TryCreateClaim(
+		context.Background(),
+		connect.NewRequest(&temporalessv1.TryCreateClaimRequest{
+			Record: &temporalessv1.ClaimRecord{
+				SchemaVersion: storage.ClaimRecordSchemaVersion,
+				Key:           key.Proto(),
+				OwnerId:       "worker",
+				ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+				ResourceId:    key.WorkflowID,
+			},
+		}),
+	)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf(
+			"code = %s, want %s (err=%v)",
+			connect.CodeOf(err),
+			connect.CodeFailedPrecondition,
+			err,
+		)
+	}
+	if _, found, getErr := claims.GetClaim(context.Background(), key); getErr != nil || found {
+		t.Fatalf("claim mutated after reserved CAS rejection: found=%v err=%v", found, getErr)
+	}
+}
+
+func TestHandlerDeleteClaimRejectsReservedCASCapability(t *testing.T) {
+	ctx := context.Background()
+	baseClaims := newClaimsBackend(t)
+	claims := &capabilityOverrideClaimStore{
+		ClaimStore: baseClaims,
+		capability: storage.CASClaims,
+	}
+	key := storage.NewClaimKey("prices:cas", "run", "workflow:execution")
+	created, err := baseClaims.TryCreateClaim(ctx, &temporalessv1.ClaimRecord{
+		SchemaVersion: storage.ClaimRecordSchemaVersion,
+		Key:           key.Proto(),
+		OwnerId:       "worker",
+		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
+		ResourceId:    key.WorkflowID,
+	})
+	if err != nil || !created {
+		t.Fatalf("seed claim: created=%v err=%v", created, err)
+	}
+
+	_, err = NewHandlerWithClaims(newTestStore(t), claims).DeleteClaim(
+		ctx,
+		connect.NewRequest(&temporalessv1.DeleteClaimRequest{Key: key.Proto()}),
+	)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf(
+			"code = %s, want %s (err=%v)",
+			connect.CodeOf(err),
+			connect.CodeFailedPrecondition,
+			err,
+		)
+	}
+	if _, found, getErr := baseClaims.GetClaim(ctx, key); getErr != nil || !found {
+		t.Fatalf("claim mutated after reserved CAS rejection: found=%v err=%v", found, getErr)
 	}
 }
 

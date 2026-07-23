@@ -113,6 +113,14 @@ func (store *noClaimsPointStore) ClaimCapability(context.Context) (storage.Claim
 	return storage.NoClaims, nil
 }
 
+type casClaimsPointStore struct {
+	storage.ClaimStore
+}
+
+func (store *casClaimsPointStore) ClaimCapability(context.Context) (storage.ClaimCapability, error) {
+	return storage.CASClaims, nil
+}
+
 type corruptClaimListingStore struct {
 	storage.ClaimRunStore
 	corruptFor  storage.WorkflowKey
@@ -153,7 +161,6 @@ func TestSweepDoesNotTrustStaleCompletedQueryRecord(t *testing.T) {
 		Key:           staleCompleted.GetKey(),
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		WorkflowType:  staleCompleted.GetWorkflowType(),
-		CodeVersion:   staleCompleted.GetCodeVersion(),
 		Input:         staleCompleted.GetInput(),
 		CreatedAt:     staleCompleted.GetCreatedAt(),
 	}
@@ -289,6 +296,33 @@ func TestSweepTreatsNoClaimsCapabilityAsRecordOnly(t *testing.T) {
 	}
 }
 
+func TestSweepRejectsReservedCASCapabilityBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	recordStore, query := newTestStoreAndQuery(t)
+	baseClaims := newClaimStore(t)
+	claims := &casClaimsPointStore{ClaimStore: baseClaims}
+	key := storage.NewWorkflowKey("prices:cas", "run:old")
+	runWorkflow(t, ctx, recordStore, key.WorkflowID, key.RunID)
+	backdate(t, ctx, recordStore, key.WorkflowID, key.RunID, time.Now().Add(-48*time.Hour))
+	claimKey := storage.NewClaimKey(key.WorkflowID, key.RunID, "must-remain")
+	createClaim(t, ctx, baseClaims, claimKey)
+
+	deleted, err := janitor.Sweep(
+		ctx,
+		query,
+		recordStore,
+		claims,
+		sweepRequest(time.Now(), 24*time.Hour),
+	)
+	if !errors.Is(err, janitor.ErrClaimCapabilityUnsupported) {
+		t.Fatalf("error = %v, want ErrClaimCapabilityUnsupported", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	assertRunAndClaimPresent(t, ctx, recordStore, baseClaims, key, claimKey)
+}
+
 func TestSweepRejectsCorruptClaimSnapshotsBeforeAnyRunMutation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -397,7 +431,6 @@ func createClaim(t *testing.T, ctx context.Context, store storage.ClaimStore, ke
 		OwnerId:       "owner",
 		ResourceType:  temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:    key.WorkflowID,
-		CodeVersion:   "v1",
 	})
 	if err != nil || !created {
 		t.Fatalf("create claim: created=%v err=%v", created, err)
@@ -437,7 +470,7 @@ func runWorkflow(t *testing.T, ctx context.Context, store storage.Store, workflo
 	_, err := workflow.Run(
 		ctx,
 		store,
-		&workflow.Options{WorkflowId: workflowID, RunId: runID, CodeVersion: "test-version"},
+		&workflow.Options{WorkflowId: workflowID, RunId: runID},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -463,7 +496,7 @@ func leaveInProgress(t *testing.T, ctx context.Context, store storage.Store, wor
 	_, _ = workflow.Run(
 		ctx,
 		store,
-		&workflow.Options{WorkflowId: workflowID, RunId: runID, CodeVersion: "test-version"},
+		&workflow.Options{WorkflowId: workflowID, RunId: runID},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },

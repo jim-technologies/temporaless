@@ -166,7 +166,6 @@ func TestLatestWorkflowRunPointerSkipsUnspecifiedStatus(t *testing.T) {
 		SchemaVersion: WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +350,6 @@ func TestLatestWorkflowRunPointerWriterAdvancesAfterStatusTransition(t *testing.
 		SchemaVersion: WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		CreatedAt:     timestamppb.New(createdAt),
 		RunOrderTime:  timestamppb.New(createdAt.Add(-time.Hour)),
@@ -406,7 +404,6 @@ func putLatestPointerWorkflowWithOrder(
 		SchemaVersion: WorkflowRecordSchemaVersion,
 		Key:           NewWorkflowKey(workflowID, runID).Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     timestamppb.New(completedAt.Add(-time.Minute)),
 		CompletedAt:   timestamppb.New(completedAt),

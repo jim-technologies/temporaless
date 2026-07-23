@@ -16,8 +16,9 @@ import (
 )
 
 type Handler struct {
-	Store      storage.Store
-	ClaimStore storage.ClaimStore
+	Store              storage.Store
+	ClaimStore         storage.ClaimStore
+	EventDeliveryStore storage.EventDeliveryStore
 }
 
 // QueryHandler adapts an explicit storage.QueryStore into RecordQueryService.
@@ -34,11 +35,18 @@ func NewHandler(store storage.Store) *Handler {
 	if claimStore, ok := store.(storage.ClaimStore); ok {
 		handler.ClaimStore = claimStore
 	}
+	if eventStore, ok := store.(storage.EventDeliveryStore); ok {
+		handler.EventDeliveryStore = eventStore
+	}
 	return handler
 }
 
 func NewHandlerWithClaims(store storage.Store, claimStore storage.ClaimStore) *Handler {
-	return &Handler{Store: store, ClaimStore: claimStore}
+	handler := &Handler{Store: store, ClaimStore: claimStore}
+	if eventStore, ok := store.(storage.EventDeliveryStore); ok {
+		handler.EventDeliveryStore = eventStore
+	}
+	return handler
 }
 
 func NewQueryHandler(query storage.QueryStore) *QueryHandler {
@@ -98,9 +106,35 @@ func (handler *Handler) GetStoreCapabilities(ctx context.Context, _ *connect.Req
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		capability, err = currentClaimCapability(capability)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+	}
+	eventCapability := storage.NoAtomicEventDelivery
+	if handler.EventDeliveryStore != nil {
+		var err error
+		eventCapability, err = handler.EventDeliveryStore.EventDeliveryCapability(ctx)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		switch eventCapability {
+		case temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED:
+			eventCapability = storage.NoAtomicEventDelivery
+		case storage.NoAtomicEventDelivery, storage.CreateOnlyEventDelivery:
+		default:
+			return nil, connect.NewError(
+				connect.CodeInternal,
+				fmt.Errorf(
+					"event delivery store returned invalid capability %s",
+					eventCapability,
+				),
+			)
+		}
 	}
 	return connect.NewResponse(&temporalessv1.GetStoreCapabilitiesResponse{
-		ClaimCapability: capability,
+		ClaimCapability:         capability,
+		EventDeliveryCapability: eventCapability,
 	}), nil
 }
 
@@ -299,6 +333,58 @@ func (handler *Handler) PutEvent(ctx context.Context, req *connect.Request[tempo
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&temporalessv1.PutEventResponse{}), nil
+}
+
+func (handler *Handler) DeliverEvent(
+	ctx context.Context,
+	req *connect.Request[temporalessv1.DeliverEventRequest],
+) (*connect.Response[temporalessv1.DeliverEventResponse], error) {
+	if err := validateRPCRequest(req.Msg); err != nil {
+		return nil, err
+	}
+	key := storage.EventKeyFromProto(req.Msg.GetRecord().GetKey())
+	if err := storage.ValidateEventDeliveryRecord(req.Msg.GetRecord(), key); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if handler.EventDeliveryStore == nil {
+		return nil, eventDeliveryConnectError(
+			storage.ErrEventDeliveryUnsupported,
+			key,
+		)
+	}
+	capability, err := handler.EventDeliveryStore.EventDeliveryCapability(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if capability == temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED ||
+		capability == storage.NoAtomicEventDelivery {
+		return nil, eventDeliveryConnectError(
+			storage.ErrEventDeliveryUnsupported,
+			key,
+		)
+	}
+	if capability != storage.CreateOnlyEventDelivery {
+		return nil, connect.NewError(
+			connect.CodeInternal,
+			fmt.Errorf("event delivery store returned invalid capability %s", capability),
+		)
+	}
+	disposition, err := handler.EventDeliveryStore.DeliverEvent(ctx, req.Msg.GetRecord())
+	if err != nil {
+		return nil, eventDeliveryConnectError(err, key)
+	}
+	switch disposition {
+	case temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_CREATED,
+		temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_IDEMPOTENT:
+	default:
+		return nil, connect.NewError(
+			connect.CodeInternal,
+			fmt.Errorf("event delivery store returned invalid disposition %s", disposition),
+		)
+	}
+	return connect.NewResponse(&temporalessv1.DeliverEventResponse{
+		Disposition: disposition,
+	}), nil
 }
 
 func (handler *Handler) ListActivities(ctx context.Context, req *connect.Request[temporalessv1.ListActivitiesRequest]) (*connect.Response[temporalessv1.ListActivitiesResponse], error) {
@@ -593,7 +679,11 @@ func (handler *Handler) listClaimsForRun(ctx context.Context, key storage.Workfl
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if capability != storage.CreateOnlyClaims && capability != storage.CASClaims {
+	capability, err = currentClaimCapability(capability)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if capability != storage.CreateOnlyClaims {
 		return nil, nil
 	}
 	claimRunStore, ok := handler.ClaimStore.(storage.ClaimRunStore)
@@ -662,6 +752,20 @@ func (handler *Handler) TryCreateClaim(ctx context.Context, req *connect.Request
 	if err := validateRPCRequest(req.Msg); err != nil {
 		return nil, err
 	}
+	capability, err := handler.ClaimStore.ClaimCapability(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	capability, err = currentClaimCapability(capability)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if capability != storage.CreateOnlyClaims {
+		return nil, connect.NewError(
+			connect.CodeFailedPrecondition,
+			fmt.Errorf("claim store does not support atomic create"),
+		)
+	}
 	if err := storage.ValidateClaimRecord(req.Msg.GetRecord(), storage.ClaimKeyFromProto(req.Msg.GetRecord().GetKey())); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -676,12 +780,43 @@ func (handler *Handler) TryCreateClaim(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+func currentClaimCapability(
+	capability storage.ClaimCapability,
+) (storage.ClaimCapability, error) {
+	switch capability {
+	case temporalessv1.ClaimCapability_CLAIM_CAPABILITY_UNSPECIFIED,
+		storage.NoClaims:
+		return storage.NoClaims, nil
+	case storage.CreateOnlyClaims:
+		return storage.CreateOnlyClaims, nil
+	default:
+		return storage.NoClaims, fmt.Errorf(
+			"claim capability %s is unsupported by the current create-only claim interface",
+			capability,
+		)
+	}
+}
+
 func (handler *Handler) DeleteClaim(ctx context.Context, req *connect.Request[temporalessv1.DeleteClaimRequest]) (*connect.Response[temporalessv1.DeleteClaimResponse], error) {
 	if handler.ClaimStore == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("claim store is required"))
 	}
 	if err := validateRPCRequest(req.Msg); err != nil {
 		return nil, err
+	}
+	capability, err := handler.ClaimStore.ClaimCapability(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	capability, err = currentClaimCapability(capability)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if capability != storage.CreateOnlyClaims {
+		return nil, connect.NewError(
+			connect.CodeFailedPrecondition,
+			fmt.Errorf("claim store does not support claim release"),
+		)
 	}
 
 	key := storage.ClaimKeyFromProto(req.Msg.GetKey())
@@ -828,6 +963,31 @@ func validateRPCRequest(message proto.Message) error {
 
 func dataLossError(err error) error {
 	return connect.NewError(connect.CodeDataLoss, err)
+}
+
+func eventDeliveryConnectError(err error, key storage.EventKey) error {
+	if errors.Is(err, storage.ErrCorruptRecord) {
+		return dataLossError(err)
+	}
+	var reason temporalessv1.EventDeliveryFailureReason
+	switch {
+	case errors.Is(err, storage.ErrEventDeliveryUnsupported):
+		reason = temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED
+	case errors.Is(err, storage.ErrEventDeliveryConflict):
+		reason = temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	connectErr := connect.NewError(connect.CodeFailedPrecondition, err)
+	detail, detailErr := connect.NewErrorDetail(&temporalessv1.EventDeliveryErrorDetail{
+		Reason: reason,
+		Key:    key.Proto(),
+	})
+	if detailErr != nil {
+		return connect.NewError(connect.CodeInternal, errors.Join(err, detailErr))
+	}
+	connectErr.AddDetail(detail)
+	return connectErr
 }
 
 func storeConnectError(err error) error {

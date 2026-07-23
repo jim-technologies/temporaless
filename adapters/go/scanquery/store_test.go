@@ -69,7 +69,6 @@ func TestListActivitiesAcrossAndWithinRuns(t *testing.T) {
 			SchemaVersion: storage.ActivityRecordSchemaVersion,
 			Key:           test.key.Proto(),
 			ActivityType:  "activity:test",
-			CodeVersion:   "v1",
 			Status:        test.status,
 		}); err != nil {
 			t.Fatal(err)
@@ -115,7 +114,6 @@ func TestScanValidatesPayloadLocation(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           storage.NewWorkflowKey("actual", "run").Proto(),
 		WorkflowType:  "workflow:test",
-		CodeVersion:   "v1",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 	}
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
@@ -161,7 +159,6 @@ func TestDueTimersQueryDelegatesToAuthoritativeLedger(t *testing.T) {
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           storage.NewTimerKey(wfKey.WorkflowID, wfKey.RunID, "timer").Proto(),
 		TimerKind:     storage.SleepTimerKind,
-		CodeVersion:   "v1",
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(now.Add(-time.Minute)),
 		CreatedAt:     timestamppb.New(now.Add(-2 * time.Minute)),
@@ -205,7 +202,6 @@ func putWorkflow(t *testing.T, point storage.Store, namespace, workflowID, runID
 			RunID:      runID,
 		}).Proto(),
 		WorkflowType: "workflow:test",
-		CodeVersion:  "v1",
 		Status:       status,
 		CreatedAt:    now,
 	}

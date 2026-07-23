@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import opendal
 import pytest
+from google.protobuf.any_pb2 import Any
 from google.protobuf.timestamp_pb2 import Timestamp
+from google.protobuf.wrappers_pb2 import StringValue
 from protovalidate import ValidationError, validate
 
 import temporaless.storage as storage_module
@@ -12,12 +14,15 @@ from temporaless.cronscheduler import last_fire_from_runs
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
+    CREATE_ONLY_EVENT_DELIVERY,
     EVENT_RECORD_SCHEMA_VERSION,
+    NO_ATOMIC_EVENT_DELIVERY,
     NO_CLAIMS,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
     ActivityKey,
     ClaimKey,
+    EventDeliveryUnsupportedError,
     EventKey,
     OpenDALStore,
     RunRecordValidationError,
@@ -25,6 +30,8 @@ from temporaless.storage import (
     WorkflowKey,
     _due_entry_path,
     _latest_pointer_path,
+    deliver_event,
+    send_event,
 )
 from temporaless.timerscanner import due_timers
 from temporaless.v1 import temporaless_pb2
@@ -46,6 +53,106 @@ async def test_opendal_store_reports_no_claims_without_conditional_writes() -> N
     assert await store.claim_capability() == NO_CLAIMS
     with pytest.raises(RuntimeError, match="atomic create-if-absent"):
         await store.try_create_claim(temporaless_pb2.ClaimRecord())
+
+
+async def test_opendal_event_delivery_fails_closed_without_conditional_writes() -> None:
+    store = OpenDALStore(opendal.AsyncOperator("webdav", endpoint="https://example.com"))
+    assert await store.event_delivery_capability() == NO_ATOMIC_EVENT_DELIVERY
+
+    with pytest.raises(EventDeliveryUnsupportedError):
+        await send_event(
+            store,
+            EventKey(workflow_id="workflow", run_id="run", event_id="approval"),
+            temporaless_pb2.EventKey(event_id="payload"),
+        )
+
+
+async def test_deliver_event_validates_key_before_capability_io() -> None:
+    class SpyDeliveryStore:
+        capability_calls = 0
+        delivery_calls = 0
+
+        async def event_delivery_capability(self):
+            self.capability_calls += 1
+            return CREATE_ONLY_EVENT_DELIVERY
+
+        async def deliver_event(self, _record):
+            self.delivery_calls += 1
+            return temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED
+
+    store = SpyDeliveryStore()
+    with pytest.raises(ValidationError):
+        await deliver_event(
+            store,  # type: ignore[arg-type]
+            EventKey(workflow_id=".", run_id="run", event_id="approval"),
+            StringValue(value="approved"),
+        )
+    assert store.capability_calls == 0
+    assert store.delivery_calls == 0
+
+
+async def test_deliver_event_rejects_unknown_local_capability() -> None:
+    class InvalidCapabilityStore:
+        delivery_calls = 0
+
+        async def event_delivery_capability(self):
+            return 99
+
+        async def deliver_event(self, _record):
+            self.delivery_calls += 1
+            return temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED
+
+    store = InvalidCapabilityStore()
+    with pytest.raises(RunRecordValidationError, match="invalid capability"):
+        await deliver_event(
+            store,  # type: ignore[arg-type]
+            EventKey(workflow_id="workflow", run_id="run", event_id="approval"),
+            StringValue(value="approved"),
+        )
+    assert store.delivery_calls == 0
+
+
+async def test_deliver_event_rejects_unknown_local_disposition() -> None:
+    class InvalidDispositionStore:
+        async def event_delivery_capability(self):
+            return CREATE_ONLY_EVENT_DELIVERY
+
+        async def deliver_event(self, _record):
+            return 99
+
+    with pytest.raises(RunRecordValidationError, match="invalid disposition"):
+        await deliver_event(
+            InvalidDispositionStore(),  # type: ignore[arg-type]
+            EventKey(workflow_id="workflow", run_id="run", event_id="approval"),
+            StringValue(value="approved"),
+        )
+
+
+@pytest.mark.parametrize("corruption", ["payload", "received_at", "timestamp"])
+async def test_opendal_duplicate_delivery_rejects_corrupt_existing_record(
+    tmp_path,
+    corruption: str,
+) -> None:
+    store = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    key = EventKey(workflow_id="workflow", run_id="run", event_id="approval")
+    payload = Any()
+    payload.Pack(StringValue(value="approved"), deterministic=True)
+    received_at = Timestamp()
+    received_at.GetCurrentTime()
+    existing = temporaless_pb2.EventRecord(
+        schema_version=EVENT_RECORD_SCHEMA_VERSION,
+        key=key.to_proto(),
+        payload=payload,
+        received_at=received_at,
+    )
+    if corruption == "timestamp":
+        existing.received_at.seconds = 253_402_300_800
+    else:
+        existing.ClearField(corruption)
+    await store.put_event(existing)
+
+    with pytest.raises(RunRecordValidationError):
+        await deliver_event(store, key, StringValue(value="approved"))
 
 
 async def test_latest_pointer_uses_fire_time_not_backfill_write_time(tmp_path) -> None:
@@ -89,7 +196,6 @@ async def test_delete_run_validates_all_claim_payloads_before_deleting_any(tmp_p
         owner_id="owner",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
         resource_id=key.workflow_id,
-        code_version="v1",
     )
     assert await store.try_create_claim(valid)
     misplaced_path = ClaimKey(
@@ -107,7 +213,6 @@ async def test_delete_run_validates_all_claim_payloads_before_deleting_any(tmp_p
         owner_id="owner",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
         resource_id=key.workflow_id,
-        code_version="v1",
     )
     await operator.create_dir(misplaced_path.dir_path())
     await operator.write(
@@ -148,7 +253,6 @@ async def test_delete_run_validates_all_record_payloads_before_deleting_any(
             owner_id="owner",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     )
 
@@ -166,7 +270,6 @@ async def test_delete_run_validates_all_record_payloads_before_deleting_any(
                 activity_id="misplaced",
             ).to_proto(),
             activity_type="activity:test",
-            code_version="v1",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
         )
     elif record_kind == "timer":
@@ -183,7 +286,6 @@ async def test_delete_run_validates_all_record_payloads_before_deleting_any(
                 timer_id="misplaced",
             ).to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
-            code_version="v1",
             status=temporaless_pb2.TIMER_STATUS_FIRED,
         )
     else:
@@ -788,7 +890,6 @@ async def test_delete_timer_tombstones_live_ledger_orphan_before_point_delete(
     ledger = temporaless_pb2.DueTimerEntry()
     ledger.ParseFromString(bytes(await operator.read(_due_entry_path(key))))
     assert ledger.record.status == temporaless_pb2.TIMER_STATUS_CANCELED
-    assert ledger.record.code_version == timer.code_version
     assert ledger.record.fire_at == timer.fire_at
     assert not await store.delete_timer(key)
 
@@ -872,7 +973,6 @@ async def test_scanner_repairs_interrupted_timer_overwrite_before_dispatch(
         datetime.now(UTC) - timedelta(minutes=1),
     )
     rearmed.timer_kind = temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY
-    rearmed.code_version = "release:rearmed"
     rearmed.retry_activity_id = "fetch"
 
     # Simulate death after overwriting the deterministic shadow but before
@@ -1203,7 +1303,6 @@ def _record_for_kind(record_kind: str, key):
             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
             key=key.to_proto(),
             activity_type="activity:test",
-            code_version="v1",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
         )
     if record_kind == "timer":
@@ -1226,7 +1325,6 @@ def _record_for_kind(record_kind: str, key):
             owner_id="owner",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     raise AssertionError(f"unsupported record kind: {record_kind}")
 
@@ -1276,7 +1374,6 @@ def _workflow(
             run_id=run_id,
         ),
         workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=status,
         created_at=created,
     )
@@ -1311,7 +1408,6 @@ def _timer(
             timer_id=timer_id,
         ).to_proto(),
         timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
-        code_version="test",
         status=status,
         fire_at=fire,
         created_at=created,

@@ -20,10 +20,11 @@ contracts. Deployment decides how those service-shaped clients dispatch:
 
 The domain-facing store interfaces still exist in each language:
 
-- Go: point `storage.Store`, `storage.ClaimStore`, bounded
-  `storage.ClaimRunStore`, and optional `storage.QueryStore`
-- Python: point `Store`, `ClaimStore`, `ClaimRunStore`, and optional
-  `QueryStore` protocols
+- Go: point `storage.Store`, optional conditional `storage.EventDeliveryStore`,
+  `storage.ClaimStore`, bounded `storage.ClaimRunStore`, and optional
+  `storage.QueryStore`
+- Python: point `Store`, conditional `EventDeliveryStore`, `ClaimStore`,
+  `ClaimRunStore`, and optional `QueryStore` protocols
 
 Those interfaces are the business-layer seam used by workflow replay. They
 mirror the protobuf service semantics and are intentionally thin. Inspector
@@ -64,26 +65,50 @@ listing and indexed retention use `QueryStore` / `RecordQueryService` instead.
 - `GetWorkflow` / `PutWorkflow` / `GetLatestWorkflowRun` / `DeleteWorkflow` / `DeleteRun`
 - `GetActivity` / `PutActivity` / `ListActivities` / `DeleteActivity`
 - `GetTimer` / `PutTimer` / `ListTimers` / `DeleteTimer`
-- `GetEvent` / `PutEvent` / `ListEvents` / `DeleteEvent`
+- `GetEvent` / `PutEvent` / `DeliverEvent` / `ListEvents` / `DeleteEvent`
 - `GetClaim` / `TryCreateClaim` / `DeleteClaim` / `ListClaims`
 - `DueTimers` (read the compact due-timer ledger)
 
 Lists on `RecordStoreService` are run-scoped only. They exist for replay prefetch and run deletion, not for search. These lists are unpaginated and materialize the selected run; core `DueTimers` likewise materializes its selected namespace. Keep runs and namespaces bounded, partition timer-heavy tenants, and use an optional indexed due query or external scheduler for very large backlogs. `DeleteRun` snapshots and validates every listed record before deleting claims, then activities/timers/events/workflow; a separately configured claim store must implement `ClaimRunStore` or deletion is rejected before mutation. Deletions are idempotent.
 
-Treat both storage services as operator/admin APIs. A namespace is a storage
-partition, not an authorization boundary, and an empty namespace on
-`DueTimers` intentionally scans every application namespace. Remote
-deployments must authenticate the transport and authorize each RPC with a
-ConnectRPC interceptor or equivalent gateway policy; do not expose these
-handlers directly to untrusted workflow users.
+Treat both storage services as privileged internal APIs with per-method
+authorization. A namespace is a storage partition, not an authorization
+boundary, and an empty namespace on `DueTimers` intentionally scans every
+application namespace. Remote deployments must authenticate the transport and
+authorize each RPC with a ConnectRPC interceptor or equivalent gateway policy;
+do not expose these handlers directly to untrusted workflow users.
 
 The bearer-token production examples represent one trusted internal principal
 with access to their mounted surface. Production should issue separate
-least-privilege identities to workflow runtimes and operators, and restrict
+least-privilege identities to workflow runtimes, event senders, and operators.
+An event sender normally receives only `DeliverEvent`; restrict `PutEvent`,
 reset, delete, sweep, claim cleanup, and point-store timer repair RPCs to the
 operator identity.
 
 `DeleteRun` is a bounded cleanup operation, not a transaction or execution fence. Quiesce the run before calling it. A claim created concurrently after the listing snapshot can survive this pass; strict concurrent deletion would require a run tombstone checked by every claim create, which the create-only core does not pretend to provide.
+
+## Event Delivery
+
+`DeliverEvent` is the application-facing create-once boundary used by
+`SendEvent` / `send_event`. The first payload for an `EventKey` wins. A retry
+with the same deterministic protobuf `Any` payload returns
+`EVENT_DELIVERY_DISPOSITION_IDEMPOTENT` and retains the original
+`received_at`; a different payload fails with a typed conflict. A backend that
+cannot atomically create-if-absent reports
+`EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE` and rejects delivery. Adapters must
+never substitute a check-then-write sequence.
+
+`PutEvent` deliberately has replace semantics. Keep it behind an operator
+boundary for migrations, repairs, and fixtures; webhook and approval handlers
+should use `DeliverEvent`.
+
+Python `OpenDALStore` advertises create-only delivery only when the selected
+operator exposes `write_with_if_not_exists`. The current Go OpenDAL binding
+exposes only unconditional writes, so direct Go `OpenDALStore` reports no
+atomic event delivery. A Go application can deliver through a `ConnectStore`
+whose remote service advertises create-only delivery, or through a narrow
+native conditional-write `EventDeliveryStore`. ConnectStore transports the
+capability; it does not manufacture atomicity.
 
 ## Query Surface
 
@@ -118,6 +143,6 @@ instead of placing cloud credentials in that local CLI.
 - Use ConnectRPC stubs generated from protobuf.
 - Store records as protobuf binary only.
 - Keep record constants in protobuf enums.
-- Report claim support with `GetStoreCapabilities`.
+- Report claim and event-delivery support with `GetStoreCapabilities`.
 - Do not add Redis, SQL, or an always-on lock service to the core boundary.
 - Keep schedulers separate; storage RPC is not a workflow control plane.

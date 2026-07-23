@@ -5,18 +5,27 @@ python3 scripts/check_versions.py
 buf lint
 buf format --diff --exit-code api
 head_commit="$(git rev-parse HEAD)"
+release_tag="v$(tr -d '\n' < VERSION)"
 baseline_tag=""
 for candidate in $(git tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname); do
   case "$candidate" in
     *-*) continue ;;
   esac
-  if [ "$(git rev-list -n 1 "$candidate")" != "$head_commit" ]; then
-    baseline_tag="$candidate"
-    break
+  # On the release commit, compare against the preceding release rather than
+  # against the candidate tag itself. Do not skip an older tag merely because
+  # the dirty worktree happens to be based directly on its commit.
+  if [ "$candidate" = "$release_tag" ] &&
+    [ "$(git rev-list -n 1 "$candidate")" = "$head_commit" ]; then
+    continue
   fi
+  baseline_tag="$candidate"
+  break
 done
 if [ -n "$baseline_tag" ]; then
-  buf breaking api --against ".git#tag=$baseline_tag,subdir=api"
+  python3 scripts/check_buf_breaking.py \
+    --against ".git#tag=$baseline_tag,subdir=api" \
+    --baseline-tag "$baseline_tag" \
+    --version "$(tr -d '\n' < VERSION)"
 else
   echo "Skipping the Buf compatibility check; no prior plain SemVer tag is reachable." >&2
 fi
@@ -29,11 +38,7 @@ uv sync --project core/py --locked
 # generated consumer. Set TEMPORALESS_REQUIRE_BUF_GENERATE=1 to force a local
 # regeneration (and fail on any remote-plugin error).
 if [ -n "${BUF_TOKEN:-}" ] || [ "${TEMPORALESS_REQUIRE_BUF_GENERATE:-0}" = "1" ]; then
-  buf generate
-  # protoc-gen-connectrpc-py 0.11.1 currently emits a single trailing space on
-  # generated optional-header parameters. Normalize generated whitespace so a
-  # clean checkout remains reproducible and passes Git's whitespace checks.
-  sed -i 's/[[:space:]]*$//' core/py/src/temporaless/v1/temporaless_connect.py
+  scripts/generate
 else
   echo "Skipping remote Buf plugin regeneration without BUF_TOKEN; set TEMPORALESS_REQUIRE_BUF_GENERATE=1 to force it." >&2
 fi
@@ -42,7 +47,7 @@ descriptor_file="$(mktemp)"
 trap 'rm -f "$descriptor_file"' EXIT HUP INT TERM
 buf build api --as-file-descriptor-set -o "$descriptor_file"
 if ! cmp -s "$descriptor_file" core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb; then
-  echo "core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb is stale; run buf generation." >&2
+  echo "core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb is stale; run scripts/generate." >&2
   exit 1
 fi
 if [ "${CI:-}" = "true" ]; then
@@ -91,9 +96,9 @@ if command -v cargo >/dev/null 2>&1; then
 else
   echo "Skipping the experimental Rust SDK locally; CI validates it with the pinned rust-toolchain.toml." >&2
 fi
-uv run --project core/py ruff format --check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_versions.py scripts/set_version.py
-uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_versions.py scripts/set_version.py
-uv run --project core/py ty check core/py/src/temporaless core/py/benchmarks examples/py scripts/check_versions.py scripts/set_version.py --exclude='**/temporaless/v1/**' --exclude='**/buf/**'
+uv run --project core/py ruff format --check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
+uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
+uv run --project core/py ty check core/py/src/temporaless core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py --exclude='**/temporaless/v1/**' --exclude='**/buf/**'
 uv run --project core/py pytest core/py/tests
 uv sync --project adapters/py/connectworkflow --locked
 uv run --project adapters/py/connectworkflow ruff format --check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests

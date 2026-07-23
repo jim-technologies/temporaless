@@ -26,7 +26,12 @@ There is no engine to run, no control plane to operate. Every workflow boundary 
 Consequences:
 
 - **Pods are interchangeable.** What you deploy is a Store backend (S3 / GCS / Azure Blob) and stateless processes calling `workflow.run`.
-- **Multi-process is explicit.** Terminal runs replay on `(workflow_id, run_id, code_version)`. To serialize two workers racing on missing or `IN_PROGRESS` work, supply `claim_owner_id` with an atomic claim store; otherwise execution is at-least-once.
+- **Multi-process is explicit.** Terminal runs replay on
+  `(workflow_id, run_id)` plus their protobuf type identity. `IN_PROGRESS`
+  runs execute the handler supplied by the current invocation. To serialize
+  two workers racing on missing or `IN_PROGRESS` work, supply
+  `claim_owner_id` with an atomic claim store; otherwise execution is
+  at-least-once.
 - **Disaster recovery is the storage backup.** Records are the state.
 - **Search is derived.** The core does point reads/writes on your bucket. Cross-run listings, inspector views, and age-based sweeps come from an optional rebuildable query index.
 
@@ -38,7 +43,7 @@ Auth, rate limiting, tracing, structured logging, tenant routing — all live in
 
 Both languages reject the impedance of mixing modes:
 
-- Python uses `async def` end-to-end (storage, RPC, every adapter). Sync callables are rejected at wrap time. Reasoning: workloads are I/O-bound (LLM, vendor APIs, ML inference); modern Python is async-first; aligns with the Temporal Python SDK; lets `asyncio.gather` parallelize record I/O.
+- Python uses `async def` end-to-end (storage, RPC, every adapter). Sync callables are rejected at wrap time. Reasoning: workloads are I/O-bound (LLM, vendor APIs, ML inference); modern Python is async-first; aligns with the Temporal Python SDK; lets `gather_activities` parallelize activity branches while settling every durable boundary.
 - Go uses `context.Context` and goroutines — idiomatic Go, no `async/await` machinery to invent.
 
 `current_workflow()` (Python contextvar) and `ctx` (Go) achieve the same thing in their language's idiom: the in-flight workflow is reachable from any depth in the call stack without threading it through.
@@ -51,7 +56,11 @@ When a feature comes up: ask *would Dagster or Prefect users also want this?* If
 
 ## 6. Point Core, Optional Search
 
-The core store protocol stays small: point GET/PUT/DELETE by deterministic key, create-if-absent claims, run-scoped listing for replay prefetch and run deletion, latest-run pointers for cron seeding, and a due-timer ledger for durable sleeps.
+The core store protocol stays small: point GET/PUT/DELETE by deterministic
+key, capability-gated create-once event delivery, create-if-absent claims,
+run-scoped listing for replay prefetch and run deletion, latest-run pointers
+for cron seeding, and a due-timer ledger for sleeps, durable retry backoffs,
+and opted-in polling waits.
 
 Everything cross-run is search: workflow listing, status filters, inspector
 screens, exact retention selection, and broad analytics. Those live in optional

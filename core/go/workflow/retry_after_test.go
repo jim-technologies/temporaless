@@ -23,10 +23,9 @@ func TestRetryAfter_LongerThanComputedIntervalWins(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	// Tiny interval but Retry-After is 30s — durable threshold is 5s, so
 	// this should become a durable wait at ~30s.
@@ -91,10 +90,9 @@ func TestRetryAfter_ShorterThanComputedIntervalIgnored(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	// 10ms in-process retry policy. Retry-After is 1ms — must not shorten
 	// the wait below the configured floor.
@@ -137,10 +135,9 @@ func TestRetryAfter_TurnsShortPolicyIntoDurableWait(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "wf",
-		runID:       "r",
-		codeVersion: "test",
+		store:      store,
+		workflowID: "wf",
+		runID:      "r",
 	}
 	// Policy says "retry in 1 second", durable threshold is 30s. Without
 	// Retry-After this would be in-process. With Retry-After: 600s the

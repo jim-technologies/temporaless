@@ -66,9 +66,8 @@ func TestDueTimersFindsScheduledTimersInflight(t *testing.T) {
 	store := storage.NewOpenDALStore(operator)
 
 	options := &workflow.Options{
-		WorkflowId:  "prices:scanner",
-		RunId:       "2026-05-02",
-		CodeVersion: "test-version",
+		WorkflowId: "prices:scanner",
+		RunId:      "2026-05-02",
 	}
 
 	_, runErr := workflow.Run(
@@ -125,9 +124,8 @@ func TestDueTimersSkipsFiredTimers(t *testing.T) {
 	store := storage.NewOpenDALStore(operator)
 
 	options := &workflow.Options{
-		WorkflowId:  "prices:scanner-fired",
-		RunId:       "2026-05-02",
-		CodeVersion: "test-version",
+		WorkflowId: "prices:scanner-fired",
+		RunId:      "2026-05-02",
 	}
 	_, _ = workflow.Run(
 		ctx,

@@ -7,6 +7,14 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 ## Storage backend
 
 - [ ] **Cloud storage with native atomicity.** S3, GCS, or Azure Blob. The OpenDAL `fs` scheme is **dev-only** — it cannot be safely shared across processes (see `docs/hard-cases.md`).
+- [ ] **Atomic event delivery capability proved.** If the application uses
+  `SendEvent` / `send_event`, assert that
+  `GetStoreCapabilities.event_delivery_capability` is
+  `EVENT_DELIVERY_CAPABILITY_CREATE_ONLY` against the deployed backend. Python
+  OpenDAL enables it only when the operator advertises
+  `write_with_if_not_exists`; direct Go OpenDAL reports no atomic create, so Go
+  delivery needs an atomic-capable remote ConnectStore or a native
+  conditional-write adapter.
 - [ ] **Bucket isolated per environment.** `temporaless-prod-{namespace}`. Disaster-recovery bucket replication if your RPO < your bucket-region RPO.
 - [ ] **Versioning enabled.** Lets you recover from accidental record deletes (a janitor mis-configuration, a bad inspector script).
 - [ ] **Lifecycle rules preserve live wakes.** Never expire active run records
@@ -29,9 +37,10 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Authorization is per RPC and least privilege.** The production-server
   bearer-token examples intentionally model one trusted internal principal;
   they are not tenant isolation or an operator authorization policy. Give
-  workflow runtimes and human/automation operators separate identities, and
-  reserve reset, delete, sweep, claim cleanup, and timer-repair mutations for
-  the operator identity.
+  workflow runtimes and human/automation operators separate identities. Give a
+  webhook principal only `DeliverEvent` plus its application trigger; reserve
+  `PutEvent`, reset, delete, sweep, claim cleanup, and timer-repair mutations
+  for the operator identity.
 - [ ] **Server configuration fails closed.** The Python example requires
   `AUTH_TOKEN` and `TEMPORALESS_STORAGE_SCHEME`; backend options are a JSON
   string map in `TEMPORALESS_STORAGE_OPTIONS` (empty by default). It rejects
@@ -76,8 +85,22 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   boundary and RPC-aware interceptors as ConnectStore.
 - [ ] **Direct path preserved for normal APIs.** Application services keep ordinary API reads and routine synchronous actions callable in-process without Temporaless. Workflow wrappers are opt-in for idempotent, retriable, scheduled, or long-running operations; if Temporaless storage or operators are down, direct APIs still serve and only the durable operation returns an explicit unavailable/deferred result.
 - [ ] **`workflow_id` and `run_id` are caller-provided.** The framework rejects empty / ambiguous IDs. Document your conventions: typically `{pipeline}:{symbol_or_partition}` for `workflow_id`; `{date}` or `{fire_time_iso}` for `run_id`.
-- [ ] **`code_version` bumped on every breaking workflow body change.** Otherwise existing run records replay against new code → `WorkflowConflictError`. Convention: tie to git short-SHA or semver.
+- [ ] **Approved visual plans are bound to execution identity.** If the
+  application accepts `WorkflowPlan`, validate it and verify its deterministic
+  SHA-256 approval before entering the runtime. A changed plan must use a new
+  caller-owned run identity or be rejected by comparing against the original
+  stored workflow input; the core intentionally does not fingerprint inputs.
+- [ ] **Workflow changes preserve durable boundary meaning.** `IN_PROGRESS`
+  runs resume under the current handler while completed activities replay by
+  caller-owned ID. Use additive changes for existing runs; use a new
+  workflow/run/activity ID or a quiesced reset when behavior is intentionally
+  incompatible. Merely renaming a function or RPC method does not change
+  storage identity.
 - [ ] **Activity bodies idempotent.** Stored terminal results replay, but retries, crashes, and unclaimed concurrent execution may run a body again. External side-effects (vendor calls, DB writes) must tolerate at-least-once delivery. The framework's claim system suppresses cooperating live duplicates but cannot extend exactly-once guarantees across vendor boundaries.
+- [ ] **Wait wake policy is explicit.** `WaitEvent` and `WaitForWorkflow`
+  create no timer when `PollOptions` is absent. Ensure the event or upstream
+  completion path dispatches the same run, or supply a stable caller-owned poll
+  timer ID and interval and operate the timer scanner.
 
 ## Operator processes
 
@@ -88,7 +111,10 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   set every dispatched `WorkflowOptions.run_order_time` to its fire time.
   Multiple copies provide at-least-once dispatch, so resulting workflow calls
   must use execution claims or tolerate overlap.
-- [ ] **Timer scanner ticked at the granularity you need.** ~1-minute polling is the framework's expected cadence. Tighter loops increase storage RPCs without lowering wake-up latency below the `sleep(duration)` precision you persisted.
+- [ ] **Timer scanner ticked at the granularity you need.** ~1-minute scanning
+  is the framework's expected default. Choose cadence from the smallest sleep,
+  durable retry, or `PollOptions.interval` you need; a timer cannot be observed
+  before `fire_at`, and a coarse scan adds up to one scan interval of latency.
 - [ ] **Point-store scan partitions are bounded.** Core `DueTimers` materializes
   its selected namespace, and run-scoped activity/timer/event/claim lists
   materialize the selected run; these RPCs are intentionally unpaginated.
@@ -99,6 +125,11 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   multiple scanners can dispatch it concurrently. Use execution claims to
   single-flight cooperating workflow invocations and keep external side
   effects idempotent.
+- [ ] **Event duplicates tested.** Re-delivering the same deterministic
+  protobuf payload must be idempotent and retain the first timestamp; a
+  different payload for the same key must produce a typed conflict. Treat
+  unsupported/conflict results as alerts or application errors, never as a
+  reason to fall back to check-then-write or low-level `PutEvent`.
 - [ ] **Operators run beside the application trigger, not inside ConnectStore.**
   The production-server examples serve records only. Wire `BackgroundWorkers`
   into the application workflow service, deploy a separate operator with a
@@ -124,10 +155,14 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 - [ ] **Metrics from interceptors, not from a parallel framework surface.** Wrap your interceptor list with the metrics middleware your service mesh provides (OpenTelemetry-Connect, Datadog interceptor, etc.). The framework deliberately does not ship `Observer` / `Tracer` Protocols — the gRPC interceptor is the universal seam.
 - [ ] **Trace context propagated from interceptors into activity bodies** if you want activity-level spans. Inside the activity body, use your tracer SDK directly (`with tracer.start_as_current_span(...)`).
 - [ ] **Bucket access metrics watched.** Storage cost = `(records/day) × (avg record size)` per record kind. Use storage-class transitions to manage long-tail cost.
+- [ ] **Visual dashboards distinguish evidence from inference.** Overlay the
+  approved plan on activity/timer/event/claim records, retain unplanned
+  records, and do not label an absent event or stale claim as a definitely
+  running worker.
 
 ## Failure modes and recovery
 
-- [ ] **Workflows in `IN_PROGRESS` past their expected duration are alerted on.** A workflow stuck `IN_PROGRESS` for hours past its timer's `wake_at` indicates a stuck timer-scanner or a pending-event that nothing's delivering. Use the query index plus `inspector.list_in_flight_workflows(query_store)` to enumerate.
+- [ ] **Workflows in `IN_PROGRESS` past their expected duration are alerted on.** A workflow stuck `IN_PROGRESS` for hours past its timer's `wake_at` indicates a stuck timer scanner. An event/dependency wait without `PollOptions` has no `wake_at`; alert against an application deadline and verify its delivery/completion path dispatched the run. Use the query index plus `inspector.list_in_flight_workflows(query_store)` to enumerate.
 - [ ] **Failed workflow index reviewed regularly.** Failed runs are a queue of
   incidents. Before a partial retry, quiesce the run, reset only failed child
   activity/paired retry-timer records, and delete the parent workflow record

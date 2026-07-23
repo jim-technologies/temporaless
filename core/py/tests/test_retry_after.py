@@ -34,7 +34,7 @@ def store(tmp_path):
 
 
 def _workflow(store) -> Workflow:
-    return Workflow(store, Options(workflow_id="wf", run_id="r", code_version="test"))
+    return Workflow(store, Options(workflow_id="wf", run_id="r"))
 
 
 def _duration(td: timedelta) -> Duration:

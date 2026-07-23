@@ -47,7 +47,6 @@ Recommended fields:
 - `owner_id`: caller-provided invocation, request, or worker ID
 - `resource_type`: `workflow`, `activity`, or `timer`
 - `resource_id`: workflow ID, activity ID, or timer ID
-- `code_version`
 - `lease_expires_at`
 - `created_at`
 - `heartbeat_at`
@@ -109,9 +108,9 @@ Backends should be classified by capability:
 
 - `CLAIM_CAPABILITY_NO_CLAIMS`: no atomic claim support. Options that require claims (`claim_owner_id` or `concurrency_key`) are rejected; omit them to execute idempotently with at-least-once semantics.
 - `CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS`: can create-if-absent but cannot safely take over stale claims. Useful where orderly release is expected and manual cleanup after crashes is acceptable.
-- `CLAIM_CAPABILITY_CAS_CLAIMS`: reserved for adapters that can create, refresh, conditionally release, and take over with generation/ETag preconditions.
+- `CLAIM_CAPABILITY_CAS_CLAIMS`: reserved for a future adapter interface that can create, refresh, conditionally release, and take over with generation/ETag preconditions.
 
-Claim capability is a protobuf enum in `temporaless.v1`, not a language-local string. The current core claim surface provides create/get/delete semantics only and performs no CAS refresh or takeover, so `CLAIM_CAPABILITY_CAS_CLAIMS` is future-only today.
+Claim capability is a protobuf enum in `temporaless.v1`, not a language-local string. The current core claim surface provides create/get/unconditional-delete semantics only and performs no CAS refresh, fenced release, or takeover. It therefore rejects `CLAIM_CAPABILITY_CAS_CLAIMS` rather than silently treating it as create-only. Direct `TryCreateClaim` and `DeleteClaim` RPCs preflight the same boundary before mutation; cleanup and retention paths do too. Every bundled adapter reports only `NO_CLAIMS` or `CREATE_ONLY_CLAIMS`; CAS is future-only wire compatibility today.
 
 ## OpenDAL Status
 
@@ -161,7 +160,7 @@ The core handles claim availability as follows:
 
 - A non-empty `claim_owner_id` enables workflow-execution and activity claims and supplies the owner for any configured concurrency slot; merely supplying a claim store does not opt in. `concurrency_key` without it is invalid.
 - Acquire `workflow:execution` before entering missing or `IN_PROGRESS` workflow work.
-- Preflight `ClaimCapability`; reject requested coordination unless the store reports create-only or CAS capability. This prevents a remote store with no claim backend from silently degrading single-flight to at-least-once execution.
+- Preflight `ClaimCapability`; reject requested coordination unless the store reports create-only capability. `CAS_CLAIMS` is also rejected until the interface carries fencing and conditional lifecycle operations. This prevents a remote store from silently degrading or overstating the requested single-flight guarantee.
 - If a terminal workflow record appears after a failed claim create, replay it.
 - If the claim exists and the workflow is not terminal, return `ClaimBusyError` / `ALREADY_EXISTS`.
 - Delete the workflow execution claim after every orderly invocation exit so timers, events, and retries can resume through a later invocation. A delete failure is returned to the caller and leaves the claim for operator recovery.

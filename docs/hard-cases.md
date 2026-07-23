@@ -53,13 +53,25 @@ The convention is:
 
 The activity_id is the de-duplication key. Reusing the same activity_id replays the stored result — including when the new input bytes differ. This is deliberate: the caller chose the id and owns its meaning. If you want the activity body to run again with different input, pick a different activity_id.
 
-If the shape changes — request or response message types swapped — the stored `activity_type` no longer matches and the runtime raises `ErrActivityConflict` / `ActivityConflictError` so you can't silently replay against incompatible code. Bumping `code_version` is the explicit lever for "treat all old records as stale."
+If the shape changes—request or response message types are swapped—the stored
+`activity_type` no longer matches and the runtime raises
+`ErrActivityConflict` / `ActivityConflictError` rather than returning a result
+of the wrong protobuf type.
 
 ## Code Changes
 
 Changing activity code can make old results invalid even when input is the same.
 
-Production code should set `TEMPORALESS_CODE_VERSION` to an immutable build identity. Reusing the same activity ID and input under a new code version causes a mismatch. Use a new run ID or explicit reset tooling when reprocessing is intended.
+Temporaless does not pin a run to an application build. Terminal workflow and
+activity records remain authoritative; an `IN_PROGRESS` run executes the
+current handler and may therefore combine previously stored activity results
+with newly executed code. The current invocation also supplies the workflow
+input, so callers must keep input and control-plan meaning stable for a run.
+
+Use a new caller-owned activity ID or run ID when changed code must execute
+instead of replaying an old result. For an existing run, quiesce dispatch and
+use the child-first reset procedure before reprocessing. Applications may put
+build metadata in annotations or traces, but it is not replay identity.
 
 ## Partial Execution
 
@@ -137,9 +149,19 @@ For market-data ingestion, prefer small activities:
 
 ## Timers And Cron
 
-Durable sleeps are timer records, not blocked processes. A workflow that reaches a future timer returns a pending error and must be invoked again after the timer is due.
+Durable sleeps, activity-retry backoffs, and opted-in event/dependency polls
+are timer records, not blocked processes. A workflow that reaches a future
+timer returns a pending error and must be invoked again after the timer is due.
 
-When a due sleep resumes, its timer remains scheduled while the rest of that workflow invocation is ambiguous. The runtime marks it fired only after persisting a later wake-bearing timer or a terminal workflow record. Cancellation, claim contention, an event/dependency pending result, or a failed terminal write therefore leaves the original wakeup redeliverable. Without workflow claims this may produce overlapping at-least-once dispatches; with claims, a busy duplicate leaves the timer untouched.
+When a due wake resumes, its timer remains scheduled while the rest of that
+workflow invocation is ambiguous. The runtime marks it fired only after
+persisting a later wake-bearing timer or a terminal workflow record.
+Cancellation, claim contention, a manual event/dependency pending result, or a
+failed terminal write therefore leaves the original wakeup redeliverable. An
+unresolved wait with `PollOptions` first persists a successor poll timer, so
+the earlier wake can then be acknowledged without stranding the run. Without
+workflow claims this may produce overlapping at-least-once dispatches; with
+claims, a busy duplicate leaves the timer untouched.
 
 Timer transitions also write one deterministic prepared object under the
 bucket's compact due ledger. The object contains the full `TimerRecord` and is
@@ -157,6 +179,22 @@ only offline while writers/scanners are quiesced; the generic ledger has no
 online compaction mode.
 
 Cron should be implemented as a scheduler adapter that creates workflow runs from a schedule. The bundled scheduler seeds from latest-run pointer objects written by the bucket store. SQL can be introduced as an optional query index for search and large operational views, but the core must not require it.
+
+## Event Delivery Races
+
+An event key is create-once application state. `SendEvent` / `send_event`
+requires a backend-native conditional create. The first payload wins, a
+byte-identical deterministic protobuf retry is idempotent, and a different
+payload is a conflict. A check followed by an unconditional write is not an
+acceptable fallback: two webhooks can both observe absence and replace each
+other.
+
+Python OpenDAL exposes this only when its operator advertises
+`write_with_if_not_exists`. The current Go OpenDAL binding cannot express that
+precondition and reports event delivery unsupported; use a capable remote
+ConnectStore or a native conditional-write adapter. `PutEvent` remains
+available for deliberate operator/migration replacement, but using it in an
+ordinary sender discards the create-once guarantee.
 
 ### Point-store scan size
 
@@ -189,6 +227,15 @@ necessary even when the storage key itself contains a namespace.
 Workflow code may re-run from the beginning. Activity calls must be ordered and identified consistently.
 
 Do not generate activity IDs from wall-clock time, random values, map iteration order, or vendor response order.
+
+For visual workflows, validate and approve deterministic `WorkflowPlan` bytes
+before execution. Plan node IDs must be reused as boundary IDs, and branch
+choices must derive from recorded protobuf inputs or activity results. Because
+the core deliberately treats IDs rather than input bytes as replay identity, a
+changed plan under the same workflow/run identity can otherwise mix new control
+flow with old activity records. Use a distinct caller-owned run ID per approved
+plan revision/digest, or reject drift against the original stored workflow
+input before calling the runtime.
 
 ## Schema Evolution
 

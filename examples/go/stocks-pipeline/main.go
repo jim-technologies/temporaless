@@ -87,9 +87,8 @@ func dispatchPrices(ctx context.Context, store *storage.OpenDALStore) cronschedu
 
 func runPricesWorkflow(ctx context.Context, store *storage.OpenDALStore, fireTime time.Time) (*wrapperspb.StringValue, error) {
 	options := &workflow.Options{
-		WorkflowId:  "prices:aapl",
-		RunId:       fireTime.UTC().Format("2006-01-02T15-04-05Z"),
-		CodeVersion: "example",
+		WorkflowId: "prices:aapl",
+		RunId:      fireTime.UTC().Format("2006-01-02T15-04-05Z"),
 	}
 	return workflow.Run(
 		ctx,

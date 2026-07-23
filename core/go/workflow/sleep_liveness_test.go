@@ -57,7 +57,7 @@ func requireTimerStatus(
 func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	options := &Options{WorkflowId: "sleep-crash", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "sleep-crash", RunId: "run"}
 	crashAfterActivity := false
 	activityCalls := 0
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -143,7 +143,7 @@ func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 func TestSleepLaterScheduledTimerAcknowledgesConsumedTimer(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	options := &Options{WorkflowId: "sleep-successor", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "sleep-successor", RunId: "run"}
 	body := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		if err := Sleep(ctx, "first", time.Hour); err != nil {
 			return nil, err
@@ -177,7 +177,7 @@ func TestSleepLaterScheduledTimerAcknowledgesConsumedTimer(t *testing.T) {
 func TestSleepDurableActivityRetryTimerAcknowledgesConsumedTimer(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	options := &Options{WorkflowId: "sleep-activity-retry-successor", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "sleep-activity-retry-successor", RunId: "run"}
 	policy := &RetryPolicy{
 		InitialInterval:         durationpb.New(time.Hour),
 		BackoffCoefficient:      1,
@@ -242,7 +242,7 @@ func TestSleepTerminalWriteFailureLeavesWakeupScheduled(t *testing.T) {
 	base := newTestStore(t)
 	writeErr := errors.New("terminal workflow write failed")
 	store := &failTerminalWorkflowStore{Store: base, err: writeErr}
-	options := &Options{WorkflowId: "sleep-terminal-write", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "sleep-terminal-write", RunId: "run"}
 	bodyCalls := 0
 	body := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		if err := Sleep(ctx, "wake", time.Hour); err != nil {
@@ -323,7 +323,7 @@ func (s *boundaryOrderStore) PutTimer(ctx context.Context, record *temporalessv1
 func TestSleepBodyErrorPersistsTerminalFailureBeforeAcknowledgement(t *testing.T) {
 	ctx := context.Background()
 	store := &boundaryOrderStore{Store: newTestStore(t)}
-	options := &Options{WorkflowId: "sleep-body-error", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "sleep-body-error", RunId: "run"}
 	bodyErr := errors.New("body failed after wake")
 	body := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		if err := Sleep(ctx, "wake", time.Hour); err != nil {
@@ -361,7 +361,6 @@ func TestSleepActivityClaimBusyLeavesWakeupScheduled(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "sleep-claim-busy",
 		RunId:        "run",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "runner",
 	}
 	activityCalls := 0
@@ -401,7 +400,6 @@ func TestSleepActivityClaimBusyLeavesWakeupScheduled(t *testing.T) {
 		OwnerId:        "other-worker",
 		ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 		ResourceId:     "after-sleep",
-		CodeVersion:    options.GetCodeVersion(),
 		LeaseExpiresAt: timestamppb.New(now.Add(time.Hour)),
 		CreatedAt:      timestamppb.New(now),
 		HeartbeatAt:    timestamppb.New(now),
@@ -492,9 +490,8 @@ func TestSleepAmbiguousWriteIsVerifiedAndRemainsResumable(t *testing.T) {
 				commitBefore: test.commitBefore,
 			}
 			options := &Options{
-				WorkflowId:  "sleep-ambiguous-" + strings.ReplaceAll(test.name, " ", "-"),
-				RunId:       "run",
-				CodeVersion: "v1",
+				WorkflowId: "sleep-ambiguous-" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:      "run",
 			}
 			body := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 				if err := Sleep(ctx, "wake", time.Hour); err != nil {
@@ -639,7 +636,7 @@ func TestWorkflowPrimitiveStorageFailuresRemainInProgress(t *testing.T) {
 			body: func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 				return WaitEvent(ctx, "approval", func() *wrapperspb.StringValue {
 					return &wrapperspb.StringValue{}
-				})
+				}, nil)
 			},
 		},
 	}
@@ -657,9 +654,8 @@ func TestWorkflowPrimitiveStorageFailuresRemainInProgress(t *testing.T) {
 				failEvent:         test.failEvent,
 			}
 			options := &Options{
-				WorkflowId:  "primitive-storage-" + strings.ReplaceAll(test.name, " ", "-"),
-				RunId:       "run",
-				CodeVersion: "v1",
+				WorkflowId: "primitive-storage-" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:      "run",
 			}
 
 			_, err := Run(
@@ -686,7 +682,7 @@ func TestWorkflowPrimitiveStorageFailuresRemainInProgress(t *testing.T) {
 func TestActivityBusinessErrorCannotMasqueradeAsWorkflowPending(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	options := &Options{WorkflowId: "activity-business-pending", RunId: "run", CodeVersion: "v1"}
+	options := &Options{WorkflowId: "activity-business-pending", RunId: "run"}
 
 	_, err := Run(
 		ctx, store, options, nil, wrapperspb.String("request"),

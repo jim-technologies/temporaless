@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"os"
 	"reflect"
 	"sort"
 	"sync"
@@ -49,6 +48,7 @@ type ActivityFunc[Req proto.Message, Resp proto.Message] func(context.Context, R
 
 type Options = temporalessv1.WorkflowOptions
 type ActivityOptions = temporalessv1.ActivityOptions
+type PollOptions = temporalessv1.PollOptions
 type RetryPolicy = temporalessv1.RetryPolicy
 
 type ActivityError struct {
@@ -141,11 +141,10 @@ type Workflow struct {
 	claimCapability storage.ClaimCapability
 	workflowID      string
 	runID           string
-	codeVersion     string
 	claimOwner      string
 
-	consumedSleepMu     sync.Mutex
-	consumedSleepTimers map[string]storage.TimerKey
+	consumedWakeMu     sync.Mutex
+	consumedWakeTimers map[string]storage.TimerKey
 }
 
 type workflowContextKey struct{}
@@ -190,48 +189,47 @@ func Annotate(ctx context.Context, key string, value string) {
 	}
 }
 
-func (w *Workflow) WorkflowID() string  { return w.workflowID }
-func (w *Workflow) RunID() string       { return w.runID }
-func (w *Workflow) CodeVersion() string { return w.codeVersion }
+func (w *Workflow) WorkflowID() string { return w.workflowID }
+func (w *Workflow) RunID() string      { return w.runID }
 
 // Store returns the Store this workflow is replaying against. Exposed so
 // adapter helpers (e.g. dependencies.WaitForWorkflow) can read records
 // without reaching into private state.
 func (w *Workflow) Store() storage.Store { return w.store }
 
-// registerConsumedSleepTimer records that this invocation crossed a due
-// durable-sleep boundary. The authoritative TimerRecord intentionally remains
+// registerConsumedWakeTimer records that this invocation crossed a durable
+// wake boundary. The authoritative TimerRecord intentionally remains
 // SCHEDULED until the invocation commits either a later wake-bearing timer or
 // the terminal WorkflowRecord. That ordering prevents a process crash between
-// Sleep returning and the next durable boundary from losing the only wakeup.
-func (w *Workflow) registerConsumedSleepTimer(key storage.TimerKey) {
-	w.consumedSleepMu.Lock()
-	defer w.consumedSleepMu.Unlock()
-	if w.consumedSleepTimers == nil {
-		w.consumedSleepTimers = make(map[string]storage.TimerKey)
+// the wait returning and the next durable boundary from losing the only wakeup.
+func (w *Workflow) registerConsumedWakeTimer(key storage.TimerKey) {
+	w.consumedWakeMu.Lock()
+	defer w.consumedWakeMu.Unlock()
+	if w.consumedWakeTimers == nil {
+		w.consumedWakeTimers = make(map[string]storage.TimerKey)
 	}
-	w.consumedSleepTimers[key.TimerID] = key
+	w.consumedWakeTimers[key.TimerID] = key
 }
 
-// acknowledgeConsumedSleepTimers marks previously consumed sleep timers FIRED
+// acknowledgeConsumedWakeTimers marks previously consumed wake timers FIRED
 // after a durable successor has committed. exceptTimerID protects a timer that
 // is itself the new successor (including repeated calls using the same ID).
 // Successful updates are forgotten; failed ones remain registered so another
 // boundary in the same invocation can retry. Callers keep cleanup best-effort:
 // the successor is already durable and any still-SCHEDULED timer is a safe
 // duplicate wake rather than a lost wake.
-func (w *Workflow) acknowledgeConsumedSleepTimers(ctx context.Context, exceptTimerID string) error {
-	w.consumedSleepMu.Lock()
-	timerIDs := make([]string, 0, len(w.consumedSleepTimers))
-	keys := make(map[string]storage.TimerKey, len(w.consumedSleepTimers))
-	for timerID, key := range w.consumedSleepTimers {
+func (w *Workflow) acknowledgeConsumedWakeTimers(ctx context.Context, exceptTimerID string) error {
+	w.consumedWakeMu.Lock()
+	timerIDs := make([]string, 0, len(w.consumedWakeTimers))
+	keys := make(map[string]storage.TimerKey, len(w.consumedWakeTimers))
+	for timerID, key := range w.consumedWakeTimers {
 		if timerID == exceptTimerID {
 			continue
 		}
 		timerIDs = append(timerIDs, timerID)
 		keys[timerID] = key
 	}
-	w.consumedSleepMu.Unlock()
+	w.consumedWakeMu.Unlock()
 	if len(timerIDs) == 0 {
 		return nil
 	}
@@ -244,38 +242,35 @@ func (w *Workflow) acknowledgeConsumedSleepTimers(ctx context.Context, exceptTim
 		key := keys[timerID]
 		record, found, err := w.store.GetTimer(cleanupCtx, key)
 		if err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("get consumed sleep timer %q: %w", timerID, err))
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("get consumed wake timer %q: %w", timerID, err))
 			continue
 		}
 		if !found || record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_FIRED ||
 			record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_CANCELED {
-			w.forgetConsumedSleepTimer(timerID)
+			w.forgetConsumedWakeTimer(timerID)
 			continue
 		}
-		if record.GetTimerKind() != storage.SleepTimerKind {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("%w: consumed timer %q is not a sleep timer", ErrTimerConflict, timerID))
-			continue
-		}
-		if record.GetCodeVersion() != w.codeVersion {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("%w: consumed timer %q code version changed", ErrTimerConflict, timerID))
+		if record.GetTimerKind() != storage.SleepTimerKind &&
+			record.GetTimerKind() != storage.PollTimerKind {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("%w: consumed timer %q is not a wake timer", ErrTimerConflict, timerID))
 			continue
 		}
 		updated := proto.Clone(record).(*temporalessv1.TimerRecord)
 		updated.Status = temporalessv1.TimerStatus_TIMER_STATUS_FIRED
 		updated.FiredAt = timestamppb.New(time.Now().UTC())
 		if err := w.store.PutTimer(cleanupCtx, updated); err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("acknowledge consumed sleep timer %q: %w", timerID, err))
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("acknowledge consumed wake timer %q: %w", timerID, err))
 			continue
 		}
-		w.forgetConsumedSleepTimer(timerID)
+		w.forgetConsumedWakeTimer(timerID)
 	}
 	return errors.Join(cleanupErrors...)
 }
 
-func (w *Workflow) forgetConsumedSleepTimer(timerID string) {
-	w.consumedSleepMu.Lock()
-	defer w.consumedSleepMu.Unlock()
-	delete(w.consumedSleepTimers, timerID)
+func (w *Workflow) forgetConsumedWakeTimer(timerID string) {
+	w.consumedWakeMu.Lock()
+	defer w.consumedWakeMu.Unlock()
+	delete(w.consumedWakeTimers, timerID)
 }
 
 type TimerPendingError struct {
@@ -293,9 +288,17 @@ func (err *TimerPendingError) Unwrap() error {
 
 type EventPendingError struct {
 	EventID string
+	WakeAt  time.Time
 }
 
 func (err *EventPendingError) Error() string {
+	if !err.WakeAt.IsZero() {
+		return fmt.Sprintf(
+			"event %q is pending; next poll at %s",
+			err.EventID,
+			err.WakeAt.UTC().Format(time.RFC3339Nano),
+		)
+	}
 	return fmt.Sprintf("event %q is pending", err.EventID)
 }
 
@@ -327,14 +330,24 @@ func (err *ClaimBusyError) Unwrap() error {
 
 // WorkflowDependencyPendingError is raised when a workflow body waits on
 // another workflow that hasn't completed yet. Like EventPendingError, this
-// leaves the calling workflow IN_PROGRESS so a scanner / re-invoke can resume
-// it later.
+// leaves the calling workflow IN_PROGRESS. WakeAt is set only when the wait
+// armed a scanner-visible poll timer; otherwise the application must re-invoke
+// it.
 type WorkflowDependencyPendingError struct {
 	WorkflowID string
 	RunID      string
+	WakeAt     time.Time
 }
 
 func (err *WorkflowDependencyPendingError) Error() string {
+	if !err.WakeAt.IsZero() {
+		return fmt.Sprintf(
+			"workflow %q/%q has not completed; next poll at %s",
+			err.WorkflowID,
+			err.RunID,
+			err.WakeAt.UTC().Format(time.RFC3339Nano),
+		)
+	}
 	return fmt.Sprintf("workflow %q/%q has not completed", err.WorkflowID, err.RunID)
 }
 
@@ -430,7 +443,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			result, replayErr := replayWorkflowRecord(
 				record,
 				workflowType,
-				runOptions.GetCodeVersion(),
 				runOptions.GetRunOrderTime(),
 				newResult,
 			)
@@ -439,7 +451,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			if identityErr := assertWorkflowIdentity(
 				record,
 				workflowType,
-				runOptions.GetCodeVersion(),
 				runOptions.GetRunOrderTime(),
 			); identityErr != nil {
 				return zero, nil, false, identityErr
@@ -496,7 +507,6 @@ func Run[Req proto.Message, Resp proto.Message](
 				OwnerId:        runOptions.GetClaimOwnerId(),
 				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 				ResourceId:     runOptions.GetWorkflowId(),
-				CodeVersion:    runOptions.GetCodeVersion(),
 				LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
 				CreatedAt:      timestamppb.New(now),
 				HeartbeatAt:    timestamppb.New(now),
@@ -602,7 +612,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			ctx, claimStore,
 			storage.DefaultNamespace, concurrencyKey,
 			concurrencyLimit, runOptions.GetClaimOwnerId(),
-			runOptions.GetCodeVersion(),
 			DefaultClaimLeaseDuration,
 		)
 		if err != nil {
@@ -646,7 +655,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			SchemaVersion: storage.WorkflowRecordSchemaVersion,
 			Key:           key.Proto(),
 			WorkflowType:  workflowType,
-			CodeVersion:   runOptions.GetCodeVersion(),
 			Input:         inputAny,
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 			CreatedAt:     createdAt,
@@ -665,7 +673,6 @@ func Run[Req proto.Message, Resp proto.Message](
 		claimCapability: claimCapability,
 		workflowID:      runOptions.GetWorkflowId(),
 		runID:           runOptions.GetRunId(),
-		codeVersion:     runOptions.GetCodeVersion(),
 		claimOwner:      runOptions.GetClaimOwnerId(),
 	}
 	ctx = context.WithValue(ctx, workflowContextKey{}, workflowContext)
@@ -696,7 +703,6 @@ func Run[Req proto.Message, Resp proto.Message](
 			SchemaVersion: storage.WorkflowRecordSchemaVersion,
 			Key:           key.Proto(),
 			WorkflowType:  workflowType,
-			CodeVersion:   runOptions.GetCodeVersion(),
 			Input:         inputAny,
 			Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED,
 			Failure:       failure,
@@ -706,13 +712,13 @@ func Run[Req proto.Message, Resp proto.Message](
 			RunOrderTime:  runOptions.GetRunOrderTime(),
 		}
 		if err := store.PutWorkflow(ctx, failed); err != nil {
-			// No terminal boundary committed: leave any consumed due sleeps
+			// No terminal boundary committed: leave any consumed due wakes
 			// SCHEDULED so the scanner can redeliver this workflow.
 			return zero, err
 		}
 		// FAILED is now authoritative. Timer acknowledgement is best-effort and
 		// cannot replace the workflow body's terminal error.
-		_ = workflowContext.acknowledgeConsumedSleepTimers(ctx, "")
+		_ = workflowContext.acknowledgeConsumedWakeTimers(ctx, "")
 		return zero, runErr
 	}
 
@@ -724,7 +730,6 @@ func Run[Req proto.Message, Resp proto.Message](
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  workflowType,
-		CodeVersion:   runOptions.GetCodeVersion(),
 		Input:         inputAny,
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		Result:        resultAny,
@@ -734,12 +739,12 @@ func Run[Req proto.Message, Resp proto.Message](
 		RunOrderTime:  runOptions.GetRunOrderTime(),
 	}
 	if err := store.PutWorkflow(ctx, completed); err != nil {
-		// No terminal boundary committed: retain consumed due sleeps as wakes.
+		// No terminal boundary committed: retain consumed due timers as wakes.
 		return zero, err
 	}
 	// COMPLETED is authoritative; stale ledger entries are also safely pruned
 	// by DueTimers if this best-effort acknowledgement cannot be written.
-	_ = workflowContext.acknowledgeConsumedSleepTimers(ctx, "")
+	_ = workflowContext.acknowledgeConsumedWakeTimers(ctx, "")
 	return result, nil
 }
 
@@ -764,7 +769,9 @@ func isWorkflowContinuationError(err error) bool {
 		errors.Is(err, storage.ErrCorruptRecord) {
 		return false
 	}
-	return errors.Is(err, ErrTimerPending) ||
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrTimerPending) ||
 		errors.Is(err, ErrClaimBusy) ||
 		errors.Is(err, ErrEventPending) ||
 		errors.Is(err, ErrWorkflowDependencyPending) ||
@@ -829,14 +836,12 @@ func WaitEvent[T proto.Message](
 	ctx context.Context,
 	eventID string,
 	newPayload func() T,
+	pollOptions *PollOptions,
 ) (T, error) {
 	var zero T
 	workflow, ok := Current(ctx)
 	if !ok {
 		return zero, fmt.Errorf("workflow context is required")
-	}
-	if newPayload == nil {
-		return zero, fmt.Errorf("event payload constructor is required")
 	}
 	key := storage.EventKey{
 		Namespace:  storage.DefaultNamespace,
@@ -847,24 +852,317 @@ func WaitEvent[T proto.Message](
 	if err := key.Validate(); err != nil {
 		return zero, err
 	}
-	record, found, err := workflow.store.GetEvent(ctx, key)
-	if err != nil {
-		return zero, workflowInfrastructureError("read workflow event", err)
+	if err := ValidatePollOptions(pollOptions); err != nil {
+		return zero, err
 	}
-	if !found {
-		return zero, &EventPendingError{EventID: eventID}
+	if newPayload == nil {
+		return zero, fmt.Errorf("event payload constructor is required")
 	}
 	payload := newPayload()
 	if isNilMessage(payload) {
 		return zero, fmt.Errorf("event payload constructor returned nil")
 	}
+	record, found, err := workflow.store.GetEvent(ctx, key)
+	if err != nil {
+		return zero, workflowInfrastructureError("read workflow event", err)
+	}
+	if !found {
+		if pollOptions != nil {
+			wakeAt, pollErr := ArmPoll(ctx, pollOptions)
+			if pollErr != nil {
+				return zero, pollErr
+			}
+			return zero, &EventPendingError{EventID: eventID, WakeAt: wakeAt}
+		}
+		return zero, &EventPendingError{EventID: eventID}
+	}
+	if err := storage.ValidateEventDeliveryRecord(record, key); err != nil {
+		return zero, err
+	}
+	if pollOptions != nil {
+		if err := ResolvePoll(ctx, pollOptions); err != nil {
+			return zero, err
+		}
+	}
 	if record.GetPayload() == nil {
 		return zero, fmt.Errorf("stored event has no payload")
 	}
+	if !record.GetPayload().MessageIs(payload) {
+		return zero, fmt.Errorf(
+			"%w: stored event payload type does not match requested type",
+			ErrWorkflowConflict,
+		)
+	}
 	if err := record.GetPayload().UnmarshalTo(payload); err != nil {
-		return zero, err
+		return zero, fmt.Errorf(
+			"%w: decode stored event payload: %w",
+			storage.ErrCorruptRecord,
+			err,
+		)
 	}
 	return payload, nil
+}
+
+// ArmPoll persists or rearms a caller-identified polling timer and returns its
+// next wake time. Wait helpers call this only while their condition remains
+// unresolved.
+func ArmPoll(ctx context.Context, options *PollOptions) (time.Time, error) {
+	workflow, ok := Current(ctx)
+	if !ok {
+		return time.Time{}, fmt.Errorf("workflow context is required")
+	}
+	if options == nil {
+		return time.Time{}, fmt.Errorf("poll options are required")
+	}
+	interval, err := pollInterval(options)
+	if err != nil {
+		return time.Time{}, err
+	}
+	key := storage.TimerKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		TimerID:    options.GetTimerId(),
+	}
+	if err := key.Validate(); err != nil {
+		return time.Time{}, err
+	}
+
+	now := time.Now().UTC()
+	record, found, err := workflow.store.GetTimer(ctx, key)
+	if err != nil {
+		return time.Time{}, workflowInfrastructureError("read poll timer", err)
+	}
+	if found {
+		fireAt, status, validationErr := pollTimerDetails(
+			record,
+			key,
+			interval,
+		)
+		if validationErr != nil {
+			return time.Time{}, validationErr
+		}
+		if status == temporalessv1.TimerStatus_TIMER_STATUS_CANCELED {
+			return time.Time{}, fmt.Errorf("%w: poll timer was canceled", ErrTimerConflict)
+		}
+		if status == temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED && now.Before(fireAt) {
+			_ = workflow.acknowledgeConsumedWakeTimers(ctx, options.GetTimerId())
+			return fireAt, nil
+		}
+	}
+
+	fireAt := now.Add(interval)
+	if found {
+		record = proto.Clone(record).(*temporalessv1.TimerRecord)
+	} else {
+		record = &temporalessv1.TimerRecord{
+			SchemaVersion: storage.TimerRecordSchemaVersion,
+			Key:           key.Proto(),
+			TimerKind:     storage.PollTimerKind,
+			Duration:      durationpb.New(interval),
+			CreatedAt:     timestamppb.New(now),
+		}
+	}
+	record.Status = temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED
+	record.FireAt = timestamppb.New(fireAt)
+	record.FiredAt = nil
+	if writeErr := workflow.store.PutTimer(ctx, record); writeErr != nil {
+		verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		verified, verifiedFound, readErr := getTimerAuthoritative(
+			verifyCtx,
+			workflow.store,
+			key,
+		)
+		if readErr != nil {
+			return time.Time{}, workflowInfrastructureError(
+				"verify ambiguous poll timer write",
+				errors.Join(writeErr, readErr),
+			)
+		}
+		if !verifiedFound {
+			return time.Time{}, workflowInfrastructureError("persist poll timer", writeErr)
+		}
+		verifiedFireAt, verifiedStatus, validationErr := pollTimerDetails(
+			verified,
+			key,
+			interval,
+		)
+		if validationErr != nil {
+			return time.Time{}, errors.Join(
+				validationErr,
+				workflowInfrastructureError("persist poll timer", writeErr),
+			)
+		}
+		if verifiedStatus != temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED {
+			return time.Time{}, errors.Join(
+				fmt.Errorf("%w: verified poll timer is not scheduled", ErrTimerConflict),
+				workflowInfrastructureError("persist poll timer", writeErr),
+			)
+		}
+		return verifiedFireAt, workflowInfrastructureError("persist poll timer", writeErr)
+	}
+	_ = workflow.acknowledgeConsumedWakeTimers(ctx, options.GetTimerId())
+	return fireAt, nil
+}
+
+// ResolvePoll retains a scheduled polling timer as a crash-recovery wake until
+// the workflow commits its next durable wake or terminal record.
+func ResolvePoll(ctx context.Context, options *PollOptions) error {
+	workflow, ok := Current(ctx)
+	if !ok {
+		return fmt.Errorf("workflow context is required")
+	}
+	if options == nil {
+		return nil
+	}
+	interval, err := pollInterval(options)
+	if err != nil {
+		return err
+	}
+	key := storage.TimerKey{
+		Namespace:  storage.DefaultNamespace,
+		WorkflowID: workflow.workflowID,
+		RunID:      workflow.runID,
+		TimerID:    options.GetTimerId(),
+	}
+	record, found, err := workflow.store.GetTimer(ctx, key)
+	if err != nil {
+		return workflowInfrastructureError("read resolved poll timer", err)
+	}
+	if !found {
+		return nil
+	}
+	_, status, err := pollTimerDetails(record, key, interval)
+	if err != nil {
+		return err
+	}
+	if status == temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED {
+		workflow.registerConsumedWakeTimer(key)
+	}
+	return nil
+}
+
+func pollInterval(options *PollOptions) (time.Duration, error) {
+	if options == nil {
+		return 0, fmt.Errorf("poll options are required")
+	}
+	if err := protovalidate.Validate(options); err != nil {
+		return 0, err
+	}
+	intervalMessage := options.GetInterval()
+	if intervalMessage == nil {
+		return 0, fmt.Errorf("poll interval is required")
+	}
+	if err := intervalMessage.CheckValid(); err != nil {
+		return 0, fmt.Errorf("poll interval is invalid: %w", err)
+	}
+	interval := intervalMessage.AsDuration()
+	if !proto.Equal(intervalMessage, durationpb.New(interval)) {
+		return 0, fmt.Errorf("poll interval is outside Go time.Duration range")
+	}
+	if interval <= 0 {
+		return 0, fmt.Errorf("poll interval must be positive")
+	}
+	return interval, nil
+}
+
+// ValidatePollOptions validates the portable PollOptions contract without
+// reading or mutating workflow state. A nil value preserves manual wake
+// behavior and is valid.
+func ValidatePollOptions(options *PollOptions) error {
+	if options == nil {
+		return nil
+	}
+	_, err := pollInterval(options)
+	return err
+}
+
+func pollTimerDetails(
+	record *temporalessv1.TimerRecord,
+	key storage.TimerKey,
+	interval time.Duration,
+) (time.Time, temporalessv1.TimerStatus, error) {
+	if err := storage.ValidateTimerRecord(record, key); err != nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: invalid poll timer record: %w", ErrTimerConflict, err)
+	}
+	if record.GetTimerKind() != storage.PollTimerKind {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf(
+				"%w: timer kind changed from %s to %s",
+				ErrTimerConflict,
+				record.GetTimerKind(),
+				storage.PollTimerKind,
+			)
+	}
+	if record.GetRetryActivityId() != "" {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer is linked to an activity retry", ErrTimerConflict)
+	}
+	if record.GetDuration() == nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has no interval", ErrTimerConflict)
+	}
+	if err := record.GetDuration().CheckValid(); err != nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has invalid interval: %w", ErrTimerConflict, err)
+	}
+	storedInterval := record.GetDuration().AsDuration()
+	if !proto.Equal(record.GetDuration(), durationpb.New(storedInterval)) {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll interval is outside Go time.Duration range", ErrTimerConflict)
+	}
+	if storedInterval <= 0 {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll interval must be positive", ErrTimerConflict)
+	}
+	if storedInterval != interval {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll interval changed", ErrTimerConflict)
+	}
+	if record.GetCreatedAt() == nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has no created_at", ErrTimerConflict)
+	}
+	if err := record.GetCreatedAt().CheckValid(); err != nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has invalid created_at: %w", ErrTimerConflict, err)
+	}
+	if record.GetFireAt() == nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has no fire_at", ErrTimerConflict)
+	}
+	if err := record.GetFireAt().CheckValid(); err != nil {
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has invalid fire_at: %w", ErrTimerConflict, err)
+	}
+	status := record.GetStatus()
+	switch status {
+	case temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED:
+		if record.GetFiredAt() != nil {
+			return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+				fmt.Errorf("%w: scheduled poll timer has fired_at", ErrTimerConflict)
+		}
+	case temporalessv1.TimerStatus_TIMER_STATUS_FIRED:
+		if record.GetFiredAt() == nil {
+			return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+				fmt.Errorf("%w: fired poll timer has no fired_at", ErrTimerConflict)
+		}
+		if err := record.GetFiredAt().CheckValid(); err != nil {
+			return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+				fmt.Errorf("%w: fired poll timer has invalid fired_at: %w", ErrTimerConflict, err)
+		}
+	case temporalessv1.TimerStatus_TIMER_STATUS_CANCELED:
+		if record.GetFiredAt() != nil {
+			return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+				fmt.Errorf("%w: canceled poll timer has fired_at", ErrTimerConflict)
+		}
+	default:
+		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED,
+			fmt.Errorf("%w: poll timer has unknown status", ErrTimerConflict)
+	}
+	return record.GetFireAt().AsTime(), status, nil
 }
 
 func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
@@ -893,7 +1191,7 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		return workflowInfrastructureError("read sleep timer", err)
 	}
 	if found {
-		fireAt, status, validationErr := sleepTimerDetails(record, key, workflow.codeVersion, duration)
+		fireAt, status, validationErr := sleepTimerDetails(record, key, duration)
 		if validationErr != nil {
 			return validationErr
 		}
@@ -906,14 +1204,14 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		// This SCHEDULED timer is itself a durable successor wake for any
 		// earlier sleep consumed by the same invocation. A repeated call with
 		// the same timer ID cannot acknowledge itself.
-		_ = workflow.acknowledgeConsumedSleepTimers(ctx, timerID)
+		_ = workflow.acknowledgeConsumedWakeTimers(ctx, timerID)
 		if now.Before(fireAt) {
 			return &TimerPendingError{TimerID: timerID, WakeAt: fireAt}
 		}
 		// Do not mark FIRED here. Sleep returning is not durable: a process can
 		// still crash before the workflow commits a later wake or terminal
 		// record. Keeping this timer SCHEDULED guarantees scanner redelivery.
-		workflow.registerConsumedSleepTimer(key)
+		workflow.registerConsumedWakeTimer(key)
 		return nil
 	}
 
@@ -922,7 +1220,6 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		SchemaVersion: storage.TimerRecordSchemaVersion,
 		Key:           key.Proto(),
 		TimerKind:     timerKind,
-		CodeVersion:   workflow.codeVersion,
 		Duration:      durationpb.New(duration),
 		Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:        timestamppb.New(fireAt),
@@ -950,7 +1247,6 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 		verifiedFireAt, status, validationErr := sleepTimerDetails(
 			verified,
 			key,
-			workflow.codeVersion,
 			duration,
 		)
 		if validationErr != nil {
@@ -975,18 +1271,17 @@ func Sleep(ctx context.Context, timerID string, duration time.Duration) error {
 	}
 	// The new SCHEDULED timer is a durable successor for earlier consumed
 	// sleeps. A same-ID timer is excluded so it never acknowledges itself.
-	_ = workflow.acknowledgeConsumedSleepTimers(ctx, timerID)
+	_ = workflow.acknowledgeConsumedWakeTimers(ctx, timerID)
 	if now.Before(fireAt) {
 		return &TimerPendingError{TimerID: timerID, WakeAt: fireAt}
 	}
-	workflow.registerConsumedSleepTimer(key)
+	workflow.registerConsumedWakeTimer(key)
 	return nil
 }
 
 func sleepTimerDetails(
 	record *temporalessv1.TimerRecord,
 	key storage.TimerKey,
-	codeVersion string,
 	duration time.Duration,
 ) (time.Time, temporalessv1.TimerStatus, error) {
 	if err := storage.ValidateTimerRecord(record, key); err != nil {
@@ -1009,14 +1304,6 @@ func sleepTimerDetails(
 			"%w: sleep timer is linked to retry activity %q",
 			ErrTimerConflict,
 			record.GetRetryActivityId(),
-		)
-	}
-	if record.GetCodeVersion() != codeVersion {
-		return time.Time{}, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED, fmt.Errorf(
-			"%w: code version changed from %q to %q",
-			ErrTimerConflict,
-			record.GetCodeVersion(),
-			codeVersion,
 		)
 	}
 	if record.GetDuration() == nil {
@@ -1205,9 +1492,9 @@ func runActivity[T proto.Message](
 				// reconciliation must never replace its result or failure.
 				_ = markActivityRetryTimerFired(ctx, workflow, activityID, record.GetRetryTimerId())
 			}
-			return replayRecord(record, activityType, workflow.codeVersion, newResult)
+			return replayRecord(record, activityType, newResult)
 		case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
-			if err := assertActivityIdentity(record, activityType, workflow.codeVersion); err != nil {
+			if err := assertActivityIdentity(record, activityType); err != nil {
 				return zero, err
 			}
 			if err := assertRetryingActivity(record, normalizedRetryPolicy, retryTimerID, plan); err != nil {
@@ -1224,7 +1511,7 @@ func runActivity[T proto.Message](
 				}
 				// Only a verified SCHEDULED retry timer is a durable successor
 				// wake for ordinary sleeps consumed earlier in this invocation.
-				_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+				_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 				if time.Now().UTC().Before(wakeAt) {
 					return zero, &TimerPendingError{
 						TimerID: retryTimerID,
@@ -1244,7 +1531,7 @@ func runActivity[T proto.Message](
 					return zero, prepareErr
 				}
 				if prepared {
-					_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+					_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 					if time.Now().UTC().Before(wakeAt) {
 						return zero, &TimerPendingError{
 							TimerID: retryTimerID,
@@ -1267,7 +1554,7 @@ func runActivity[T proto.Message](
 			// A timer can commit before its first RETRYING ActivityRecord. It is
 			// a durable prepare boundary: wait for it, then retry from the empty
 			// authoritative attempt history if the activity write never landed.
-			_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+			_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 			if time.Now().UTC().Before(wakeAt) {
 				return zero, &TimerPendingError{
 					TimerID: retryTimerID,
@@ -1320,7 +1607,6 @@ func runActivity[T proto.Message](
 				OwnerId:        workflow.claimOwner,
 				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 				ResourceId:     activityID,
-				CodeVersion:    workflow.codeVersion,
 				LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
 				CreatedAt:      timestamppb.New(now),
 				HeartbeatAt:    timestamppb.New(now),
@@ -1343,7 +1629,7 @@ func runActivity[T proto.Message](
 				if activityRecordMayHaveRetryTimer(fresh) {
 					_ = markActivityRetryTimerFired(ctx, workflow, activityID, fresh.GetRetryTimerId())
 				}
-				return replayRecord(fresh, activityType, workflow.codeVersion, newResult)
+				return replayRecord(fresh, activityType, newResult)
 			}
 
 			existing, claimFound, getErr := workflow.claimStore.GetClaim(ctx, activityClaimKey)
@@ -1384,10 +1670,10 @@ func runActivity[T proto.Message](
 				if activityRecordMayHaveRetryTimer(record) {
 					_ = markActivityRetryTimerFired(ctx, workflow, activityID, record.GetRetryTimerId())
 				}
-				replayed, replayErr := replayRecord(record, activityType, workflow.codeVersion, newResult)
+				replayed, replayErr := replayRecord(record, activityType, newResult)
 				return releaseActivityClaim(replayed, replayErr)
 			case temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING:
-				if identityErr := assertActivityIdentity(record, activityType, workflow.codeVersion); identityErr != nil {
+				if identityErr := assertActivityIdentity(record, activityType); identityErr != nil {
 					return releaseActivityClaim(zero, identityErr)
 				}
 				if retryErr := assertRetryingActivity(record, normalizedRetryPolicy, retryTimerID, plan); retryErr != nil {
@@ -1398,7 +1684,7 @@ func runActivity[T proto.Message](
 					if ensureErr != nil {
 						return releaseActivityClaim(zero, ensureErr)
 					}
-					_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+					_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 					if time.Now().UTC().Before(wakeAt) {
 						return releaseActivityClaim(zero, &TimerPendingError{
 							TimerID: retryTimerID,
@@ -1418,7 +1704,7 @@ func runActivity[T proto.Message](
 						return releaseActivityClaim(zero, prepareErr)
 					}
 					if prepared {
-						_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+						_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 						if time.Now().UTC().Before(wakeAt) {
 							return releaseActivityClaim(zero, &TimerPendingError{
 								TimerID: retryTimerID,
@@ -1451,7 +1737,7 @@ func runActivity[T proto.Message](
 				return releaseActivityClaim(zero, prepareErr)
 			}
 			if prepared {
-				_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+				_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 				if time.Now().UTC().Before(wakeAt) {
 					return releaseActivityClaim(zero, &TimerPendingError{
 						TimerID: retryTimerID,
@@ -1500,7 +1786,6 @@ func runActivity[T proto.Message](
 				SchemaVersion: storage.ActivityRecordSchemaVersion,
 				Key:           key.Proto(),
 				ActivityType:  activityType,
-				CodeVersion:   workflow.codeVersion,
 				Input:         inputAny,
 				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 				Result:        resultAny,
@@ -1536,7 +1821,6 @@ func runActivity[T proto.Message](
 				SchemaVersion: storage.ActivityRecordSchemaVersion,
 				Key:           key.Proto(),
 				ActivityType:  activityType,
-				CodeVersion:   workflow.codeVersion,
 				Input:         inputAny,
 				Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED,
 				Failure:       failure,
@@ -1564,7 +1848,6 @@ func runActivity[T proto.Message](
 			SchemaVersion: storage.ActivityRecordSchemaVersion,
 			Key:           key.Proto(),
 			ActivityType:  activityType,
-			CodeVersion:   workflow.codeVersion,
 			Input:         inputAny,
 			Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 			Failure:       failure,
@@ -1624,7 +1907,7 @@ func runActivity[T proto.Message](
 			}
 			// The paired retry timer is now a durable successor wake. It is safe
 			// to retire any ordinary sleeps consumed earlier in this invocation.
-			_ = workflow.acknowledgeConsumedSleepTimers(ctx, "")
+			_ = workflow.acknowledgeConsumedWakeTimers(ctx, "")
 			return zero, &TimerPendingError{
 				TimerID: retryTimerID,
 				WakeAt:  effectiveWakeAt,
@@ -1649,23 +1932,17 @@ func runActivity[T proto.Message](
 	return zero, fmt.Errorf("activity %q exhausted retry plan", activityID)
 }
 
-// assertActivityIdentity guards against shape changes that would make the
-// stored record incompatible with the current code path: a swapped
-// request/response message type (which changes activity_type) or a bumped
-// code_version. The activity_id itself is the de-duplication key; same id +
-// same shape + same code_version is treated as the same logical activity
-// regardless of the input bytes — the caller chose the id and owns its
-// semantics.
+// assertActivityIdentity guards against a swapped request/response message
+// type, which changes activity_type. The activity_id itself is the
+// de-duplication key; the same id and protobuf shape is treated as the same
+// logical activity regardless of input bytes or the currently deployed
+// handler — the caller chose the id and owns its semantics.
 func assertActivityIdentity(
 	record *temporalessv1.ActivityRecord,
 	activityType string,
-	codeVersion string,
 ) error {
 	if record.GetActivityType() != activityType {
 		return fmt.Errorf("%w: activity type changed from %q to %q", ErrActivityConflict, record.GetActivityType(), activityType)
-	}
-	if record.GetCodeVersion() != codeVersion {
-		return fmt.Errorf("%w: code version changed from %q to %q", ErrActivityConflict, record.GetCodeVersion(), codeVersion)
 	}
 	return nil
 }
@@ -1673,11 +1950,10 @@ func assertActivityIdentity(
 func replayRecord[T proto.Message](
 	record *temporalessv1.ActivityRecord,
 	activityType string,
-	codeVersion string,
 	newResult func() T,
 ) (T, error) {
 	var zero T
-	if err := assertActivityIdentity(record, activityType, codeVersion); err != nil {
+	if err := assertActivityIdentity(record, activityType); err != nil {
 		return zero, err
 	}
 
@@ -1946,7 +2222,6 @@ func putActivityRetryTimer(
 		SchemaVersion:   storage.TimerRecordSchemaVersion,
 		Key:             key.Proto(),
 		TimerKind:       temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
-		CodeVersion:     workflow.codeVersion,
 		Duration:        durationpb.New(duration),
 		Status:          temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 		FireAt:          timestamppb.New(fireAt),
@@ -2003,7 +2278,7 @@ func ensureActivityRetryTimer(
 			"create missing paired retry timer",
 		)
 	}
-	storedWakeAt, storedDuration, status, err := activityRetryTimerDetails(record, key, workflow.codeVersion, activityID)
+	storedWakeAt, storedDuration, status, err := activityRetryTimerDetails(record, key, activityID)
 	if err != nil {
 		return wakeAt, err
 	}
@@ -2059,7 +2334,6 @@ func ensureActivityRetryTimer(
 func activityRetryTimerDetails(
 	record *temporalessv1.TimerRecord,
 	key storage.TimerKey,
-	codeVersion string,
 	activityID string,
 ) (time.Time, time.Duration, temporalessv1.TimerStatus, error) {
 	timerID := key.TimerID
@@ -2079,15 +2353,6 @@ func activityRetryTimerDetails(
 			timerID,
 			record.GetRetryActivityId(),
 			activityID,
-		)
-	}
-	if record.GetCodeVersion() != codeVersion {
-		return time.Time{}, 0, temporalessv1.TimerStatus_TIMER_STATUS_UNSPECIFIED, fmt.Errorf(
-			"%w: activity retry timer %q code version changed from %q to %q",
-			ErrTimerConflict,
-			timerID,
-			record.GetCodeVersion(),
-			codeVersion,
 		)
 	}
 	if record.GetStatus() == temporalessv1.TimerStatus_TIMER_STATUS_CANCELED {
@@ -2124,12 +2389,11 @@ func activityRetryTimerDetails(
 func inspectActivityRetryTimer(
 	record *temporalessv1.TimerRecord,
 	key storage.TimerKey,
-	codeVersion string,
 	activityID string,
 	duration time.Duration,
 	wakeAt time.Time,
 ) (bool, error) {
-	storedWakeAt, storedDuration, status, err := activityRetryTimerDetails(record, key, codeVersion, activityID)
+	storedWakeAt, storedDuration, status, err := activityRetryTimerDetails(record, key, activityID)
 	if err != nil {
 		return false, err
 	}
@@ -2190,7 +2454,7 @@ func preparedActivityRetryTimer(
 	if !found {
 		return time.Time{}, false, nil
 	}
-	wakeAt, duration, status, err := activityRetryTimerDetails(record, key, workflow.codeVersion, activityID)
+	wakeAt, duration, status, err := activityRetryTimerDetails(record, key, activityID)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -2244,7 +2508,7 @@ func newerPreparedActivityRetryTimer(
 	if !found {
 		return time.Time{}, false, nil
 	}
-	wakeAt, duration, status, err := activityRetryTimerDetails(record, key, workflow.codeVersion, activityID)
+	wakeAt, duration, status, err := activityRetryTimerDetails(record, key, activityID)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -2300,7 +2564,7 @@ func putActivityRetryTimerVerified(
 		)
 	}
 	if found {
-		exact, inspectErr := inspectActivityRetryTimer(record, key, workflow.codeVersion, activityID, duration, wakeAt)
+		exact, inspectErr := inspectActivityRetryTimer(record, key, activityID, duration, wakeAt)
 		if inspectErr != nil {
 			return errors.Join(inspectErr, fmt.Errorf("%s %q: %w", operation, timerID, writeErr))
 		}
@@ -2424,7 +2688,7 @@ func markActivityRetryTimerFired(
 	if !found {
 		return nil
 	}
-	_, _, status, err := activityRetryTimerDetails(record, key, workflow.codeVersion, activityID)
+	_, _, status, err := activityRetryTimerDetails(record, key, activityID)
 	if err != nil {
 		return fmt.Errorf("validate activity retry timer %q for terminal cleanup: %w", timerID, err)
 	}
@@ -2484,12 +2748,11 @@ func failureFromError(err error) *temporalessv1.ActivityFailure {
 func replayWorkflowRecord[T proto.Message](
 	record *temporalessv1.WorkflowRecord,
 	workflowType string,
-	codeVersion string,
 	runOrderTime *timestamppb.Timestamp,
 	newResult func() T,
 ) (T, error) {
 	var zero T
-	if err := assertWorkflowIdentity(record, workflowType, codeVersion, runOrderTime); err != nil {
+	if err := assertWorkflowIdentity(record, workflowType, runOrderTime); err != nil {
 		return zero, err
 	}
 	switch record.GetStatus() {
@@ -2521,14 +2784,10 @@ func replayWorkflowRecord[T proto.Message](
 func assertWorkflowIdentity(
 	record *temporalessv1.WorkflowRecord,
 	workflowType string,
-	codeVersion string,
 	runOrderTime *timestamppb.Timestamp,
 ) error {
 	if record.GetWorkflowType() != workflowType {
 		return fmt.Errorf("%w: workflow type changed from %q to %q", ErrWorkflowConflict, record.GetWorkflowType(), workflowType)
-	}
-	if record.GetCodeVersion() != codeVersion {
-		return fmt.Errorf("%w: code version changed from %q to %q", ErrWorkflowConflict, record.GetCodeVersion(), codeVersion)
 	}
 	if stored := record.GetRunOrderTime(); stored != nil {
 		if err := stored.CheckValid(); err != nil {
@@ -2555,13 +2814,6 @@ func messagePairType(kind string, input proto.Message, output proto.Message) str
 	)
 }
 
-func codeVersionFromEnv() string {
-	if value := os.Getenv("TEMPORALESS_CODE_VERSION"); value != "" {
-		return value
-	}
-	return "dev"
-}
-
 func isNilMessage(message proto.Message) bool {
 	if message == nil {
 		return true
@@ -2580,9 +2832,6 @@ func normalizedWorkflowOptions(options *Options) (*Options, error) {
 		return nil, fmt.Errorf("workflow options are required")
 	}
 	normalized := proto.Clone(options).(*temporalessv1.WorkflowOptions)
-	if normalized.GetCodeVersion() == "" {
-		normalized.CodeVersion = codeVersionFromEnv()
-	}
 	if normalized.GetRunOrderTime() != nil {
 		if err := normalized.GetRunOrderTime().CheckValid(); err != nil {
 			return nil, fmt.Errorf("workflow run_order_time is invalid: %w", err)

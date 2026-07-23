@@ -59,7 +59,7 @@ async def price_workflow(workflow: Workflow, request: StringValue) -> StringValu
 
 # Trigger:
 result = await run(
-    store, Options(workflow_id="prices:aapl", run_id="2026-05-04", code_version="v1"),
+    store, Options(workflow_id="prices:aapl", run_id="2026-05-04"),
     StringValue(value="AAPL"), StringValue, price_workflow,
 )
 ```
@@ -198,7 +198,7 @@ Things that work in Temporaless but not in others (or vice versa):
 | Multi-signal `select` | ✗ | ✓ | n/a | n/a | n/a |
 | Asset graph / lineage | ✗ | ✗ | ✓ | partial | n/a |
 | `adapters/py/connectworkflow` decorator | ✓ | per-Temporal patterns | `@op` | `@task` | `Operator` |
-| `code_version` fingerprinting | ✓ | history compatibility versioning | code location versions | deployments | DAG versioning |
+| Historical application-build pinning | ✗ — current handler resumes | history compatibility versioning | code location versions | deployments | DAG versioning |
 
 ## Practical migration recipe
 

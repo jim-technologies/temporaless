@@ -45,7 +45,6 @@ async def test_concurrency_acquire_when_free(store):
     options = Options(
         workflow_id="wf",
         run_id="r-1",
-        code_version="test",
         claim_owner_id="worker:free",
         concurrency_key="vendor:test",
         concurrency_limit=3,
@@ -93,7 +92,6 @@ async def test_concurrency_busy_when_full(store):
     options = Options(
         workflow_id="wf",
         run_id="r-1",
-        code_version="test",
         claim_owner_id="worker:busy",
         concurrency_key="vendor:test",
         concurrency_limit=2,
@@ -118,7 +116,6 @@ async def test_concurrency_released_on_failure(store):
     options = Options(
         workflow_id="wf",
         run_id="r-failed",
-        code_version="test",
         claim_owner_id="worker:failure",
         concurrency_key="vendor:test",
         concurrency_limit=2,
@@ -168,7 +165,6 @@ async def test_concurrency_stale_same_owner_slot_is_not_reacquired(store):
     options = Options(
         workflow_id="wf",
         run_id="r-1",
-        code_version="test",
         claim_owner_id=owner_id,
         concurrency_key="vendor:test",
         concurrency_limit=1,
@@ -241,7 +237,6 @@ async def test_concurrency_multiple_workflows_obey_limit(store):
                 Options(
                     workflow_id="wf",
                     run_id=f"r-{i}",
-                    code_version="test",
                     claim_owner_id=f"worker:{i}",
                     concurrency_key="vendor:test",
                     concurrency_limit=limit,

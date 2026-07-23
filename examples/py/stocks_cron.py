@@ -97,7 +97,6 @@ def _make_dispatcher(store: Store):
             Options(
                 workflow_id=schedule_id,
                 run_id=fire_time.strftime(RUN_ID_FORMAT),
-                code_version="example",
                 run_order_time=run_order_time,
                 # Two scheduler replicas may dispatch this fire together.
                 # OpenDAL supplies atomic create-if-absent claims; the caller

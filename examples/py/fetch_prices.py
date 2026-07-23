@@ -42,7 +42,6 @@ async def main() -> None:
             options=Options(
                 workflow_id="prices:aapl",
                 run_id="2026-05-02",
-                code_version="example",
             ),
         ),
         StringValue,
@@ -52,9 +51,7 @@ async def main() -> None:
 
     activity_price = await run(
         store,
-        Options(
-            workflow_id="prices:activity", run_id="2026-05-02", code_version="example"
-        ),
+        Options(workflow_id="prices:activity", run_id="2026-05-02"),
         StringValue(value="AAPL"),
         StringValue,
         fetch_price_workflow,

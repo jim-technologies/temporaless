@@ -88,7 +88,6 @@ result = await run(
     Options(
         workflow_id="llm:answer",
         run_id="2026-05-04-r1",
-        code_version="v1",
     ),
     StringValue(value="Why is the sky blue?"),
     StringValue,
@@ -101,9 +100,8 @@ result, err := workflow.Run(
     ctx,
     store,
     &workflow.Options{
-        WorkflowId:  "llm:answer",
-        RunId:       "2026-05-04-r1",
-        CodeVersion: "v1",
+        WorkflowId: "llm:answer",
+        RunId:      "2026-05-04-r1",
     },
     nil, // no claim store
     wrapperspb.String("Why is the sky blue?"),
@@ -118,7 +116,11 @@ What happens on first call:
 2. The workflow body executes. Each `execute_activity` either replays a stored result or runs the activity and writes an `ActivityRecord{status: COMPLETED, result: ...}`.
 3. `run` updates the workflow record to `COMPLETED` with the result.
 
-Re-invoking the same `(workflow_id, run_id, code_version)` short-circuits everything: the stored result is returned without re-executing the body or any activity. The user-supplied ids are the contract — pick distinct ids when you want distinct executions.
+Re-invoking the same `(workflow_id, run_id)` after terminal completion
+short-circuits everything: the stored result is returned without re-executing
+the body or any activity. The user-supplied IDs are the contract—pick distinct
+IDs when you want distinct executions. An `IN_PROGRESS` run instead resumes
+with the current handler and reuses any completed activity records it reaches.
 
 ## 5. Retry transient failures
 
@@ -171,6 +173,14 @@ Each attempt is recorded on `ActivityRecord.attempts`. If retries are exhausted,
 
 A `RETRYING` record is persisted between attempts, so a process death mid-retry doesn't lose the attempt history — the next invocation resumes from the next attempt index.
 
+Use `gather_activities(...)` in Python or `AllActivities(ctx, calls...)` in Go
+for parallel activity branches. Both preserve input order and wait for every
+started branch to reach its durable boundary before propagating an error. This
+matters when one partition fails quickly while another is still completing:
+the parent workflow cannot become terminal while the slower activity is still
+writing its checkpoint. A pending retry/event/claim outcome keeps the parent
+`IN_PROGRESS`; already-terminal sibling records replay on the next invocation.
+
 For a partitioned job, assign one stable activity ID per batch. Completed
 batches replay from their records, while only failed/incomplete activities use
 their remaining retries. If an activity exhausts retries, the workflow is
@@ -209,7 +219,10 @@ for timer in await due_timers(store, datetime.now(UTC)):
 
 ## 7. Wait for an external event
 
-`Workflow.wait_event` raises `EventPendingError` until an external service writes the corresponding `EventRecord`. The signal flow stays storage-first: webhook handler → `send_event` → workflow resumes on its next reinvocation.
+`Workflow.wait_event` raises `EventPendingError` until an external service
+delivers the corresponding `EventRecord`. Without poll options it creates no
+timer: the webhook or another application trigger must re-invoke the same
+workflow run after delivery.
 
 ```python
 from temporaless import EventKey, send_event
@@ -223,7 +236,39 @@ await send_event(
     EventKey(workflow_id="twitter:moderate", run_id="tweet-12345", event_id="approval"),
     StringValue(value="approved"),
 )
+
+# Then dispatch the same workflow_id/run_id through your normal trigger.
 ```
+
+`send_event` is create-once and requires atomic create-if-absent support.
+Identical delivery retries are idempotent and keep the original timestamp; a
+different payload for the same key raises `EventDeliveryConflictError`.
+Unsupported stores raise `EventDeliveryUnsupportedError` instead of using an
+unsafe check-then-write. `Store.put_event` is the low-level replace primitive
+for operators, migrations, and test fixtures.
+
+If the webhook cannot dispatch the workflow, opt the wait into durable polling:
+
+```python
+from datetime import timedelta
+from google.protobuf.duration_pb2 import Duration
+from temporaless import PollOptions
+
+interval = Duration()
+interval.FromTimedelta(timedelta(minutes=1))
+
+decision = await workflow.wait_event(
+    "approval",
+    StringValue,
+    PollOptions(timer_id="poll:approval", interval=interval),
+)
+```
+
+The missing event now arms a `TIMER_KIND_POLL` wake. The normal timer scanner
+re-invokes the run; an unresolved wait rearms the same caller-supplied ID, and
+a resolved wait consumes it at the next durable boundary. The default remains
+manual so deployments that already dispatch from their webhook do not pay for
+polling.
 
 ## 8. Schedule it
 
@@ -239,7 +284,6 @@ async def dispatch(schedule_id: str, fire_time):
         Options(
             workflow_id=schedule_id,
             run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            code_version="v1",
         ),
         StringValue(value="AAPL"),
         StringValue,
@@ -335,7 +379,6 @@ def _options_for(_svc, req):
     return Options(
         workflow_id=f"prices:{req.value}",
         run_id="2026-05-04",
-        code_version="v1",
         claim_owner_id="price-service",
     )
 
@@ -375,11 +418,14 @@ ConnectRPC interceptors (auth, rate-limit, tracing) plug in unchanged.
 
 Temporaless is intentionally smaller than Temporal. It does not offer:
 
-- Multi-signal channels with `select` semantics — events are one-shot, consumed once.
+- Multi-signal channels with `select` semantics — each event key accepts one
+  create-once payload.
 - Query / update RPCs against running workflows.
 - Child workflows.
 - Sub-second timer accuracy (scanner cadence is ~1 minute by default).
-- A UI / control plane / task queue server.
+- A ready-made UI / control plane / task queue server. Products can build a
+  UI from the optional protobuf plan and run projection described in
+  `docs/visual-workflows.md`.
 - Asset graph / lineage tracking.
 
 If you need any of those, layer them on as adapters or use a different tool — see `docs/comparisons.md`.
@@ -390,17 +436,19 @@ If you need any of those, layer them on as adapters or use a different tool — 
 |---|---|
 | `examples/py/fetch_prices.py` / `examples/go/fetch-prices/` | Hello-world workflow with one activity |
 | `examples/py/llm_completion.py` / `examples/go/llm-completion/` | Retry policy + annotations + replay |
-| `examples/py/quant_signals.py` | Parallel fan-out via `asyncio.gather` |
+| `examples/py/quant_signals.py` | Structured parallel fan-out via `gather_activities` |
 | `examples/py/quant_service.py` | Canonical: ConnectRPC service of decorated workflow methods |
 | `examples/py/stocks_cron.py` / `examples/go/stocks-pipeline/` | Cron-driven workflows |
 | `examples/py/approval_workflow.py` | Long-running: durable sleep + wait-for-event + replay |
-| `examples/go/twitter-webhook/` | `WaitEvent` + `SendEvent` |
+| `examples/py/data_pipeline.py` | Visual-workflow building blocks: sequence, branch, fan-out, checkpoints, and backfill |
+| `examples/go/twitter-webhook/` | `WaitEvent` + explicit re-invocation; local `PutEvent` fixture with production `SendEvent` guidance |
 
 ## Reference
 
 - `docs/philosophy.md` — design tenets in one page (read first)
 - `docs/comparisons.md` — Temporaless vs Temporal / Prefect / Dagster / n8n
 - `docs/architecture.md` — goals and core model
+- `docs/visual-workflows.md` — optional visual plan, approval digest, and run projection
 - `docs/deployment.md` — production deployment patterns
 - `docs/storage-rpc.md` — `RecordStoreService` contract
 - `docs/scheduling.md` — timer + cron model

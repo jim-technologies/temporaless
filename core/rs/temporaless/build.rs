@@ -78,6 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Transformations:
 ///   * `edition = "2023";` → `syntax = "proto3";`
 ///   * `option features.field_presence = IMPLICIT;` → deleted
+///   * Edition-style bare reserved identifiers become the quoted names that
+///     proto3 requires.
 ///   * Within `message ReservedNames { ... }`, multi-line fields that carry
 ///     `[features.field_presence = EXPLICIT, default = "..."]` collapse to
 ///     bare `string foo = N;` and the default is exported as a Rust const.
@@ -111,6 +113,36 @@ fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) 
         if line.trim().starts_with("option features.field_presence") {
             i += 1;
             continue;
+        }
+
+        // Editions accepts bare identifiers in reserved-name declarations,
+        // while proto3 requires string literals. Numeric reservations and
+        // already quoted names pass through unchanged.
+        let trimmed_line = line.trim();
+        if let Some(reservations) = trimmed_line
+            .strip_prefix("reserved ")
+            .and_then(|value| value.strip_suffix(';'))
+        {
+            let names: Vec<&str> = reservations.split(',').map(str::trim).collect();
+            let all_identifiers = !names.is_empty()
+                && names.iter().all(|name| {
+                    let mut chars = name.chars();
+                    chars
+                        .next()
+                        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+                        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                });
+            if all_identifiers {
+                let indent: String = line.chars().take_while(|ch| ch.is_whitespace()).collect();
+                let quoted = names
+                    .into_iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                output.push_str(&format!("{indent}reserved {quoted};\n"));
+                i += 1;
+                continue;
+            }
         }
 
         // Inline protovalidate annotations are edition/protoc options that

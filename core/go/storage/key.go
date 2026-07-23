@@ -15,6 +15,7 @@ const (
 	TimerRecordSchemaVersion    = temporalessv1.RecordSchemaVersion_RECORD_SCHEMA_VERSION_TIMER
 	WorkflowRecordSchemaVersion = temporalessv1.RecordSchemaVersion_RECORD_SCHEMA_VERSION_WORKFLOW
 	SleepTimerKind              = temporalessv1.TimerKind_TIMER_KIND_SLEEP
+	PollTimerKind               = temporalessv1.TimerKind_TIMER_KIND_POLL
 )
 
 type WorkflowKey struct {

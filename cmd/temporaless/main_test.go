@@ -48,7 +48,6 @@ func seedWorkflow(t *testing.T, store *storage.OpenDALStore, workflowID, runID s
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        status,
 		CreatedAt:     now,
 	}
@@ -73,7 +72,6 @@ func seedActivity(t *testing.T, store *storage.OpenDALStore, workflowID, runID, 
 		SchemaVersion: storage.ActivityRecordSchemaVersion,
 		Key:           key.Proto(),
 		ActivityType:  "activity:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		CreatedAt:     now,
 		CompletedAt:   now,
@@ -151,9 +149,6 @@ func TestCLIListWorkflowsJSON(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
-	if records[0]["codeVersion"] != "test" {
-		t.Errorf("unexpected codeVersion: %v", records[0]["codeVersion"])
-	}
 }
 
 func TestCLIListActivities(t *testing.T) {
@@ -192,8 +187,8 @@ func TestCLIGetWorkflow(t *testing.T) {
 	if !strings.Contains(out, "status=WORKFLOW_STATUS_COMPLETED") {
 		t.Errorf("expected status line in output: %s", out)
 	}
-	if !strings.Contains(out, "code_version=") {
-		t.Errorf("expected code_version line in output: %s", out)
+	if !strings.Contains(out, "workflow_type=") {
+		t.Errorf("expected workflow_type line in output: %s", out)
 	}
 }
 
@@ -282,7 +277,6 @@ func TestCLISweep(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           key.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -379,7 +373,6 @@ func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           oldKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
 		CreatedAt:     old,
 	}); err != nil {
@@ -397,7 +390,6 @@ func TestCLIStaleWorkflows_FiltersByAge(t *testing.T) {
 		SchemaVersion: storage.WorkflowRecordSchemaVersion,
 		Key:           completedKey.Proto(),
 		WorkflowType:  "workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-		CodeVersion:   "test",
 		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		CreatedAt:     old,
 		CompletedAt:   old,
@@ -504,8 +496,8 @@ func TestCLIExport_WorkflowKindEmitsJSONL(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
 			t.Fatalf("invalid JSON line %q: %v", line, err)
 		}
-		if obj["codeVersion"] != "test" {
-			t.Fatalf("unexpected codeVersion: %v", obj["codeVersion"])
+		if obj["workflowType"] == nil {
+			t.Fatalf("missing workflowType: %v", obj)
 		}
 	}
 }

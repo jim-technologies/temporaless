@@ -94,7 +94,6 @@ async def test_claim_run_listing_passes_through(tmp_path) -> None:
             owner_id="owner",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     )
 
@@ -553,7 +552,6 @@ async def test_sweep_deletes_claims_from_separate_claim_store(tmp_path) -> None:
             owner_id="worker",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
             resource_id="fetch",
-            code_version="v1",
         )
     )
 
@@ -611,7 +609,6 @@ async def test_sweep_rejects_list_incapable_claim_store_before_mutation(tmp_path
             owner_id="worker",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     )
 
@@ -661,6 +658,62 @@ async def test_sweep_respects_no_claims_capability(tmp_path) -> None:
     assert await records.get_workflow(key) is None
 
 
+async def test_sweep_rejects_reserved_cas_capability_before_mutation(tmp_path) -> None:
+    class ReservedCASStore:
+        async def claim_capability(self):
+            return temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS
+
+        async def get_claim(self, key):
+            raise AssertionError(f"get_claim must not be called: {key}")
+
+        async def try_create_claim(self, record):
+            raise AssertionError(f"try_create_claim must not be called: {record}")
+
+        async def delete_claim(self, key):
+            raise AssertionError(f"delete_claim must not be called: {key}")
+
+        async def list_claims(self, key):
+            raise AssertionError(f"list_claims must not be called: {key}")
+
+    records = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path / "records")))
+    store = IndexedStore(
+        records,
+        tmp_path / "index.sqlite",
+        claim_store=ReservedCASStore(),
+    )
+    key = WorkflowKey(workflow_id="prices:cas", run_id="old")
+    await store.put_workflow(
+        _workflow(
+            key.workflow_id,
+            key.run_id,
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            completed_at=datetime.now(UTC) - timedelta(days=2),
+        )
+    )
+
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await store.sweep("", datetime.now(UTC), timedelta(days=1))
+
+    claim_key = ClaimKey(
+        workflow_id=key.workflow_id,
+        run_id=key.run_id,
+        claim_id="workflow:execution",
+    )
+    claim = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=claim_key.to_proto(),
+        owner_id="worker",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=key.workflow_id,
+    )
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await store.try_create_claim(claim)
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await store.delete_claim(claim_key)
+
+    assert await records.get_workflow(key) is not None
+
+
 async def test_sweep_prevalidates_separate_claim_listing_before_mutation(tmp_path) -> None:
     class CorruptClaimRunStore:
         def __init__(
@@ -702,7 +755,6 @@ async def test_sweep_prevalidates_separate_claim_listing_before_mutation(tmp_pat
         owner_id="worker",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
         resource_id=key.workflow_id,
-        code_version="v1",
     )
     assert await claims.try_create_claim(valid)
     misplaced = temporaless_pb2.ClaimRecord(
@@ -715,7 +767,6 @@ async def test_sweep_prevalidates_separate_claim_listing_before_mutation(tmp_pat
         owner_id="worker",
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
         resource_id=key.workflow_id,
-        code_version="v1",
     )
     corrupt_claims = CorruptClaimRunStore(claims, [valid, misplaced])
     store = IndexedStore(
@@ -774,7 +825,6 @@ async def test_sweep_prevalidates_record_listing_before_separate_claim_deletion(
             owner_id="worker",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     )
     path_key = ActivityKey(
@@ -790,7 +840,6 @@ async def test_sweep_prevalidates_record_listing_before_separate_claim_deletion(
             activity_id="misplaced",
         ).to_proto(),
         activity_type="activity:test",
-        code_version="v1",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     await records_operator.create_dir(path_key.dir_path())
@@ -1043,7 +1092,6 @@ def _workflow(
         schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
         key=WorkflowKey(workflow_id=workflow_id, run_id=run_id).to_proto(),
         workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=status,
         created_at=now,
     )
@@ -1077,7 +1125,6 @@ def _activity(
             activity_id=activity_id,
         ).to_proto(),
         activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=status,
         created_at=created,
         completed_at=completed,
@@ -1099,7 +1146,6 @@ def _timer(
         schema_version=TIMER_RECORD_SCHEMA_VERSION,
         key=TimerKey(workflow_id=workflow_id, run_id=run_id, timer_id=timer_id).to_proto(),
         timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
-        code_version="test",
         status=status,
         fire_at=fire,
         created_at=created,

@@ -65,7 +65,7 @@ async def test_list_activities_and_reset_helpers(
             fetch,
         )
 
-    options = Options(workflow_id="prices:reset", run_id="2026-05-04", code_version="test")
+    options = Options(workflow_id="prices:reset", run_id="2026-05-04")
     await run(store, options, StringValue(value="AAPL"), StringValue, execute)
 
     wf_key = WorkflowKey(workflow_id="prices:reset", run_id="2026-05-04")
@@ -112,7 +112,7 @@ async def test_list_in_flight_and_failed_workflows(
 
     await run(
         store,
-        Options(workflow_id="prices:done", run_id="2026-05-04", code_version="test"),
+        Options(workflow_id="prices:done", run_id="2026-05-04"),
         StringValue(value="AAPL"),
         StringValue,
         done,
@@ -126,7 +126,7 @@ async def test_list_in_flight_and_failed_workflows(
     with pytest.raises(TimerPendingError):
         await run(
             store,
-            Options(workflow_id="prices:waiting", run_id="2026-05-04", code_version="test"),
+            Options(workflow_id="prices:waiting", run_id="2026-05-04"),
             StringValue(value="AAPL"),
             StringValue,
             waiting,
@@ -139,7 +139,7 @@ async def test_list_in_flight_and_failed_workflows(
     with pytest.raises(ActivityError):
         await run(
             store,
-            Options(workflow_id="prices:broken", run_id="2026-05-04", code_version="test"),
+            Options(workflow_id="prices:broken", run_id="2026-05-04"),
             StringValue(value="AAPL"),
             StringValue,
             boom,

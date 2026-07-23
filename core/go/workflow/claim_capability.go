@@ -33,5 +33,9 @@ func (err *ClaimCapabilityError) Unwrap() error {
 }
 
 func supportsCreateOnlyClaims(capability storage.ClaimCapability) bool {
-	return capability == storage.CreateOnlyClaims || capability == storage.CASClaims
+	// CAS is reserved in the wire enum, but the current ClaimStore surface has
+	// no fencing token, conditional refresh, conditional release, or takeover
+	// operation. Treating CAS as usable here would advertise stronger
+	// semantics than the runtime can enforce.
+	return capability == storage.CreateOnlyClaims
 }

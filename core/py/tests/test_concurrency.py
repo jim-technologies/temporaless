@@ -56,7 +56,6 @@ def test_concurrent_activity_claim_serialization(tmp_path) -> None:
             Options(
                 workflow_id="prices:concurrent",
                 run_id="2026-05-04",
-                code_version="test",
                 claim_owner_id=f"worker-{idx}",
             ),
             StringValue(value="AAPL"),
@@ -101,7 +100,6 @@ def test_concurrent_replays_return_same_result(tmp_path) -> None:
     options = Options(
         workflow_id="prices:replay",
         run_id="2026-05-04",
-        code_version="test",
     )
     activity_calls = 0
     activity_lock = threading.Lock()

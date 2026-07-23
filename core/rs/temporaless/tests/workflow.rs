@@ -9,7 +9,7 @@ use std::time::Duration;
 use opendal::{Operator, services::Fs};
 use prost::{Message, Name};
 use tempfile::TempDir;
-use temporaless::storage::OpenDALStore;
+use temporaless::storage::{OpenDALStore, Store, WorkflowKey};
 use temporaless::workflow::{
     ActivityError, ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions, annotate,
     current, execute_activity, run,
@@ -47,7 +47,7 @@ fn s(value: &str) -> StringValue {
 #[tokio::test]
 async fn run_completes_a_fresh_workflow() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-1");
     let executions = Arc::new(AtomicUsize::new(0));
     let executions2 = executions.clone();
     let result: StringValue = run(store, options, s("AAPL"), |_w: Workflow, input| {
@@ -66,7 +66,7 @@ async fn run_completes_a_fresh_workflow() {
 #[tokio::test]
 async fn run_replays_completed_workflow_without_re_executing_body() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-1");
     let executions = Arc::new(AtomicUsize::new(0));
 
     let body = |_w: Workflow, input: StringValue| {
@@ -104,7 +104,7 @@ async fn run_replays_stored_result_even_when_input_bytes_differ() {
     // must NOT error — the stored result wins. Callers wanting a distinct
     // execution choose a distinct run_id.
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-1");
     let executions = Arc::new(AtomicUsize::new(0));
     {
         let executions = executions.clone();
@@ -143,7 +143,7 @@ async fn run_replays_stored_result_even_when_input_bytes_differ() {
 #[tokio::test]
 async fn execute_activity_runs_and_replays() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-1");
     let executions = Arc::new(AtomicUsize::new(0));
 
     let result: StringValue = run(store.clone(), options.clone(), s("AAPL"), {
@@ -200,9 +200,94 @@ async fn execute_activity_runs_and_replays() {
 }
 
 #[tokio::test]
+async fn in_progress_run_resumes_changed_handler_and_replays_completed_activity() {
+    let (_tmp, store) = new_store();
+    let options = WorkflowOptions::new("wf", "resume-handler-change");
+    let first_activity_executions = Arc::new(AtomicUsize::new(0));
+
+    let first_error =
+        run::<StringValue, StringValue, _, _>(store.clone(), options.clone(), s("x"), {
+            let executions = first_activity_executions.clone();
+            move |_workflow, input| {
+                let executions = executions.clone();
+                async move {
+                    let _: StringValue = execute_activity(
+                        ActivityOptions::new("completed-boundary"),
+                        input,
+                        |req: StringValue| {
+                            let executions = executions.clone();
+                            async move {
+                                executions.fetch_add(1, Ordering::SeqCst);
+                                Ok::<StringValue, ActivityError>(s(&format!("old:{}", req.value)))
+                            }
+                        },
+                    )
+                    .await?;
+                    Err(RunError::Activity(ActivityError::new(
+                        "interrupted",
+                        "simulate an invocation ending after the activity committed",
+                    )))
+                }
+            }
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(first_error, RunError::Activity(_)));
+    assert_eq!(first_activity_executions.load(Ordering::SeqCst), 1);
+
+    // The first invocation deliberately used a terminal error to make the
+    // test deterministic. Restore the workflow lifecycle to the state a
+    // process interruption leaves behind while retaining the completed
+    // activity boundary.
+    let key = WorkflowKey::new("wf", "resume-handler-change");
+    let mut record = store
+        .get_workflow(&key)
+        .await
+        .unwrap()
+        .expect("failed workflow record");
+    record.status = temporaless::v1::WorkflowStatus::InProgress as i32;
+    record.result = None;
+    record.failure = None;
+    record.completed_at = None;
+    store.put_workflow(&record).await.unwrap();
+
+    let changed_activity_executions = Arc::new(AtomicUsize::new(0));
+    let result: StringValue = run(store, options, s("changed-input"), {
+        let executions = changed_activity_executions.clone();
+        move |_workflow, input| {
+            let executions = executions.clone();
+            async move {
+                let replayed: StringValue = execute_activity(
+                    ActivityOptions::new("completed-boundary"),
+                    input,
+                    |req: StringValue| {
+                        let executions = executions.clone();
+                        async move {
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            Ok::<StringValue, ActivityError>(s(&format!("new:{}", req.value)))
+                        }
+                    },
+                )
+                .await?;
+                Ok::<StringValue, RunError>(s(&format!("handler-v2:{}", replayed.value)))
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.value, "handler-v2:old:x");
+    assert_eq!(
+        changed_activity_executions.load(Ordering::SeqCst),
+        0,
+        "the changed activity implementation must not rerun a completed boundary",
+    );
+}
+
+#[tokio::test]
 async fn execute_activity_retries_and_succeeds() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-1");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let result: StringValue = run(store, options, s("x"), {
@@ -246,7 +331,7 @@ async fn execute_activity_retries_and_succeeds() {
 #[tokio::test]
 async fn execute_activity_terminal_failure_after_exhausted_retries() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-failed").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-failed");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let err = run::<StringValue, StringValue, _, _>(store, options, s("x"), {
@@ -286,7 +371,7 @@ async fn execute_activity_terminal_failure_after_exhausted_retries() {
 #[tokio::test]
 async fn retry_after_overrides_short_interval() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-ra").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-ra");
     let attempts = Arc::new(AtomicUsize::new(0));
     let started = std::time::Instant::now();
 
@@ -336,7 +421,7 @@ async fn retry_after_overrides_short_interval() {
 #[tokio::test]
 async fn non_retryable_error_codes_skip_remaining_retries() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-nrc").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-nrc");
     let attempts = Arc::new(AtomicUsize::new(0));
 
     let err = run::<StringValue, StringValue, _, _>(store, options, s("x"), {
@@ -383,7 +468,7 @@ async fn non_retryable_error_codes_skip_remaining_retries() {
 #[tokio::test]
 async fn annotate_persists_on_activity_record() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf", "r-ann").with_code_version("test");
+    let options = WorkflowOptions::new("wf", "r-ann");
     let _: StringValue = run(store.clone(), options, s("x"), |_w, input| async move {
         let resp: StringValue = execute_activity(
             ActivityOptions::new("annotated"),
@@ -420,7 +505,7 @@ async fn annotate_persists_on_activity_record() {
 #[tokio::test]
 async fn current_workflow_accessor_works_from_activity_body() {
     let (_tmp, store) = new_store();
-    let options = WorkflowOptions::new("wf-cur", "r-1").with_code_version("test");
+    let options = WorkflowOptions::new("wf-cur", "r-1");
     let _: StringValue = run(store, options, s("x"), |_w, input| async move {
         let resp: StringValue = execute_activity(
             ActivityOptions::new("uses_current"),
@@ -429,7 +514,6 @@ async fn current_workflow_accessor_works_from_activity_body() {
                 let w = current();
                 assert_eq!(w.workflow_id(), "wf-cur");
                 assert_eq!(w.run_id(), "r-1");
-                assert_eq!(w.code_version(), "test");
                 Ok::<StringValue, ActivityError>(s(&format!(
                     "seen:{}:{}",
                     w.workflow_id(),

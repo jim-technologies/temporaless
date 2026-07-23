@@ -50,7 +50,6 @@ def _workflow(store: OpenDALStore, *, run_id: str, owner_id: str) -> Workflow:
         Options(
             workflow_id="prices:activity-claims",
             run_id=run_id,
-            code_version="test",
             claim_owner_id=owner_id,
         ),
     )
@@ -261,7 +260,6 @@ async def test_post_claim_refresh_observes_timer_published_after_cached_miss(tmp
                             timer_id=retry_timer_id,
                         ).to_proto(),
                         timer_kind=temporaless_pb2.TIMER_KIND_ACTIVITY_RETRY,
-                        code_version="test",
                         duration=_duration(timedelta(hours=1)),
                         status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
                         fire_at=fire_at,
@@ -281,7 +279,6 @@ async def test_post_claim_refresh_observes_timer_published_after_cached_miss(tmp
         Options(
             workflow_id=scope.workflow_id,
             run_id=scope.run_id,
-            code_version="test",
             claim_owner_id="new-owner",
         ),
     )
@@ -349,7 +346,6 @@ async def test_busy_activity_claim_does_not_consume_due_retry_timer(
             owner_id="stale-owner",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
             resource_id="fetch",
-            code_version="test",
             lease_expires_at=expires,
             created_at=now,
             heartbeat_at=now,
@@ -690,7 +686,6 @@ async def test_claim_loss_refreshes_cached_terminal_activity(tmp_path) -> None:
                         schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                         key=_activity_key("terminal-race").to_proto(),
                         activity_type=_ACTIVITY_TYPE,
-                        code_version="test",
                         input=input_any,
                         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                         result=result_any,
@@ -719,7 +714,6 @@ async def test_claim_loss_refreshes_cached_terminal_activity(tmp_path) -> None:
         Options(
             workflow_id="prices:activity-claims",
             run_id="terminal-race",
-            code_version="test",
             claim_owner_id="worker",
         ),
         StringValue(value="AAPL"),
@@ -741,7 +735,6 @@ async def test_activity_claim_release_failure_leaves_workflow_in_progress(tmp_pa
     options = Options(
         workflow_id="prices:activity-claims",
         run_id="release-failure",
-        code_version="test",
         claim_owner_id="worker",
     )
 

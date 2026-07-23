@@ -17,6 +17,8 @@ import (
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"gocloud.dev/blob/fileblob"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -37,9 +39,8 @@ func TestRunNilResultPersistsFailureAndReplays(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			options := &Options{
-				WorkflowId:  "nil-workflow-result-" + strings.ReplaceAll(test.name, " ", "-"),
-				RunId:       "run",
-				CodeVersion: "v1",
+				WorkflowId: "nil-workflow-result-" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:      "run",
 			}
 			var claimStore storage.ClaimStore
 			if test.withClaims {
@@ -154,7 +155,6 @@ func TestRunOrderTimePersistsAcrossWorkflowStates(t *testing.T) {
 			options := &Options{
 				WorkflowId:   fmt.Sprintf("run-order-%d", index),
 				RunId:        "run",
-				CodeVersion:  "v1",
 				RunOrderTime: runOrderTime,
 			}
 			_, _ = Run(
@@ -187,7 +187,6 @@ func TestRunOrderTimeReplayRejectsDriftAndInvalidTimestamp(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "run-order-drift",
 		RunId:        "run",
-		CodeVersion:  "v1",
 		RunOrderTime: firstOrder,
 	}
 	pendingBody := func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -204,7 +203,6 @@ func TestRunOrderTimeReplayRejectsDriftAndInvalidTimestamp(t *testing.T) {
 	drifted := &Options{
 		WorkflowId:   options.GetWorkflowId(),
 		RunId:        options.GetRunId(),
-		CodeVersion:  options.GetCodeVersion(),
 		RunOrderTime: timestamppb.New(firstOrder.AsTime().Add(time.Second)),
 	}
 	bodyCalls := 0
@@ -226,7 +224,6 @@ func TestRunOrderTimeReplayRejectsDriftAndInvalidTimestamp(t *testing.T) {
 	invalid := &Options{
 		WorkflowId:   "run-order-invalid",
 		RunId:        "run",
-		CodeVersion:  "v1",
 		RunOrderTime: &timestamppb.Timestamp{Seconds: 253402300800},
 	}
 	_, err = Run(
@@ -242,8 +239,8 @@ func TestRunActivity(t *testing.T) {
 	// User-supplied activity_id is the de-duplication contract. Same id
 	// replays the stored result regardless of the input bytes — the caller
 	// chose the id and is responsible for picking distinct ids when they
-	// want distinct executions. activity_type and code_version still must
-	// match to guard against shape changes.
+	// want distinct executions. activity_type still must match to guard
+	// against protobuf shape changes.
 	tests := []struct {
 		name       string
 		firstInput string
@@ -270,10 +267,9 @@ func TestRunActivity(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			wf := &Workflow{
-				store:       store,
-				workflowID:  "prices:aapl",
-				runID:       "2026-05-02",
-				codeVersion: "test-version",
+				store:      store,
+				workflowID: "prices:aapl",
+				runID:      "2026-05-02",
 			}
 
 			executions := 0
@@ -368,7 +364,6 @@ func TestRunActivityWithClaims(t *testing.T) {
 				OwnerId:        "other-owner",
 				ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_ACTIVITY,
 				ResourceId:     "fetch:symbol",
-				CodeVersion:    "test-version",
 				LeaseExpiresAt: timestamppb.New(test.claimExpiresAt),
 				CreatedAt:      timestamppb.Now(),
 				HeartbeatAt:    timestamppb.Now(),
@@ -387,7 +382,6 @@ func TestRunActivityWithClaims(t *testing.T) {
 				&Options{
 					WorkflowId:   "prices:claims",
 					RunId:        "2026-05-02",
-					CodeVersion:  "test-version",
 					ClaimOwnerId: "this-owner",
 				},
 				claimStore,
@@ -454,12 +448,11 @@ func TestConcurrentActivityClaimSerialization(t *testing.T) {
 			defer wg.Done()
 			<-start
 			wf := &Workflow{
-				store:       store,
-				claimStore:  claimStore,
-				workflowID:  "prices:concurrent",
-				runID:       "2026-05-04",
-				codeVersion: "test-version",
-				claimOwner:  fmt.Sprintf("worker-%d", idx),
+				store:      store,
+				claimStore: claimStore,
+				workflowID: "prices:concurrent",
+				runID:      "2026-05-04",
+				claimOwner: fmt.Sprintf("worker-%d", idx),
 			}
 			result, err := runActivity(
 				ctx,
@@ -555,7 +548,7 @@ func TestRunRejectsMissingRequiredIDs(t *testing.T) {
 	}{
 		{
 			name:    "run ID is required",
-			options: &Options{WorkflowId: "prices:ids", CodeVersion: "test-version"},
+			options: &Options{WorkflowId: "prices:ids"},
 		},
 		// Note: "claim_owner_id required when claim store is present" was
 		// removed when concurrency-keys landed — a claim store can now be
@@ -599,7 +592,7 @@ func TestWrapWorkflow(t *testing.T) {
 			wrap: func(store storage.Store, execute WorkflowFunc[*wrapperspb.StringValue, *wrapperspb.StringValue]) WorkflowFunc[*wrapperspb.StringValue, *wrapperspb.StringValue] {
 				return WrapWorkflow(WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 					Store:     store,
-					Options:   &Options{WorkflowId: "prices:wrapped", RunId: "2026-05-02", CodeVersion: "test-version"},
+					Options:   &Options{WorkflowId: "prices:wrapped", RunId: "2026-05-02"},
 					NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					Execute:   execute,
 				})
@@ -616,9 +609,8 @@ func TestWrapWorkflow(t *testing.T) {
 					Store: store,
 					OptionsFor: func(_ context.Context, input *wrapperspb.StringValue) (*Options, error) {
 						return &Options{
-							WorkflowId:  "prices:" + input.GetValue(),
-							RunId:       "2026-05-02",
-							CodeVersion: "test-version",
+							WorkflowId: "prices:" + input.GetValue(),
+							RunId:      "2026-05-02",
 						}, nil
 					},
 					NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -732,7 +724,7 @@ func TestWrapActivity(t *testing.T) {
 			result, err := Run(
 				context.Background(),
 				store,
-				&Options{WorkflowId: "prices:activity-wrapper", RunId: test.runID, CodeVersion: "test-version"},
+				&Options{WorkflowId: "prices:activity-wrapper", RunId: test.runID},
 				nil,
 				wrapperspb.String("AAPL"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -801,7 +793,7 @@ func TestRunWorkflow(t *testing.T) {
 			first, err := Run(
 				ctx,
 				store,
-				&Options{WorkflowId: "prices:symbol", RunId: "2026-05-02", CodeVersion: "test-version"},
+				&Options{WorkflowId: "prices:symbol", RunId: "2026-05-02"},
 				nil,
 				wrapperspb.String(test.firstInput),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -817,7 +809,7 @@ func TestRunWorkflow(t *testing.T) {
 			second, err := Run(
 				ctx,
 				store,
-				&Options{WorkflowId: "prices:symbol", RunId: "2026-05-02", CodeVersion: "test-version"},
+				&Options{WorkflowId: "prices:symbol", RunId: "2026-05-02"},
 				nil,
 				wrapperspb.String(test.nextInput),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -879,7 +871,7 @@ func TestSleep(t *testing.T) {
 			result, err := Run(
 				ctx,
 				store,
-				&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02", CodeVersion: "test-version"},
+				&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02"},
 				nil,
 				wrapperspb.String("AAPL"),
 				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -917,7 +909,7 @@ func TestAnnotationsPersistOnWorkflowAndActivity(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:annotations", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:annotations", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1000,9 +992,8 @@ func TestWorkflowAnnotationsSurviveContinuationReplay(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			options := &Options{
-				WorkflowId:  "annotations:" + strings.ReplaceAll(test.name, " ", "-"),
-				RunId:       "run",
-				CodeVersion: "v1",
+				WorkflowId: "annotations:" + strings.ReplaceAll(test.name, " ", "-"),
+				RunId:      "run",
 			}
 			executions := 0
 			execute := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
@@ -1071,7 +1062,7 @@ func TestWorkflowAccessorsExpose(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:accessors", RunId: "2026-05-02", CodeVersion: "v42"},
+		&Options{WorkflowId: "prices:accessors", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1080,8 +1071,8 @@ func TestWorkflowAccessorsExpose(t *testing.T) {
 			if !ok {
 				return nil, errors.New("workflow context missing")
 			}
-			if wf.WorkflowID() != "prices:accessors" || wf.RunID() != "2026-05-02" || wf.CodeVersion() != "v42" {
-				return nil, fmt.Errorf("accessors = %s/%s/%s", wf.WorkflowID(), wf.RunID(), wf.CodeVersion())
+			if wf.WorkflowID() != "prices:accessors" || wf.RunID() != "2026-05-02" {
+				return nil, fmt.Errorf("accessors = %s/%s", wf.WorkflowID(), wf.RunID())
 			}
 			return wrapperspb.String("ok"), nil
 		},
@@ -1091,7 +1082,7 @@ func TestWorkflowAccessorsExpose(t *testing.T) {
 	}
 }
 
-func TestSendEventDeliversWaitableEvent(t *testing.T) {
+func TestPutEventSeedsWaitableEventFixture(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 
@@ -1101,7 +1092,16 @@ func TestSendEventDeliversWaitableEvent(t *testing.T) {
 		RunID:      "2026-05-02",
 		EventID:    "approval",
 	}
-	if err := storage.SendEvent(ctx, store, key, wrapperspb.String("manager")); err != nil {
+	payload, err := anypb.New(wrapperspb.String("manager"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutEvent(ctx, &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           key.Proto(),
+		Payload:       payload,
+		ReceivedAt:    timestamppb.Now(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1131,7 +1131,7 @@ func TestWaitEventReturnsPendingThenResumes(t *testing.T) {
 	executions := 0
 	run := func(ctx context.Context, _ *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		executions++
-		payload, err := WaitEvent(ctx, "approval", func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} })
+		payload, err := WaitEvent(ctx, "approval", func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1141,7 +1141,7 @@ func TestWaitEventReturnsPendingThenResumes(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:event", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:event", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1185,7 +1185,7 @@ func TestWaitEventReturnsPendingThenResumes(t *testing.T) {
 	result, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:event", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:event", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1218,7 +1218,7 @@ func TestSleepResumesAfterStoredTimerIsDue(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1249,7 +1249,7 @@ func TestSleepResumesAfterStoredTimerIsDue(t *testing.T) {
 	result, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:sleep", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1273,7 +1273,7 @@ func TestRunWritesInProgressBeforeExecution(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:in-progress", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:in-progress", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1322,7 +1322,7 @@ func TestRunStoresFailedRecordOnNonPendingError(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:fails", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:fails", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1353,7 +1353,7 @@ func TestRunStoresFailedRecordOnNonPendingError(t *testing.T) {
 	_, replayErr := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:fails", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:fails", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1381,7 +1381,7 @@ func TestRunSleepLeavesInProgressForResume(t *testing.T) {
 	_, err := Run(
 		ctx,
 		store,
-		&Options{WorkflowId: "prices:resume", RunId: "2026-05-02", CodeVersion: "test-version"},
+		&Options{WorkflowId: "prices:resume", RunId: "2026-05-02"},
 		nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -1409,6 +1409,175 @@ func TestRunSleepLeavesInProgressForResume(t *testing.T) {
 	}
 }
 
+func TestRunInProgressUsesCurrentHandlerAndReplaysCompletedBoundaries(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	options := &Options{WorkflowId: "prices:current-handler", RunId: "run"}
+	input := wrapperspb.String("AAPL")
+	newResult := func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }
+
+	oldActivityCalls := 0
+	_, err := Run(
+		ctx,
+		store,
+		options,
+		nil,
+		input,
+		newResult,
+		func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			_, err := ExecuteActivity(
+				ctx,
+				&ActivityOptions{ActivityId: "fetch:stable"},
+				input,
+				newResult,
+				func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+					oldActivityCalls++
+					return wrapperspb.String("stored-by-old-handler"), nil
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return nil, &TimerPendingError{
+				TimerID: "wake",
+				WakeAt:  time.Now().UTC().Add(time.Hour),
+			}
+		},
+	)
+	if !errors.Is(err, ErrTimerPending) {
+		t.Fatalf("initial run error = %v, want timer pending", err)
+	}
+	if oldActivityCalls != 1 {
+		t.Fatalf("old activity calls = %d, want 1", oldActivityCalls)
+	}
+
+	currentWorkflowCalls := 0
+	currentActivityCalls := 0
+	resumed, err := Run(
+		ctx,
+		store,
+		options,
+		nil,
+		input,
+		newResult,
+		func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			currentWorkflowCalls++
+			activityResult, err := ExecuteActivity(
+				ctx,
+				&ActivityOptions{ActivityId: "fetch:stable"},
+				input,
+				newResult,
+				func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+					currentActivityCalls++
+					return wrapperspb.String("new-handler-must-not-run"), nil
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+			return wrapperspb.String("current:" + activityResult.GetValue()), nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.GetValue() != "current:stored-by-old-handler" {
+		t.Fatalf("resumed result = %q", resumed.GetValue())
+	}
+	if currentWorkflowCalls != 1 {
+		t.Fatalf("current workflow calls = %d, want 1", currentWorkflowCalls)
+	}
+	if currentActivityCalls != 0 {
+		t.Fatalf("current activity calls = %d, want completed activity replay", currentActivityCalls)
+	}
+
+	terminalWorkflowCalls := 0
+	replayed, err := Run(
+		ctx,
+		store,
+		options,
+		nil,
+		input,
+		newResult,
+		func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			terminalWorkflowCalls++
+			return wrapperspb.String("newer-handler-must-not-run"), nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.GetValue() != resumed.GetValue() {
+		t.Fatalf("terminal replay = %q, want %q", replayed.GetValue(), resumed.GetValue())
+	}
+	if terminalWorkflowCalls != 0 {
+		t.Fatalf("terminal workflow calls = %d, want 0", terminalWorkflowCalls)
+	}
+}
+
+func TestRunResumesLegacyRecordWithRemovedApplicationField(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	options := &Options{WorkflowId: "prices:legacy-wire", RunId: "run"}
+	input := wrapperspb.String("AAPL")
+	newResult := func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }
+	inputAny, err := anypb.New(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := storage.NewWorkflowKey(options.GetWorkflowId(), options.GetRunId())
+	legacy := &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           key.Proto(),
+		WorkflowType:  messagePairType("workflow", input, newResult()),
+		Input:         inputAny,
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+		CreatedAt:     timestamppb.Now(),
+	}
+	wire, err := proto.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Field 4 belonged to the removed application build gate. Old binary
+	// records retain it as an unknown field and must remain resumable.
+	wire = protowire.AppendTag(wire, 4, protowire.BytesType)
+	wire = protowire.AppendString(wire, "legacy-build")
+	var decoded temporalessv1.WorkflowRecord
+	if err := proto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.ProtoReflect().GetUnknown()) == 0 {
+		t.Fatal("legacy field was not retained as unknown protobuf data")
+	}
+	if err := store.PutWorkflow(ctx, &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	handlerCalls := 0
+	result, err := Run(
+		ctx,
+		store,
+		options,
+		nil,
+		input,
+		newResult,
+		func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+			handlerCalls++
+			return wrapperspb.String("resumed-by-current-handler"), nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetValue() != "resumed-by-current-handler" {
+		t.Fatalf("result = %q", result.GetValue())
+	}
+	if handlerCalls != 1 {
+		t.Fatalf("handler calls = %d, want 1", handlerCalls)
+	}
+}
+
 func TestRunActivityRetriesUntilSuccess(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1426,10 +1595,9 @@ func TestRunActivityRetriesUntilSuccess(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			wf := &Workflow{
-				store:       store,
-				workflowID:  "prices:retry",
-				runID:       fmt.Sprintf("retry-success-%d", index),
-				codeVersion: "test-version",
+				store:      store,
+				workflowID: "prices:retry",
+				runID:      fmt.Sprintf("retry-success-%d", index),
 			}
 
 			calls := 0
@@ -1491,10 +1659,9 @@ func TestRunActivityRetriesExhaustedSurfacesFailure(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "prices:retry-exhausted",
-		runID:       "2026-05-02",
-		codeVersion: "test-version",
+		store:      store,
+		workflowID: "prices:retry-exhausted",
+		runID:      "2026-05-02",
 	}
 
 	calls := 0
@@ -1584,10 +1751,9 @@ func TestRunActivityResumesRetryAcrossInvocations(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "prices:retry-resume",
-		runID:       "2026-05-04",
-		codeVersion: "test-version",
+		store:      store,
+		workflowID: "prices:retry-resume",
+		runID:      "2026-05-04",
 	}
 
 	totalCalls := 0
@@ -1699,10 +1865,9 @@ func TestRunActivityNonRetryableErrorFailsFast(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	wf := &Workflow{
-		store:       store,
-		workflowID:  "prices:non-retryable",
-		runID:       "2026-05-02",
-		codeVersion: "test-version",
+		store:      store,
+		workflowID: "prices:non-retryable",
+		runID:      "2026-05-02",
 	}
 
 	calls := 0
@@ -1823,10 +1988,9 @@ func TestRunActivityInvalidRetryPolicyRejected(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			wf := &Workflow{
-				store:       store,
-				workflowID:  "prices:bad-policy",
-				runID:       fmt.Sprintf("bad-policy-%d", index),
-				codeVersion: "test-version",
+				store:      store,
+				workflowID: "prices:bad-policy",
+				runID:      fmt.Sprintf("bad-policy-%d", index),
 			}
 			_, err := runActivity(
 				ctx,
@@ -1879,7 +2043,7 @@ func TestRunIsPointInTimeAgainstMutatingSource(t *testing.T) {
 		)
 	}
 
-	opts := &Options{WorkflowId: "feature:price", RunId: "2026-05-31", CodeVersion: "v1"}
+	opts := &Options{WorkflowId: "feature:price", RunId: "2026-05-31"}
 	first, err := Run(ctx, store, opts, nil,
 		wrapperspb.String("AAPL"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },

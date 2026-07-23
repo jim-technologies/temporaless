@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 	"github.com/apache/opendal-go-services/fs"
@@ -47,12 +48,11 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-const codeVersion = "example"
-
 // QuantService implements two ConnectRPC handlers. The handlers happen to be
 // workflows — that's the only Temporaless-specific thing about them.
 type QuantService struct {
 	store storage.Store
+	mu    sync.Mutex
 	calls map[string]int
 }
 
@@ -74,9 +74,8 @@ func (s *QuantService) FetchPrices(
 			Store: s.store,
 			OptionsFor: func(_ context.Context, r *wrapperspb.StringValue) (*workflow.Options, error) {
 				return &workflow.Options{
-					WorkflowId:  "prices:" + r.GetValue(),
-					RunId:       "2026-05-04",
-					CodeVersion: codeVersion,
+					WorkflowId: "prices:" + r.GetValue(),
+					RunId:      "2026-05-04",
 				}, nil
 			},
 			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -85,9 +84,10 @@ func (s *QuantService) FetchPrices(
 	)
 }
 
-// ComposeSignal is the second canonical handler — sequentially fans out to
-// per-symbol activities inside one workflow. Each activity has its own key and
-// default retry policy, so transient partial failures retry only that symbol.
+// ComposeSignal is the second canonical handler — it fans out to per-symbol
+// activities inside one workflow. AllActivities settles every branch before
+// returning; each activity has its own key and default retry policy, so
+// transient partial failures retry only that symbol.
 func (s *QuantService) ComposeSignal(
 	ctx context.Context,
 	req *connect.Request[wrapperspb.StringValue],
@@ -98,9 +98,8 @@ func (s *QuantService) ComposeSignal(
 			Store: s.store,
 			OptionsFor: func(_ context.Context, r *wrapperspb.StringValue) (*workflow.Options, error) {
 				return &workflow.Options{
-					WorkflowId:  "signals:batch",
-					RunId:       r.GetValue(),
-					CodeVersion: codeVersion,
+					WorkflowId: "signals:batch",
+					RunId:      r.GetValue(),
 				}, nil
 			},
 			NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
@@ -125,19 +124,25 @@ func (s *QuantService) composeSignalBody(
 	ctx context.Context, _ *wrapperspb.StringValue,
 ) (*wrapperspb.StringValue, error) {
 	symbols := []string{"AAPL", "MSFT", "GOOG", "TSLA", "NVDA"}
-	prices := make([]string, 0, len(symbols))
+	calls := make([]workflow.ActivityCall[*wrapperspb.StringValue], 0, len(symbols))
 	for _, symbol := range symbols {
-		out, err := workflow.Activity(
-			ctx,
-			s.vendorFetch,
-			wrapperspb.String(symbol),
-			workflow.WithActivityID("fetch:"+symbol),
-			workflow.WithRetryTimerID("retry:fetch:"+symbol),
-		)
-		if err != nil {
-			return nil, err
-		}
-		prices = append(prices, out.GetValue())
+		calls = append(calls, func(ctx context.Context) (*wrapperspb.StringValue, error) {
+			return workflow.Activity(
+				ctx,
+				s.vendorFetch,
+				wrapperspb.String(symbol),
+				workflow.WithActivityID("fetch:"+symbol),
+				workflow.WithRetryTimerID("retry:fetch:"+symbol),
+			)
+		})
+	}
+	results, err := workflow.AllActivities(ctx, calls...)
+	if err != nil {
+		return nil, err
+	}
+	prices := make([]string, 0, len(results))
+	for _, result := range results {
+		prices = append(prices, result.GetValue())
 	}
 	return workflow.ExecuteActivity(
 		ctx,
@@ -151,6 +156,8 @@ func (s *QuantService) composeSignalBody(
 func (s *QuantService) vendorFetch(
 	_ context.Context, req *wrapperspb.StringValue,
 ) (*wrapperspb.StringValue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls[req.GetValue()]++
 	return wrapperspb.String(req.GetValue() + " 100.00"), nil
 }
@@ -158,8 +165,16 @@ func (s *QuantService) vendorFetch(
 func (s *QuantService) composeFn(
 	_ context.Context, req *wrapperspb.StringValue,
 ) (*wrapperspb.StringValue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls["__compose__"]++
 	return wrapperspb.String("signal(" + req.GetValue() + ")"), nil
+}
+
+func (s *QuantService) callCount(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[key]
 }
 
 func main() {
@@ -181,26 +196,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  result: %q (vendor calls: %d)\n", resp.Msg.GetValue(), service.calls["AAPL"])
+	fmt.Printf("  result: %q (vendor calls: %d)\n", resp.Msg.GetValue(), service.callCount("AAPL"))
 
 	fmt.Println("\n=== same call replays from storage ===")
 	resp, err = service.FetchPrices(ctx, connect.NewRequest(wrapperspb.String("AAPL")))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  result: %q (vendor calls: %d, no new vendor call)\n", resp.Msg.GetValue(), service.calls["AAPL"])
+	fmt.Printf("  result: %q (vendor calls: %d, no new vendor call)\n", resp.Msg.GetValue(), service.callCount("AAPL"))
 
 	fmt.Println("\n=== fan-out workflow (ComposeSignal) ===")
 	signal, err := service.ComposeSignal(ctx, connect.NewRequest(wrapperspb.String("batch-1")))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  result: %q (compose calls: %d)\n", signal.Msg.GetValue(), service.calls["__compose__"])
+	fmt.Printf("  result: %q (compose calls: %d)\n", signal.Msg.GetValue(), service.callCount("__compose__"))
 
 	fmt.Println("\n=== signal replay short-circuits all 5 fetches + compose ===")
 	signal, err = service.ComposeSignal(ctx, connect.NewRequest(wrapperspb.String("batch-1")))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  result: %q (compose calls: %d, no new compose call)\n", signal.Msg.GetValue(), service.calls["__compose__"])
+	fmt.Printf("  result: %q (compose calls: %d, no new compose call)\n", signal.Msg.GetValue(), service.callCount("__compose__"))
 }

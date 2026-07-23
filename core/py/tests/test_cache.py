@@ -142,7 +142,6 @@ async def test_claim_run_listing_passes_through(inner_store: OpenDALStore) -> No
             owner_id="owner",
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
             resource_id=key.workflow_id,
-            code_version="v1",
         )
     )
     cache = RunScopedCache(inner_store, key)
@@ -150,6 +149,41 @@ async def test_claim_run_listing_passes_through(inner_store: OpenDALStore) -> No
     claims = await cache.list_claims(key)
 
     assert [claim.key.claim_id for claim in claims] == ["arbitrary"]
+
+
+async def test_claim_mutations_reject_reserved_cas_capability(tmp_path) -> None:
+    class ReservedCASStore(OpenDALStore):
+        async def claim_capability(self):
+            return temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS
+
+        async def try_create_claim(self, record):
+            raise AssertionError(f"try_create_claim must not be called: {record}")
+
+        async def delete_claim(self, key):
+            raise AssertionError(f"delete_claim must not be called: {key}")
+
+    inner = ReservedCASStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+    workflow_key = WorkflowKey(workflow_id="prices:cache", run_id="run:cas")
+    claim_key = ClaimKey(
+        workflow_id=workflow_key.workflow_id,
+        run_id=workflow_key.run_id,
+        claim_id="workflow:execution",
+    )
+    claim = temporaless_pb2.ClaimRecord(
+        schema_version=CLAIM_RECORD_SCHEMA_VERSION,
+        key=claim_key.to_proto(),
+        owner_id="worker",
+        resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
+        resource_id=workflow_key.workflow_id,
+    )
+    cache = RunScopedCache(inner, workflow_key)
+
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await cache.claim_capability()
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await cache.try_create_claim(claim)
+    with pytest.raises(ValueError, match="unsupported by the current create-only"):
+        await cache.delete_claim(claim_key)
 
 
 async def _run_fanout(store, run_id: str, n: int, executions_counter: list[int]) -> Int32Value:
@@ -179,7 +213,7 @@ async def _run_fanout(store, run_id: str, n: int, executions_counter: list[int])
 
     return await run(
         store,
-        Options(workflow_id="fanout", run_id=run_id, code_version="test"),
+        Options(workflow_id="fanout", run_id=run_id),
         Int32Value(value=n),
         Int32Value,
         workflow_body,
@@ -248,7 +282,6 @@ async def test_write_through_and_readback(inner_store, counter):
             activity_id="a",
         ).to_proto(),
         activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
-        code_version="test",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     record.created_at.GetCurrentTime()
@@ -283,7 +316,6 @@ async def test_out_of_scope_read_passes_through(inner_store, counter):
         schema_version=temporaless_pb2.RECORD_SCHEMA_VERSION_WORKFLOW,
         key=other_key.to_proto(),
         workflow_type="workflow:google.protobuf.Int32Value->google.protobuf.Int32Value",
-        code_version="test",
         status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
     )
     other_record.created_at.GetCurrentTime()
@@ -326,7 +358,6 @@ async def test_prefetch_rejects_cross_run_record_before_populating_cache() -> No
             activity_id="fetch",
         ).to_proto(),
         activity_type="activity:test",
-        code_version="v1",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
 
@@ -362,7 +393,6 @@ async def test_cache_revalidates_mutable_cached_record_before_return(inner_store
         schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
         key=key.to_proto(),
         activity_type="activity:test",
-        code_version="v1",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     cache = RunScopedCache(inner_store, scope)
@@ -388,7 +418,6 @@ async def test_delete_invalidates_cache(inner_store, counter):
             workflow_id=scope.workflow_id, run_id=scope.run_id, activity_id="a"
         ).to_proto(),
         activity_type="activity:google.protobuf.Int32Value->google.protobuf.Int32Value",
-        code_version="test",
         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
     )
     record.created_at.GetCurrentTime()
@@ -441,7 +470,6 @@ async def test_cache_concurrent_get(inner_store, counter):
                 activity_id=f"act:{i}",
             ).to_proto(),
             activity_type="activity:google.protobuf.Int32Value->google.protobuf.Int32Value",
-            code_version="test",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
         )
         record.created_at.GetCurrentTime()

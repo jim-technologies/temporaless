@@ -42,22 +42,14 @@ use crate::v1;
 pub struct WorkflowOptions {
     pub workflow_id: String,
     pub run_id: String,
-    pub code_version: String,
 }
 
 impl WorkflowOptions {
     pub fn new(workflow_id: impl Into<String>, run_id: impl Into<String>) -> Self {
-        let cv = std::env::var("TEMPORALESS_CODE_VERSION").unwrap_or_else(|_| "dev".into());
         Self {
             workflow_id: workflow_id.into(),
             run_id: run_id.into(),
-            code_version: cv,
         }
-    }
-
-    pub fn with_code_version(mut self, cv: impl Into<String>) -> Self {
-        self.code_version = cv.into();
-        self
     }
 }
 
@@ -140,9 +132,8 @@ impl ActivityError {
 }
 
 /// Top-level error type for the runtime. Surfaces storage errors,
-/// identity conflicts (workflow_type / activity_type / code_version
-/// changes incompatible with a stored record), and terminal activity
-/// failures.
+/// identity conflicts (workflow_type / activity_type changes incompatible
+/// with a stored record), and terminal activity failures.
 #[derive(Debug, Error)]
 pub enum RunError {
     #[error("storage: {0}")]
@@ -173,7 +164,6 @@ pub struct Workflow {
     pub(crate) store: Arc<OpenDALStore>,
     pub(crate) workflow_id: String,
     pub(crate) run_id: String,
-    pub(crate) code_version: String,
     pub(crate) annotations: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -183,9 +173,6 @@ impl Workflow {
     }
     pub fn run_id(&self) -> &str {
         &self.run_id
-    }
-    pub fn code_version(&self) -> &str {
-        &self.code_version
     }
 }
 
@@ -221,18 +208,18 @@ pub fn annotate(key: impl Into<String>, value: impl Into<String>) {
 /// 1. **COMPLETED record found** → decode the stored result and return it.
 ///    The body does NOT run.
 /// 2. **FAILED record found** → return the stored failure.
-/// 3. **IN_PROGRESS record found** → verify identity (workflow_type +
-///    code_version), then re-run the body. Activities short-circuit on
-///    their own stored records.
+/// 3. **IN_PROGRESS record found** → verify `workflow_type`, then re-run the
+///    body. Activities short-circuit on their own stored records.
 /// 4. **No record** → write IN_PROGRESS, run the body, write the terminal
 ///    record (COMPLETED or FAILED).
 ///
-/// On replay the runtime checks `(workflow_type, code_version)`. The
-/// `workflow_id` itself is the de-duplication key: same id replays the
-/// stored result regardless of input bytes — the caller chose the id and
-/// owns its semantics. A shape change (request/response message types) or
-/// a bumped `code_version` triggers `RunError::WorkflowConflict` so a
-/// caller can't accidentally replay against incompatible code.
+/// On replay the runtime checks `workflow_type`. The `workflow_id` itself is
+/// the de-duplication key: same id replays the stored result regardless of
+/// input bytes — the caller chose the id and owns its semantics. A request or
+/// response message shape change triggers `RunError::WorkflowConflict` so a
+/// caller cannot accidentally decode an incompatible stored result. Handler
+/// implementation changes resume an IN_PROGRESS run while completed activity
+/// boundaries continue to replay.
 pub async fn run<Req, Resp, F, Fut>(
     store: Arc<OpenDALStore>,
     options: WorkflowOptions,
@@ -252,11 +239,11 @@ where
     let existing = store.get_workflow(&key).await?;
     let created_at = match existing {
         Some(record) if record.status == v1::WorkflowStatus::Completed as i32 => {
-            assert_workflow_identity(&record, &workflow_type, &options.code_version)?;
+            assert_workflow_identity(&record, &workflow_type)?;
             return decode_workflow_result::<Resp>(&record);
         }
         Some(record) if record.status == v1::WorkflowStatus::Failed as i32 => {
-            assert_workflow_identity(&record, &workflow_type, &options.code_version)?;
+            assert_workflow_identity(&record, &workflow_type)?;
             return Err(RunError::Activity(ActivityError::new(
                 record
                     .failure
@@ -271,7 +258,7 @@ where
             )));
         }
         Some(ref record) if record.status == v1::WorkflowStatus::InProgress as i32 => {
-            assert_workflow_identity(record, &workflow_type, &options.code_version)?;
+            assert_workflow_identity(record, &workflow_type)?;
             record.created_at
         }
         Some(record) => {
@@ -291,7 +278,6 @@ where
             schema_version: v1::RecordSchemaVersion::Workflow as i32,
             key: Some(key.to_proto()),
             workflow_type: workflow_type.clone(),
-            code_version: options.code_version.clone(),
             input: Some(input_any.clone()),
             status: v1::WorkflowStatus::InProgress as i32,
             result: None,
@@ -310,7 +296,6 @@ where
         store: store.clone(),
         workflow_id: options.workflow_id.clone(),
         run_id: options.run_id.clone(),
-        code_version: options.code_version.clone(),
         annotations: annotations.clone(),
     };
     let result = CURRENT
@@ -329,7 +314,6 @@ where
                 schema_version: v1::RecordSchemaVersion::Workflow as i32,
                 key: Some(key.to_proto()),
                 workflow_type,
-                code_version: options.code_version,
                 input: Some(input_any),
                 status: v1::WorkflowStatus::Completed as i32,
                 result: Some(result_any),
@@ -360,7 +344,6 @@ where
                 schema_version: v1::RecordSchemaVersion::Workflow as i32,
                 key: Some(key.to_proto()),
                 workflow_type,
-                code_version: options.code_version,
                 input: Some(input_any),
                 status: v1::WorkflowStatus::Failed as i32,
                 result: None,
@@ -409,11 +392,11 @@ where
         match v1::ActivityStatus::try_from(record.status).unwrap_or(v1::ActivityStatus::Unspecified)
         {
             v1::ActivityStatus::Completed => {
-                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
+                assert_activity_identity(record, &activity_type)?;
                 return decode_activity_result::<Resp>(record);
             }
             v1::ActivityStatus::Failed => {
-                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
+                assert_activity_identity(record, &activity_type)?;
                 let failure = record.failure.clone().unwrap_or_default();
                 return Err(RunError::Activity(ActivityError::new(
                     failure.code,
@@ -421,7 +404,7 @@ where
                 )));
             }
             v1::ActivityStatus::Retrying => {
-                assert_activity_identity(record, &activity_type, &workflow.code_version)?;
+                assert_activity_identity(record, &activity_type)?;
                 // Resume from len(attempts) + 1.
             }
             _ => {
@@ -470,7 +453,6 @@ where
             store: workflow.store.clone(),
             workflow_id: workflow.workflow_id.clone(),
             run_id: workflow.run_id.clone(),
-            code_version: workflow.code_version.clone(),
             annotations: annotations.clone(),
         };
         let exec_input = input.clone();
@@ -491,7 +473,6 @@ where
                     schema_version: v1::RecordSchemaVersion::Activity as i32,
                     key: Some(key.to_proto()),
                     activity_type,
-                    code_version: workflow.code_version.clone(),
                     input: Some(input_any),
                     status: v1::ActivityStatus::Completed as i32,
                     result: Some(result_any),
@@ -537,7 +518,6 @@ where
                         schema_version: v1::RecordSchemaVersion::Activity as i32,
                         key: Some(key.to_proto()),
                         activity_type,
-                        code_version: workflow.code_version.clone(),
                         input: Some(input_any),
                         status: v1::ActivityStatus::Failed as i32,
                         result: None,
@@ -565,7 +545,6 @@ where
                     schema_version: v1::RecordSchemaVersion::Activity as i32,
                     key: Some(key.to_proto()),
                     activity_type: activity_type.clone(),
-                    code_version: workflow.code_version.clone(),
                     input: Some(input_any.clone()),
                     status: v1::ActivityStatus::Retrying as i32,
                     result: None,
@@ -610,26 +589,18 @@ fn message_pair_type<Req: Name, Resp: Name>(kind: &str) -> String {
     format!("{kind}:{}->{}", Req::full_name(), Resp::full_name())
 }
 
-/// Guard against shape changes that would make the stored record
-/// incompatible with the current code path: a swapped request/response
-/// message type (which changes `workflow_type`) or a bumped `code_version`.
-/// The `workflow_id` itself is the de-duplication key; same id + same shape
-/// + same code_version replays the stored result regardless of input bytes.
+/// Guard against request/response shape changes that would make a stored
+/// record incompatible with the current code path. The `workflow_id` itself
+/// is the de-duplication key; same id + same shape replays the stored result
+/// regardless of input bytes.
 fn assert_workflow_identity(
     record: &v1::WorkflowRecord,
     workflow_type: &str,
-    code_version: &str,
 ) -> Result<(), RunError> {
     if record.workflow_type != workflow_type {
         return Err(RunError::WorkflowConflict(format!(
             "workflow type changed from {:?} to {:?}",
             record.workflow_type, workflow_type
-        )));
-    }
-    if record.code_version != code_version {
-        return Err(RunError::WorkflowConflict(format!(
-            "code version changed from {:?} to {:?}",
-            record.code_version, code_version
         )));
     }
     Ok(())
@@ -639,18 +610,11 @@ fn assert_workflow_identity(
 fn assert_activity_identity(
     record: &v1::ActivityRecord,
     activity_type: &str,
-    code_version: &str,
 ) -> Result<(), RunError> {
     if record.activity_type != activity_type {
         return Err(RunError::ActivityConflict(format!(
             "activity type changed from {:?} to {:?}",
             record.activity_type, activity_type
-        )));
-    }
-    if record.code_version != code_version {
-        return Err(RunError::ActivityConflict(format!(
-            "code version changed from {:?} to {:?}",
-            record.code_version, code_version
         )));
     }
     Ok(())

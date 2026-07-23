@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+buf generate
+
+# protoc-gen-connectrpc-py 0.11.1 currently emits trailing spaces on generated
+# optional-header parameters. Use Python instead of GNU-only `sed -i` so the
+# one-command generator is identical on Linux and macOS Flox environments.
+python3 - core/py/src/temporaless/v1/temporaless_connect.py <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+path.write_text("".join(f"{line.rstrip()}\n" for line in lines), encoding="utf-8")
+PY
+
+# The TypeScript Invariant projection consumes the application descriptor at
+# runtime. Buf's language plugins do not emit a descriptor set, so build it
+# explicitly as part of the same generation command.
+buf build api --as-file-descriptor-set \
+  -o core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb

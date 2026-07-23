@@ -37,7 +37,6 @@ async def test_due_timers_finds_scheduled_timers_inflight(
             Options(
                 workflow_id="prices:scanner",
                 run_id="2026-05-02",
-                code_version="test",
             ),
             StringValue(value="AAPL"),
             StringValue,
@@ -67,7 +66,6 @@ async def test_due_timers_skips_fired_timers(
         Options(
             workflow_id="prices:scanner-fired",
             run_id="2026-05-02",
-            code_version="test",
         ),
         StringValue(value="AAPL"),
         StringValue,
@@ -101,7 +99,6 @@ async def test_due_timers_skips_timer_under_completed_workflow(
             schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
             key=workflow_key.to_proto(),
             workflow_type="workflow:google.protobuf.StringValue->google.protobuf.StringValue",
-            code_version="test",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             completed_at=completed_at,
         )
@@ -116,7 +113,6 @@ async def test_due_timers_skips_timer_under_completed_workflow(
                 workflow_id="prices:done", run_id="2026-05-04", timer_id="orphan"
             ).to_proto(),
             timer_kind=temporaless_pb2.TIMER_KIND_SLEEP,
-            code_version="test",
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at,
         )

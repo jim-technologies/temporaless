@@ -38,7 +38,7 @@ four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
 Go 1.26.5, so `GOTOOLCHAIN=go1.26.5+auto` selects that exact checksum-verified
 security patch while the catalog package acts only as the bootstrap command.
 The production image has no Flox catalog constraint and uses upstream Python
-3.14.6 and uv 0.11.28.
+3.14.6 and uv 0.11.31.
 
 ## Go
 
@@ -90,7 +90,7 @@ workflow replay.
 
 Rust dependencies live in `core/rs/temporaless/Cargo.toml`. The repository
 root has a small `Cargo.toml` workspace so Cargo can install the crate directly
-from git without a registry. `rust-toolchain.toml` pins Rust 1.97.0 plus Clippy
+from git without a registry. `rust-toolchain.toml` pins Rust 1.97.1 plus Clippy
 and rustfmt for the experimental SDK gate; Rust remains outside the first-class
 Flox environment.
 
@@ -102,7 +102,7 @@ The npm package entry is at the repository root because npm git dependencies
 install from the repository package root; TypeScript source remains under
 `core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
 `core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
-backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.8.3
+backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.9.0
 rather than a mutable branch. The root TypeScript export stays a lightweight
 generated-types + Connect-client surface. The facade uses Invariant's
 generated-service registration and unified Connect interceptor API.
@@ -115,5 +115,8 @@ regenerates them with `BUF_TOKEN`; anonymous/fork gates avoid the BSR rate-limit
 dependency while still validating the checked-in descriptor and compiling and
 testing every generated consumer. Set
 `TEMPORALESS_REQUIRE_BUF_GENERATE=1` for a forced local regeneration.
+Run `scripts/generate` (or `make generate`) to regenerate all language outputs
+and the checked-in TypeScript descriptor together; raw `buf generate` does not
+build that descriptor set.
 `buf.yaml` also tracks the Protovalidate schema dependency used by validation
 annotations.

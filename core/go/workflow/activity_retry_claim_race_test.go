@@ -64,7 +64,6 @@ func TestActivityClaimRechecksPreparedRetryTimerAfterAcquisition(t *testing.T) {
 		claimCapability: storage.CreateOnlyClaims,
 		workflowID:      "activity-claim",
 		runID:           "prepared-timer-handoff",
-		codeVersion:     "v1",
 		claimOwner:      "contender",
 	}
 	activityID := "send"
@@ -75,7 +74,6 @@ func TestActivityClaimRechecksPreparedRetryTimerAfterAcquisition(t *testing.T) {
 			SchemaVersion:   storage.TimerRecordSchemaVersion,
 			Key:             storage.NewTimerKey(workflow.workflowID, workflow.runID, retryTimerID).Proto(),
 			TimerKind:       temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
-			CodeVersion:     workflow.codeVersion,
 			Duration:        durationpb.New(time.Hour),
 			Status:          temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 			FireAt:          timestamppb.New(wakeAt),
@@ -134,7 +132,6 @@ func TestActivityClaimRechecksNewerPreparedTimerAgainstLaggingRetryingRecord(t *
 		claimCapability: storage.CreateOnlyClaims,
 		workflowID:      "activity-claim",
 		runID:           "lagging-retrying-handoff",
-		codeVersion:     "v1",
 		claimOwner:      "contender",
 	}
 	activityID := "send"
@@ -160,7 +157,6 @@ func TestActivityClaimRechecksNewerPreparedTimerAgainstLaggingRetryingRecord(t *
 		SchemaVersion: storage.ActivityRecordSchemaVersion,
 		Key:           activityKey.Proto(),
 		ActivityType:  activityClaimTestType,
-		CodeVersion:   workflow.codeVersion,
 		Input:         input,
 		Status:        temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 		Failure:       proto.Clone(failure).(*temporalessv1.ActivityFailure),
@@ -185,7 +181,6 @@ func TestActivityClaimRechecksNewerPreparedTimerAgainstLaggingRetryingRecord(t *
 			SchemaVersion:   storage.TimerRecordSchemaVersion,
 			Key:             storage.NewTimerKey(workflow.workflowID, workflow.runID, retryTimerID).Proto(),
 			TimerKind:       temporalessv1.TimerKind_TIMER_KIND_ACTIVITY_RETRY,
-			CodeVersion:     workflow.codeVersion,
 			Duration:        durationpb.New(2 * time.Minute),
 			Status:          temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 			FireAt:          timestamppb.New(wakeAt),

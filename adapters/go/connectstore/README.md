@@ -4,7 +4,8 @@ This is a decision adapter for exposing Temporaless record storage over ConnectR
 
 ## Purpose
 
-The adapter exposes the protobuf record store service so a process can read and write workflow, activity, timer, and claim records remotely.
+The adapter exposes the protobuf record store service so a process can read and
+write workflow, activity, timer, event, and claim records remotely.
 
 It also provides a local client path: `NewLocalClientStore(...)` dispatches to
 the same generated service-shaped handlers in-process. Use that when the store
@@ -34,7 +35,18 @@ HTTP mounting is explicit:
 - in-process local clients wrapped as `storage.Store`
 - explicit local or remote `storage.QueryStore` wiring
 - same record keys and protobuf binary records as the core storage package
-- generated storage capability response for claim support
+- generated storage capability response for claim and atomic event-delivery
+  support
+- typed `DeliverEvent` forwarding: created and idempotent dispositions plus
+  structured unsupported/conflict errors
+
+`DeliverEvent` does not make an unconditional backend atomic. The handler
+advertises `CREATE_ONLY` only when its `storage.EventDeliveryStore` does, and a
+client preserves that capability and the typed failure details. Direct Go
+OpenDAL reports `NO_ATOMIC_CREATE` because its current binding lacks
+conditional writes; use an atomic-capable remote service or a narrow native
+conditional-write adapter. `PutEvent` remains the low-level replace RPC for
+operators, migrations, and fixtures.
 
 ## Rejected Behavior
 
@@ -43,6 +55,7 @@ HTTP mounting is explicit:
 - no server-side workflow execution
 - no production cross-run search or retention index in this adapter
 - no lock service or scheduler behavior
+- no check-then-write emulation for event delivery
 
 This adapter is a transport boundary for storage records. It is not a Temporal frontend or worker service.
 

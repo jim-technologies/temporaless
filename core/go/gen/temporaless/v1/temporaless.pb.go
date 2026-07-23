@@ -42,6 +42,146 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// WorkflowPlanNodeKind identifies the visual role of one node. These values do
+// not add new core execution primitives: adapters map them to existing
+// activities, sleeps, events, fan-out helpers, and workflow dependencies.
+type WorkflowPlanNodeKind int32
+
+const (
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED WorkflowPlanNodeKind = 0
+	// A local unary protobuf handler or a remote protobuf RPC executed as an
+	// activity. Both use the same request -> response shape.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_ACTIVITY WorkflowPlanNodeKind = 1
+	// A decision activity whose protobuf response selects a conditional edge.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_BRANCH WorkflowPlanNodeKind = 2
+	// A structural grouping for concurrently executed activity nodes.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_FAN_OUT WorkflowPlanNodeKind = 3
+	// An explicit bounded loop. Iterations still need caller-supplied stable
+	// activity IDs; a LOOP_BACK edge is visualization metadata, not a scheduler.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_LOOP WorkflowPlanNodeKind = 4
+	// A durable workflow sleep; node_id conventionally equals timer_id.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_SLEEP WorkflowPlanNodeKind = 5
+	// A create-once event wait; node_id conventionally equals event_id.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT WorkflowPlanNodeKind = 6
+	// A wait for an explicitly identified workflow run. This is a dependency,
+	// not a claim of child-workflow lifecycle or cancellation semantics.
+	WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW WorkflowPlanNodeKind = 7
+)
+
+// Enum value maps for WorkflowPlanNodeKind.
+var (
+	WorkflowPlanNodeKind_name = map[int32]string{
+		0: "WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED",
+		1: "WORKFLOW_PLAN_NODE_KIND_ACTIVITY",
+		2: "WORKFLOW_PLAN_NODE_KIND_BRANCH",
+		3: "WORKFLOW_PLAN_NODE_KIND_FAN_OUT",
+		4: "WORKFLOW_PLAN_NODE_KIND_LOOP",
+		5: "WORKFLOW_PLAN_NODE_KIND_SLEEP",
+		6: "WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT",
+		7: "WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW",
+	}
+	WorkflowPlanNodeKind_value = map[string]int32{
+		"WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED":   0,
+		"WORKFLOW_PLAN_NODE_KIND_ACTIVITY":      1,
+		"WORKFLOW_PLAN_NODE_KIND_BRANCH":        2,
+		"WORKFLOW_PLAN_NODE_KIND_FAN_OUT":       3,
+		"WORKFLOW_PLAN_NODE_KIND_LOOP":          4,
+		"WORKFLOW_PLAN_NODE_KIND_SLEEP":         5,
+		"WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT":    6,
+		"WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW": 7,
+	}
+)
+
+func (x WorkflowPlanNodeKind) Enum() *WorkflowPlanNodeKind {
+	p := new(WorkflowPlanNodeKind)
+	*p = x
+	return p
+}
+
+func (x WorkflowPlanNodeKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkflowPlanNodeKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[0].Descriptor()
+}
+
+func (WorkflowPlanNodeKind) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[0]
+}
+
+func (x WorkflowPlanNodeKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkflowPlanNodeKind.Descriptor instead.
+func (WorkflowPlanNodeKind) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{0}
+}
+
+// WorkflowPlanEdgeKind describes why two visual nodes are connected.
+type WorkflowPlanEdgeKind int32
+
+const (
+	WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED WorkflowPlanEdgeKind = 0
+	// Ordering dependency with no implied payload transfer.
+	WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_CONTROL WorkflowPlanEdgeKind = 1
+	// The complete protobuf response from the source becomes the complete
+	// protobuf request to the target. Validators require exact descriptor-name
+	// equality. Insert a typed transformation activity when shapes differ.
+	WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_DATA WorkflowPlanEdgeKind = 2
+	// A labelled route selected by a recorded branch-decision activity.
+	WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL WorkflowPlanEdgeKind = 3
+	// Explicit loop visualization. The graph remains acyclic when LOOP_BACK
+	// edges are removed.
+	WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK WorkflowPlanEdgeKind = 4
+)
+
+// Enum value maps for WorkflowPlanEdgeKind.
+var (
+	WorkflowPlanEdgeKind_name = map[int32]string{
+		0: "WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED",
+		1: "WORKFLOW_PLAN_EDGE_KIND_CONTROL",
+		2: "WORKFLOW_PLAN_EDGE_KIND_DATA",
+		3: "WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL",
+		4: "WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK",
+	}
+	WorkflowPlanEdgeKind_value = map[string]int32{
+		"WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED": 0,
+		"WORKFLOW_PLAN_EDGE_KIND_CONTROL":     1,
+		"WORKFLOW_PLAN_EDGE_KIND_DATA":        2,
+		"WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL": 3,
+		"WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK":   4,
+	}
+)
+
+func (x WorkflowPlanEdgeKind) Enum() *WorkflowPlanEdgeKind {
+	p := new(WorkflowPlanEdgeKind)
+	*p = x
+	return p
+}
+
+func (x WorkflowPlanEdgeKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkflowPlanEdgeKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[1].Descriptor()
+}
+
+func (WorkflowPlanEdgeKind) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[1]
+}
+
+func (x WorkflowPlanEdgeKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkflowPlanEdgeKind.Descriptor instead.
+func (WorkflowPlanEdgeKind) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{1}
+}
+
 // TaskStatus mirrors the lifecycle of one `DoAsync` submission.
 // UNSPECIFIED is the zero value and is what `Status(taskID)` returns
 // for unknown / TTL-evicted ids — distinguish "no such task" from a
@@ -89,11 +229,11 @@ func (x TaskStatus) String() string {
 }
 
 func (TaskStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[0].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[2].Descriptor()
 }
 
 func (TaskStatus) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[0]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[2]
 }
 
 func (x TaskStatus) Number() protoreflect.EnumNumber {
@@ -102,7 +242,7 @@ func (x TaskStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TaskStatus.Descriptor instead.
 func (TaskStatus) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{0}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{2}
 }
 
 // ActivityStatus tracks an activity's lifecycle in storage.
@@ -149,11 +289,11 @@ func (x ActivityStatus) String() string {
 }
 
 func (ActivityStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[1].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[3].Descriptor()
 }
 
 func (ActivityStatus) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[1]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[3]
 }
 
 func (x ActivityStatus) Number() protoreflect.EnumNumber {
@@ -162,7 +302,7 @@ func (x ActivityStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ActivityStatus.Descriptor instead.
 func (ActivityStatus) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{1}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{3}
 }
 
 // WorkflowStatus tracks a workflow run's lifecycle in storage.
@@ -207,11 +347,11 @@ func (x WorkflowStatus) String() string {
 }
 
 func (WorkflowStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[2].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[4].Descriptor()
 }
 
 func (WorkflowStatus) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[2]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[4]
 }
 
 func (x WorkflowStatus) Number() protoreflect.EnumNumber {
@@ -220,7 +360,7 @@ func (x WorkflowStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WorkflowStatus.Descriptor instead.
 func (WorkflowStatus) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{2}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{4}
 }
 
 // TimerStatus tracks the lifecycle of a durable sleep timer.
@@ -265,11 +405,11 @@ func (x TimerStatus) String() string {
 }
 
 func (TimerStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[3].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[5].Descriptor()
 }
 
 func (TimerStatus) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[3]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[5]
 }
 
 func (x TimerStatus) Number() protoreflect.EnumNumber {
@@ -278,7 +418,7 @@ func (x TimerStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TimerStatus.Descriptor instead.
 func (TimerStatus) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{3}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{5}
 }
 
 // TimerKind discriminates timer record uses.
@@ -294,6 +434,11 @@ const (
 	// from the next attempt. Its timer ID is supplied explicitly through
 	// ActivityOptions.retry_timer_id.
 	TimerKind_TIMER_KIND_ACTIVITY_RETRY TimerKind = 2
+	// Durable polling wake used by event and workflow-dependency waits. The
+	// caller supplies the timer ID through PollOptions. If the condition is
+	// still unresolved when the timer becomes due, the same timer is rearmed
+	// for the next interval.
+	TimerKind_TIMER_KIND_POLL TimerKind = 3
 )
 
 // Enum value maps for TimerKind.
@@ -302,11 +447,13 @@ var (
 		0: "TIMER_KIND_UNSPECIFIED",
 		1: "TIMER_KIND_SLEEP",
 		2: "TIMER_KIND_ACTIVITY_RETRY",
+		3: "TIMER_KIND_POLL",
 	}
 	TimerKind_value = map[string]int32{
 		"TIMER_KIND_UNSPECIFIED":    0,
 		"TIMER_KIND_SLEEP":          1,
 		"TIMER_KIND_ACTIVITY_RETRY": 2,
+		"TIMER_KIND_POLL":           3,
 	}
 )
 
@@ -321,11 +468,11 @@ func (x TimerKind) String() string {
 }
 
 func (TimerKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[4].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[6].Descriptor()
 }
 
 func (TimerKind) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[4]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[6]
 }
 
 func (x TimerKind) Number() protoreflect.EnumNumber {
@@ -334,7 +481,7 @@ func (x TimerKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TimerKind.Descriptor instead.
 func (TimerKind) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{4}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{6}
 }
 
 // RecordSchemaVersion identifies the record family. Each protobuf record sets
@@ -381,11 +528,11 @@ func (x RecordSchemaVersion) String() string {
 }
 
 func (RecordSchemaVersion) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[5].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[7].Descriptor()
 }
 
 func (RecordSchemaVersion) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[5]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[7]
 }
 
 func (x RecordSchemaVersion) Number() protoreflect.EnumNumber {
@@ -394,7 +541,7 @@ func (x RecordSchemaVersion) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RecordSchemaVersion.Descriptor instead.
 func (RecordSchemaVersion) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{5}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{7}
 }
 
 // ClaimResourceType identifies what kind of work a claim coordinates.
@@ -442,11 +589,11 @@ func (x ClaimResourceType) String() string {
 }
 
 func (ClaimResourceType) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[6].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[8].Descriptor()
 }
 
 func (ClaimResourceType) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[6]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[8]
 }
 
 func (x ClaimResourceType) Number() protoreflect.EnumNumber {
@@ -455,7 +602,7 @@ func (x ClaimResourceType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ClaimResourceType.Descriptor instead.
 func (ClaimResourceType) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{6}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{8}
 }
 
 // ClaimCapability declares what the configured claim store can do. Adapters
@@ -505,11 +652,11 @@ func (x ClaimCapability) String() string {
 }
 
 func (ClaimCapability) Descriptor() protoreflect.EnumDescriptor {
-	return file_temporaless_v1_temporaless_proto_enumTypes[7].Descriptor()
+	return file_temporaless_v1_temporaless_proto_enumTypes[9].Descriptor()
 }
 
 func (ClaimCapability) Type() protoreflect.EnumType {
-	return &file_temporaless_v1_temporaless_proto_enumTypes[7]
+	return &file_temporaless_v1_temporaless_proto_enumTypes[9]
 }
 
 func (x ClaimCapability) Number() protoreflect.EnumNumber {
@@ -518,7 +665,160 @@ func (x ClaimCapability) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ClaimCapability.Descriptor instead.
 func (ClaimCapability) EnumDescriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{7}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{9}
+}
+
+// EventDeliveryCapability declares whether a store can atomically establish
+// the first payload for an EventKey. Adapters must not implement this with a
+// check-then-write sequence.
+type EventDeliveryCapability int32
+
+const (
+	EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED      EventDeliveryCapability = 0
+	EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE EventDeliveryCapability = 1
+	EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_CREATE_ONLY      EventDeliveryCapability = 2
+)
+
+// Enum value maps for EventDeliveryCapability.
+var (
+	EventDeliveryCapability_name = map[int32]string{
+		0: "EVENT_DELIVERY_CAPABILITY_UNSPECIFIED",
+		1: "EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE",
+		2: "EVENT_DELIVERY_CAPABILITY_CREATE_ONLY",
+	}
+	EventDeliveryCapability_value = map[string]int32{
+		"EVENT_DELIVERY_CAPABILITY_UNSPECIFIED":      0,
+		"EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE": 1,
+		"EVENT_DELIVERY_CAPABILITY_CREATE_ONLY":      2,
+	}
+)
+
+func (x EventDeliveryCapability) Enum() *EventDeliveryCapability {
+	p := new(EventDeliveryCapability)
+	*p = x
+	return p
+}
+
+func (x EventDeliveryCapability) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EventDeliveryCapability) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[10].Descriptor()
+}
+
+func (EventDeliveryCapability) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[10]
+}
+
+func (x EventDeliveryCapability) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EventDeliveryCapability.Descriptor instead.
+func (EventDeliveryCapability) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{10}
+}
+
+// EventDeliveryDisposition describes a successful DeliverEvent operation.
+type EventDeliveryDisposition int32
+
+const (
+	EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED EventDeliveryDisposition = 0
+	EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_CREATED     EventDeliveryDisposition = 1
+	// The key already contained the same protobuf Any payload. The original
+	// EventRecord, including its received_at timestamp, remains authoritative.
+	EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_IDEMPOTENT EventDeliveryDisposition = 2
+)
+
+// Enum value maps for EventDeliveryDisposition.
+var (
+	EventDeliveryDisposition_name = map[int32]string{
+		0: "EVENT_DELIVERY_DISPOSITION_UNSPECIFIED",
+		1: "EVENT_DELIVERY_DISPOSITION_CREATED",
+		2: "EVENT_DELIVERY_DISPOSITION_IDEMPOTENT",
+	}
+	EventDeliveryDisposition_value = map[string]int32{
+		"EVENT_DELIVERY_DISPOSITION_UNSPECIFIED": 0,
+		"EVENT_DELIVERY_DISPOSITION_CREATED":     1,
+		"EVENT_DELIVERY_DISPOSITION_IDEMPOTENT":  2,
+	}
+)
+
+func (x EventDeliveryDisposition) Enum() *EventDeliveryDisposition {
+	p := new(EventDeliveryDisposition)
+	*p = x
+	return p
+}
+
+func (x EventDeliveryDisposition) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EventDeliveryDisposition) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[11].Descriptor()
+}
+
+func (EventDeliveryDisposition) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[11]
+}
+
+func (x EventDeliveryDisposition) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EventDeliveryDisposition.Descriptor instead.
+func (EventDeliveryDisposition) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{11}
+}
+
+type EventDeliveryFailureReason int32
+
+const (
+	EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED EventDeliveryFailureReason = 0
+	EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED EventDeliveryFailureReason = 1
+	EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT    EventDeliveryFailureReason = 2
+)
+
+// Enum value maps for EventDeliveryFailureReason.
+var (
+	EventDeliveryFailureReason_name = map[int32]string{
+		0: "EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED",
+		1: "EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED",
+		2: "EVENT_DELIVERY_FAILURE_REASON_CONFLICT",
+	}
+	EventDeliveryFailureReason_value = map[string]int32{
+		"EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED": 0,
+		"EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED": 1,
+		"EVENT_DELIVERY_FAILURE_REASON_CONFLICT":    2,
+	}
+)
+
+func (x EventDeliveryFailureReason) Enum() *EventDeliveryFailureReason {
+	p := new(EventDeliveryFailureReason)
+	*p = x
+	return p
+}
+
+func (x EventDeliveryFailureReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EventDeliveryFailureReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[12].Descriptor()
+}
+
+func (EventDeliveryFailureReason) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[12]
+}
+
+func (x EventDeliveryFailureReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EventDeliveryFailureReason.Descriptor instead.
+func (EventDeliveryFailureReason) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{12}
 }
 
 // WorkflowOptions identifies a single workflow run plus its replay context.
@@ -534,10 +834,6 @@ type WorkflowOptions struct {
 	// adapters commonly derive a deterministic ID from the schedule and fire
 	// time so duplicate ticks converge, but the framework never parses it.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	// Application-supplied build identity (git SHA, release tag, immutable build
-	// ID). Bumping it invalidates stored results because the digest changes.
-	// Defaults to the `TEMPORALESS_CODE_VERSION` env var, or `dev` when unset.
-	CodeVersion string `protobuf:"bytes,3,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
 	// Caller-supplied identity for workflow-execution, activity, and
 	// concurrency-slot claims.
 	// Non-empty opts the run into storage-backed single-flight execution and
@@ -618,13 +914,6 @@ func (x *WorkflowOptions) GetWorkflowId() string {
 func (x *WorkflowOptions) GetRunId() string {
 	if x != nil {
 		return x.RunId
-	}
-	return ""
-}
-
-func (x *WorkflowOptions) GetCodeVersion() string {
-	if x != nil {
-		return x.CodeVersion
 	}
 	return ""
 }
@@ -728,6 +1017,62 @@ func (x *ActivityOptions) GetRetryTimerId() string {
 	return ""
 }
 
+// PollOptions opts an event or workflow-dependency wait into durable polling.
+// The caller owns the timer ID. When absent, wait primitives preserve their
+// legacy storage-only behavior and rely on an application-triggered
+// re-invocation.
+type PollOptions struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TimerId       string                 `protobuf:"bytes,1,opt,name=timer_id,json=timerId" json:"timer_id,omitempty"`
+	Interval      *durationpb.Duration   `protobuf:"bytes,2,opt,name=interval" json:"interval,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PollOptions) Reset() {
+	*x = PollOptions{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PollOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PollOptions) ProtoMessage() {}
+
+func (x *PollOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PollOptions.ProtoReflect.Descriptor instead.
+func (*PollOptions) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PollOptions) GetTimerId() string {
+	if x != nil {
+		return x.TimerId
+	}
+	return ""
+}
+
+func (x *PollOptions) GetInterval() *durationpb.Duration {
+	if x != nil {
+		return x.Interval
+	}
+	return nil
+}
+
 // DispatchOptions configures an in-process fire-and-forget dispatcher (the
 // `dispatch` adapter in each SDK). Native runtime knobs that can't be
 // expressed as data — the `OnError` hook, the pluggable `Queue` adapter for
@@ -763,7 +1108,7 @@ type DispatchOptions struct {
 
 func (x *DispatchOptions) Reset() {
 	*x = DispatchOptions{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[2]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -775,7 +1120,7 @@ func (x *DispatchOptions) String() string {
 func (*DispatchOptions) ProtoMessage() {}
 
 func (x *DispatchOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[2]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -788,7 +1133,7 @@ func (x *DispatchOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DispatchOptions.ProtoReflect.Descriptor instead.
 func (*DispatchOptions) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{2}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DispatchOptions) GetDrainTimeout() *durationpb.Duration {
@@ -810,6 +1155,280 @@ func (x *DispatchOptions) GetTaskTtl() *durationpb.Duration {
 		return x.TaskTtl
 	}
 	return nil
+}
+
+// WorkflowPlan is an optional, display-oriented description of a workflow.
+//
+// It is deliberately not an execution language. Applications may place this
+// message inside their own workflow request, render it for approval, and then
+// compile it into ordinary Temporaless workflow code. The plan is
+// authoritative for intended topology; durable workflow/activity/timer/event
+// records are authoritative for what actually executed.
+//
+// A plan can describe loops without pretending every workflow is a DAG:
+// ordinary forward edges must remain acyclic, while an explicit LOOP_BACK edge
+// must touch a LOOP node. Adapter validators enforce those cross-field rules.
+type WorkflowPlan struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	PlanId string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId" json:"plan_id,omitempty"`
+	// Application-owned revision. A changed approved plan must use a new
+	// revision and a caller-owned execution identity that cannot replay records
+	// from the previous revision.
+	Revision uint64              `protobuf:"varint,2,opt,name=revision" json:"revision,omitempty"`
+	Nodes    []*WorkflowPlanNode `protobuf:"bytes,3,rep,name=nodes" json:"nodes,omitempty"`
+	Edges    []*WorkflowPlanEdge `protobuf:"bytes,4,rep,name=edges" json:"edges,omitempty"`
+	// Display/filter metadata only. Execution decisions must come from typed
+	// request fields or recorded activity results, never from annotations.
+	Annotations   map[string]string `protobuf:"bytes,5,rep,name=annotations" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowPlan) Reset() {
+	*x = WorkflowPlan{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowPlan) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowPlan) ProtoMessage() {}
+
+func (x *WorkflowPlan) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowPlan.ProtoReflect.Descriptor instead.
+func (*WorkflowPlan) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *WorkflowPlan) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *WorkflowPlan) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *WorkflowPlan) GetNodes() []*WorkflowPlanNode {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *WorkflowPlan) GetEdges() []*WorkflowPlanEdge {
+	if x != nil {
+		return x.Edges
+	}
+	return nil
+}
+
+func (x *WorkflowPlan) GetAnnotations() map[string]string {
+	if x != nil {
+		return x.Annotations
+	}
+	return nil
+}
+
+// WorkflowPlanNode describes one box in a visual workflow. Callable nodes name
+// their unary protobuf operation and concrete request/response descriptors.
+// The application registry or generated RPC descriptor remains authoritative;
+// validators reject a mismatch before execution.
+type WorkflowPlanNode struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable application-owned identity. For activity, sleep, and event nodes,
+	// use this exact value as the corresponding activity_id, timer_id, or
+	// event_id so a UI can join the plan to durable records without inference.
+	NodeId      string               `protobuf:"bytes,1,opt,name=node_id,json=nodeId" json:"node_id,omitempty"`
+	DisplayName string               `protobuf:"bytes,2,opt,name=display_name,json=displayName" json:"display_name,omitempty"`
+	Description string               `protobuf:"bytes,3,opt,name=description" json:"description,omitempty"`
+	Kind        WorkflowPlanNodeKind `protobuf:"varint,4,opt,name=kind,enum=temporaless.v1.WorkflowPlanNodeKind" json:"kind,omitempty"`
+	// Fully-qualified protobuf RPC procedure or application registry key for
+	// callable ACTIVITY and BRANCH nodes. Examples:
+	// `prices.v1.PriceService.Fetch` or `normalize:tweet`.
+	Operation string `protobuf:"bytes,5,opt,name=operation" json:"operation,omitempty"`
+	// Fully-qualified protobuf message names for callable nodes. These are
+	// metadata for validation/UI display; payloads remain concrete protobuf
+	// messages and are never converted to JSON or generic objects.
+	RequestType   string            `protobuf:"bytes,6,opt,name=request_type,json=requestType" json:"request_type,omitempty"`
+	ResponseType  string            `protobuf:"bytes,7,opt,name=response_type,json=responseType" json:"response_type,omitempty"`
+	Annotations   map[string]string `protobuf:"bytes,8,rep,name=annotations" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowPlanNode) Reset() {
+	*x = WorkflowPlanNode{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowPlanNode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowPlanNode) ProtoMessage() {}
+
+func (x *WorkflowPlanNode) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowPlanNode.ProtoReflect.Descriptor instead.
+func (*WorkflowPlanNode) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *WorkflowPlanNode) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetKind() WorkflowPlanNodeKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED
+}
+
+func (x *WorkflowPlanNode) GetOperation() string {
+	if x != nil {
+		return x.Operation
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetRequestType() string {
+	if x != nil {
+		return x.RequestType
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetResponseType() string {
+	if x != nil {
+		return x.ResponseType
+	}
+	return ""
+}
+
+func (x *WorkflowPlanNode) GetAnnotations() map[string]string {
+	if x != nil {
+		return x.Annotations
+	}
+	return nil
+}
+
+type WorkflowPlanEdge struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	SourceNodeId string                 `protobuf:"bytes,1,opt,name=source_node_id,json=sourceNodeId" json:"source_node_id,omitempty"`
+	TargetNodeId string                 `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId" json:"target_node_id,omitempty"`
+	Kind         WorkflowPlanEdgeKind   `protobuf:"varint,3,opt,name=kind,enum=temporaless.v1.WorkflowPlanEdgeKind" json:"kind,omitempty"`
+	// Required for CONDITIONAL edges, optional display text otherwise.
+	Label         string `protobuf:"bytes,4,opt,name=label" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowPlanEdge) Reset() {
+	*x = WorkflowPlanEdge{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowPlanEdge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowPlanEdge) ProtoMessage() {}
+
+func (x *WorkflowPlanEdge) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowPlanEdge.ProtoReflect.Descriptor instead.
+func (*WorkflowPlanEdge) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *WorkflowPlanEdge) GetSourceNodeId() string {
+	if x != nil {
+		return x.SourceNodeId
+	}
+	return ""
+}
+
+func (x *WorkflowPlanEdge) GetTargetNodeId() string {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return ""
+}
+
+func (x *WorkflowPlanEdge) GetKind() WorkflowPlanEdgeKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED
+}
+
+func (x *WorkflowPlanEdge) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
 }
 
 // TaskInfo is the per-submission lifecycle record the dispatcher tracks
@@ -837,7 +1456,7 @@ type TaskInfo struct {
 
 func (x *TaskInfo) Reset() {
 	*x = TaskInfo{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[3]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -849,7 +1468,7 @@ func (x *TaskInfo) String() string {
 func (*TaskInfo) ProtoMessage() {}
 
 func (x *TaskInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[3]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -862,7 +1481,7 @@ func (x *TaskInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskInfo.ProtoReflect.Descriptor instead.
 func (*TaskInfo) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{3}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TaskInfo) GetTaskId() string {
@@ -954,7 +1573,7 @@ type RetryPolicy struct {
 
 func (x *RetryPolicy) Reset() {
 	*x = RetryPolicy{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[4]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +1585,7 @@ func (x *RetryPolicy) String() string {
 func (*RetryPolicy) ProtoMessage() {}
 
 func (x *RetryPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[4]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +1598,7 @@ func (x *RetryPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryPolicy.ProtoReflect.Descriptor instead.
 func (*RetryPolicy) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{4}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RetryPolicy) GetInitialInterval() *durationpb.Duration {
@@ -1078,7 +1697,7 @@ const (
 
 func (x *ReservedNames) Reset() {
 	*x = ReservedNames{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[5]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1090,7 +1709,7 @@ func (x *ReservedNames) String() string {
 func (*ReservedNames) ProtoMessage() {}
 
 func (x *ReservedNames) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[5]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1103,7 +1722,7 @@ func (x *ReservedNames) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReservedNames.ProtoReflect.Descriptor instead.
 func (*ReservedNames) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{5}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReservedNames) GetConcurrencyWorkflowId() string {
@@ -1164,7 +1783,7 @@ const (
 
 func (x *RuntimeDefaults) Reset() {
 	*x = RuntimeDefaults{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[6]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1176,7 +1795,7 @@ func (x *RuntimeDefaults) String() string {
 func (*RuntimeDefaults) ProtoMessage() {}
 
 func (x *RuntimeDefaults) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[6]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1189,7 +1808,7 @@ func (x *RuntimeDefaults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeDefaults.ProtoReflect.Descriptor instead.
 func (*RuntimeDefaults) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{6}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RuntimeDefaults) GetClaimLeaseDurationSeconds() uint32 {
@@ -1197,6 +1816,59 @@ func (x *RuntimeDefaults) GetClaimLeaseDurationSeconds() uint32 {
 		return *x.ClaimLeaseDurationSeconds
 	}
 	return Default_RuntimeDefaults_ClaimLeaseDurationSeconds
+}
+
+// Structured ConnectRPC error detail returned by DeliverEvent failures.
+type EventDeliveryErrorDetail struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Reason        EventDeliveryFailureReason `protobuf:"varint,1,opt,name=reason,enum=temporaless.v1.EventDeliveryFailureReason" json:"reason,omitempty"`
+	Key           *EventKey                  `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventDeliveryErrorDetail) Reset() {
+	*x = EventDeliveryErrorDetail{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventDeliveryErrorDetail) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventDeliveryErrorDetail) ProtoMessage() {}
+
+func (x *EventDeliveryErrorDetail) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventDeliveryErrorDetail.ProtoReflect.Descriptor instead.
+func (*EventDeliveryErrorDetail) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *EventDeliveryErrorDetail) GetReason() EventDeliveryFailureReason {
+	if x != nil {
+		return x.Reason
+	}
+	return EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED
+}
+
+func (x *EventDeliveryErrorDetail) GetKey() *EventKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
 }
 
 // WorkflowKey addresses a single workflow run.
@@ -1216,7 +1888,7 @@ type WorkflowKey struct {
 
 func (x *WorkflowKey) Reset() {
 	*x = WorkflowKey{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[7]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1228,7 +1900,7 @@ func (x *WorkflowKey) String() string {
 func (*WorkflowKey) ProtoMessage() {}
 
 func (x *WorkflowKey) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[7]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1241,7 +1913,7 @@ func (x *WorkflowKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowKey.ProtoReflect.Descriptor instead.
 func (*WorkflowKey) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{7}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *WorkflowKey) GetNamespace() string {
@@ -1278,7 +1950,7 @@ type ActivityKey struct {
 
 func (x *ActivityKey) Reset() {
 	*x = ActivityKey{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[8]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1290,7 +1962,7 @@ func (x *ActivityKey) String() string {
 func (*ActivityKey) ProtoMessage() {}
 
 func (x *ActivityKey) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[8]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1303,7 +1975,7 @@ func (x *ActivityKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityKey.ProtoReflect.Descriptor instead.
 func (*ActivityKey) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{8}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ActivityKey) GetNamespace() string {
@@ -1347,7 +2019,7 @@ type TimerKey struct {
 
 func (x *TimerKey) Reset() {
 	*x = TimerKey{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[9]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1359,7 +2031,7 @@ func (x *TimerKey) String() string {
 func (*TimerKey) ProtoMessage() {}
 
 func (x *TimerKey) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[9]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1372,7 +2044,7 @@ func (x *TimerKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerKey.ProtoReflect.Descriptor instead.
 func (*TimerKey) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{9}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TimerKey) GetNamespace() string {
@@ -1416,7 +2088,7 @@ type EventKey struct {
 
 func (x *EventKey) Reset() {
 	*x = EventKey{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[10]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1428,7 +2100,7 @@ func (x *EventKey) String() string {
 func (*EventKey) ProtoMessage() {}
 
 func (x *EventKey) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[10]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1441,7 +2113,7 @@ func (x *EventKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventKey.ProtoReflect.Descriptor instead.
 func (*EventKey) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{10}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EventKey) GetNamespace() string {
@@ -1485,7 +2157,7 @@ type ClaimKey struct {
 
 func (x *ClaimKey) Reset() {
 	*x = ClaimKey{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[11]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1497,7 +2169,7 @@ func (x *ClaimKey) String() string {
 func (*ClaimKey) ProtoMessage() {}
 
 func (x *ClaimKey) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[11]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1510,7 +2182,7 @@ func (x *ClaimKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimKey.ProtoReflect.Descriptor instead.
 func (*ClaimKey) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{11}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ClaimKey) GetNamespace() string {
@@ -1568,7 +2240,7 @@ type ActivityFailure struct {
 
 func (x *ActivityFailure) Reset() {
 	*x = ActivityFailure{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[12]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1580,7 +2252,7 @@ func (x *ActivityFailure) String() string {
 func (*ActivityFailure) ProtoMessage() {}
 
 func (x *ActivityFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[12]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1593,7 +2265,7 @@ func (x *ActivityFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityFailure.ProtoReflect.Descriptor instead.
 func (*ActivityFailure) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{12}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ActivityFailure) GetCode() string {
@@ -1632,7 +2304,7 @@ type ActivityAttempt struct {
 
 func (x *ActivityAttempt) Reset() {
 	*x = ActivityAttempt{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[13]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1644,7 +2316,7 @@ func (x *ActivityAttempt) String() string {
 func (*ActivityAttempt) ProtoMessage() {}
 
 func (x *ActivityAttempt) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[13]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1657,7 +2329,7 @@ func (x *ActivityAttempt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityAttempt.ProtoReflect.Descriptor instead.
 func (*ActivityAttempt) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{13}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ActivityAttempt) GetAttempt() uint32 {
@@ -1697,13 +2369,9 @@ type ActivityRecord struct {
 	// Derived from the request and response message types. Useful for analytics;
 	// checked against the stored value on replay so a code change that swaps
 	// input/output types fails loudly rather than returning a stale result.
-	ActivityType string `protobuf:"bytes,3,opt,name=activity_type,json=activityType" json:"activity_type,omitempty"`
-	// Caller-supplied build identity. Replay compares stored vs current and
-	// rejects mismatch so a bumped code_version triggers re-execution (with
-	// a fresh activity_id or run_id) rather than silently replaying stale data.
-	CodeVersion string         `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	Input       *anypb.Any     `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
-	Status      ActivityStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
+	ActivityType string         `protobuf:"bytes,3,opt,name=activity_type,json=activityType" json:"activity_type,omitempty"`
+	Input        *anypb.Any     `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
+	Status       ActivityStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
 	Result *anypb.Any `protobuf:"bytes,8,opt,name=result" json:"result,omitempty"`
 	// Set when status is FAILED.
@@ -1726,7 +2394,7 @@ type ActivityRecord struct {
 	// Normalized effective retry policy used to create this record. Absent
 	// means single-attempt execution. RETRYING replay requires this policy to
 	// match the caller's current policy so a deploy cannot silently change the
-	// remaining attempt count or backoff schedule under the same code_version.
+	// remaining attempt count or backoff schedule for the same activity.
 	// Terminal records remain authoritative and retain the policy for audit.
 	RetryPolicy *RetryPolicy `protobuf:"bytes,15,opt,name=retry_policy,json=retryPolicy" json:"retry_policy,omitempty"`
 	// Caller-supplied ID of the durable retry timer paired with this activity.
@@ -1740,7 +2408,7 @@ type ActivityRecord struct {
 
 func (x *ActivityRecord) Reset() {
 	*x = ActivityRecord{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[14]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1752,7 +2420,7 @@ func (x *ActivityRecord) String() string {
 func (*ActivityRecord) ProtoMessage() {}
 
 func (x *ActivityRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[14]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1765,7 +2433,7 @@ func (x *ActivityRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityRecord.ProtoReflect.Descriptor instead.
 func (*ActivityRecord) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{14}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ActivityRecord) GetSchemaVersion() RecordSchemaVersion {
@@ -1785,13 +2453,6 @@ func (x *ActivityRecord) GetKey() *ActivityKey {
 func (x *ActivityRecord) GetActivityType() string {
 	if x != nil {
 		return x.ActivityType
-	}
-	return ""
-}
-
-func (x *ActivityRecord) GetCodeVersion() string {
-	if x != nil {
-		return x.CodeVersion
 	}
 	return ""
 }
@@ -1880,7 +2541,6 @@ type WorkflowRecord struct {
 	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
 	Key           *WorkflowKey           `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	WorkflowType  string                 `protobuf:"bytes,3,opt,name=workflow_type,json=workflowType" json:"workflow_type,omitempty"`
-	CodeVersion   string                 `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
 	Input         *anypb.Any             `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
 	Status        WorkflowStatus         `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
@@ -1904,7 +2564,7 @@ type WorkflowRecord struct {
 
 func (x *WorkflowRecord) Reset() {
 	*x = WorkflowRecord{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[15]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1916,7 +2576,7 @@ func (x *WorkflowRecord) String() string {
 func (*WorkflowRecord) ProtoMessage() {}
 
 func (x *WorkflowRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[15]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1929,7 +2589,7 @@ func (x *WorkflowRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowRecord.ProtoReflect.Descriptor instead.
 func (*WorkflowRecord) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{15}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *WorkflowRecord) GetSchemaVersion() RecordSchemaVersion {
@@ -1949,13 +2609,6 @@ func (x *WorkflowRecord) GetKey() *WorkflowKey {
 func (x *WorkflowRecord) GetWorkflowType() string {
 	if x != nil {
 		return x.WorkflowType
-	}
-	return ""
-}
-
-func (x *WorkflowRecord) GetCodeVersion() string {
-	if x != nil {
-		return x.CodeVersion
 	}
 	return ""
 }
@@ -2016,14 +2669,14 @@ func (x *WorkflowRecord) GetRunOrderTime() *timestamppb.Timestamp {
 	return nil
 }
 
-// TimerRecord backs `workflow.Sleep`. Stored at `timer/{timer_id}.binpb`.
+// TimerRecord backs durable sleep, activity-retry backoff, and polling wakes.
+// Stored at `timer/{timer_id}.binpb`.
 type TimerRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
 	Key           *TimerKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	TimerKind     TimerKind              `protobuf:"varint,3,opt,name=timer_kind,json=timerKind,enum=temporaless.v1.TimerKind" json:"timer_kind,omitempty"`
-	CodeVersion   string                 `protobuf:"bytes,4,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
-	// Original duration the workflow body asked to sleep for.
+	// Canonical interval for a sleep, activity retry, or poll timer.
 	Duration *durationpb.Duration `protobuf:"bytes,6,opt,name=duration" json:"duration,omitempty"`
 	Status   TimerStatus          `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.TimerStatus" json:"status,omitempty"`
 	// Wall-clock instant at which the timer becomes due. Schedulers compare this
@@ -2034,7 +2687,8 @@ type TimerRecord struct {
 	// terminal workflow record. A due timer remains SCHEDULED until that durable
 	// boundary so a crash cannot consume its only wakeup.
 	FiredAt *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=fired_at,json=firedAt" json:"fired_at,omitempty"`
-	// Activity paired with TIMER_KIND_ACTIVITY_RETRY. Empty for sleep timers.
+	// Activity paired with TIMER_KIND_ACTIVITY_RETRY. Empty for sleep and poll
+	// timers.
 	// This reciprocal link lets replay reject two activities that accidentally
 	// reuse one caller-supplied retry_timer_id.
 	RetryActivityId string `protobuf:"bytes,11,opt,name=retry_activity_id,json=retryActivityId" json:"retry_activity_id,omitempty"`
@@ -2044,7 +2698,7 @@ type TimerRecord struct {
 
 func (x *TimerRecord) Reset() {
 	*x = TimerRecord{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[16]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2056,7 +2710,7 @@ func (x *TimerRecord) String() string {
 func (*TimerRecord) ProtoMessage() {}
 
 func (x *TimerRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[16]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2069,7 +2723,7 @@ func (x *TimerRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerRecord.ProtoReflect.Descriptor instead.
 func (*TimerRecord) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{16}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *TimerRecord) GetSchemaVersion() RecordSchemaVersion {
@@ -2091,13 +2745,6 @@ func (x *TimerRecord) GetTimerKind() TimerKind {
 		return x.TimerKind
 	}
 	return TimerKind_TIMER_KIND_UNSPECIFIED
-}
-
-func (x *TimerRecord) GetCodeVersion() string {
-	if x != nil {
-		return x.CodeVersion
-	}
-	return ""
 }
 
 func (x *TimerRecord) GetDuration() *durationpb.Duration {
@@ -2144,13 +2791,16 @@ func (x *TimerRecord) GetRetryActivityId() string {
 
 // EventRecord delivers an external signal payload to a waiting workflow.
 // Written by external services (webhook handlers, approval flows) via
-// `SendEvent` / `PutEvent`. Stored at `event/{event_id}.binpb`.
+// `DeliverEvent`. `PutEvent` is reserved for operators and migrations.
+// Stored at `event/{event_id}.binpb`.
 type EventRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
 	Key           *EventKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
-	// Application-typed payload packed as Any. The waiting workflow declares
-	// the expected message type via `WaitEvent`'s payload factory.
+	// Application-typed payload packed as Any. DeliverEvent helpers use
+	// deterministic protobuf bytes so byte-identical retries are idempotent.
+	// The waiting workflow declares the expected message type via `WaitEvent`'s
+	// payload factory.
 	Payload       *anypb.Any             `protobuf:"bytes,3,opt,name=payload" json:"payload,omitempty"`
 	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=received_at,json=receivedAt" json:"received_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2159,7 +2809,7 @@ type EventRecord struct {
 
 func (x *EventRecord) Reset() {
 	*x = EventRecord{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[17]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2171,7 +2821,7 @@ func (x *EventRecord) String() string {
 func (*EventRecord) ProtoMessage() {}
 
 func (x *EventRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[17]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2184,7 +2834,7 @@ func (x *EventRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventRecord.ProtoReflect.Descriptor instead.
 func (*EventRecord) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{17}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *EventRecord) GetSchemaVersion() RecordSchemaVersion {
@@ -2229,7 +2879,6 @@ type ClaimRecord struct {
 	ResourceType ClaimResourceType `protobuf:"varint,4,opt,name=resource_type,json=resourceType,enum=temporaless.v1.ClaimResourceType" json:"resource_type,omitempty"`
 	// Domain ID of the resource being claimed (activity_id, timer_id, etc.).
 	ResourceId     string                 `protobuf:"bytes,5,opt,name=resource_id,json=resourceId" json:"resource_id,omitempty"`
-	CodeVersion    string                 `protobuf:"bytes,6,opt,name=code_version,json=codeVersion" json:"code_version,omitempty"`
 	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=lease_expires_at,json=leaseExpiresAt" json:"lease_expires_at,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
 	// Updated by CAS-capable adapters to extend the lease. Create-only adapters
@@ -2241,7 +2890,7 @@ type ClaimRecord struct {
 
 func (x *ClaimRecord) Reset() {
 	*x = ClaimRecord{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[18]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2253,7 +2902,7 @@ func (x *ClaimRecord) String() string {
 func (*ClaimRecord) ProtoMessage() {}
 
 func (x *ClaimRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[18]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2266,7 +2915,7 @@ func (x *ClaimRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimRecord.ProtoReflect.Descriptor instead.
 func (*ClaimRecord) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{18}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ClaimRecord) GetSchemaVersion() RecordSchemaVersion {
@@ -2300,13 +2949,6 @@ func (x *ClaimRecord) GetResourceType() ClaimResourceType {
 func (x *ClaimRecord) GetResourceId() string {
 	if x != nil {
 		return x.ResourceId
-	}
-	return ""
-}
-
-func (x *ClaimRecord) GetCodeVersion() string {
-	if x != nil {
-		return x.CodeVersion
 	}
 	return ""
 }
@@ -2359,7 +3001,7 @@ type LatestWorkflowRunPointer struct {
 
 func (x *LatestWorkflowRunPointer) Reset() {
 	*x = LatestWorkflowRunPointer{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[19]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2371,7 +3013,7 @@ func (x *LatestWorkflowRunPointer) String() string {
 func (*LatestWorkflowRunPointer) ProtoMessage() {}
 
 func (x *LatestWorkflowRunPointer) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[19]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2384,7 +3026,7 @@ func (x *LatestWorkflowRunPointer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LatestWorkflowRunPointer.ProtoReflect.Descriptor instead.
 func (*LatestWorkflowRunPointer) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{19}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *LatestWorkflowRunPointer) GetKey() *WorkflowKey {
@@ -2440,7 +3082,7 @@ type DueTimerEntry struct {
 
 func (x *DueTimerEntry) Reset() {
 	*x = DueTimerEntry{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[20]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2452,7 +3094,7 @@ func (x *DueTimerEntry) String() string {
 func (*DueTimerEntry) ProtoMessage() {}
 
 func (x *DueTimerEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[20]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2465,7 +3107,7 @@ func (x *DueTimerEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimerEntry.ProtoReflect.Descriptor instead.
 func (*DueTimerEntry) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{20}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DueTimerEntry) GetKey() *TimerKey {
@@ -2505,7 +3147,7 @@ type GetWorkflowRequest struct {
 
 func (x *GetWorkflowRequest) Reset() {
 	*x = GetWorkflowRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[21]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2517,7 +3159,7 @@ func (x *GetWorkflowRequest) String() string {
 func (*GetWorkflowRequest) ProtoMessage() {}
 
 func (x *GetWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[21]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2530,7 +3172,7 @@ func (x *GetWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{21}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetWorkflowRequest) GetKey() *WorkflowKey {
@@ -2552,7 +3194,7 @@ type GetWorkflowResponse struct {
 
 func (x *GetWorkflowResponse) Reset() {
 	*x = GetWorkflowResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[22]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2564,7 +3206,7 @@ func (x *GetWorkflowResponse) String() string {
 func (*GetWorkflowResponse) ProtoMessage() {}
 
 func (x *GetWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[22]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2577,7 +3219,7 @@ func (x *GetWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{22}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetWorkflowResponse) GetFound() bool {
@@ -2603,7 +3245,7 @@ type PutWorkflowRequest struct {
 
 func (x *PutWorkflowRequest) Reset() {
 	*x = PutWorkflowRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[23]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2615,7 +3257,7 @@ func (x *PutWorkflowRequest) String() string {
 func (*PutWorkflowRequest) ProtoMessage() {}
 
 func (x *PutWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[23]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2628,7 +3270,7 @@ func (x *PutWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*PutWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{23}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PutWorkflowRequest) GetRecord() *WorkflowRecord {
@@ -2646,7 +3288,7 @@ type PutWorkflowResponse struct {
 
 func (x *PutWorkflowResponse) Reset() {
 	*x = PutWorkflowResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[24]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2658,7 +3300,7 @@ func (x *PutWorkflowResponse) String() string {
 func (*PutWorkflowResponse) ProtoMessage() {}
 
 func (x *PutWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[24]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2671,7 +3313,7 @@ func (x *PutWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*PutWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{24}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{29}
 }
 
 type GetLatestWorkflowRunRequest struct {
@@ -2684,7 +3326,7 @@ type GetLatestWorkflowRunRequest struct {
 
 func (x *GetLatestWorkflowRunRequest) Reset() {
 	*x = GetLatestWorkflowRunRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[25]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2696,7 +3338,7 @@ func (x *GetLatestWorkflowRunRequest) String() string {
 func (*GetLatestWorkflowRunRequest) ProtoMessage() {}
 
 func (x *GetLatestWorkflowRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[25]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2709,7 +3351,7 @@ func (x *GetLatestWorkflowRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestWorkflowRunRequest.ProtoReflect.Descriptor instead.
 func (*GetLatestWorkflowRunRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{25}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetLatestWorkflowRunRequest) GetNamespace() string {
@@ -2736,7 +3378,7 @@ type GetLatestWorkflowRunResponse struct {
 
 func (x *GetLatestWorkflowRunResponse) Reset() {
 	*x = GetLatestWorkflowRunResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[26]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2748,7 +3390,7 @@ func (x *GetLatestWorkflowRunResponse) String() string {
 func (*GetLatestWorkflowRunResponse) ProtoMessage() {}
 
 func (x *GetLatestWorkflowRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[26]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2761,7 +3403,7 @@ func (x *GetLatestWorkflowRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestWorkflowRunResponse.ProtoReflect.Descriptor instead.
 func (*GetLatestWorkflowRunResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{26}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetLatestWorkflowRunResponse) GetFound() bool {
@@ -2787,7 +3429,7 @@ type GetTimerRequest struct {
 
 func (x *GetTimerRequest) Reset() {
 	*x = GetTimerRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[27]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2799,7 +3441,7 @@ func (x *GetTimerRequest) String() string {
 func (*GetTimerRequest) ProtoMessage() {}
 
 func (x *GetTimerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[27]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2812,7 +3454,7 @@ func (x *GetTimerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimerRequest.ProtoReflect.Descriptor instead.
 func (*GetTimerRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{27}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetTimerRequest) GetKey() *TimerKey {
@@ -2832,7 +3474,7 @@ type GetTimerResponse struct {
 
 func (x *GetTimerResponse) Reset() {
 	*x = GetTimerResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[28]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2844,7 +3486,7 @@ func (x *GetTimerResponse) String() string {
 func (*GetTimerResponse) ProtoMessage() {}
 
 func (x *GetTimerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[28]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2857,7 +3499,7 @@ func (x *GetTimerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimerResponse.ProtoReflect.Descriptor instead.
 func (*GetTimerResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{28}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *GetTimerResponse) GetFound() bool {
@@ -2883,7 +3525,7 @@ type PutTimerRequest struct {
 
 func (x *PutTimerRequest) Reset() {
 	*x = PutTimerRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[29]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2895,7 +3537,7 @@ func (x *PutTimerRequest) String() string {
 func (*PutTimerRequest) ProtoMessage() {}
 
 func (x *PutTimerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[29]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2908,7 +3550,7 @@ func (x *PutTimerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutTimerRequest.ProtoReflect.Descriptor instead.
 func (*PutTimerRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{29}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PutTimerRequest) GetRecord() *TimerRecord {
@@ -2926,7 +3568,7 @@ type PutTimerResponse struct {
 
 func (x *PutTimerResponse) Reset() {
 	*x = PutTimerResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[30]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2938,7 +3580,7 @@ func (x *PutTimerResponse) String() string {
 func (*PutTimerResponse) ProtoMessage() {}
 
 func (x *PutTimerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[30]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2951,7 +3593,7 @@ func (x *PutTimerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutTimerResponse.ProtoReflect.Descriptor instead.
 func (*PutTimerResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{30}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{35}
 }
 
 type GetActivityRequest struct {
@@ -2963,7 +3605,7 @@ type GetActivityRequest struct {
 
 func (x *GetActivityRequest) Reset() {
 	*x = GetActivityRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[31]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2975,7 +3617,7 @@ func (x *GetActivityRequest) String() string {
 func (*GetActivityRequest) ProtoMessage() {}
 
 func (x *GetActivityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[31]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2988,7 +3630,7 @@ func (x *GetActivityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetActivityRequest.ProtoReflect.Descriptor instead.
 func (*GetActivityRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{31}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetActivityRequest) GetKey() *ActivityKey {
@@ -3008,7 +3650,7 @@ type GetActivityResponse struct {
 
 func (x *GetActivityResponse) Reset() {
 	*x = GetActivityResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[32]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3020,7 +3662,7 @@ func (x *GetActivityResponse) String() string {
 func (*GetActivityResponse) ProtoMessage() {}
 
 func (x *GetActivityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[32]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3033,7 +3675,7 @@ func (x *GetActivityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetActivityResponse.ProtoReflect.Descriptor instead.
 func (*GetActivityResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{32}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetActivityResponse) GetFound() bool {
@@ -3059,7 +3701,7 @@ type PutActivityRequest struct {
 
 func (x *PutActivityRequest) Reset() {
 	*x = PutActivityRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[33]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3071,7 +3713,7 @@ func (x *PutActivityRequest) String() string {
 func (*PutActivityRequest) ProtoMessage() {}
 
 func (x *PutActivityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[33]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3084,7 +3726,7 @@ func (x *PutActivityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutActivityRequest.ProtoReflect.Descriptor instead.
 func (*PutActivityRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{33}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PutActivityRequest) GetRecord() *ActivityRecord {
@@ -3102,7 +3744,7 @@ type PutActivityResponse struct {
 
 func (x *PutActivityResponse) Reset() {
 	*x = PutActivityResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[34]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3114,7 +3756,7 @@ func (x *PutActivityResponse) String() string {
 func (*PutActivityResponse) ProtoMessage() {}
 
 func (x *PutActivityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[34]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3127,7 +3769,7 @@ func (x *PutActivityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutActivityResponse.ProtoReflect.Descriptor instead.
 func (*PutActivityResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{34}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{39}
 }
 
 type GetEventRequest struct {
@@ -3139,7 +3781,7 @@ type GetEventRequest struct {
 
 func (x *GetEventRequest) Reset() {
 	*x = GetEventRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[35]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3151,7 +3793,7 @@ func (x *GetEventRequest) String() string {
 func (*GetEventRequest) ProtoMessage() {}
 
 func (x *GetEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[35]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3164,7 +3806,7 @@ func (x *GetEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventRequest.ProtoReflect.Descriptor instead.
 func (*GetEventRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{35}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *GetEventRequest) GetKey() *EventKey {
@@ -3184,7 +3826,7 @@ type GetEventResponse struct {
 
 func (x *GetEventResponse) Reset() {
 	*x = GetEventResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[36]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3196,7 +3838,7 @@ func (x *GetEventResponse) String() string {
 func (*GetEventResponse) ProtoMessage() {}
 
 func (x *GetEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[36]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3209,7 +3851,7 @@ func (x *GetEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventResponse.ProtoReflect.Descriptor instead.
 func (*GetEventResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{36}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetEventResponse) GetFound() bool {
@@ -3235,7 +3877,7 @@ type PutEventRequest struct {
 
 func (x *PutEventRequest) Reset() {
 	*x = PutEventRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[37]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3889,7 @@ func (x *PutEventRequest) String() string {
 func (*PutEventRequest) ProtoMessage() {}
 
 func (x *PutEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[37]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3902,7 @@ func (x *PutEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEventRequest.ProtoReflect.Descriptor instead.
 func (*PutEventRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{37}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PutEventRequest) GetRecord() *EventRecord {
@@ -3278,7 +3920,7 @@ type PutEventResponse struct {
 
 func (x *PutEventResponse) Reset() {
 	*x = PutEventResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[38]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3290,7 +3932,7 @@ func (x *PutEventResponse) String() string {
 func (*PutEventResponse) ProtoMessage() {}
 
 func (x *PutEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[38]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3303,7 +3945,97 @@ func (x *PutEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutEventResponse.ProtoReflect.Descriptor instead.
 func (*PutEventResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{38}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{43}
+}
+
+// DeliverEventRequest atomically establishes the first payload for an event.
+// Unlike PutEvent, this operation never replaces an existing payload.
+type DeliverEventRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Record        *EventRecord           `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliverEventRequest) Reset() {
+	*x = DeliverEventRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverEventRequest) ProtoMessage() {}
+
+func (x *DeliverEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverEventRequest.ProtoReflect.Descriptor instead.
+func (*DeliverEventRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *DeliverEventRequest) GetRecord() *EventRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+type DeliverEventResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Disposition   EventDeliveryDisposition `protobuf:"varint,1,opt,name=disposition,enum=temporaless.v1.EventDeliveryDisposition" json:"disposition,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliverEventResponse) Reset() {
+	*x = DeliverEventResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverEventResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverEventResponse) ProtoMessage() {}
+
+func (x *DeliverEventResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverEventResponse.ProtoReflect.Descriptor instead.
+func (*DeliverEventResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *DeliverEventResponse) GetDisposition() EventDeliveryDisposition {
+	if x != nil {
+		return x.Disposition
+	}
+	return EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED
 }
 
 // ListWorkflowsRequest filters by namespace, workflow_id, and status.
@@ -3329,7 +4061,7 @@ type ListWorkflowsRequest struct {
 
 func (x *ListWorkflowsRequest) Reset() {
 	*x = ListWorkflowsRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[39]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3341,7 +4073,7 @@ func (x *ListWorkflowsRequest) String() string {
 func (*ListWorkflowsRequest) ProtoMessage() {}
 
 func (x *ListWorkflowsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[39]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3354,7 +4086,7 @@ func (x *ListWorkflowsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowsRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkflowsRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{39}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListWorkflowsRequest) GetNamespace() string {
@@ -3409,7 +4141,7 @@ type ListWorkflowsResponse struct {
 
 func (x *ListWorkflowsResponse) Reset() {
 	*x = ListWorkflowsResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[40]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3421,7 +4153,7 @@ func (x *ListWorkflowsResponse) String() string {
 func (*ListWorkflowsResponse) ProtoMessage() {}
 
 func (x *ListWorkflowsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[40]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3434,7 +4166,7 @@ func (x *ListWorkflowsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowsResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkflowsResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{40}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListWorkflowsResponse) GetRecords() []*WorkflowRecord {
@@ -3461,7 +4193,7 @@ type ListActivitiesRequest struct {
 
 func (x *ListActivitiesRequest) Reset() {
 	*x = ListActivitiesRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[41]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3473,7 +4205,7 @@ func (x *ListActivitiesRequest) String() string {
 func (*ListActivitiesRequest) ProtoMessage() {}
 
 func (x *ListActivitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[41]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3486,7 +4218,7 @@ func (x *ListActivitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListActivitiesRequest.ProtoReflect.Descriptor instead.
 func (*ListActivitiesRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{41}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ListActivitiesRequest) GetKey() *WorkflowKey {
@@ -3505,7 +4237,7 @@ type ListActivitiesResponse struct {
 
 func (x *ListActivitiesResponse) Reset() {
 	*x = ListActivitiesResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[42]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3517,7 +4249,7 @@ func (x *ListActivitiesResponse) String() string {
 func (*ListActivitiesResponse) ProtoMessage() {}
 
 func (x *ListActivitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[42]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3530,7 +4262,7 @@ func (x *ListActivitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListActivitiesResponse.ProtoReflect.Descriptor instead.
 func (*ListActivitiesResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{42}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ListActivitiesResponse) GetRecords() []*ActivityRecord {
@@ -3553,7 +4285,7 @@ type ListTimersRequest struct {
 
 func (x *ListTimersRequest) Reset() {
 	*x = ListTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[43]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3565,7 +4297,7 @@ func (x *ListTimersRequest) String() string {
 func (*ListTimersRequest) ProtoMessage() {}
 
 func (x *ListTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[43]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3578,7 +4310,7 @@ func (x *ListTimersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTimersRequest.ProtoReflect.Descriptor instead.
 func (*ListTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{43}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ListTimersRequest) GetKey() *WorkflowKey {
@@ -3604,7 +4336,7 @@ type ListTimersResponse struct {
 
 func (x *ListTimersResponse) Reset() {
 	*x = ListTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[44]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3616,7 +4348,7 @@ func (x *ListTimersResponse) String() string {
 func (*ListTimersResponse) ProtoMessage() {}
 
 func (x *ListTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[44]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3629,7 +4361,7 @@ func (x *ListTimersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTimersResponse.ProtoReflect.Descriptor instead.
 func (*ListTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{44}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ListTimersResponse) GetRecords() []*TimerRecord {
@@ -3649,7 +4381,7 @@ type ListEventsRequest struct {
 
 func (x *ListEventsRequest) Reset() {
 	*x = ListEventsRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[45]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3661,7 +4393,7 @@ func (x *ListEventsRequest) String() string {
 func (*ListEventsRequest) ProtoMessage() {}
 
 func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[45]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3674,7 +4406,7 @@ func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListEventsRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{45}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ListEventsRequest) GetKey() *WorkflowKey {
@@ -3693,7 +4425,7 @@ type ListEventsResponse struct {
 
 func (x *ListEventsResponse) Reset() {
 	*x = ListEventsResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[46]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3705,7 +4437,7 @@ func (x *ListEventsResponse) String() string {
 func (*ListEventsResponse) ProtoMessage() {}
 
 func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[46]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3718,7 +4450,7 @@ func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListEventsResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{46}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ListEventsResponse) GetRecords() []*EventRecord {
@@ -3740,7 +4472,7 @@ type ListClaimsRequest struct {
 
 func (x *ListClaimsRequest) Reset() {
 	*x = ListClaimsRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[47]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3752,7 +4484,7 @@ func (x *ListClaimsRequest) String() string {
 func (*ListClaimsRequest) ProtoMessage() {}
 
 func (x *ListClaimsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[47]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3765,7 +4497,7 @@ func (x *ListClaimsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClaimsRequest.ProtoReflect.Descriptor instead.
 func (*ListClaimsRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{47}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ListClaimsRequest) GetKey() *WorkflowKey {
@@ -3784,7 +4516,7 @@ type ListClaimsResponse struct {
 
 func (x *ListClaimsResponse) Reset() {
 	*x = ListClaimsResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[48]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3796,7 +4528,7 @@ func (x *ListClaimsResponse) String() string {
 func (*ListClaimsResponse) ProtoMessage() {}
 
 func (x *ListClaimsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[48]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3809,7 +4541,7 @@ func (x *ListClaimsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClaimsResponse.ProtoReflect.Descriptor instead.
 func (*ListClaimsResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{48}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ListClaimsResponse) GetRecords() []*ClaimRecord {
@@ -3834,7 +4566,7 @@ type RecordQueryServiceListActivitiesRequest struct {
 
 func (x *RecordQueryServiceListActivitiesRequest) Reset() {
 	*x = RecordQueryServiceListActivitiesRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[49]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3846,7 +4578,7 @@ func (x *RecordQueryServiceListActivitiesRequest) String() string {
 func (*RecordQueryServiceListActivitiesRequest) ProtoMessage() {}
 
 func (x *RecordQueryServiceListActivitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[49]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3859,7 +4591,7 @@ func (x *RecordQueryServiceListActivitiesRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use RecordQueryServiceListActivitiesRequest.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceListActivitiesRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{49}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RecordQueryServiceListActivitiesRequest) GetNamespace() string {
@@ -3921,7 +4653,7 @@ type RecordQueryServiceListActivitiesResponse struct {
 
 func (x *RecordQueryServiceListActivitiesResponse) Reset() {
 	*x = RecordQueryServiceListActivitiesResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[50]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3933,7 +4665,7 @@ func (x *RecordQueryServiceListActivitiesResponse) String() string {
 func (*RecordQueryServiceListActivitiesResponse) ProtoMessage() {}
 
 func (x *RecordQueryServiceListActivitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[50]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3946,7 +4678,7 @@ func (x *RecordQueryServiceListActivitiesResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use RecordQueryServiceListActivitiesResponse.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceListActivitiesResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{50}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *RecordQueryServiceListActivitiesResponse) GetRecords() []*ActivityRecord {
@@ -3976,7 +4708,7 @@ type DeleteWorkflowRequest struct {
 
 func (x *DeleteWorkflowRequest) Reset() {
 	*x = DeleteWorkflowRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3988,7 +4720,7 @@ func (x *DeleteWorkflowRequest) String() string {
 func (*DeleteWorkflowRequest) ProtoMessage() {}
 
 func (x *DeleteWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[51]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4001,7 +4733,7 @@ func (x *DeleteWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{51}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *DeleteWorkflowRequest) GetKey() *WorkflowKey {
@@ -4022,7 +4754,7 @@ type DeleteWorkflowResponse struct {
 
 func (x *DeleteWorkflowResponse) Reset() {
 	*x = DeleteWorkflowResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4034,7 +4766,7 @@ func (x *DeleteWorkflowResponse) String() string {
 func (*DeleteWorkflowResponse) ProtoMessage() {}
 
 func (x *DeleteWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[52]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4047,7 +4779,7 @@ func (x *DeleteWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*DeleteWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{52}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *DeleteWorkflowResponse) GetDeleted() bool {
@@ -4073,7 +4805,7 @@ type DeleteRunRequest struct {
 
 func (x *DeleteRunRequest) Reset() {
 	*x = DeleteRunRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4085,7 +4817,7 @@ func (x *DeleteRunRequest) String() string {
 func (*DeleteRunRequest) ProtoMessage() {}
 
 func (x *DeleteRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[53]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4098,7 +4830,7 @@ func (x *DeleteRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRunRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRunRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{53}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *DeleteRunRequest) GetKey() *WorkflowKey {
@@ -4117,7 +4849,7 @@ type DeleteRunResponse struct {
 
 func (x *DeleteRunResponse) Reset() {
 	*x = DeleteRunResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4129,7 +4861,7 @@ func (x *DeleteRunResponse) String() string {
 func (*DeleteRunResponse) ProtoMessage() {}
 
 func (x *DeleteRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[54]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4142,7 +4874,7 @@ func (x *DeleteRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRunResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRunResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{54}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *DeleteRunResponse) GetDeleted() uint32 {
@@ -4161,7 +4893,7 @@ type DeleteActivityRequest struct {
 
 func (x *DeleteActivityRequest) Reset() {
 	*x = DeleteActivityRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4173,7 +4905,7 @@ func (x *DeleteActivityRequest) String() string {
 func (*DeleteActivityRequest) ProtoMessage() {}
 
 func (x *DeleteActivityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[55]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4186,7 +4918,7 @@ func (x *DeleteActivityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteActivityRequest.ProtoReflect.Descriptor instead.
 func (*DeleteActivityRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{55}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *DeleteActivityRequest) GetKey() *ActivityKey {
@@ -4205,7 +4937,7 @@ type DeleteActivityResponse struct {
 
 func (x *DeleteActivityResponse) Reset() {
 	*x = DeleteActivityResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4217,7 +4949,7 @@ func (x *DeleteActivityResponse) String() string {
 func (*DeleteActivityResponse) ProtoMessage() {}
 
 func (x *DeleteActivityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[56]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4230,7 +4962,7 @@ func (x *DeleteActivityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteActivityResponse.ProtoReflect.Descriptor instead.
 func (*DeleteActivityResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{56}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *DeleteActivityResponse) GetDeleted() bool {
@@ -4249,7 +4981,7 @@ type DeleteTimerRequest struct {
 
 func (x *DeleteTimerRequest) Reset() {
 	*x = DeleteTimerRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4261,7 +4993,7 @@ func (x *DeleteTimerRequest) String() string {
 func (*DeleteTimerRequest) ProtoMessage() {}
 
 func (x *DeleteTimerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[57]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4274,7 +5006,7 @@ func (x *DeleteTimerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTimerRequest.ProtoReflect.Descriptor instead.
 func (*DeleteTimerRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{57}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *DeleteTimerRequest) GetKey() *TimerKey {
@@ -4293,7 +5025,7 @@ type DeleteTimerResponse struct {
 
 func (x *DeleteTimerResponse) Reset() {
 	*x = DeleteTimerResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4305,7 +5037,7 @@ func (x *DeleteTimerResponse) String() string {
 func (*DeleteTimerResponse) ProtoMessage() {}
 
 func (x *DeleteTimerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[58]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4318,7 +5050,7 @@ func (x *DeleteTimerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTimerResponse.ProtoReflect.Descriptor instead.
 func (*DeleteTimerResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{58}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *DeleteTimerResponse) GetDeleted() bool {
@@ -4337,7 +5069,7 @@ type DeleteEventRequest struct {
 
 func (x *DeleteEventRequest) Reset() {
 	*x = DeleteEventRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4349,7 +5081,7 @@ func (x *DeleteEventRequest) String() string {
 func (*DeleteEventRequest) ProtoMessage() {}
 
 func (x *DeleteEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[59]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4362,7 +5094,7 @@ func (x *DeleteEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEventRequest.ProtoReflect.Descriptor instead.
 func (*DeleteEventRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{59}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *DeleteEventRequest) GetKey() *EventKey {
@@ -4381,7 +5113,7 @@ type DeleteEventResponse struct {
 
 func (x *DeleteEventResponse) Reset() {
 	*x = DeleteEventResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[60]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4393,7 +5125,7 @@ func (x *DeleteEventResponse) String() string {
 func (*DeleteEventResponse) ProtoMessage() {}
 
 func (x *DeleteEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[60]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4406,7 +5138,7 @@ func (x *DeleteEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEventResponse.ProtoReflect.Descriptor instead.
 func (*DeleteEventResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{60}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *DeleteEventResponse) GetDeleted() bool {
@@ -4425,7 +5157,7 @@ type GetClaimRequest struct {
 
 func (x *GetClaimRequest) Reset() {
 	*x = GetClaimRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[61]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4437,7 +5169,7 @@ func (x *GetClaimRequest) String() string {
 func (*GetClaimRequest) ProtoMessage() {}
 
 func (x *GetClaimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[61]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4450,7 +5182,7 @@ func (x *GetClaimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClaimRequest.ProtoReflect.Descriptor instead.
 func (*GetClaimRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{61}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *GetClaimRequest) GetKey() *ClaimKey {
@@ -4470,7 +5202,7 @@ type GetClaimResponse struct {
 
 func (x *GetClaimResponse) Reset() {
 	*x = GetClaimResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[62]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4482,7 +5214,7 @@ func (x *GetClaimResponse) String() string {
 func (*GetClaimResponse) ProtoMessage() {}
 
 func (x *GetClaimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[62]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4495,7 +5227,7 @@ func (x *GetClaimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetClaimResponse.ProtoReflect.Descriptor instead.
 func (*GetClaimResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{62}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *GetClaimResponse) GetFound() bool {
@@ -4524,7 +5256,7 @@ type TryCreateClaimRequest struct {
 
 func (x *TryCreateClaimRequest) Reset() {
 	*x = TryCreateClaimRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[63]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4536,7 +5268,7 @@ func (x *TryCreateClaimRequest) String() string {
 func (*TryCreateClaimRequest) ProtoMessage() {}
 
 func (x *TryCreateClaimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[63]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4549,7 +5281,7 @@ func (x *TryCreateClaimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TryCreateClaimRequest.ProtoReflect.Descriptor instead.
 func (*TryCreateClaimRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{63}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *TryCreateClaimRequest) GetRecord() *ClaimRecord {
@@ -4569,7 +5301,7 @@ type TryCreateClaimResponse struct {
 
 func (x *TryCreateClaimResponse) Reset() {
 	*x = TryCreateClaimResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[64]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4581,7 +5313,7 @@ func (x *TryCreateClaimResponse) String() string {
 func (*TryCreateClaimResponse) ProtoMessage() {}
 
 func (x *TryCreateClaimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[64]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4594,7 +5326,7 @@ func (x *TryCreateClaimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TryCreateClaimResponse.ProtoReflect.Descriptor instead.
 func (*TryCreateClaimResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{64}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *TryCreateClaimResponse) GetCreated() bool {
@@ -4615,7 +5347,7 @@ type DeleteClaimRequest struct {
 
 func (x *DeleteClaimRequest) Reset() {
 	*x = DeleteClaimRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[65]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4627,7 +5359,7 @@ func (x *DeleteClaimRequest) String() string {
 func (*DeleteClaimRequest) ProtoMessage() {}
 
 func (x *DeleteClaimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[65]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4640,7 +5372,7 @@ func (x *DeleteClaimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteClaimRequest.ProtoReflect.Descriptor instead.
 func (*DeleteClaimRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{65}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *DeleteClaimRequest) GetKey() *ClaimKey {
@@ -4659,7 +5391,7 @@ type DeleteClaimResponse struct {
 
 func (x *DeleteClaimResponse) Reset() {
 	*x = DeleteClaimResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[66]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4671,7 +5403,7 @@ func (x *DeleteClaimResponse) String() string {
 func (*DeleteClaimResponse) ProtoMessage() {}
 
 func (x *DeleteClaimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[66]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4684,7 +5416,7 @@ func (x *DeleteClaimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteClaimResponse.ProtoReflect.Descriptor instead.
 func (*DeleteClaimResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{66}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *DeleteClaimResponse) GetDeleted() bool {
@@ -4702,7 +5434,7 @@ type GetStoreCapabilitiesRequest struct {
 
 func (x *GetStoreCapabilitiesRequest) Reset() {
 	*x = GetStoreCapabilitiesRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[67]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4714,7 +5446,7 @@ func (x *GetStoreCapabilitiesRequest) String() string {
 func (*GetStoreCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetStoreCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[67]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4727,7 +5459,7 @@ func (x *GetStoreCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStoreCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetStoreCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{67}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{74}
 }
 
 type GetStoreCapabilitiesResponse struct {
@@ -4737,13 +5469,15 @@ type GetStoreCapabilitiesResponse struct {
 	// workflows that omit those options retain at-least-once semantics and use
 	// external idempotency keys for side effects.
 	ClaimCapability ClaimCapability `protobuf:"varint,1,opt,name=claim_capability,json=claimCapability,enum=temporaless.v1.ClaimCapability" json:"claim_capability,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Whether DeliverEvent has distributed atomic create-if-absent semantics.
+	EventDeliveryCapability EventDeliveryCapability `protobuf:"varint,2,opt,name=event_delivery_capability,json=eventDeliveryCapability,enum=temporaless.v1.EventDeliveryCapability" json:"event_delivery_capability,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *GetStoreCapabilitiesResponse) Reset() {
 	*x = GetStoreCapabilitiesResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[68]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4755,7 +5489,7 @@ func (x *GetStoreCapabilitiesResponse) String() string {
 func (*GetStoreCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetStoreCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[68]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4768,7 +5502,7 @@ func (x *GetStoreCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStoreCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetStoreCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{68}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *GetStoreCapabilitiesResponse) GetClaimCapability() ClaimCapability {
@@ -4776,6 +5510,13 @@ func (x *GetStoreCapabilitiesResponse) GetClaimCapability() ClaimCapability {
 		return x.ClaimCapability
 	}
 	return ClaimCapability_CLAIM_CAPABILITY_UNSPECIFIED
+}
+
+func (x *GetStoreCapabilitiesResponse) GetEventDeliveryCapability() EventDeliveryCapability {
+	if x != nil {
+		return x.EventDeliveryCapability
+	}
+	return EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED
 }
 
 // SweepRequest deletes every externally quiesced COMPLETED workflow run whose
@@ -4801,7 +5542,7 @@ type SweepRequest struct {
 
 func (x *SweepRequest) Reset() {
 	*x = SweepRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[69]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4813,7 +5554,7 @@ func (x *SweepRequest) String() string {
 func (*SweepRequest) ProtoMessage() {}
 
 func (x *SweepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[69]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4826,7 +5567,7 @@ func (x *SweepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepRequest.ProtoReflect.Descriptor instead.
 func (*SweepRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{69}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *SweepRequest) GetNamespace() string {
@@ -4860,7 +5601,7 @@ type SweepResponse struct {
 
 func (x *SweepResponse) Reset() {
 	*x = SweepResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[70]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4872,7 +5613,7 @@ func (x *SweepResponse) String() string {
 func (*SweepResponse) ProtoMessage() {}
 
 func (x *SweepResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[70]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4885,7 +5626,7 @@ func (x *SweepResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepResponse.ProtoReflect.Descriptor instead.
 func (*SweepResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{70}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *SweepResponse) GetDeleted() uint32 {
@@ -4910,7 +5651,7 @@ type DueTimer struct {
 
 func (x *DueTimer) Reset() {
 	*x = DueTimer{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[71]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4922,7 +5663,7 @@ func (x *DueTimer) String() string {
 func (*DueTimer) ProtoMessage() {}
 
 func (x *DueTimer) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[71]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4935,7 +5676,7 @@ func (x *DueTimer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimer.ProtoReflect.Descriptor instead.
 func (*DueTimer) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{71}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *DueTimer) GetKey() *TimerKey {
@@ -4975,7 +5716,7 @@ type DueTimersRequest struct {
 
 func (x *DueTimersRequest) Reset() {
 	*x = DueTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[72]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4987,7 +5728,7 @@ func (x *DueTimersRequest) String() string {
 func (*DueTimersRequest) ProtoMessage() {}
 
 func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[72]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5000,7 +5741,7 @@ func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersRequest.ProtoReflect.Descriptor instead.
 func (*DueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{72}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *DueTimersRequest) GetNamespace() string {
@@ -5026,7 +5767,7 @@ type DueTimersResponse struct {
 
 func (x *DueTimersResponse) Reset() {
 	*x = DueTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[73]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5038,7 +5779,7 @@ func (x *DueTimersResponse) String() string {
 func (*DueTimersResponse) ProtoMessage() {}
 
 func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[73]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5051,7 +5792,7 @@ func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersResponse.ProtoReflect.Descriptor instead.
 func (*DueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{73}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *DueTimersResponse) GetDue() []*DueTimer {
@@ -5071,7 +5812,7 @@ type RecordQueryServiceDueTimersRequest struct {
 
 func (x *RecordQueryServiceDueTimersRequest) Reset() {
 	*x = RecordQueryServiceDueTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[74]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5083,7 +5824,7 @@ func (x *RecordQueryServiceDueTimersRequest) String() string {
 func (*RecordQueryServiceDueTimersRequest) ProtoMessage() {}
 
 func (x *RecordQueryServiceDueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[74]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5096,7 +5837,7 @@ func (x *RecordQueryServiceDueTimersRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RecordQueryServiceDueTimersRequest.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceDueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{74}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *RecordQueryServiceDueTimersRequest) GetNamespace() string {
@@ -5122,7 +5863,7 @@ type RecordQueryServiceDueTimersResponse struct {
 
 func (x *RecordQueryServiceDueTimersResponse) Reset() {
 	*x = RecordQueryServiceDueTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[75]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5134,7 +5875,7 @@ func (x *RecordQueryServiceDueTimersResponse) String() string {
 func (*RecordQueryServiceDueTimersResponse) ProtoMessage() {}
 
 func (x *RecordQueryServiceDueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[75]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5147,7 +5888,7 @@ func (x *RecordQueryServiceDueTimersResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RecordQueryServiceDueTimersResponse.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceDueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{75}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *RecordQueryServiceDueTimersResponse) GetDue() []*DueTimer {
@@ -5161,15 +5902,14 @@ var File_temporaless_v1_temporaless_proto protoreflect.FileDescriptor
 
 const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
-	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xea\v\n" +
+	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\v\n" +
 	"\x0fWorkflowOptions\x12\xb0\x02\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x8e\x02\xbaH\x8a\x02\xba\x01u\n" +
 	"5temporaless.workflow_options.workflow_id.not_dot_path\x12\x1fworkflow_id must not be . or ..\x1a\x1bthis != '.' && this != '..'\xba\x01v\n" +
 	":temporaless.workflow_options.workflow_id.not_system_prefix\x12!workflow_id must not start with _\x1a\x15!this.startsWith('_')r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\n" +
 	"workflowId\x12\xa3\x01\n" +
 	"\x06run_id\x18\x02 \x01(\tB\x8b\x01\xbaH\x87\x01\xba\x01k\n" +
-	"0temporaless.workflow_options.run_id.not_dot_path\x12\x1arun_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x05runId\x12!\n" +
-	"\fcode_version\x18\x03 \x01(\tR\vcodeVersion\x12\xd4\x01\n" +
+	"0temporaless.workflow_options.run_id.not_dot_path\x12\x1arun_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x05runId\x12\xd4\x01\n" +
 	"\x0eclaim_owner_id\x18\x04 \x01(\tB\xad\x01\xbaH\xa9\x01\xba\x01\x8b\x01\n" +
 	"8temporaless.workflow_options.claim_owner_id.not_dot_path\x12\"claim_owner_id must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\fclaimOwnerId\x12\xd9\x01\n" +
 	"\x0fconcurrency_key\x18\x05 \x01(\tB\xaf\x01\xbaH\xab\x01\xba\x01\x8d\x01\n" +
@@ -5177,7 +5917,7 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x11concurrency_limit\x18\x06 \x01(\rR\x10concurrencyLimit\x12@\n" +
 	"\x0erun_order_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\frunOrderTime:\xb8\x03\xbaH\xb4\x03\x1a\xfe\x01\n" +
 	"9temporaless.workflow_options.concurrency_key_limit_paired\x12Dconcurrency_key and concurrency_limit must both be set or both empty\x1a{(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)\x1a\xb0\x01\n" +
-	"=temporaless.workflow_options.concurrency_requires_claim_owner\x126claim_owner_id must be set when concurrency_key is set\x1a7this.concurrency_key == '' || this.claim_owner_id != ''\"\xba\x06\n" +
+	"=temporaless.workflow_options.concurrency_requires_claim_owner\x126claim_owner_id must be set when concurrency_key is set\x1a7this.concurrency_key == '' || this.claim_owner_id != ''J\x04\b\x03\x10\x04R\fcode_version\"\xba\x06\n" +
 	"\x0fActivityOptions\x12\xa9\x01\n" +
 	"\vactivity_id\x18\x01 \x01(\tB\x87\x01\xbaH\x83\x01\xba\x01g\n" +
 	"'temporaless.id.activity_id.not_dot_path\x12\x1factivity_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\n" +
@@ -5185,11 +5925,47 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\fretry_policy\x18\x02 \x01(\v2\x1b.temporaless.v1.RetryPolicyR\vretryPolicy\x12\xd4\x01\n" +
 	"\x0eretry_timer_id\x18\x03 \x01(\tB\xad\x01\xbaH\xa9\x01\xba\x01\x8b\x01\n" +
 	"8temporaless.activity_options.retry_timer_id.not_dot_path\x12\"retry_timer_id must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\fretryTimerId:\xe3\x02\xbaH\xdf\x02\x1a\xdc\x02\n" +
-	"<temporaless.activity_options.durable_retry_timer_id_required\x12Dretry_timer_id is required when retry_policy enables durable backoff\x1a\xd5\x01!has(this.retry_policy) || this.retry_policy.maximum_attempts <= 1 || !has(this.retry_policy.durable_backoff_threshold) || this.retry_policy.durable_backoff_threshold <= duration('0s') || this.retry_timer_id != ''\"\xaa\x01\n" +
+	"<temporaless.activity_options.durable_retry_timer_id_required\x12Dretry_timer_id is required when retry_policy enables durable backoff\x1a\xd5\x01!has(this.retry_policy) || this.retry_policy.maximum_attempts <= 1 || !has(this.retry_policy.durable_backoff_threshold) || this.retry_policy.durable_backoff_threshold <= duration('0s') || this.retry_timer_id != ''\"\xfb\x01\n" +
+	"\vPollOptions\x12\xa7\x01\n" +
+	"\btimer_id\x18\x01 \x01(\tB\x8b\x01\xbaH\x87\x01\xba\x01k\n" +
+	".temporaless.poll_options.timer_id.not_dot_path\x12\x1ctimer_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\atimerId\x12B\n" +
+	"\binterval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\v\xbaH\b\xc8\x01\x01\xaa\x01\x02*\x00R\binterval\"\xaa\x01\n" +
 	"\x0fDispatchOptions\x12>\n" +
 	"\rdrain_timeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\fdrainTimeout\x12!\n" +
 	"\fmax_inflight\x18\x02 \x01(\rR\vmaxInflight\x124\n" +
-	"\btask_ttl\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\ataskTtl\"\xb5\x02\n" +
+	"\btask_ttl\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\ataskTtl\"\xe5\x03\n" +
+	"\fWorkflowPlan\x12\xa4\x01\n" +
+	"\aplan_id\x18\x01 \x01(\tB\x8a\x01\xbaH\x86\x01\xba\x01j\n" +
+	".temporaless.workflow_plan.plan_id.not_dot_path\x12\x1bplan_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x06planId\x12#\n" +
+	"\brevision\x18\x02 \x01(\x04B\a\xbaH\x042\x02 \x00R\brevision\x12@\n" +
+	"\x05nodes\x18\x03 \x03(\v2 .temporaless.v1.WorkflowPlanNodeB\b\xbaH\x05\x92\x01\x02\b\x01R\x05nodes\x126\n" +
+	"\x05edges\x18\x04 \x03(\v2 .temporaless.v1.WorkflowPlanEdgeR\x05edges\x12O\n" +
+	"\vannotations\x18\x05 \x03(\v2-.temporaless.v1.WorkflowPlan.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\x10AnnotationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x05\n" +
+	"\x10WorkflowPlanNode\x12\xa9\x01\n" +
+	"\anode_id\x18\x01 \x01(\tB\x8f\x01\xbaH\x8b\x01\xba\x01o\n" +
+	"3temporaless.workflow_plan_node.node_id.not_dot_path\x12\x1bnode_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x06nodeId\x12*\n" +
+	"\fdisplay_name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\vdisplayName\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12D\n" +
+	"\x04kind\x18\x04 \x01(\x0e2$.temporaless.v1.WorkflowPlanNodeKindB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x1c\n" +
+	"\toperation\x18\x05 \x01(\tR\toperation\x12`\n" +
+	"\frequest_type\x18\x06 \x01(\tB=\xbaH:r826^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\vrequestType\x12b\n" +
+	"\rresponse_type\x18\a \x01(\tB=\xbaH:r826^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\fresponseType\x12S\n" +
+	"\vannotations\x18\b \x03(\v21.temporaless.v1.WorkflowPlanNode.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\x10AnnotationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfc\x03\n" +
+	"\x10WorkflowPlanEdge\x12\xc4\x01\n" +
+	"\x0esource_node_id\x18\x01 \x01(\tB\x9d\x01\xbaH\x99\x01\xba\x01}\n" +
+	":temporaless.workflow_plan_edge.source_node_id.not_dot_path\x12\"source_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\fsourceNodeId\x12\xc4\x01\n" +
+	"\x0etarget_node_id\x18\x02 \x01(\tB\x9d\x01\xbaH\x99\x01\xba\x01}\n" +
+	":temporaless.workflow_plan_edge.target_node_id.not_dot_path\x12\"target_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\ftargetNodeId\x12D\n" +
+	"\x04kind\x18\x03 \x01(\x0e2$.temporaless.v1.WorkflowPlanEdgeKindB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x14\n" +
+	"\x05label\x18\x04 \x01(\tR\x05label\"\xb5\x02\n" +
 	"\bTaskInfo\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +
 	"\x06method\x18\x02 \x01(\tR\x06method\x122\n" +
@@ -5213,7 +5989,10 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x1bworkflow_execution_claim_id\x18\x04 \x01(\t:\x12workflow:executionB\x05\xaa\x01\x02\b\x01R\x18workflowExecutionClaimId\x12I\n" +
 	"\x18activity_claim_id_prefix\x18\x05 \x01(\t:\tactivity:B\x05\xaa\x01\x02\b\x01R\x15activityClaimIdPrefix\"^\n" +
 	"\x0fRuntimeDefaults\x12K\n" +
-	"\x1cclaim_lease_duration_seconds\x18\x01 \x01(\r:\x03900B\x05\xaa\x01\x02\b\x01R\x19claimLeaseDurationSeconds\"\xfa\x05\n" +
+	"\x1cclaim_lease_duration_seconds\x18\x01 \x01(\r:\x03900B\x05\xaa\x01\x02\b\x01R\x19claimLeaseDurationSeconds\"\x8a\x01\n" +
+	"\x18EventDeliveryErrorDetail\x12B\n" +
+	"\x06reason\x18\x01 \x01(\x0e2*.temporaless.v1.EventDeliveryFailureReasonR\x06reason\x12*\n" +
+	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.EventKeyR\x03key\"\xfa\x05\n" +
 	"\vWorkflowKey\x12\x9d\x02\n" +
 	"\tnamespace\x18\x01 \x01(\tB\xfe\x01\xbaH\xfa\x01\xba\x01m\n" +
 	"/temporaless.workflow_key.namespace.not_dot_path\x12\x1dnamespace must not be . or ..\x1a\x1bthis != '.' && this != '..'\xba\x01n\n" +
@@ -5283,12 +6062,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
 	"\fcompleted_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x129\n" +
-	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\x9a\a\n" +
+	"\afailure\x18\x04 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\afailure\"\x99\a\n" +
 	"\x0eActivityRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12-\n" +
 	"\x03key\x18\x02 \x01(\v2\x1b.temporaless.v1.ActivityKeyR\x03key\x12#\n" +
-	"\ractivity_type\x18\x03 \x01(\tR\factivityType\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12*\n" +
+	"\ractivity_type\x18\x03 \x01(\tR\factivityType\x12*\n" +
 	"\x05input\x18\x06 \x01(\v2\x14.google.protobuf.AnyR\x05input\x126\n" +
 	"\x06status\x18\a \x01(\x0e2\x1e.temporaless.v1.ActivityStatusR\x06status\x12,\n" +
 	"\x06result\x18\b \x01(\v2\x14.google.protobuf.AnyR\x06result\x129\n" +
@@ -5304,12 +6082,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0eretry_timer_id\x18\x10 \x01(\tR\fretryTimerId\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"\xf5\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\fcode_versionR\finput_digest\"\xf4\x05\n" +
 	"\x0eWorkflowRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12-\n" +
 	"\x03key\x18\x02 \x01(\v2\x1b.temporaless.v1.WorkflowKeyR\x03key\x12#\n" +
-	"\rworkflow_type\x18\x03 \x01(\tR\fworkflowType\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x12*\n" +
+	"\rworkflow_type\x18\x03 \x01(\tR\fworkflowType\x12*\n" +
 	"\x05input\x18\x06 \x01(\v2\x14.google.protobuf.AnyR\x05input\x126\n" +
 	"\x06status\x18\a \x01(\x0e2\x1e.temporaless.v1.WorkflowStatusR\x06status\x12,\n" +
 	"\x06result\x18\b \x01(\v2\x14.google.protobuf.AnyR\x06result\x129\n" +
@@ -5322,13 +6099,12 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0erun_order_time\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\frunOrderTime\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"\xa7\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\fcode_versionR\finput_digest\"\xa6\x04\n" +
 	"\vTimerRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.TimerKeyR\x03key\x128\n" +
 	"\n" +
-	"timer_kind\x18\x03 \x01(\x0e2\x19.temporaless.v1.TimerKindR\ttimerKind\x12!\n" +
-	"\fcode_version\x18\x04 \x01(\tR\vcodeVersion\x125\n" +
+	"timer_kind\x18\x03 \x01(\x0e2\x19.temporaless.v1.TimerKindR\ttimerKind\x125\n" +
 	"\bduration\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\bduration\x123\n" +
 	"\x06status\x18\a \x01(\x0e2\x1b.temporaless.v1.TimerStatusR\x06status\x123\n" +
 	"\afire_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x06fireAt\x129\n" +
@@ -5336,26 +6112,25 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x125\n" +
 	"\bfired_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\afiredAt\x12*\n" +
-	"\x11retry_activity_id\x18\v \x01(\tR\x0fretryActivityIdJ\x04\b\x05\x10\x06\"\xf2\x01\n" +
+	"\x11retry_activity_id\x18\v \x01(\tR\x0fretryActivityIdJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\fcode_versionR\finput_digest\"\xf2\x01\n" +
 	"\vEventRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.EventKeyR\x03key\x12.\n" +
 	"\apayload\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\apayload\x12;\n" +
 	"\vreceived_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"receivedAt\"\xf2\x03\n" +
+	"receivedAt\"\xf1\x03\n" +
 	"\vClaimRecord\x12J\n" +
 	"\x0eschema_version\x18\x01 \x01(\x0e2#.temporaless.v1.RecordSchemaVersionR\rschemaVersion\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.ClaimKeyR\x03key\x12\x19\n" +
 	"\bowner_id\x18\x03 \x01(\tR\aownerId\x12F\n" +
 	"\rresource_type\x18\x04 \x01(\x0e2!.temporaless.v1.ClaimResourceTypeR\fresourceType\x12\x1f\n" +
 	"\vresource_id\x18\x05 \x01(\tR\n" +
-	"resourceId\x12!\n" +
-	"\fcode_version\x18\x06 \x01(\tR\vcodeVersion\x12D\n" +
+	"resourceId\x12D\n" +
 	"\x10lease_expires_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt\x129\n" +
 	"\n" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12=\n" +
 	"\fheartbeat_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAtJ\x04\b\a\x10\b\"\xbb\x02\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\vheartbeatAtJ\x04\b\x06\x10\aJ\x04\b\a\x10\bR\fcode_versionR\finput_digest\"\xbb\x02\n" +
 	"\x18LatestWorkflowRunPointer\x12-\n" +
 	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyR\x03key\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.temporaless.v1.WorkflowStatusR\x06status\x12;\n" +
@@ -5407,7 +6182,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x06record\x18\x02 \x01(\v2\x1b.temporaless.v1.EventRecordR\x06record\"N\n" +
 	"\x0fPutEventRequest\x12;\n" +
 	"\x06record\x18\x01 \x01(\v2\x1b.temporaless.v1.EventRecordB\x06\xbaH\x03\xc8\x01\x01R\x06record\"\x12\n" +
-	"\x10PutEventResponse\"\xe4\x01\n" +
+	"\x10PutEventResponse\"R\n" +
+	"\x13DeliverEventRequest\x12;\n" +
+	"\x06record\x18\x01 \x01(\v2\x1b.temporaless.v1.EventRecordB\x06\xbaH\x03\xc8\x01\x01R\x06record\"b\n" +
+	"\x14DeliverEventResponse\x12J\n" +
+	"\vdisposition\x18\x01 \x01(\x0e2(.temporaless.v1.EventDeliveryDispositionR\vdisposition\"\xe4\x01\n" +
 	"\x14ListWorkflowsRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x126\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1e.temporaless.v1.WorkflowStatusR\x06status\x12\x1f\n" +
@@ -5483,9 +6262,10 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\v2\x18.temporaless.v1.ClaimKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\"/\n" +
 	"\x13DeleteClaimResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x1d\n" +
-	"\x1bGetStoreCapabilitiesRequest\"j\n" +
+	"\x1bGetStoreCapabilitiesRequest\"\xcf\x01\n" +
 	"\x1cGetStoreCapabilitiesResponse\x12J\n" +
-	"\x10claim_capability\x18\x01 \x01(\x0e2\x1f.temporaless.v1.ClaimCapabilityR\x0fclaimCapability\"\xa3\x01\n" +
+	"\x10claim_capability\x18\x01 \x01(\x0e2\x1f.temporaless.v1.ClaimCapabilityR\x0fclaimCapability\x12c\n" +
+	"\x19event_delivery_capability\x18\x02 \x01(\x0e2'.temporaless.v1.EventDeliveryCapabilityR\x17eventDeliveryCapability\"\xa3\x01\n" +
 	"\fSweepRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x124\n" +
 	"\x03now\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\x03now\x12?\n" +
@@ -5505,7 +6285,22 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x124\n" +
 	"\x03now\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\x03now\"Q\n" +
 	"#RecordQueryServiceDueTimersResponse\x12*\n" +
-	"\x03due\x18\x01 \x03(\v2\x18.temporaless.v1.DueTimerR\x03due*\x89\x01\n" +
+	"\x03due\x18\x01 \x03(\v2\x18.temporaless.v1.DueTimerR\x03due*\xc6\x02\n" +
+	"\x14WorkflowPlanNodeKind\x12'\n" +
+	"#WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED\x10\x00\x12$\n" +
+	" WORKFLOW_PLAN_NODE_KIND_ACTIVITY\x10\x01\x12\"\n" +
+	"\x1eWORKFLOW_PLAN_NODE_KIND_BRANCH\x10\x02\x12#\n" +
+	"\x1fWORKFLOW_PLAN_NODE_KIND_FAN_OUT\x10\x03\x12 \n" +
+	"\x1cWORKFLOW_PLAN_NODE_KIND_LOOP\x10\x04\x12!\n" +
+	"\x1dWORKFLOW_PLAN_NODE_KIND_SLEEP\x10\x05\x12&\n" +
+	"\"WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT\x10\x06\x12)\n" +
+	"%WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW\x10\a*\xd6\x01\n" +
+	"\x14WorkflowPlanEdgeKind\x12'\n" +
+	"#WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fWORKFLOW_PLAN_EDGE_KIND_CONTROL\x10\x01\x12 \n" +
+	"\x1cWORKFLOW_PLAN_EDGE_KIND_DATA\x10\x02\x12'\n" +
+	"#WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL\x10\x03\x12%\n" +
+	"!WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK\x10\x04*\x89\x01\n" +
 	"\n" +
 	"TaskStatus\x12\x1b\n" +
 	"\x17TASK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
@@ -5527,11 +6322,12 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x18TIMER_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16TIMER_STATUS_SCHEDULED\x10\x01\x12\x16\n" +
 	"\x12TIMER_STATUS_FIRED\x10\x02\x12\x19\n" +
-	"\x15TIMER_STATUS_CANCELED\x10\x03*\\\n" +
+	"\x15TIMER_STATUS_CANCELED\x10\x03*q\n" +
 	"\tTimerKind\x12\x1a\n" +
 	"\x16TIMER_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10TIMER_KIND_SLEEP\x10\x01\x12\x1d\n" +
-	"\x19TIMER_KIND_ACTIVITY_RETRY\x10\x02*\xe7\x01\n" +
+	"\x19TIMER_KIND_ACTIVITY_RETRY\x10\x02\x12\x13\n" +
+	"\x0fTIMER_KIND_POLL\x10\x03*\xe7\x01\n" +
 	"\x13RecordSchemaVersion\x12%\n" +
 	"!RECORD_SCHEMA_VERSION_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eRECORD_SCHEMA_VERSION_ACTIVITY\x10\x01\x12\"\n" +
@@ -5549,7 +6345,19 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x1cCLAIM_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aCLAIM_CAPABILITY_NO_CLAIMS\x10\x01\x12'\n" +
 	"#CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS\x10\x02\x12\x1f\n" +
-	"\x1bCLAIM_CAPABILITY_CAS_CLAIMS\x10\x032\x94\x10\n" +
+	"\x1bCLAIM_CAPABILITY_CAS_CLAIMS\x10\x03*\x9f\x01\n" +
+	"\x17EventDeliveryCapability\x12)\n" +
+	"%EVENT_DELIVERY_CAPABILITY_UNSPECIFIED\x10\x00\x12.\n" +
+	"*EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE\x10\x01\x12)\n" +
+	"%EVENT_DELIVERY_CAPABILITY_CREATE_ONLY\x10\x02*\x99\x01\n" +
+	"\x18EventDeliveryDisposition\x12*\n" +
+	"&EVENT_DELIVERY_DISPOSITION_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"EVENT_DELIVERY_DISPOSITION_CREATED\x10\x01\x12)\n" +
+	"%EVENT_DELIVERY_DISPOSITION_IDEMPOTENT\x10\x02*\xa6\x01\n" +
+	"\x1aEventDeliveryFailureReason\x12-\n" +
+	")EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED\x10\x00\x12-\n" +
+	")EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED\x10\x01\x12*\n" +
+	"&EVENT_DELIVERY_FAILURE_REASON_CONFLICT\x10\x022\xef\x10\n" +
 	"\x12RecordStoreService\x12q\n" +
 	"\x14GetStoreCapabilities\x12+.temporaless.v1.GetStoreCapabilitiesRequest\x1a,.temporaless.v1.GetStoreCapabilitiesResponse\x12V\n" +
 	"\vGetWorkflow\x12\".temporaless.v1.GetWorkflowRequest\x1a#.temporaless.v1.GetWorkflowResponse\x12V\n" +
@@ -5563,7 +6371,8 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0eTryCreateClaim\x12%.temporaless.v1.TryCreateClaimRequest\x1a&.temporaless.v1.TryCreateClaimResponse\x12V\n" +
 	"\vDeleteClaim\x12\".temporaless.v1.DeleteClaimRequest\x1a#.temporaless.v1.DeleteClaimResponse\x12M\n" +
 	"\bGetEvent\x12\x1f.temporaless.v1.GetEventRequest\x1a .temporaless.v1.GetEventResponse\x12M\n" +
-	"\bPutEvent\x12\x1f.temporaless.v1.PutEventRequest\x1a .temporaless.v1.PutEventResponse\x12_\n" +
+	"\bPutEvent\x12\x1f.temporaless.v1.PutEventRequest\x1a .temporaless.v1.PutEventResponse\x12Y\n" +
+	"\fDeliverEvent\x12#.temporaless.v1.DeliverEventRequest\x1a$.temporaless.v1.DeliverEventResponse\x12_\n" +
 	"\x0eListActivities\x12%.temporaless.v1.ListActivitiesRequest\x1a&.temporaless.v1.ListActivitiesResponse\x12S\n" +
 	"\n" +
 	"ListTimers\x12!.temporaless.v1.ListTimersRequest\x1a\".temporaless.v1.ListTimersResponse\x12S\n" +
@@ -5595,268 +6404,296 @@ func file_temporaless_v1_temporaless_proto_rawDescGZIP() []byte {
 	return file_temporaless_v1_temporaless_proto_rawDescData
 }
 
-var file_temporaless_v1_temporaless_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
-var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 78)
+var file_temporaless_v1_temporaless_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
+var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
 var file_temporaless_v1_temporaless_proto_goTypes = []any{
-	(TaskStatus)(0),                                  // 0: temporaless.v1.TaskStatus
-	(ActivityStatus)(0),                              // 1: temporaless.v1.ActivityStatus
-	(WorkflowStatus)(0),                              // 2: temporaless.v1.WorkflowStatus
-	(TimerStatus)(0),                                 // 3: temporaless.v1.TimerStatus
-	(TimerKind)(0),                                   // 4: temporaless.v1.TimerKind
-	(RecordSchemaVersion)(0),                         // 5: temporaless.v1.RecordSchemaVersion
-	(ClaimResourceType)(0),                           // 6: temporaless.v1.ClaimResourceType
-	(ClaimCapability)(0),                             // 7: temporaless.v1.ClaimCapability
-	(*WorkflowOptions)(nil),                          // 8: temporaless.v1.WorkflowOptions
-	(*ActivityOptions)(nil),                          // 9: temporaless.v1.ActivityOptions
-	(*DispatchOptions)(nil),                          // 10: temporaless.v1.DispatchOptions
-	(*TaskInfo)(nil),                                 // 11: temporaless.v1.TaskInfo
-	(*RetryPolicy)(nil),                              // 12: temporaless.v1.RetryPolicy
-	(*ReservedNames)(nil),                            // 13: temporaless.v1.ReservedNames
-	(*RuntimeDefaults)(nil),                          // 14: temporaless.v1.RuntimeDefaults
-	(*WorkflowKey)(nil),                              // 15: temporaless.v1.WorkflowKey
-	(*ActivityKey)(nil),                              // 16: temporaless.v1.ActivityKey
-	(*TimerKey)(nil),                                 // 17: temporaless.v1.TimerKey
-	(*EventKey)(nil),                                 // 18: temporaless.v1.EventKey
-	(*ClaimKey)(nil),                                 // 19: temporaless.v1.ClaimKey
-	(*ActivityFailure)(nil),                          // 20: temporaless.v1.ActivityFailure
-	(*ActivityAttempt)(nil),                          // 21: temporaless.v1.ActivityAttempt
-	(*ActivityRecord)(nil),                           // 22: temporaless.v1.ActivityRecord
-	(*WorkflowRecord)(nil),                           // 23: temporaless.v1.WorkflowRecord
-	(*TimerRecord)(nil),                              // 24: temporaless.v1.TimerRecord
-	(*EventRecord)(nil),                              // 25: temporaless.v1.EventRecord
-	(*ClaimRecord)(nil),                              // 26: temporaless.v1.ClaimRecord
-	(*LatestWorkflowRunPointer)(nil),                 // 27: temporaless.v1.LatestWorkflowRunPointer
-	(*DueTimerEntry)(nil),                            // 28: temporaless.v1.DueTimerEntry
-	(*GetWorkflowRequest)(nil),                       // 29: temporaless.v1.GetWorkflowRequest
-	(*GetWorkflowResponse)(nil),                      // 30: temporaless.v1.GetWorkflowResponse
-	(*PutWorkflowRequest)(nil),                       // 31: temporaless.v1.PutWorkflowRequest
-	(*PutWorkflowResponse)(nil),                      // 32: temporaless.v1.PutWorkflowResponse
-	(*GetLatestWorkflowRunRequest)(nil),              // 33: temporaless.v1.GetLatestWorkflowRunRequest
-	(*GetLatestWorkflowRunResponse)(nil),             // 34: temporaless.v1.GetLatestWorkflowRunResponse
-	(*GetTimerRequest)(nil),                          // 35: temporaless.v1.GetTimerRequest
-	(*GetTimerResponse)(nil),                         // 36: temporaless.v1.GetTimerResponse
-	(*PutTimerRequest)(nil),                          // 37: temporaless.v1.PutTimerRequest
-	(*PutTimerResponse)(nil),                         // 38: temporaless.v1.PutTimerResponse
-	(*GetActivityRequest)(nil),                       // 39: temporaless.v1.GetActivityRequest
-	(*GetActivityResponse)(nil),                      // 40: temporaless.v1.GetActivityResponse
-	(*PutActivityRequest)(nil),                       // 41: temporaless.v1.PutActivityRequest
-	(*PutActivityResponse)(nil),                      // 42: temporaless.v1.PutActivityResponse
-	(*GetEventRequest)(nil),                          // 43: temporaless.v1.GetEventRequest
-	(*GetEventResponse)(nil),                         // 44: temporaless.v1.GetEventResponse
-	(*PutEventRequest)(nil),                          // 45: temporaless.v1.PutEventRequest
-	(*PutEventResponse)(nil),                         // 46: temporaless.v1.PutEventResponse
-	(*ListWorkflowsRequest)(nil),                     // 47: temporaless.v1.ListWorkflowsRequest
-	(*ListWorkflowsResponse)(nil),                    // 48: temporaless.v1.ListWorkflowsResponse
-	(*ListActivitiesRequest)(nil),                    // 49: temporaless.v1.ListActivitiesRequest
-	(*ListActivitiesResponse)(nil),                   // 50: temporaless.v1.ListActivitiesResponse
-	(*ListTimersRequest)(nil),                        // 51: temporaless.v1.ListTimersRequest
-	(*ListTimersResponse)(nil),                       // 52: temporaless.v1.ListTimersResponse
-	(*ListEventsRequest)(nil),                        // 53: temporaless.v1.ListEventsRequest
-	(*ListEventsResponse)(nil),                       // 54: temporaless.v1.ListEventsResponse
-	(*ListClaimsRequest)(nil),                        // 55: temporaless.v1.ListClaimsRequest
-	(*ListClaimsResponse)(nil),                       // 56: temporaless.v1.ListClaimsResponse
-	(*RecordQueryServiceListActivitiesRequest)(nil),  // 57: temporaless.v1.RecordQueryServiceListActivitiesRequest
-	(*RecordQueryServiceListActivitiesResponse)(nil), // 58: temporaless.v1.RecordQueryServiceListActivitiesResponse
-	(*DeleteWorkflowRequest)(nil),                    // 59: temporaless.v1.DeleteWorkflowRequest
-	(*DeleteWorkflowResponse)(nil),                   // 60: temporaless.v1.DeleteWorkflowResponse
-	(*DeleteRunRequest)(nil),                         // 61: temporaless.v1.DeleteRunRequest
-	(*DeleteRunResponse)(nil),                        // 62: temporaless.v1.DeleteRunResponse
-	(*DeleteActivityRequest)(nil),                    // 63: temporaless.v1.DeleteActivityRequest
-	(*DeleteActivityResponse)(nil),                   // 64: temporaless.v1.DeleteActivityResponse
-	(*DeleteTimerRequest)(nil),                       // 65: temporaless.v1.DeleteTimerRequest
-	(*DeleteTimerResponse)(nil),                      // 66: temporaless.v1.DeleteTimerResponse
-	(*DeleteEventRequest)(nil),                       // 67: temporaless.v1.DeleteEventRequest
-	(*DeleteEventResponse)(nil),                      // 68: temporaless.v1.DeleteEventResponse
-	(*GetClaimRequest)(nil),                          // 69: temporaless.v1.GetClaimRequest
-	(*GetClaimResponse)(nil),                         // 70: temporaless.v1.GetClaimResponse
-	(*TryCreateClaimRequest)(nil),                    // 71: temporaless.v1.TryCreateClaimRequest
-	(*TryCreateClaimResponse)(nil),                   // 72: temporaless.v1.TryCreateClaimResponse
-	(*DeleteClaimRequest)(nil),                       // 73: temporaless.v1.DeleteClaimRequest
-	(*DeleteClaimResponse)(nil),                      // 74: temporaless.v1.DeleteClaimResponse
-	(*GetStoreCapabilitiesRequest)(nil),              // 75: temporaless.v1.GetStoreCapabilitiesRequest
-	(*GetStoreCapabilitiesResponse)(nil),             // 76: temporaless.v1.GetStoreCapabilitiesResponse
-	(*SweepRequest)(nil),                             // 77: temporaless.v1.SweepRequest
-	(*SweepResponse)(nil),                            // 78: temporaless.v1.SweepResponse
-	(*DueTimer)(nil),                                 // 79: temporaless.v1.DueTimer
-	(*DueTimersRequest)(nil),                         // 80: temporaless.v1.DueTimersRequest
-	(*DueTimersResponse)(nil),                        // 81: temporaless.v1.DueTimersResponse
-	(*RecordQueryServiceDueTimersRequest)(nil),       // 82: temporaless.v1.RecordQueryServiceDueTimersRequest
-	(*RecordQueryServiceDueTimersResponse)(nil),      // 83: temporaless.v1.RecordQueryServiceDueTimersResponse
-	nil,                           // 84: temporaless.v1.ActivityRecord.AnnotationsEntry
-	nil,                           // 85: temporaless.v1.WorkflowRecord.AnnotationsEntry
-	(*timestamppb.Timestamp)(nil), // 86: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 87: google.protobuf.Duration
-	(*anypb.Any)(nil),             // 88: google.protobuf.Any
+	(WorkflowPlanNodeKind)(0),                        // 0: temporaless.v1.WorkflowPlanNodeKind
+	(WorkflowPlanEdgeKind)(0),                        // 1: temporaless.v1.WorkflowPlanEdgeKind
+	(TaskStatus)(0),                                  // 2: temporaless.v1.TaskStatus
+	(ActivityStatus)(0),                              // 3: temporaless.v1.ActivityStatus
+	(WorkflowStatus)(0),                              // 4: temporaless.v1.WorkflowStatus
+	(TimerStatus)(0),                                 // 5: temporaless.v1.TimerStatus
+	(TimerKind)(0),                                   // 6: temporaless.v1.TimerKind
+	(RecordSchemaVersion)(0),                         // 7: temporaless.v1.RecordSchemaVersion
+	(ClaimResourceType)(0),                           // 8: temporaless.v1.ClaimResourceType
+	(ClaimCapability)(0),                             // 9: temporaless.v1.ClaimCapability
+	(EventDeliveryCapability)(0),                     // 10: temporaless.v1.EventDeliveryCapability
+	(EventDeliveryDisposition)(0),                    // 11: temporaless.v1.EventDeliveryDisposition
+	(EventDeliveryFailureReason)(0),                  // 12: temporaless.v1.EventDeliveryFailureReason
+	(*WorkflowOptions)(nil),                          // 13: temporaless.v1.WorkflowOptions
+	(*ActivityOptions)(nil),                          // 14: temporaless.v1.ActivityOptions
+	(*PollOptions)(nil),                              // 15: temporaless.v1.PollOptions
+	(*DispatchOptions)(nil),                          // 16: temporaless.v1.DispatchOptions
+	(*WorkflowPlan)(nil),                             // 17: temporaless.v1.WorkflowPlan
+	(*WorkflowPlanNode)(nil),                         // 18: temporaless.v1.WorkflowPlanNode
+	(*WorkflowPlanEdge)(nil),                         // 19: temporaless.v1.WorkflowPlanEdge
+	(*TaskInfo)(nil),                                 // 20: temporaless.v1.TaskInfo
+	(*RetryPolicy)(nil),                              // 21: temporaless.v1.RetryPolicy
+	(*ReservedNames)(nil),                            // 22: temporaless.v1.ReservedNames
+	(*RuntimeDefaults)(nil),                          // 23: temporaless.v1.RuntimeDefaults
+	(*EventDeliveryErrorDetail)(nil),                 // 24: temporaless.v1.EventDeliveryErrorDetail
+	(*WorkflowKey)(nil),                              // 25: temporaless.v1.WorkflowKey
+	(*ActivityKey)(nil),                              // 26: temporaless.v1.ActivityKey
+	(*TimerKey)(nil),                                 // 27: temporaless.v1.TimerKey
+	(*EventKey)(nil),                                 // 28: temporaless.v1.EventKey
+	(*ClaimKey)(nil),                                 // 29: temporaless.v1.ClaimKey
+	(*ActivityFailure)(nil),                          // 30: temporaless.v1.ActivityFailure
+	(*ActivityAttempt)(nil),                          // 31: temporaless.v1.ActivityAttempt
+	(*ActivityRecord)(nil),                           // 32: temporaless.v1.ActivityRecord
+	(*WorkflowRecord)(nil),                           // 33: temporaless.v1.WorkflowRecord
+	(*TimerRecord)(nil),                              // 34: temporaless.v1.TimerRecord
+	(*EventRecord)(nil),                              // 35: temporaless.v1.EventRecord
+	(*ClaimRecord)(nil),                              // 36: temporaless.v1.ClaimRecord
+	(*LatestWorkflowRunPointer)(nil),                 // 37: temporaless.v1.LatestWorkflowRunPointer
+	(*DueTimerEntry)(nil),                            // 38: temporaless.v1.DueTimerEntry
+	(*GetWorkflowRequest)(nil),                       // 39: temporaless.v1.GetWorkflowRequest
+	(*GetWorkflowResponse)(nil),                      // 40: temporaless.v1.GetWorkflowResponse
+	(*PutWorkflowRequest)(nil),                       // 41: temporaless.v1.PutWorkflowRequest
+	(*PutWorkflowResponse)(nil),                      // 42: temporaless.v1.PutWorkflowResponse
+	(*GetLatestWorkflowRunRequest)(nil),              // 43: temporaless.v1.GetLatestWorkflowRunRequest
+	(*GetLatestWorkflowRunResponse)(nil),             // 44: temporaless.v1.GetLatestWorkflowRunResponse
+	(*GetTimerRequest)(nil),                          // 45: temporaless.v1.GetTimerRequest
+	(*GetTimerResponse)(nil),                         // 46: temporaless.v1.GetTimerResponse
+	(*PutTimerRequest)(nil),                          // 47: temporaless.v1.PutTimerRequest
+	(*PutTimerResponse)(nil),                         // 48: temporaless.v1.PutTimerResponse
+	(*GetActivityRequest)(nil),                       // 49: temporaless.v1.GetActivityRequest
+	(*GetActivityResponse)(nil),                      // 50: temporaless.v1.GetActivityResponse
+	(*PutActivityRequest)(nil),                       // 51: temporaless.v1.PutActivityRequest
+	(*PutActivityResponse)(nil),                      // 52: temporaless.v1.PutActivityResponse
+	(*GetEventRequest)(nil),                          // 53: temporaless.v1.GetEventRequest
+	(*GetEventResponse)(nil),                         // 54: temporaless.v1.GetEventResponse
+	(*PutEventRequest)(nil),                          // 55: temporaless.v1.PutEventRequest
+	(*PutEventResponse)(nil),                         // 56: temporaless.v1.PutEventResponse
+	(*DeliverEventRequest)(nil),                      // 57: temporaless.v1.DeliverEventRequest
+	(*DeliverEventResponse)(nil),                     // 58: temporaless.v1.DeliverEventResponse
+	(*ListWorkflowsRequest)(nil),                     // 59: temporaless.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),                    // 60: temporaless.v1.ListWorkflowsResponse
+	(*ListActivitiesRequest)(nil),                    // 61: temporaless.v1.ListActivitiesRequest
+	(*ListActivitiesResponse)(nil),                   // 62: temporaless.v1.ListActivitiesResponse
+	(*ListTimersRequest)(nil),                        // 63: temporaless.v1.ListTimersRequest
+	(*ListTimersResponse)(nil),                       // 64: temporaless.v1.ListTimersResponse
+	(*ListEventsRequest)(nil),                        // 65: temporaless.v1.ListEventsRequest
+	(*ListEventsResponse)(nil),                       // 66: temporaless.v1.ListEventsResponse
+	(*ListClaimsRequest)(nil),                        // 67: temporaless.v1.ListClaimsRequest
+	(*ListClaimsResponse)(nil),                       // 68: temporaless.v1.ListClaimsResponse
+	(*RecordQueryServiceListActivitiesRequest)(nil),  // 69: temporaless.v1.RecordQueryServiceListActivitiesRequest
+	(*RecordQueryServiceListActivitiesResponse)(nil), // 70: temporaless.v1.RecordQueryServiceListActivitiesResponse
+	(*DeleteWorkflowRequest)(nil),                    // 71: temporaless.v1.DeleteWorkflowRequest
+	(*DeleteWorkflowResponse)(nil),                   // 72: temporaless.v1.DeleteWorkflowResponse
+	(*DeleteRunRequest)(nil),                         // 73: temporaless.v1.DeleteRunRequest
+	(*DeleteRunResponse)(nil),                        // 74: temporaless.v1.DeleteRunResponse
+	(*DeleteActivityRequest)(nil),                    // 75: temporaless.v1.DeleteActivityRequest
+	(*DeleteActivityResponse)(nil),                   // 76: temporaless.v1.DeleteActivityResponse
+	(*DeleteTimerRequest)(nil),                       // 77: temporaless.v1.DeleteTimerRequest
+	(*DeleteTimerResponse)(nil),                      // 78: temporaless.v1.DeleteTimerResponse
+	(*DeleteEventRequest)(nil),                       // 79: temporaless.v1.DeleteEventRequest
+	(*DeleteEventResponse)(nil),                      // 80: temporaless.v1.DeleteEventResponse
+	(*GetClaimRequest)(nil),                          // 81: temporaless.v1.GetClaimRequest
+	(*GetClaimResponse)(nil),                         // 82: temporaless.v1.GetClaimResponse
+	(*TryCreateClaimRequest)(nil),                    // 83: temporaless.v1.TryCreateClaimRequest
+	(*TryCreateClaimResponse)(nil),                   // 84: temporaless.v1.TryCreateClaimResponse
+	(*DeleteClaimRequest)(nil),                       // 85: temporaless.v1.DeleteClaimRequest
+	(*DeleteClaimResponse)(nil),                      // 86: temporaless.v1.DeleteClaimResponse
+	(*GetStoreCapabilitiesRequest)(nil),              // 87: temporaless.v1.GetStoreCapabilitiesRequest
+	(*GetStoreCapabilitiesResponse)(nil),             // 88: temporaless.v1.GetStoreCapabilitiesResponse
+	(*SweepRequest)(nil),                             // 89: temporaless.v1.SweepRequest
+	(*SweepResponse)(nil),                            // 90: temporaless.v1.SweepResponse
+	(*DueTimer)(nil),                                 // 91: temporaless.v1.DueTimer
+	(*DueTimersRequest)(nil),                         // 92: temporaless.v1.DueTimersRequest
+	(*DueTimersResponse)(nil),                        // 93: temporaless.v1.DueTimersResponse
+	(*RecordQueryServiceDueTimersRequest)(nil),       // 94: temporaless.v1.RecordQueryServiceDueTimersRequest
+	(*RecordQueryServiceDueTimersResponse)(nil),      // 95: temporaless.v1.RecordQueryServiceDueTimersResponse
+	nil,                           // 96: temporaless.v1.WorkflowPlan.AnnotationsEntry
+	nil,                           // 97: temporaless.v1.WorkflowPlanNode.AnnotationsEntry
+	nil,                           // 98: temporaless.v1.ActivityRecord.AnnotationsEntry
+	nil,                           // 99: temporaless.v1.WorkflowRecord.AnnotationsEntry
+	(*timestamppb.Timestamp)(nil), // 100: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 101: google.protobuf.Duration
+	(*anypb.Any)(nil),             // 102: google.protobuf.Any
 }
 var file_temporaless_v1_temporaless_proto_depIdxs = []int32{
-	86,  // 0: temporaless.v1.WorkflowOptions.run_order_time:type_name -> google.protobuf.Timestamp
-	12,  // 1: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
-	87,  // 2: temporaless.v1.DispatchOptions.drain_timeout:type_name -> google.protobuf.Duration
-	87,  // 3: temporaless.v1.DispatchOptions.task_ttl:type_name -> google.protobuf.Duration
-	0,   // 4: temporaless.v1.TaskInfo.status:type_name -> temporaless.v1.TaskStatus
-	88,  // 5: temporaless.v1.TaskInfo.response:type_name -> google.protobuf.Any
-	86,  // 6: temporaless.v1.TaskInfo.submitted_at:type_name -> google.protobuf.Timestamp
-	86,  // 7: temporaless.v1.TaskInfo.completed_at:type_name -> google.protobuf.Timestamp
-	87,  // 8: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	87,  // 9: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
-	87,  // 10: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
-	87,  // 11: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
-	86,  // 12: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
-	86,  // 13: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
-	20,  // 14: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
-	5,   // 15: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	16,  // 16: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
-	88,  // 17: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
-	1,   // 18: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
-	88,  // 19: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
-	20,  // 20: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	86,  // 21: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
-	86,  // 22: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
-	21,  // 23: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
-	84,  // 24: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
-	86,  // 25: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
-	12,  // 26: temporaless.v1.ActivityRecord.retry_policy:type_name -> temporaless.v1.RetryPolicy
-	5,   // 27: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	15,  // 28: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
-	88,  // 29: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
-	2,   // 30: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
-	88,  // 31: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
-	20,  // 32: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	86,  // 33: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
-	86,  // 34: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
-	85,  // 35: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
-	86,  // 36: temporaless.v1.WorkflowRecord.run_order_time:type_name -> google.protobuf.Timestamp
-	5,   // 37: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	17,  // 38: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
-	4,   // 39: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
-	87,  // 40: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
-	3,   // 41: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
-	86,  // 42: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
-	86,  // 43: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
-	86,  // 44: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
-	5,   // 45: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	18,  // 46: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
-	88,  // 47: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
-	86,  // 48: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
-	5,   // 49: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	19,  // 50: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
-	6,   // 51: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
-	86,  // 52: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
-	86,  // 53: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
-	86,  // 54: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
-	15,  // 55: temporaless.v1.LatestWorkflowRunPointer.key:type_name -> temporaless.v1.WorkflowKey
-	2,   // 56: temporaless.v1.LatestWorkflowRunPointer.status:type_name -> temporaless.v1.WorkflowStatus
-	86,  // 57: temporaless.v1.LatestWorkflowRunPointer.record_time:type_name -> google.protobuf.Timestamp
-	86,  // 58: temporaless.v1.LatestWorkflowRunPointer.updated_at:type_name -> google.protobuf.Timestamp
-	86,  // 59: temporaless.v1.LatestWorkflowRunPointer.run_order_time:type_name -> google.protobuf.Timestamp
-	17,  // 60: temporaless.v1.DueTimerEntry.key:type_name -> temporaless.v1.TimerKey
-	15,  // 61: temporaless.v1.DueTimerEntry.workflow_key:type_name -> temporaless.v1.WorkflowKey
-	86,  // 62: temporaless.v1.DueTimerEntry.fire_at:type_name -> google.protobuf.Timestamp
-	24,  // 63: temporaless.v1.DueTimerEntry.record:type_name -> temporaless.v1.TimerRecord
-	15,  // 64: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	23,  // 65: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
-	23,  // 66: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
-	27,  // 67: temporaless.v1.GetLatestWorkflowRunResponse.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
-	17,  // 68: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	24,  // 69: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
-	24,  // 70: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
-	16,  // 71: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	22,  // 72: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
-	22,  // 73: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
-	18,  // 74: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
-	25,  // 75: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
-	25,  // 76: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
-	2,   // 77: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
-	23,  // 78: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
-	15,  // 79: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
-	22,  // 80: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
-	15,  // 81: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
-	3,   // 82: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
-	24,  // 83: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
-	15,  // 84: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
-	25,  // 85: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
-	15,  // 86: temporaless.v1.ListClaimsRequest.key:type_name -> temporaless.v1.WorkflowKey
-	26,  // 87: temporaless.v1.ListClaimsResponse.records:type_name -> temporaless.v1.ClaimRecord
-	1,   // 88: temporaless.v1.RecordQueryServiceListActivitiesRequest.status:type_name -> temporaless.v1.ActivityStatus
-	22,  // 89: temporaless.v1.RecordQueryServiceListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
-	15,  // 90: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	15,  // 91: temporaless.v1.DeleteRunRequest.key:type_name -> temporaless.v1.WorkflowKey
-	16,  // 92: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	17,  // 93: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	18,  // 94: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
-	19,  // 95: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
-	26,  // 96: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
-	26,  // 97: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
-	19,  // 98: temporaless.v1.DeleteClaimRequest.key:type_name -> temporaless.v1.ClaimKey
-	7,   // 99: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
-	86,  // 100: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
-	87,  // 101: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
-	17,  // 102: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
-	24,  // 103: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
-	23,  // 104: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
-	86,  // 105: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	79,  // 106: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	86,  // 107: temporaless.v1.RecordQueryServiceDueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	79,  // 108: temporaless.v1.RecordQueryServiceDueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	75,  // 109: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
-	29,  // 110: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
-	31,  // 111: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
-	33,  // 112: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:input_type -> temporaless.v1.GetLatestWorkflowRunRequest
-	35,  // 113: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
-	37,  // 114: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
-	39,  // 115: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
-	41,  // 116: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
-	69,  // 117: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
-	71,  // 118: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
-	73,  // 119: temporaless.v1.RecordStoreService.DeleteClaim:input_type -> temporaless.v1.DeleteClaimRequest
-	43,  // 120: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
-	45,  // 121: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
-	49,  // 122: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
-	51,  // 123: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
-	53,  // 124: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
-	55,  // 125: temporaless.v1.RecordStoreService.ListClaims:input_type -> temporaless.v1.ListClaimsRequest
-	59,  // 126: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
-	63,  // 127: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
-	65,  // 128: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
-	67,  // 129: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
-	61,  // 130: temporaless.v1.RecordStoreService.DeleteRun:input_type -> temporaless.v1.DeleteRunRequest
-	80,  // 131: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
-	47,  // 132: temporaless.v1.RecordQueryService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
-	57,  // 133: temporaless.v1.RecordQueryService.ListActivities:input_type -> temporaless.v1.RecordQueryServiceListActivitiesRequest
-	77,  // 134: temporaless.v1.RecordQueryService.Sweep:input_type -> temporaless.v1.SweepRequest
-	82,  // 135: temporaless.v1.RecordQueryService.DueTimers:input_type -> temporaless.v1.RecordQueryServiceDueTimersRequest
-	76,  // 136: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
-	30,  // 137: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
-	32,  // 138: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
-	34,  // 139: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:output_type -> temporaless.v1.GetLatestWorkflowRunResponse
-	36,  // 140: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
-	38,  // 141: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
-	40,  // 142: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
-	42,  // 143: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
-	70,  // 144: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
-	72,  // 145: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
-	74,  // 146: temporaless.v1.RecordStoreService.DeleteClaim:output_type -> temporaless.v1.DeleteClaimResponse
-	44,  // 147: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
-	46,  // 148: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
-	50,  // 149: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
-	52,  // 150: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
-	54,  // 151: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
-	56,  // 152: temporaless.v1.RecordStoreService.ListClaims:output_type -> temporaless.v1.ListClaimsResponse
-	60,  // 153: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
-	64,  // 154: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
-	66,  // 155: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
-	68,  // 156: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
-	62,  // 157: temporaless.v1.RecordStoreService.DeleteRun:output_type -> temporaless.v1.DeleteRunResponse
-	81,  // 158: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
-	48,  // 159: temporaless.v1.RecordQueryService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
-	58,  // 160: temporaless.v1.RecordQueryService.ListActivities:output_type -> temporaless.v1.RecordQueryServiceListActivitiesResponse
-	78,  // 161: temporaless.v1.RecordQueryService.Sweep:output_type -> temporaless.v1.SweepResponse
-	83,  // 162: temporaless.v1.RecordQueryService.DueTimers:output_type -> temporaless.v1.RecordQueryServiceDueTimersResponse
-	136, // [136:163] is the sub-list for method output_type
-	109, // [109:136] is the sub-list for method input_type
-	109, // [109:109] is the sub-list for extension type_name
-	109, // [109:109] is the sub-list for extension extendee
-	0,   // [0:109] is the sub-list for field type_name
+	100, // 0: temporaless.v1.WorkflowOptions.run_order_time:type_name -> google.protobuf.Timestamp
+	21,  // 1: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
+	101, // 2: temporaless.v1.PollOptions.interval:type_name -> google.protobuf.Duration
+	101, // 3: temporaless.v1.DispatchOptions.drain_timeout:type_name -> google.protobuf.Duration
+	101, // 4: temporaless.v1.DispatchOptions.task_ttl:type_name -> google.protobuf.Duration
+	18,  // 5: temporaless.v1.WorkflowPlan.nodes:type_name -> temporaless.v1.WorkflowPlanNode
+	19,  // 6: temporaless.v1.WorkflowPlan.edges:type_name -> temporaless.v1.WorkflowPlanEdge
+	96,  // 7: temporaless.v1.WorkflowPlan.annotations:type_name -> temporaless.v1.WorkflowPlan.AnnotationsEntry
+	0,   // 8: temporaless.v1.WorkflowPlanNode.kind:type_name -> temporaless.v1.WorkflowPlanNodeKind
+	97,  // 9: temporaless.v1.WorkflowPlanNode.annotations:type_name -> temporaless.v1.WorkflowPlanNode.AnnotationsEntry
+	1,   // 10: temporaless.v1.WorkflowPlanEdge.kind:type_name -> temporaless.v1.WorkflowPlanEdgeKind
+	2,   // 11: temporaless.v1.TaskInfo.status:type_name -> temporaless.v1.TaskStatus
+	102, // 12: temporaless.v1.TaskInfo.response:type_name -> google.protobuf.Any
+	100, // 13: temporaless.v1.TaskInfo.submitted_at:type_name -> google.protobuf.Timestamp
+	100, // 14: temporaless.v1.TaskInfo.completed_at:type_name -> google.protobuf.Timestamp
+	101, // 15: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	101, // 16: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
+	101, // 17: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
+	12,  // 18: temporaless.v1.EventDeliveryErrorDetail.reason:type_name -> temporaless.v1.EventDeliveryFailureReason
+	28,  // 19: temporaless.v1.EventDeliveryErrorDetail.key:type_name -> temporaless.v1.EventKey
+	101, // 20: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
+	100, // 21: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
+	100, // 22: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
+	30,  // 23: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
+	7,   // 24: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	26,  // 25: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
+	102, // 26: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
+	3,   // 27: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
+	102, // 28: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
+	30,  // 29: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	100, // 30: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
+	100, // 31: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
+	31,  // 32: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
+	98,  // 33: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
+	100, // 34: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
+	21,  // 35: temporaless.v1.ActivityRecord.retry_policy:type_name -> temporaless.v1.RetryPolicy
+	7,   // 36: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	25,  // 37: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
+	102, // 38: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
+	4,   // 39: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
+	102, // 40: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
+	30,  // 41: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	100, // 42: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
+	100, // 43: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
+	99,  // 44: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
+	100, // 45: temporaless.v1.WorkflowRecord.run_order_time:type_name -> google.protobuf.Timestamp
+	7,   // 46: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	27,  // 47: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
+	6,   // 48: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
+	101, // 49: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
+	5,   // 50: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
+	100, // 51: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
+	100, // 52: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
+	100, // 53: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
+	7,   // 54: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	28,  // 55: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
+	102, // 56: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
+	100, // 57: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
+	7,   // 58: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	29,  // 59: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
+	8,   // 60: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
+	100, // 61: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
+	100, // 62: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
+	100, // 63: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
+	25,  // 64: temporaless.v1.LatestWorkflowRunPointer.key:type_name -> temporaless.v1.WorkflowKey
+	4,   // 65: temporaless.v1.LatestWorkflowRunPointer.status:type_name -> temporaless.v1.WorkflowStatus
+	100, // 66: temporaless.v1.LatestWorkflowRunPointer.record_time:type_name -> google.protobuf.Timestamp
+	100, // 67: temporaless.v1.LatestWorkflowRunPointer.updated_at:type_name -> google.protobuf.Timestamp
+	100, // 68: temporaless.v1.LatestWorkflowRunPointer.run_order_time:type_name -> google.protobuf.Timestamp
+	27,  // 69: temporaless.v1.DueTimerEntry.key:type_name -> temporaless.v1.TimerKey
+	25,  // 70: temporaless.v1.DueTimerEntry.workflow_key:type_name -> temporaless.v1.WorkflowKey
+	100, // 71: temporaless.v1.DueTimerEntry.fire_at:type_name -> google.protobuf.Timestamp
+	34,  // 72: temporaless.v1.DueTimerEntry.record:type_name -> temporaless.v1.TimerRecord
+	25,  // 73: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	33,  // 74: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
+	33,  // 75: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
+	37,  // 76: temporaless.v1.GetLatestWorkflowRunResponse.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
+	27,  // 77: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	34,  // 78: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
+	34,  // 79: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
+	26,  // 80: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	32,  // 81: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
+	32,  // 82: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
+	28,  // 83: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
+	35,  // 84: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
+	35,  // 85: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
+	35,  // 86: temporaless.v1.DeliverEventRequest.record:type_name -> temporaless.v1.EventRecord
+	11,  // 87: temporaless.v1.DeliverEventResponse.disposition:type_name -> temporaless.v1.EventDeliveryDisposition
+	4,   // 88: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
+	33,  // 89: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
+	25,  // 90: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
+	32,  // 91: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
+	25,  // 92: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
+	5,   // 93: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
+	34,  // 94: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
+	25,  // 95: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
+	35,  // 96: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
+	25,  // 97: temporaless.v1.ListClaimsRequest.key:type_name -> temporaless.v1.WorkflowKey
+	36,  // 98: temporaless.v1.ListClaimsResponse.records:type_name -> temporaless.v1.ClaimRecord
+	3,   // 99: temporaless.v1.RecordQueryServiceListActivitiesRequest.status:type_name -> temporaless.v1.ActivityStatus
+	32,  // 100: temporaless.v1.RecordQueryServiceListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
+	25,  // 101: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	25,  // 102: temporaless.v1.DeleteRunRequest.key:type_name -> temporaless.v1.WorkflowKey
+	26,  // 103: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	27,  // 104: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	28,  // 105: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
+	29,  // 106: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	36,  // 107: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
+	36,  // 108: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
+	29,  // 109: temporaless.v1.DeleteClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	9,   // 110: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
+	10,  // 111: temporaless.v1.GetStoreCapabilitiesResponse.event_delivery_capability:type_name -> temporaless.v1.EventDeliveryCapability
+	100, // 112: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
+	101, // 113: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
+	27,  // 114: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
+	34,  // 115: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
+	33,  // 116: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
+	100, // 117: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	91,  // 118: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	100, // 119: temporaless.v1.RecordQueryServiceDueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	91,  // 120: temporaless.v1.RecordQueryServiceDueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	87,  // 121: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
+	39,  // 122: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
+	41,  // 123: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
+	43,  // 124: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:input_type -> temporaless.v1.GetLatestWorkflowRunRequest
+	45,  // 125: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
+	47,  // 126: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
+	49,  // 127: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
+	51,  // 128: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
+	81,  // 129: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
+	83,  // 130: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
+	85,  // 131: temporaless.v1.RecordStoreService.DeleteClaim:input_type -> temporaless.v1.DeleteClaimRequest
+	53,  // 132: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
+	55,  // 133: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
+	57,  // 134: temporaless.v1.RecordStoreService.DeliverEvent:input_type -> temporaless.v1.DeliverEventRequest
+	61,  // 135: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
+	63,  // 136: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
+	65,  // 137: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
+	67,  // 138: temporaless.v1.RecordStoreService.ListClaims:input_type -> temporaless.v1.ListClaimsRequest
+	71,  // 139: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
+	75,  // 140: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
+	77,  // 141: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
+	79,  // 142: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
+	73,  // 143: temporaless.v1.RecordStoreService.DeleteRun:input_type -> temporaless.v1.DeleteRunRequest
+	92,  // 144: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
+	59,  // 145: temporaless.v1.RecordQueryService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
+	69,  // 146: temporaless.v1.RecordQueryService.ListActivities:input_type -> temporaless.v1.RecordQueryServiceListActivitiesRequest
+	89,  // 147: temporaless.v1.RecordQueryService.Sweep:input_type -> temporaless.v1.SweepRequest
+	94,  // 148: temporaless.v1.RecordQueryService.DueTimers:input_type -> temporaless.v1.RecordQueryServiceDueTimersRequest
+	88,  // 149: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
+	40,  // 150: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
+	42,  // 151: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
+	44,  // 152: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:output_type -> temporaless.v1.GetLatestWorkflowRunResponse
+	46,  // 153: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
+	48,  // 154: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
+	50,  // 155: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
+	52,  // 156: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
+	82,  // 157: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
+	84,  // 158: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
+	86,  // 159: temporaless.v1.RecordStoreService.DeleteClaim:output_type -> temporaless.v1.DeleteClaimResponse
+	54,  // 160: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
+	56,  // 161: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
+	58,  // 162: temporaless.v1.RecordStoreService.DeliverEvent:output_type -> temporaless.v1.DeliverEventResponse
+	62,  // 163: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
+	64,  // 164: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
+	66,  // 165: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
+	68,  // 166: temporaless.v1.RecordStoreService.ListClaims:output_type -> temporaless.v1.ListClaimsResponse
+	72,  // 167: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
+	76,  // 168: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
+	78,  // 169: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
+	80,  // 170: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
+	74,  // 171: temporaless.v1.RecordStoreService.DeleteRun:output_type -> temporaless.v1.DeleteRunResponse
+	93,  // 172: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
+	60,  // 173: temporaless.v1.RecordQueryService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
+	70,  // 174: temporaless.v1.RecordQueryService.ListActivities:output_type -> temporaless.v1.RecordQueryServiceListActivitiesResponse
+	90,  // 175: temporaless.v1.RecordQueryService.Sweep:output_type -> temporaless.v1.SweepResponse
+	95,  // 176: temporaless.v1.RecordQueryService.DueTimers:output_type -> temporaless.v1.RecordQueryServiceDueTimersResponse
+	149, // [149:177] is the sub-list for method output_type
+	121, // [121:149] is the sub-list for method input_type
+	121, // [121:121] is the sub-list for extension type_name
+	121, // [121:121] is the sub-list for extension extendee
+	0,   // [0:121] is the sub-list for field type_name
 }
 
 func init() { file_temporaless_v1_temporaless_proto_init() }
@@ -5869,8 +6706,8 @@ func file_temporaless_v1_temporaless_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporaless_v1_temporaless_proto_rawDesc), len(file_temporaless_v1_temporaless_proto_rawDesc)),
-			NumEnums:      8,
-			NumMessages:   78,
+			NumEnums:      13,
+			NumMessages:   87,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

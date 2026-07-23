@@ -41,7 +41,6 @@ def _options(*, run_id: str, owner_id: str) -> Options:
     return Options(
         workflow_id="prices:singleflight",
         run_id=run_id,
-        code_version="test",
         claim_owner_id=owner_id,
     )
 
@@ -72,7 +71,6 @@ async def _put_workflow_claim(
         owner_id=owner_id,
         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
         resource_id=options.workflow_id,
-        code_version=options.code_version,
         lease_expires_at=expires_at,
         created_at=created_at,
         heartbeat_at=created_at,
@@ -121,7 +119,6 @@ async def test_live_duplicate_is_busy_even_for_same_owner(
     assert claim.owner_id == "first-owner"
     assert claim.resource_type == temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW
     assert claim.resource_id == options.workflow_id
-    assert claim.code_version == "test"
     assert claim.HasField("created_at")
     assert claim.HasField("heartbeat_at")
     assert claim.HasField("lease_expires_at")
@@ -221,7 +218,6 @@ async def test_claim_store_without_owner_keeps_at_least_once_execution(
     options = Options(
         workflow_id="prices:singleflight",
         run_id="no-owner",
-        code_version="test",
     )
     first_entered = asyncio.Event()
     release_first = asyncio.Event()
@@ -277,7 +273,6 @@ async def test_terminal_state_is_refreshed_around_claim_acquisition(
             run_id=options.run_id,
         ).to_proto(),
         workflow_type=("workflow:google.protobuf.StringValue->google.protobuf.StringValue"),
-        code_version=options.code_version,
         input=input_any,
         status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         result=result_any,

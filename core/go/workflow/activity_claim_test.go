@@ -33,10 +33,9 @@ func TestActivityNilResultPersistsFailureAndReleasesClaim(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			workflow := &Workflow{
-				store:       store,
-				workflowID:  "nil-activity-result",
-				runID:       strings.ReplaceAll(test.name, " ", "-"),
-				codeVersion: "v1",
+				store:      store,
+				workflowID: "nil-activity-result",
+				runID:      strings.ReplaceAll(test.name, " ", "-"),
 			}
 			var claimStore storage.ClaimStore
 			if test.withClaims {
@@ -145,20 +144,18 @@ func TestActivityClaimSerializesLiveDuplicatesIncludingSameOwner(t *testing.T) {
 			cache := newRunScopedCache(rawStore, scope)
 			claimStore := newTestClaimStore(t)
 			firstWorkflow := &Workflow{
-				store:       cache,
-				claimStore:  claimStore,
-				workflowID:  scope.WorkflowID,
-				runID:       scope.RunID,
-				codeVersion: "v1",
-				claimOwner:  test.firstOwner,
+				store:      cache,
+				claimStore: claimStore,
+				workflowID: scope.WorkflowID,
+				runID:      scope.RunID,
+				claimOwner: test.firstOwner,
 			}
 			secondWorkflow := &Workflow{
-				store:       cache,
-				claimStore:  claimStore,
-				workflowID:  scope.WorkflowID,
-				runID:       scope.RunID,
-				codeVersion: "v1",
-				claimOwner:  test.secondOwner,
+				store:      cache,
+				claimStore: claimStore,
+				workflowID: scope.WorkflowID,
+				runID:      scope.RunID,
+				claimOwner: test.secondOwner,
 			}
 
 			var bodyCalls atomic.Int64
@@ -285,12 +282,11 @@ func TestActivityClaimReleasedAtDurableBoundaries(t *testing.T) {
 			store := newTestStore(t)
 			claimStore := newTestClaimStore(t)
 			workflow := &Workflow{
-				store:       store,
-				claimStore:  claimStore,
-				workflowID:  "activity-boundary",
-				runID:       "run-" + intToASCII(int32(index)),
-				codeVersion: "v1",
-				claimOwner:  "worker",
+				store:      store,
+				claimStore: claimStore,
+				workflowID: "activity-boundary",
+				runID:      "run-" + intToASCII(int32(index)),
+				claimOwner: "worker",
 			}
 
 			result, err := runActivity(
@@ -387,12 +383,11 @@ func TestActivityClaimRetainedWhenOutcomeIsAmbiguous(t *testing.T) {
 			}
 			claimStore := newTestClaimStore(t)
 			workflow := &Workflow{
-				store:       store,
-				claimStore:  claimStore,
-				workflowID:  "activity-ambiguous",
-				runID:       strings.ReplaceAll(test.name, " ", "-"),
-				codeVersion: "v1",
-				claimOwner:  "worker",
+				store:      store,
+				claimStore: claimStore,
+				workflowID: "activity-ambiguous",
+				runID:      strings.ReplaceAll(test.name, " ", "-"),
+				claimOwner: "worker",
 			}
 
 			err := test.run(t, workflow)
@@ -423,7 +418,6 @@ func TestActivityClaimReleaseFailureLeavesWorkflowInProgress(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "activity-release",
 		RunId:        "release-failed",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "worker",
 	}
 
@@ -499,11 +493,10 @@ func TestActivityClaimRefreshBypassesCachedMiss(t *testing.T) {
 			scope := storage.NewWorkflowKey("activity-refresh", strings.ReplaceAll(test.name, " ", "-"))
 			cache := newRunScopedCache(rawStore, scope)
 			workflow := &Workflow{
-				store:       cache,
-				workflowID:  scope.WorkflowID,
-				runID:       scope.RunID,
-				codeVersion: "v1",
-				claimOwner:  "worker",
+				store:      cache,
+				workflowID: scope.WorkflowID,
+				runID:      scope.RunID,
+				claimOwner: "worker",
 			}
 			claimStore := &activityTerminalRaceClaimStore{
 				ClaimStore:      newTestClaimStore(t),
@@ -623,7 +616,6 @@ func putCompletedActivityForClaimRace(
 			workflow.workflowID, workflow.runID, activityID,
 		).Proto(),
 		ActivityType: activityClaimTestType,
-		CodeVersion:  workflow.codeVersion,
 		Input:        inputAny,
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		Result:       resultAny,

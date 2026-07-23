@@ -5,7 +5,6 @@ import contextvars
 import inspect
 import logging
 import math
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -23,6 +22,7 @@ from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
     DEFAULT_NAMESPACE,
+    POLL_TIMER_KIND,
     SLEEP_TIMER_KIND,
     TIMER_RECORD_SCHEMA_VERSION,
     WORKFLOW_RECORD_SCHEMA_VERSION,
@@ -34,6 +34,8 @@ from temporaless.storage import (
     Store,
     TimerKey,
     WorkflowKey,
+    _validate_event_delivery_record,
+    _validate_timer_record,
 )
 from temporaless.v1 import temporaless_pb2
 
@@ -45,6 +47,7 @@ TaskResultT = TypeVar("TaskResultT")
 Options = temporaless_pb2.WorkflowOptions
 ActivityOptions = temporaless_pb2.ActivityOptions
 RetryPolicy = temporaless_pb2.RetryPolicy
+PollOptions = temporaless_pb2.PollOptions
 
 # Framework-reserved string literals sourced from the proto-declared defaults
 # on ``temporaless.v1.ReservedNames``. Reading from a zero-value instance
@@ -92,7 +95,6 @@ async def _acquire_concurrency_slot(
     concurrency_key: str,
     limit: int,
     owner_id: str,
-    code_version: str,
     lease_duration: timedelta,
 ) -> str | None:
     """Try slots 0..limit-1 in order; return the slot_id of the acquired slot
@@ -126,7 +128,6 @@ async def _acquire_concurrency_slot(
             owner_id=owner_id,
             resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_CONCURRENCY_KEY,
             resource_id=concurrency_key,
-            code_version=code_version,
             lease_expires_at=expires_at,
             created_at=created_at,
             heartbeat_at=created_at,
@@ -391,20 +392,34 @@ async def _await_workflow_infrastructure(
 
 
 class EventPendingError(RuntimeError):
-    def __init__(self, event_id: str) -> None:
-        super().__init__(f"event {event_id!r} is pending")
+    def __init__(self, event_id: str, wake_at: datetime | None = None) -> None:
+        message = f"event {event_id!r} is pending"
+        if wake_at is not None:
+            message += f"; next poll at {wake_at.isoformat()}"
+        super().__init__(message)
         self.event_id = event_id
+        self.wake_at = wake_at
 
 
 class WorkflowDependencyPendingError(RuntimeError):
     """Raised when a workflow body waits on another workflow that hasn't
     completed yet. Like ``EventPendingError``, this leaves the calling
-    workflow IN_PROGRESS so a scanner / re-invoke can resume it later."""
+    workflow IN_PROGRESS. ``wake_at`` is present only when the wait armed a
+    scanner-visible poll timer; otherwise the application must re-invoke it."""
 
-    def __init__(self, workflow_id: str, run_id: str) -> None:
-        super().__init__(f"workflow {workflow_id!r}/{run_id!r} has not completed")
+    def __init__(
+        self,
+        workflow_id: str,
+        run_id: str,
+        wake_at: datetime | None = None,
+    ) -> None:
+        message = f"workflow {workflow_id!r}/{run_id!r} has not completed"
+        if wake_at is not None:
+            message += f"; next poll at {wake_at.isoformat()}"
+        super().__init__(message)
         self.workflow_id = workflow_id
         self.run_id = run_id
+        self.wake_at = wake_at
 
 
 class WorkflowDependencyFailedError(RuntimeError):
@@ -418,6 +433,91 @@ class WorkflowDependencyFailedError(RuntimeError):
         self.workflow_id = workflow_id
         self.run_id = run_id
         self.status = status
+
+
+def _is_workflow_continuation_exception(exc: BaseException) -> bool:
+    """Return whether ``run`` must leave its parent record IN_PROGRESS.
+
+    Activity bodies are application boundaries: when one returns a framework
+    error, ``run_activity`` wraps it in ``ActivityError`` after persisting the
+    activity outcome. That wrapped value is terminal business failure here,
+    not a workflow continuation signal.
+    """
+    if isinstance(exc, ActivityError):
+        return False
+    return isinstance(
+        exc,
+        (
+            asyncio.CancelledError,
+            TimerPendingError,
+            ClaimBusyError,
+            ClaimReleaseError,
+            EventPendingError,
+            WorkflowDependencyPendingError,
+            WorkflowInfrastructureError,
+        ),
+    )
+
+
+async def gather_activities(
+    *awaitables: Awaitable[TaskResultT],
+) -> list[TaskResultT]:
+    """Run independent activity branches concurrently and settle every branch.
+
+    Pass calls to :meth:`Workflow.execute_activity` or
+    :meth:`Workflow.activity`. Results preserve argument order. Unlike bare
+    ``asyncio.gather`` with its default options, the first failure is not
+    returned while sibling activities are still running: every started branch
+    reaches its own durable outcome first.
+
+    A timer/event/claim/infrastructure continuation wins over terminal activity
+    failures for the current invocation so the parent workflow remains
+    ``IN_PROGRESS``. The terminal activity record is already durable and is
+    replayed on the next invocation. Multiple terminal failures are raised as
+    one ``ExceptionGroup`` after all branches settle.
+
+    Caller cancellation is propagated to every child and all children are
+    drained before cancellation returns, so no activity task is left mutating
+    records after its workflow invocation exits.
+    """
+    if not awaitables:
+        return []
+
+    async def await_one(awaitable: Awaitable[TaskResultT]) -> TaskResultT:
+        return await awaitable
+
+    tasks = [asyncio.create_task(await_one(awaitable)) for awaitable in awaitables]
+    try:
+        settled = await asyncio.gather(*tasks, return_exceptions=True)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+
+        async def drain() -> None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        drain_task = asyncio.create_task(drain())
+        await _await_task_to_completion(drain_task)
+        raise
+
+    failures = [item for item in settled if isinstance(item, BaseException)]
+    for failure in failures:
+        if _is_workflow_continuation_exception(failure):
+            raise failure
+    for failure in failures:
+        # ExceptionGroup deliberately rejects BaseException-only signals such
+        # as SystemExit and KeyboardInterrupt. Settle every sibling first, then
+        # propagate the first such signal in call order.
+        if not isinstance(failure, Exception):
+            raise failure
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise ExceptionGroup(
+            "multiple activity branches failed",
+            [failure for failure in failures if isinstance(failure, Exception)],
+        )
+    return cast("list[TaskResultT]", settled)
 
 
 @dataclass
@@ -494,13 +594,12 @@ class Workflow:
         self._claim_capability = claim_capability
         self._workflow_id = options.workflow_id
         self._run_id = options.run_id
-        self._code_version = options.code_version
         self._claim_owner = options.claim_owner_id or None
-        # A due sleep has been observed by this invocation, but its wakeup is
+        # A due timer has been observed by this invocation, but its wakeup is
         # not consumed until the workflow reaches another durable wakeup or a
-        # terminal workflow record. Keeping the timer scheduled across the
-        # ambiguous body window makes a crash redeliverable.
-        self._due_sleep_timer_ids: set[str] = set()
+        # terminal workflow record. Keeping it scheduled across the ambiguous
+        # body window makes a crash redeliverable.
+        self._due_wake_timer_ids: set[str] = set()
 
     @property
     def workflow_id(self) -> str:
@@ -509,10 +608,6 @@ class Workflow:
     @property
     def run_id(self) -> str:
         return self._run_id
-
-    @property
-    def code_version(self) -> str:
-        return self._code_version
 
     async def run_activity(
         self,
@@ -563,7 +658,7 @@ class Workflow:
                 return stored, [], {}, None
             if stored.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING:
                 raise ActivityConflictError("stored activity has unknown status")
-            _assert_activity_identity(stored, activity_type, self._code_version)
+            _assert_activity_identity(stored, activity_type)
             _assert_activity_retry_policy(stored, plan.record_policy)
             if stored.retry_timer_id != retry_timer_id:
                 raise ActivityConflictError(
@@ -655,8 +750,6 @@ class Workflow:
                     raise ActivityConflictError(
                         "stored activity retry timer belongs to another activity"
                     )
-                if timer.code_version != self._code_version:
-                    raise ActivityConflictError("stored activity retry timer code version changed")
                 if timer.schema_version != TIMER_RECORD_SCHEMA_VERSION:
                     raise ActivityConflictError(
                         "stored activity retry timer schema version changed"
@@ -751,7 +844,7 @@ class Workflow:
                         timer_duration,
                         timer_fire_at,
                     )
-                await self._reconcile_due_sleep_timers()
+                await self._reconcile_due_wake_timers()
                 return timer_fire_at
 
             retry_interval = _retry_interval_after_failed_attempt(plan, len(stored_attempts))
@@ -768,7 +861,7 @@ class Workflow:
                 await self._put_activity_retry_timer(
                     activity_id, retry_timer_id, retry_interval, wake_at
                 )
-                await self._reconcile_due_sleep_timers()
+                await self._reconcile_due_wake_timers()
                 return wake_at
 
             assert timer_fire_at is not None
@@ -781,7 +874,7 @@ class Workflow:
             if timer.status == temporaless_pb2.TIMER_STATUS_SCHEDULED and timer_fire_at == wake_at:
                 # The verified retry timer is a durable successor for any
                 # ordinary sleep crossed earlier in this invocation.
-                await self._reconcile_due_sleep_timers()
+                await self._reconcile_due_wake_timers()
                 return wake_at
             if timer_fire_at > wake_at:
                 # A timer-first writer published a later retry but died before
@@ -806,7 +899,7 @@ class Workflow:
                         timer_duration,
                         timer_fire_at,
                     )
-                await self._reconcile_due_sleep_timers()
+                await self._reconcile_due_wake_timers()
                 return timer_fire_at
 
             # Missing the latest overwrite is the expected partial-write case;
@@ -815,12 +908,12 @@ class Workflow:
             await self._put_activity_retry_timer(
                 activity_id, retry_timer_id, retry_interval, wake_at
             )
-            await self._reconcile_due_sleep_timers()
+            await self._reconcile_due_wake_timers()
             return wake_at
 
         async def replay_terminal(stored: temporaless_pb2.ActivityRecord) -> ResultT:
             await reconcile_terminal_retry_timer(stored)
-            return _replay_record(stored, activity_type, self._code_version, result_template)
+            return _replay_record(stored, activity_type, result_template)
 
         record = await _await_workflow_infrastructure(
             "read activity",
@@ -845,10 +938,11 @@ class Workflow:
                         "read activity claim capability",
                         self._claim_store.claim_capability(),
                     )
-                if self._claim_capability not in (
-                    temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-                    temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-                ):
+                # CAS remains a reserved wire value. The current ClaimStore
+                # Protocol has no fencing token, conditional refresh/release,
+                # or takeover operation, so accepting it here would promise
+                # semantics this runtime cannot enforce.
+                if self._claim_capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
                     raise ClaimCapabilityError(self._claim_capability, "claim_owner_id")
                 claim_id = f"{ACTIVITY_CLAIM_ID_PREFIX}{activity_id}"
                 activity_claim_key = ClaimKey(
@@ -868,7 +962,6 @@ class Workflow:
                         owner_id=self._claim_owner,
                         resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_ACTIVITY,
                         resource_id=activity_id,
-                        code_version=self._code_version,
                         lease_expires_at=expires_at,
                         created_at=created_at,
                         heartbeat_at=created_at,
@@ -1018,7 +1111,6 @@ class Workflow:
                                 schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                                 key=key.to_proto(),
                                 activity_type=activity_type,
-                                code_version=self._code_version,
                                 input=input_any,
                                 status=temporaless_pb2.ACTIVITY_STATUS_FAILED,
                                 failure=failure,
@@ -1044,7 +1136,6 @@ class Workflow:
                             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                             key=key.to_proto(),
                             activity_type=activity_type,
-                            code_version=self._code_version,
                             input=input_any,
                             status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
                             failure=failure,
@@ -1085,7 +1176,7 @@ class Workflow:
                                 release_activity_claim = True
                                 if timer_cancelled is not None:
                                     raise timer_cancelled
-                                await self._reconcile_due_sleep_timers()
+                                await self._reconcile_due_wake_timers()
                                 await _await_workflow_infrastructure(
                                     "persist durable retrying activity",
                                     self._store.put_activity(retrying_record),
@@ -1119,7 +1210,6 @@ class Workflow:
                         schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                         key=key.to_proto(),
                         activity_type=activity_type,
-                        code_version=self._code_version,
                         input=input_any,
                         status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                         result=result_any,
@@ -1228,24 +1318,197 @@ class Workflow:
         self,
         event_id: str,
         payload_factory: Callable[[], ResultT],
+        poll_options: PollOptions | None = None,
     ) -> ResultT:
         key = EventKey(
             workflow_id=self._workflow_id,
             run_id=self._run_id,
             event_id=event_id,
         )
+        key.validate()
+        if poll_options is not None:
+            _validated_poll_interval(poll_options)
+        payload = payload_factory()
+        if not isinstance(payload, Message):
+            raise TypeError("event payload_factory must return a protobuf message")
         record = await _await_workflow_infrastructure(
             "read workflow event",
             self._store.get_event(key),
         )
         if record is None:
-            raise EventPendingError(event_id)
-        payload = payload_factory()
+            wake_at = await self.arm_poll(poll_options) if poll_options is not None else None
+            raise EventPendingError(event_id, wake_at)
+        _validate_event_delivery_record(record, expected_key=key)
+        if poll_options is not None:
+            await self.resolve_poll(poll_options)
         if not record.payload.Unpack(payload):
             raise WorkflowConflictError(
                 "stored event payload type does not match requested payload"
             )
         return payload
+
+    def _inspect_poll_timer(
+        self,
+        stored: temporaless_pb2.TimerRecord,
+        key: TimerKey,
+        interval: timedelta,
+    ) -> tuple[datetime, temporaless_pb2.TimerStatus]:
+        try:
+            _validate_timer_record(stored, expected_key=key)
+        except (ValidationError, ValueError) as exc:
+            raise TimerConflictError("stored poll timer record is invalid") from exc
+        if stored.timer_kind != POLL_TIMER_KIND:
+            raise TimerConflictError(
+                f"timer kind changed from {stored.timer_kind!r} to {POLL_TIMER_KIND!r}"
+            )
+        if stored.retry_activity_id:
+            raise TimerConflictError("stored poll timer belongs to an activity retry")
+        if not stored.HasField("duration"):
+            raise TimerConflictError("stored poll timer has no interval")
+        try:
+            stored_interval = _validated_proto_duration(stored.duration, "persisted poll interval")
+        except (OverflowError, ValueError) as exc:
+            raise TimerConflictError("stored poll timer has invalid interval") from exc
+        if stored_interval <= timedelta(0):
+            raise TimerConflictError("stored poll timer interval must be positive")
+        if stored_interval != interval:
+            raise TimerConflictError(f"poll interval changed from {stored_interval} to {interval}")
+        if not stored.HasField("fire_at"):
+            raise TimerConflictError("stored poll timer has no fire_at")
+        if not stored.HasField("created_at"):
+            raise TimerConflictError("stored poll timer has no created_at")
+        try:
+            fire_at = _validated_proto_timestamp(stored.fire_at, "persisted poll timer fire_at")
+            _validated_proto_timestamp(stored.created_at, "persisted poll timer created_at")
+        except (OverflowError, ValueError) as exc:
+            raise TimerConflictError("stored poll timer has an invalid timestamp") from exc
+
+        if stored.status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
+            if stored.HasField("fired_at"):
+                raise TimerConflictError("stored SCHEDULED poll timer has fired_at")
+            return fire_at, stored.status
+        if stored.status == temporaless_pb2.TIMER_STATUS_FIRED:
+            if not stored.HasField("fired_at"):
+                raise TimerConflictError("stored FIRED poll timer has no fired_at")
+            try:
+                _validated_proto_timestamp(stored.fired_at, "persisted poll timer fired_at")
+            except (OverflowError, ValueError) as exc:
+                raise TimerConflictError("stored FIRED poll timer has invalid fired_at") from exc
+            return fire_at, stored.status
+        if stored.status == temporaless_pb2.TIMER_STATUS_CANCELED:
+            if stored.HasField("fired_at"):
+                raise TimerConflictError("stored CANCELED poll timer has fired_at")
+            raise TimerConflictError("poll timer was canceled")
+        raise TimerConflictError("stored poll timer has unknown status")
+
+    async def arm_poll(self, options: PollOptions) -> datetime:
+        """Persist or rearm one caller-identified polling wake.
+
+        Call wait helpers only while their condition remains unresolved. A
+        future scheduled timer is reused. A due or previously fired timer is
+        rearmed from the current time using the same ID.
+        """
+        interval = _validated_poll_interval(options)
+        key = TimerKey(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            timer_id=options.timer_id,
+        )
+        now = datetime.now(UTC)
+
+        record = await _await_workflow_infrastructure(
+            "read poll timer",
+            self._store.get_timer(key),
+        )
+        if record is not None:
+            fire_at, status = self._inspect_poll_timer(record, key, interval)
+            if status == temporaless_pb2.TIMER_STATUS_SCHEDULED and now < fire_at:
+                await self._reconcile_due_wake_timers(except_timer_id=options.timer_id)
+                return fire_at
+
+        try:
+            fire_at = now + interval
+        except OverflowError as exc:
+            raise ValueError("poll interval is outside the supported range") from exc
+        duration_message = Duration()
+        duration_message.FromTimedelta(interval)
+        fire_at_message = Timestamp()
+        fire_at_message.FromDatetime(fire_at)
+
+        if record is None:
+            created_at = Timestamp()
+            created_at.FromDatetime(now)
+            record = temporaless_pb2.TimerRecord(
+                schema_version=TIMER_RECORD_SCHEMA_VERSION,
+                key=key.to_proto(),
+                timer_kind=POLL_TIMER_KIND,
+                duration=duration_message,
+                created_at=created_at,
+            )
+        else:
+            updated = temporaless_pb2.TimerRecord()
+            updated.CopyFrom(record)
+            record = updated
+        record.status = temporaless_pb2.TIMER_STATUS_SCHEDULED
+        record.fire_at.CopyFrom(fire_at_message)
+        record.ClearField("fired_at")
+
+        try:
+            await _await_workflow_infrastructure(
+                "persist poll timer",
+                self._store.put_timer(record),
+            )
+        except WorkflowInfrastructureError as write_error:
+            try:
+                if isinstance(self._store, RunScopedCache):
+                    verified = await _await_workflow_infrastructure(
+                        "verify ambiguous poll timer write",
+                        self._store.refresh_timer(key),
+                    )
+                else:
+                    verified = await _await_workflow_infrastructure(
+                        "verify ambiguous poll timer write",
+                        self._store.get_timer(key),
+                    )
+            except WorkflowInfrastructureError as verify_error:
+                raise WorkflowInfrastructureError(
+                    "persist and verify poll timer",
+                    ExceptionGroup(
+                        "poll timer write and verification failed",
+                        [write_error, verify_error],
+                    ),
+                ) from verify_error
+            if verified is None:
+                raise
+            _verified_fire_at, verified_status = self._inspect_poll_timer(verified, key, interval)
+            if verified_status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
+                raise TimerConflictError("verified poll timer is not scheduled") from write_error
+            # The wake exists, but preserve the ambiguous infrastructure
+            # outcome so the immediate requester retries independently too.
+            raise
+
+        await self._reconcile_due_wake_timers(except_timer_id=options.timer_id)
+        return fire_at
+
+    async def resolve_poll(self, options: PollOptions | None) -> None:
+        """Retain a resolved poll timer until the next durable boundary."""
+        if options is None:
+            return
+        interval = _validated_poll_interval(options)
+        key = TimerKey(
+            workflow_id=self._workflow_id,
+            run_id=self._run_id,
+            timer_id=options.timer_id,
+        )
+        record = await _await_workflow_infrastructure(
+            "read resolved poll timer",
+            self._store.get_timer(key),
+        )
+        if record is None:
+            return
+        _fire_at, status = self._inspect_poll_timer(record, key, interval)
+        if status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
+            self._due_wake_timer_ids.add(options.timer_id)
 
     @property
     def store(self) -> Store:
@@ -1272,10 +1535,6 @@ class Workflow:
             if stored.timer_kind != timer_kind:
                 raise TimerConflictError(
                     f"timer kind changed from {stored.timer_kind!r} to {timer_kind!r}"
-                )
-            if stored.code_version != self._code_version:
-                raise TimerConflictError(
-                    f"code version changed from {stored.code_version!r} to {self._code_version!r}"
                 )
             if stored.retry_activity_id:
                 raise TimerConflictError("stored sleep timer belongs to an activity retry")
@@ -1333,11 +1592,11 @@ class Workflow:
             fire_at, status = inspect_sleep_timer(record)
             if status == temporaless_pb2.TIMER_STATUS_SCHEDULED:
                 if now < fire_at:
-                    # This future timer is the durable successor for any earlier
-                    # due sleeps traversed by the replay.
-                    await self._reconcile_due_sleep_timers()
+                    # This future timer is the durable successor for any
+                    # earlier due wakes traversed by the replay.
+                    await self._reconcile_due_wake_timers()
                     raise TimerPendingError(timer_id, fire_at)
-                self._due_sleep_timer_ids.add(timer_id)
+                self._due_wake_timer_ids.add(timer_id)
             return
 
         try:
@@ -1359,7 +1618,6 @@ class Workflow:
             schema_version=TIMER_RECORD_SCHEMA_VERSION,
             key=key.to_proto(),
             timer_kind=timer_kind,
-            code_version=self._code_version,
             duration=duration_message,
             # Even an immediately due timer stays scheduled until the body
             # crosses a later durable boundary. Otherwise a process death
@@ -1409,21 +1667,23 @@ class Workflow:
             # parent must remain IN_PROGRESS after the ambiguous response.
             raise TimerPendingError(timer_id, verified_fire_at) from write_error
         if now >= fire_at:
-            self._due_sleep_timer_ids.add(timer_id)
+            self._due_wake_timer_ids.add(timer_id)
             return
         # Persist the successor before consuming any prior due wakeups. A
         # cleanup failure leaves duplicate delivery, not a lost workflow.
-        await self._reconcile_due_sleep_timers()
+        await self._reconcile_due_wake_timers()
         raise TimerPendingError(timer_id, fire_at)
 
-    async def _reconcile_due_sleep_timers(self) -> None:
+    async def _reconcile_due_wake_timers(self, *, except_timer_id: str = "") -> None:
         """Best-effort acknowledgement after a durable successor boundary.
 
         The caller must persist that boundary before invoking this method.
         Failed acknowledgements intentionally remain scheduled so a scanner
         can safely redeliver the workflow.
         """
-        for timer_id in tuple(self._due_sleep_timer_ids):
+        for timer_id in tuple(self._due_wake_timer_ids):
+            if timer_id == except_timer_id:
+                continue
             key = TimerKey(
                 workflow_id=self._workflow_id,
                 run_id=self._run_id,
@@ -1432,14 +1692,11 @@ class Workflow:
             try:
                 record = await self._store.get_timer(key)
                 if record is None or record.status != temporaless_pb2.TIMER_STATUS_SCHEDULED:
-                    self._due_sleep_timer_ids.discard(timer_id)
+                    self._due_wake_timer_ids.discard(timer_id)
                     continue
-                if (
-                    record.timer_kind != SLEEP_TIMER_KIND
-                    or record.code_version != self._code_version
-                ):
+                if record.timer_kind not in (SLEEP_TIMER_KIND, POLL_TIMER_KIND):
                     _LOGGER.warning(
-                        "refusing to reconcile changed sleep timer %s/%s/%s",
+                        "refusing to reconcile changed wake timer %s/%s/%s",
                         self._workflow_id,
                         self._run_id,
                         timer_id,
@@ -1450,10 +1707,10 @@ class Workflow:
                 fired.status = temporaless_pb2.TIMER_STATUS_FIRED
                 fired.fired_at.GetCurrentTime()
                 await self._store.put_timer(fired)
-                self._due_sleep_timer_ids.discard(timer_id)
+                self._due_wake_timer_ids.discard(timer_id)
             except Exception:
                 _LOGGER.warning(
-                    "failed to reconcile due sleep timer %s/%s/%s",
+                    "failed to reconcile due wake timer %s/%s/%s",
                     self._workflow_id,
                     self._run_id,
                     timer_id,
@@ -1486,7 +1743,6 @@ class Workflow:
             schema_version=TIMER_RECORD_SCHEMA_VERSION,
             key=key.to_proto(),
             timer_kind=timer_kind,
-            code_version=self._code_version,
             duration=duration_message,
             status=temporaless_pb2.TIMER_STATUS_SCHEDULED,
             fire_at=fire_at_message,
@@ -1525,8 +1781,6 @@ class Workflow:
             )
         if record.retry_activity_id != activity_id:
             raise ActivityConflictError("stored activity retry timer belongs to another activity")
-        if record.code_version != self._code_version:
-            raise ActivityConflictError("stored activity retry timer code version changed")
         if record.schema_version != TIMER_RECORD_SCHEMA_VERSION:
             raise ActivityConflictError("stored activity retry timer schema version changed")
         if record.status == temporaless_pb2.TIMER_STATUS_FIRED:
@@ -1593,7 +1847,6 @@ async def run(
                 _replay_workflow_record(
                     record,
                     workflow_type,
-                    options.code_version,
                     options.run_order_time if options.HasField("run_order_time") else None,
                     result_template,
                 ),
@@ -1603,7 +1856,6 @@ async def run(
             _assert_workflow_identity(
                 record,
                 workflow_type,
-                options.code_version,
                 options.run_order_time if options.HasField("run_order_time") else None,
             )
             created_at = Timestamp()
@@ -1627,10 +1879,7 @@ async def run(
     if claim_option:
         assert claim_store is not None
         claim_capability = await claim_store.claim_capability()
-        if claim_capability not in (
-            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-        ):
+        if claim_capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
             raise ClaimCapabilityError(claim_capability, claim_option)
 
     workflow_claim_key: ClaimKey | None = None
@@ -1663,7 +1912,6 @@ async def run(
                     owner_id=options.claim_owner_id,
                     resource_type=temporaless_pb2.CLAIM_RESOURCE_TYPE_WORKFLOW,
                     resource_id=options.workflow_id,
-                    code_version=options.code_version,
                     lease_expires_at=claim_expires_at,
                     created_at=claim_created_at,
                     heartbeat_at=claim_heartbeat_at,
@@ -1738,7 +1986,6 @@ async def run(
                     options.concurrency_key,
                     options.concurrency_limit,
                     options.claim_owner_id,
-                    options.code_version,
                     DEFAULT_CLAIM_LEASE_DURATION,
                 )
             )
@@ -1758,7 +2005,6 @@ async def run(
                 schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                 key=key.to_proto(),
                 workflow_type=workflow_type,
-                code_version=options.code_version,
                 input=input_any,
                 status=temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS,
                 created_at=created_at,
@@ -1810,7 +2056,6 @@ async def run(
                     schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                     key=key.to_proto(),
                     workflow_type=workflow_type,
-                    code_version=options.code_version,
                     input=input_any,
                     status=temporaless_pb2.WORKFLOW_STATUS_FAILED,
                     failure=_failure_from_exception(exc),
@@ -1822,8 +2067,8 @@ async def run(
                     failed.run_order_time.CopyFrom(options.run_order_time)
                 await store.put_workflow(failed)
                 # The terminal record is authoritative. Only now is it safe
-                # to consume sleep wakeups traversed by this invocation.
-                await workflow._reconcile_due_sleep_timers()
+                # to consume due wake timers traversed by this invocation.
+                await workflow._reconcile_due_wake_timers()
                 raise
 
             result_any = Any()
@@ -1834,7 +2079,6 @@ async def run(
                 schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                 key=key.to_proto(),
                 workflow_type=workflow_type,
-                code_version=options.code_version,
                 input=input_any,
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
                 result=result_any,
@@ -1845,7 +2089,7 @@ async def run(
             if options.HasField("run_order_time"):
                 completed.run_order_time.CopyFrom(options.run_order_time)
             await store.put_workflow(completed)
-            await workflow._reconcile_due_sleep_timers()
+            await workflow._reconcile_due_wake_timers()
             return result
         finally:
             _workflow_var.reset(workflow_token)
@@ -1951,8 +2195,6 @@ def normalized_workflow_options(options: Options) -> Options:
         raise ValueError("workflow options are required")
     normalized = Options()
     normalized.CopyFrom(options)
-    if not normalized.code_version:
-        normalized.code_version = os.environ.get("TEMPORALESS_CODE_VERSION") or "dev"
     validate(normalized)
     if normalized.HasField("run_order_time"):
         try:
@@ -1992,23 +2234,17 @@ def _validate_result_message(kind: str, result: object, expected: Message) -> No
 def _assert_activity_identity(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
-    code_version: str,
 ) -> None:
     """Guard against shape changes that would make the stored record
     incompatible with the current code path: a swapped request/response
-    message type (which changes ``activity_type``) or a bumped
-    ``code_version``. The ``activity_id`` itself is the de-duplication key;
-    same id + same shape + same code_version is treated as the same logical
-    activity regardless of the input bytes — the caller chose the id and
-    owns its semantics.
+    message type changes ``activity_type``. The ``activity_id`` itself is the
+    de-duplication key; same id + same shape is treated as the same logical
+    activity regardless of the input bytes or current handler implementation.
+    The caller chose the id and owns its semantics.
     """
     if record.activity_type != activity_type:
         raise ActivityConflictError(
             f"activity type changed from {record.activity_type!r} to {activity_type!r}"
-        )
-    if record.code_version != code_version:
-        raise ActivityConflictError(
-            f"code version changed from {record.code_version!r} to {code_version!r}"
         )
 
 
@@ -2035,10 +2271,9 @@ def _assert_activity_retry_policy(
 def _replay_record(
     record: temporaless_pb2.ActivityRecord,
     activity_type: str,
-    code_version: str,
     result: ResultT,
 ) -> ResultT:
-    _assert_activity_identity(record, activity_type, code_version)
+    _assert_activity_identity(record, activity_type)
 
     if record.status == temporaless_pb2.ACTIVITY_STATUS_COMPLETED:
         if not record.result.Unpack(result):
@@ -2130,10 +2365,25 @@ def _validated_proto_duration(value: Duration, name: str) -> timedelta:
     try:
         # ToJsonString enforces the protobuf Duration range and canonical
         # seconds/nanos sign rules that ToTimedelta alone accepts loosely.
+        # Python timedelta has microsecond precision, so reject rather than
+        # silently round a positive sub-microsecond poll/retry interval to zero.
         value.ToJsonString()
-        return value.ToTimedelta()
+        duration = value.ToTimedelta()
+        roundtrip = Duration()
+        roundtrip.FromTimedelta(duration)
+        if roundtrip != value:
+            raise ValueError(f"{name} is not exactly representable as timedelta")
+        return duration
     except (OverflowError, ValueError) as exc:
-        raise ValueError(f"retry policy {name} is invalid") from exc
+        raise ValueError(f"{name} is invalid") from exc
+
+
+def _validated_poll_interval(options: PollOptions) -> timedelta:
+    validate(options)
+    interval = _validated_proto_duration(options.interval, "poll interval")
+    if interval <= timedelta(0):
+        raise ValueError("poll interval must be positive")
+    return interval
 
 
 def _validated_proto_timestamp(value: Timestamp, name: str) -> datetime:
@@ -2265,11 +2515,10 @@ def _failure_from_exception(exc: BaseException) -> temporaless_pb2.ActivityFailu
 def _replay_workflow_record(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
-    code_version: str,
     run_order_time: Timestamp | None,
     result: ResultT,
 ) -> ResultT:
-    _assert_workflow_identity(record, workflow_type, code_version, run_order_time)
+    _assert_workflow_identity(record, workflow_type, run_order_time)
     if record.status == temporaless_pb2.WORKFLOW_STATUS_COMPLETED:
         if not record.result.Unpack(result):
             raise WorkflowConflictError(
@@ -2286,17 +2535,12 @@ def _replay_workflow_record(
 def _assert_workflow_identity(
     record: temporaless_pb2.WorkflowRecord,
     workflow_type: str,
-    code_version: str,
     run_order_time: Timestamp | None,
 ) -> None:
     """See :func:`_assert_activity_identity` for the de-duplication contract."""
     if record.workflow_type != workflow_type:
         raise WorkflowConflictError(
             f"workflow type changed from {record.workflow_type!r} to {workflow_type!r}"
-        )
-    if record.code_version != code_version:
-        raise WorkflowConflictError(
-            f"code version changed from {record.code_version!r} to {code_version!r}"
         )
     if record.HasField("run_order_time") != (run_order_time is not None):
         raise WorkflowConflictError("run_order_time changed for an existing workflow run")

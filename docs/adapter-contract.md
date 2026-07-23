@@ -35,6 +35,7 @@ Each adapter should document:
 - semantic gaps
 - dependency choices
 - storage and concurrency assumptions
+- claim and event-delivery capabilities
 - tests proving the declared behavior
 
 For Temporal-shaped adapters, unsupported Temporal behavior should fail loudly. Examples include multiple workflow arguments, custom payload converters, non-protobuf payloads, child workflows, signals, queries, cancellation semantics, retry policies, and workflow task replay details.
@@ -45,7 +46,12 @@ Claim adapters must declare one capability:
 
 - `CLAIM_CAPABILITY_NO_CLAIMS`
 - `CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS`
-- `CLAIM_CAPABILITY_CAS_CLAIMS`
+- `CLAIM_CAPABILITY_CAS_CLAIMS` (reserved for a future fenced CAS interface)
+
+Current adapters must report only `NO_CLAIMS` or `CREATE_ONLY_CLAIMS`.
+Workflow, ConnectStore, deletion, and retention boundaries reject the reserved
+CAS value today: the existing create/get/unconditional-delete surface cannot
+honestly provide refresh, fenced release, or safe takeover.
 
 When `claim_owner_id` enables them, create-only claims prevent concurrent
 workflow starts and missing activity execution, but they cannot safely take
@@ -56,3 +62,21 @@ Every existing activity claim is also busy, including for the same owner.
 Adapters must support run-scoped claim listing when they are used behind
 `DeleteRun` or claim-aware retention sweep, so recursive deletion can remove
 every claim before deleting the remaining run records.
+
+## Event Delivery
+
+Event-delivery adapters must declare one capability:
+
+- `EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE`
+- `EVENT_DELIVERY_CAPABILITY_CREATE_ONLY`
+
+`UNSPECIFIED` is treated as no support. A create-only implementation must use
+one backend-native conditional create; it must not emulate the boundary with a
+read followed by an unconditional write. An existing valid record with the
+same canonical protobuf payload is idempotent, while a different payload is a
+typed conflict. Corrupt existing records are errors, never idempotent or
+conflict outcomes.
+
+`PutEvent` is a separate low-level replace primitive for operators, migrations,
+and fixtures. Adapters must not silently route application `DeliverEvent`
+through it.

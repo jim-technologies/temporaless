@@ -12,6 +12,7 @@ import opendal
 from google.protobuf.message import DecodeError
 from protovalidate import ValidationError
 from temporaless.storage import (
+    NO_ATOMIC_EVENT_DELIVERY,
     NO_CLAIMS,
     ActivityKey,
     ClaimKey,
@@ -19,6 +20,8 @@ from temporaless.storage import (
     ClaimRunStore,
     ClaimStore,
     DueTimer,
+    EventDeliveryStore,
+    EventDeliveryUnsupportedError,
     EventKey,
     OpenDALStore,
     Store,
@@ -26,9 +29,12 @@ from temporaless.storage import (
     WorkflowKey,
     _activity_keys_for_run,
     _claim_keys_for_run,
+    _current_claim_capability,
     _event_keys_for_run,
     _timer_keys_for_run,
     _validate_activity_record,
+    _validate_event_delivery_disposition,
+    _validate_event_delivery_record,
     _validate_timer_record,
     _validate_workflow_record,
     activity_key_from_proto,
@@ -98,7 +104,7 @@ class IndexedStore:
     async def claim_capability(self) -> temporaless_pb2.ClaimCapability:
         if self._claim_store is None:
             return NO_CLAIMS
-        return await self._claim_store.claim_capability()
+        return _current_claim_capability(await self._claim_store.claim_capability())
 
     async def get_workflow(self, key: WorkflowKey) -> temporaless_pb2.WorkflowRecord | None:
         return await self._inner.get_workflow(key)
@@ -197,6 +203,24 @@ class IndexedStore:
     async def put_event(self, record: temporaless_pb2.EventRecord) -> None:
         await self._inner.put_event(record)
 
+    async def event_delivery_capability(
+        self,
+    ) -> temporaless_pb2.EventDeliveryCapability:
+        if not isinstance(self._inner, EventDeliveryStore):
+            return NO_ATOMIC_EVENT_DELIVERY
+        return await self._inner.event_delivery_capability()
+
+    async def deliver_event(
+        self,
+        record: temporaless_pb2.EventRecord,
+    ) -> temporaless_pb2.EventDeliveryDisposition:
+        _validate_event_delivery_record(record)
+        if not isinstance(self._inner, EventDeliveryStore):
+            raise EventDeliveryUnsupportedError(
+                "underlying store does not support atomic event delivery"
+            )
+        return _validate_event_delivery_disposition(await self._inner.deliver_event(record))
+
     async def list_events(self, key: WorkflowKey) -> list[temporaless_pb2.EventRecord]:
         return await self._inner.list_events(key)
 
@@ -207,10 +231,18 @@ class IndexedStore:
         return await self._require_claim_store().get_claim(key)
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
-        return await self._require_claim_store().try_create_claim(record)
+        claim_store = self._require_claim_store()
+        capability = _current_claim_capability(await claim_store.claim_capability())
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
+            raise ValueError("configured claim store does not support atomic claim creation")
+        return await claim_store.try_create_claim(record)
 
     async def delete_claim(self, key: ClaimKey) -> bool:
-        return await self._require_claim_store().delete_claim(key)
+        claim_store = self._require_claim_store()
+        capability = _current_claim_capability(await claim_store.claim_capability())
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
+            raise ValueError("configured claim store does not support claim release")
+        return await claim_store.delete_claim(key)
 
     async def list_claims(self, key: WorkflowKey) -> list[temporaless_pb2.ClaimRecord]:
         return await self._require_claim_run_store().list_claims(key)
@@ -609,10 +641,8 @@ class IndexedStore:
         if claim_store is None:
             return None, []
         capability = await claim_store.claim_capability()
-        if capability not in (
-            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-        ):
+        capability = _current_claim_capability(capability)
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
             return None, []
         claim_run_store = self._require_claim_run_store()
         try:
@@ -638,10 +668,8 @@ class IndexedStore:
         if self._claim_store is self._inner or not isinstance(self._inner, ClaimRunStore):
             return
         capability = await self._inner.claim_capability()
-        if capability not in (
-            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-        ):
+        capability = _current_claim_capability(capability)
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
             return
         try:
             records = await self._inner.list_claims(key)

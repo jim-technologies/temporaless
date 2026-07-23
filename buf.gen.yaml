@@ -26,7 +26,7 @@ plugins:
     opt:
       - protobuf=google
       - io=async
-  - remote: buf.build/bufbuild/es:v2.12.1
+  - remote: buf.build/bufbuild/es:v2.13.0
     out: core/ts/src/gen
     opt:
       - target=ts

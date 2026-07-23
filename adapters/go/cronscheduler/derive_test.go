@@ -37,7 +37,6 @@ func TestLastFireFromRunsDerivesStateFromStorage(t *testing.T) {
 			&workflow.Options{
 				WorkflowId:   "prices:aapl",
 				RunId:        fireTime.UTC().Format(time.RFC3339),
-				CodeVersion:  "test",
 				RunOrderTime: timestamppb.New(fireTime),
 			},
 			nil,
@@ -107,7 +106,6 @@ func TestLastFiresFromRunsBuildsRestorableSnapshot(t *testing.T) {
 			&workflow.Options{
 				WorkflowId:   schedule.workflowID,
 				RunId:        schedule.runID,
-				CodeVersion:  "test",
 				RunOrderTime: timestamppb.New(schedule.fireTime),
 			},
 			nil,

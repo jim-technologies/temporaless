@@ -20,7 +20,7 @@ func doubleInt32(_ context.Context, req *wrapperspb.Int32Value) (*wrapperspb.Int
 func TestActivityRequiresExplicitID(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "r", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "r"}
 	ctx = context.WithValue(ctx, workflowContextKey{}, wf)
 
 	_, err := Activity(ctx, doubleInt32, wrapperspb.Int32(7))
@@ -32,7 +32,7 @@ func TestActivityRequiresExplicitID(t *testing.T) {
 func TestActivityWithExplicitID(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "r", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "r"}
 	ctx = context.WithValue(ctx, workflowContextKey{}, wf)
 
 	_, err := Activity(
@@ -60,7 +60,7 @@ func TestActivityWithExplicitID(t *testing.T) {
 func TestActivityDefaultRetryPolicyRetries(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "r", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "r"}
 	ctx = context.WithValue(ctx, workflowContextKey{}, wf)
 
 	attempts := 0
@@ -93,7 +93,7 @@ func TestActivityDefaultRetryPolicyRetries(t *testing.T) {
 func TestActivityExplicitRetryPolicyOverridesDefault(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	wf := &Workflow{store: store, workflowID: "wf", runID: "r", codeVersion: "test"}
+	wf := &Workflow{store: store, workflowID: "wf", runID: "r"}
 	ctx = context.WithValue(ctx, workflowContextKey{}, wf)
 
 	attempts := 0

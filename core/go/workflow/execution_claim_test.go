@@ -41,13 +41,11 @@ func TestWorkflowExecutionClaimSerializesLiveDuplicates(t *testing.T) {
 			firstOptions := &Options{
 				WorkflowId:   "single-flight",
 				RunId:        "live-duplicate",
-				CodeVersion:  "v1",
 				ClaimOwnerId: test.firstOwner,
 			}
 			secondOptions := &Options{
 				WorkflowId:   firstOptions.GetWorkflowId(),
 				RunId:        firstOptions.GetRunId(),
-				CodeVersion:  firstOptions.GetCodeVersion(),
 				ClaimOwnerId: test.secondOwner,
 			}
 
@@ -170,7 +168,6 @@ func TestWorkflowTerminalReplayIgnoresStaleExecutionClaim(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "single-flight",
 		RunId:        "terminal-replay",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "first-worker",
 	}
 
@@ -208,7 +205,6 @@ func TestWorkflowTerminalReplayIgnoresStaleExecutionClaim(t *testing.T) {
 	replayOptions := &Options{
 		WorkflowId:   options.GetWorkflowId(),
 		RunId:        options.GetRunId(),
-		CodeVersion:  options.GetCodeVersion(),
 		ClaimOwnerId: "replay-worker",
 	}
 	replayed, err := Run(
@@ -291,7 +287,6 @@ func TestWorkflowExecutionClaimReleasedOnEveryBodyExit(t *testing.T) {
 			options := &Options{
 				WorkflowId:   "claim-release",
 				RunId:        "exit-" + intToASCII(int32(index)),
-				CodeVersion:  "v1",
 				ClaimOwnerId: "worker-1",
 			}
 
@@ -364,7 +359,6 @@ func TestWorkflowExecutionClaimReleasedAfterContextCancellation(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "claim-release",
 		RunId:        "context-canceled",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "cancelled-worker",
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -432,7 +426,6 @@ func TestWorkflowExecutionClaimReleaseFailureIsSurfacedWithContextValues(t *test
 	options := &Options{
 		WorkflowId:   "claim-release",
 		RunId:        "release-error",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "worker",
 	}
 	valueCtx := context.WithValue(context.Background(), releaseContextKey{}, "tenant-auth")
@@ -494,7 +487,6 @@ func TestWorkflowExecutionClaimRefreshesTerminalStateAroundAcquisition(t *testin
 			options := &Options{
 				WorkflowId:   "claim-race",
 				RunId:        "terminal-refresh",
-				CodeVersion:  "v1",
 				ClaimOwnerId: "racing-worker",
 			}
 			claimStore := &terminalRaceClaimStore{
@@ -546,7 +538,6 @@ func TestExpiredWorkflowExecutionClaimRemainsBusy(t *testing.T) {
 	options := &Options{
 		WorkflowId:   "claim-expiry",
 		RunId:        "create-only",
-		CodeVersion:  "v1",
 		ClaimOwnerId: "new-worker",
 	}
 	claimKey := workflowExecutionClaimKeyForTest(options)
@@ -597,9 +588,8 @@ func TestClaimStoreWithoutOwnerKeepsAtLeastOnceExecution(t *testing.T) {
 	store := newTestStore(t)
 	claimStore := newTestClaimStore(t)
 	options := &Options{
-		WorkflowId:  "claim-opt-in",
-		RunId:       "no-owner",
-		CodeVersion: "v1",
+		WorkflowId: "claim-opt-in",
+		RunId:      "no-owner",
 	}
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -732,7 +722,6 @@ func putCompletedWorkflowForClaimRace(
 			RunID:      options.GetRunId(),
 		}).Proto(),
 		WorkflowType: messagePairType("workflow", input, &wrapperspb.StringValue{}),
-		CodeVersion:  options.GetCodeVersion(),
 		Input:        inputAny,
 		Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 		Result:       resultAny,
@@ -762,7 +751,6 @@ func workflowExecutionClaimRecordForTest(
 		OwnerId:        ownerID,
 		ResourceType:   temporalessv1.ClaimResourceType_CLAIM_RESOURCE_TYPE_WORKFLOW,
 		ResourceId:     options.GetWorkflowId(),
-		CodeVersion:    options.GetCodeVersion(),
 		LeaseExpiresAt: timestamppb.New(now.Add(DefaultClaimLeaseDuration)),
 		CreatedAt:      timestamppb.New(now),
 		HeartbeatAt:    timestamppb.New(now),
@@ -791,9 +779,6 @@ func assertWorkflowExecutionClaimForTest(
 	}
 	if got := claim.GetResourceId(); got != options.GetWorkflowId() {
 		t.Fatalf("claim resource_id = %q, want %q", got, options.GetWorkflowId())
-	}
-	if got := claim.GetCodeVersion(); got != options.GetCodeVersion() {
-		t.Fatalf("claim code_version = %q, want %q", got, options.GetCodeVersion())
 	}
 	if claim.GetCreatedAt() == nil || claim.GetHeartbeatAt() == nil || claim.GetLeaseExpiresAt() == nil {
 		t.Fatal("claim timestamps must all be populated")

@@ -13,6 +13,25 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class WorkflowPlanNodeKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_ACTIVITY: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_BRANCH: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_FAN_OUT: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_LOOP: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_SLEEP: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT: _ClassVar[WorkflowPlanNodeKind]
+    WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW: _ClassVar[WorkflowPlanNodeKind]
+
+class WorkflowPlanEdgeKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED: _ClassVar[WorkflowPlanEdgeKind]
+    WORKFLOW_PLAN_EDGE_KIND_CONTROL: _ClassVar[WorkflowPlanEdgeKind]
+    WORKFLOW_PLAN_EDGE_KIND_DATA: _ClassVar[WorkflowPlanEdgeKind]
+    WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL: _ClassVar[WorkflowPlanEdgeKind]
+    WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK: _ClassVar[WorkflowPlanEdgeKind]
+
 class TaskStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     TASK_STATUS_UNSPECIFIED: _ClassVar[TaskStatus]
@@ -47,6 +66,7 @@ class TimerKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TIMER_KIND_UNSPECIFIED: _ClassVar[TimerKind]
     TIMER_KIND_SLEEP: _ClassVar[TimerKind]
     TIMER_KIND_ACTIVITY_RETRY: _ClassVar[TimerKind]
+    TIMER_KIND_POLL: _ClassVar[TimerKind]
 
 class RecordSchemaVersion(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -71,6 +91,37 @@ class ClaimCapability(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CLAIM_CAPABILITY_NO_CLAIMS: _ClassVar[ClaimCapability]
     CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS: _ClassVar[ClaimCapability]
     CLAIM_CAPABILITY_CAS_CLAIMS: _ClassVar[ClaimCapability]
+
+class EventDeliveryCapability(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EVENT_DELIVERY_CAPABILITY_UNSPECIFIED: _ClassVar[EventDeliveryCapability]
+    EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE: _ClassVar[EventDeliveryCapability]
+    EVENT_DELIVERY_CAPABILITY_CREATE_ONLY: _ClassVar[EventDeliveryCapability]
+
+class EventDeliveryDisposition(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EVENT_DELIVERY_DISPOSITION_UNSPECIFIED: _ClassVar[EventDeliveryDisposition]
+    EVENT_DELIVERY_DISPOSITION_CREATED: _ClassVar[EventDeliveryDisposition]
+    EVENT_DELIVERY_DISPOSITION_IDEMPOTENT: _ClassVar[EventDeliveryDisposition]
+
+class EventDeliveryFailureReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED: _ClassVar[EventDeliveryFailureReason]
+    EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED: _ClassVar[EventDeliveryFailureReason]
+    EVENT_DELIVERY_FAILURE_REASON_CONFLICT: _ClassVar[EventDeliveryFailureReason]
+WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_ACTIVITY: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_BRANCH: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_FAN_OUT: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_LOOP: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_SLEEP: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT: WorkflowPlanNodeKind
+WORKFLOW_PLAN_NODE_KIND_WAIT_WORKFLOW: WorkflowPlanNodeKind
+WORKFLOW_PLAN_EDGE_KIND_UNSPECIFIED: WorkflowPlanEdgeKind
+WORKFLOW_PLAN_EDGE_KIND_CONTROL: WorkflowPlanEdgeKind
+WORKFLOW_PLAN_EDGE_KIND_DATA: WorkflowPlanEdgeKind
+WORKFLOW_PLAN_EDGE_KIND_CONDITIONAL: WorkflowPlanEdgeKind
+WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK: WorkflowPlanEdgeKind
 TASK_STATUS_UNSPECIFIED: TaskStatus
 TASK_STATUS_PENDING: TaskStatus
 TASK_STATUS_RUNNING: TaskStatus
@@ -91,6 +142,7 @@ TIMER_STATUS_CANCELED: TimerStatus
 TIMER_KIND_UNSPECIFIED: TimerKind
 TIMER_KIND_SLEEP: TimerKind
 TIMER_KIND_ACTIVITY_RETRY: TimerKind
+TIMER_KIND_POLL: TimerKind
 RECORD_SCHEMA_VERSION_UNSPECIFIED: RecordSchemaVersion
 RECORD_SCHEMA_VERSION_ACTIVITY: RecordSchemaVersion
 RECORD_SCHEMA_VERSION_WORKFLOW: RecordSchemaVersion
@@ -106,24 +158,31 @@ CLAIM_CAPABILITY_UNSPECIFIED: ClaimCapability
 CLAIM_CAPABILITY_NO_CLAIMS: ClaimCapability
 CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS: ClaimCapability
 CLAIM_CAPABILITY_CAS_CLAIMS: ClaimCapability
+EVENT_DELIVERY_CAPABILITY_UNSPECIFIED: EventDeliveryCapability
+EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE: EventDeliveryCapability
+EVENT_DELIVERY_CAPABILITY_CREATE_ONLY: EventDeliveryCapability
+EVENT_DELIVERY_DISPOSITION_UNSPECIFIED: EventDeliveryDisposition
+EVENT_DELIVERY_DISPOSITION_CREATED: EventDeliveryDisposition
+EVENT_DELIVERY_DISPOSITION_IDEMPOTENT: EventDeliveryDisposition
+EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED: EventDeliveryFailureReason
+EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED: EventDeliveryFailureReason
+EVENT_DELIVERY_FAILURE_REASON_CONFLICT: EventDeliveryFailureReason
 
 class WorkflowOptions(_message.Message):
-    __slots__ = ("workflow_id", "run_id", "code_version", "claim_owner_id", "concurrency_key", "concurrency_limit", "run_order_time")
+    __slots__ = ("workflow_id", "run_id", "claim_owner_id", "concurrency_key", "concurrency_limit", "run_order_time")
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
-    CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     CLAIM_OWNER_ID_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_LIMIT_FIELD_NUMBER: _ClassVar[int]
     RUN_ORDER_TIME_FIELD_NUMBER: _ClassVar[int]
     workflow_id: str
     run_id: str
-    code_version: str
     claim_owner_id: str
     concurrency_key: str
     concurrency_limit: int
     run_order_time: _timestamp_pb2.Timestamp
-    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., code_version: _Optional[str] = ..., claim_owner_id: _Optional[str] = ..., concurrency_key: _Optional[str] = ..., concurrency_limit: _Optional[int] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., claim_owner_id: _Optional[str] = ..., concurrency_key: _Optional[str] = ..., concurrency_limit: _Optional[int] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class ActivityOptions(_message.Message):
     __slots__ = ("activity_id", "retry_policy", "retry_timer_id")
@@ -135,6 +194,14 @@ class ActivityOptions(_message.Message):
     retry_timer_id: str
     def __init__(self, activity_id: _Optional[str] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ..., retry_timer_id: _Optional[str] = ...) -> None: ...
 
+class PollOptions(_message.Message):
+    __slots__ = ("timer_id", "interval")
+    TIMER_ID_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    timer_id: str
+    interval: _duration_pb2.Duration
+    def __init__(self, timer_id: _Optional[str] = ..., interval: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
 class DispatchOptions(_message.Message):
     __slots__ = ("drain_timeout", "max_inflight", "task_ttl")
     DRAIN_TIMEOUT_FIELD_NUMBER: _ClassVar[int]
@@ -144,6 +211,66 @@ class DispatchOptions(_message.Message):
     max_inflight: int
     task_ttl: _duration_pb2.Duration
     def __init__(self, drain_timeout: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., max_inflight: _Optional[int] = ..., task_ttl: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
+class WorkflowPlan(_message.Message):
+    __slots__ = ("plan_id", "revision", "nodes", "edges", "annotations")
+    class AnnotationsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    PLAN_ID_FIELD_NUMBER: _ClassVar[int]
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    NODES_FIELD_NUMBER: _ClassVar[int]
+    EDGES_FIELD_NUMBER: _ClassVar[int]
+    ANNOTATIONS_FIELD_NUMBER: _ClassVar[int]
+    plan_id: str
+    revision: int
+    nodes: _containers.RepeatedCompositeFieldContainer[WorkflowPlanNode]
+    edges: _containers.RepeatedCompositeFieldContainer[WorkflowPlanEdge]
+    annotations: _containers.ScalarMap[str, str]
+    def __init__(self, plan_id: _Optional[str] = ..., revision: _Optional[int] = ..., nodes: _Optional[_Iterable[_Union[WorkflowPlanNode, _Mapping]]] = ..., edges: _Optional[_Iterable[_Union[WorkflowPlanEdge, _Mapping]]] = ..., annotations: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class WorkflowPlanNode(_message.Message):
+    __slots__ = ("node_id", "display_name", "description", "kind", "operation", "request_type", "response_type", "annotations")
+    class AnnotationsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_TYPE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    ANNOTATIONS_FIELD_NUMBER: _ClassVar[int]
+    node_id: str
+    display_name: str
+    description: str
+    kind: WorkflowPlanNodeKind
+    operation: str
+    request_type: str
+    response_type: str
+    annotations: _containers.ScalarMap[str, str]
+    def __init__(self, node_id: _Optional[str] = ..., display_name: _Optional[str] = ..., description: _Optional[str] = ..., kind: _Optional[_Union[WorkflowPlanNodeKind, str]] = ..., operation: _Optional[str] = ..., request_type: _Optional[str] = ..., response_type: _Optional[str] = ..., annotations: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class WorkflowPlanEdge(_message.Message):
+    __slots__ = ("source_node_id", "target_node_id", "kind", "label")
+    SOURCE_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    TARGET_NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    source_node_id: str
+    target_node_id: str
+    kind: WorkflowPlanEdgeKind
+    label: str
+    def __init__(self, source_node_id: _Optional[str] = ..., target_node_id: _Optional[str] = ..., kind: _Optional[_Union[WorkflowPlanEdgeKind, str]] = ..., label: _Optional[str] = ...) -> None: ...
 
 class TaskInfo(_message.Message):
     __slots__ = ("task_id", "method", "status", "response", "error", "submitted_at", "completed_at")
@@ -198,6 +325,14 @@ class RuntimeDefaults(_message.Message):
     CLAIM_LEASE_DURATION_SECONDS_FIELD_NUMBER: _ClassVar[int]
     claim_lease_duration_seconds: int
     def __init__(self, claim_lease_duration_seconds: _Optional[int] = ...) -> None: ...
+
+class EventDeliveryErrorDetail(_message.Message):
+    __slots__ = ("reason", "key")
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    reason: EventDeliveryFailureReason
+    key: EventKey
+    def __init__(self, reason: _Optional[_Union[EventDeliveryFailureReason, str]] = ..., key: _Optional[_Union[EventKey, _Mapping]] = ...) -> None: ...
 
 class WorkflowKey(_message.Message):
     __slots__ = ("namespace", "workflow_id", "run_id")
@@ -280,7 +415,7 @@ class ActivityAttempt(_message.Message):
     def __init__(self, attempt: _Optional[int] = ..., started_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ...) -> None: ...
 
 class ActivityRecord(_message.Message):
-    __slots__ = ("schema_version", "key", "activity_type", "code_version", "input", "status", "result", "failure", "created_at", "completed_at", "attempts", "annotations", "next_attempt_at", "retry_policy", "retry_timer_id")
+    __slots__ = ("schema_version", "key", "activity_type", "input", "status", "result", "failure", "created_at", "completed_at", "attempts", "annotations", "next_attempt_at", "retry_policy", "retry_timer_id")
     class AnnotationsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -291,7 +426,6 @@ class ActivityRecord(_message.Message):
     SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     ACTIVITY_TYPE_FIELD_NUMBER: _ClassVar[int]
-    CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     RESULT_FIELD_NUMBER: _ClassVar[int]
@@ -306,7 +440,6 @@ class ActivityRecord(_message.Message):
     schema_version: RecordSchemaVersion
     key: ActivityKey
     activity_type: str
-    code_version: str
     input: _any_pb2.Any
     status: ActivityStatus
     result: _any_pb2.Any
@@ -318,10 +451,10 @@ class ActivityRecord(_message.Message):
     next_attempt_at: _timestamp_pb2.Timestamp
     retry_policy: RetryPolicy
     retry_timer_id: str
-    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ActivityKey, _Mapping]] = ..., activity_type: _Optional[str] = ..., code_version: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[ActivityStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., attempts: _Optional[_Iterable[_Union[ActivityAttempt, _Mapping]]] = ..., annotations: _Optional[_Mapping[str, str]] = ..., next_attempt_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ..., retry_timer_id: _Optional[str] = ...) -> None: ...
+    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ActivityKey, _Mapping]] = ..., activity_type: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[ActivityStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., attempts: _Optional[_Iterable[_Union[ActivityAttempt, _Mapping]]] = ..., annotations: _Optional[_Mapping[str, str]] = ..., next_attempt_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ..., retry_timer_id: _Optional[str] = ...) -> None: ...
 
 class WorkflowRecord(_message.Message):
-    __slots__ = ("schema_version", "key", "workflow_type", "code_version", "input", "status", "result", "failure", "created_at", "completed_at", "annotations", "run_order_time")
+    __slots__ = ("schema_version", "key", "workflow_type", "input", "status", "result", "failure", "created_at", "completed_at", "annotations", "run_order_time")
     class AnnotationsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -332,7 +465,6 @@ class WorkflowRecord(_message.Message):
     SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     WORKFLOW_TYPE_FIELD_NUMBER: _ClassVar[int]
-    CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     RESULT_FIELD_NUMBER: _ClassVar[int]
@@ -344,7 +476,6 @@ class WorkflowRecord(_message.Message):
     schema_version: RecordSchemaVersion
     key: WorkflowKey
     workflow_type: str
-    code_version: str
     input: _any_pb2.Any
     status: WorkflowStatus
     result: _any_pb2.Any
@@ -353,14 +484,13 @@ class WorkflowRecord(_message.Message):
     completed_at: _timestamp_pb2.Timestamp
     annotations: _containers.ScalarMap[str, str]
     run_order_time: _timestamp_pb2.Timestamp
-    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., workflow_type: _Optional[str] = ..., code_version: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[WorkflowStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., annotations: _Optional[_Mapping[str, str]] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., workflow_type: _Optional[str] = ..., input: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., status: _Optional[_Union[WorkflowStatus, str]] = ..., result: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., failure: _Optional[_Union[ActivityFailure, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., annotations: _Optional[_Mapping[str, str]] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class TimerRecord(_message.Message):
-    __slots__ = ("schema_version", "key", "timer_kind", "code_version", "duration", "status", "fire_at", "created_at", "fired_at", "retry_activity_id")
+    __slots__ = ("schema_version", "key", "timer_kind", "duration", "status", "fire_at", "created_at", "fired_at", "retry_activity_id")
     SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     TIMER_KIND_FIELD_NUMBER: _ClassVar[int]
-    CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     DURATION_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     FIRE_AT_FIELD_NUMBER: _ClassVar[int]
@@ -370,14 +500,13 @@ class TimerRecord(_message.Message):
     schema_version: RecordSchemaVersion
     key: TimerKey
     timer_kind: TimerKind
-    code_version: str
     duration: _duration_pb2.Duration
     status: TimerStatus
     fire_at: _timestamp_pb2.Timestamp
     created_at: _timestamp_pb2.Timestamp
     fired_at: _timestamp_pb2.Timestamp
     retry_activity_id: str
-    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[TimerKey, _Mapping]] = ..., timer_kind: _Optional[_Union[TimerKind, str]] = ..., code_version: _Optional[str] = ..., duration: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., status: _Optional[_Union[TimerStatus, str]] = ..., fire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., fired_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., retry_activity_id: _Optional[str] = ...) -> None: ...
+    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[TimerKey, _Mapping]] = ..., timer_kind: _Optional[_Union[TimerKind, str]] = ..., duration: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., status: _Optional[_Union[TimerStatus, str]] = ..., fire_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., fired_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., retry_activity_id: _Optional[str] = ...) -> None: ...
 
 class EventRecord(_message.Message):
     __slots__ = ("schema_version", "key", "payload", "received_at")
@@ -392,13 +521,12 @@ class EventRecord(_message.Message):
     def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[EventKey, _Mapping]] = ..., payload: _Optional[_Union[_any_pb2.Any, _Mapping]] = ..., received_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class ClaimRecord(_message.Message):
-    __slots__ = ("schema_version", "key", "owner_id", "resource_type", "resource_id", "code_version", "lease_expires_at", "created_at", "heartbeat_at")
+    __slots__ = ("schema_version", "key", "owner_id", "resource_type", "resource_id", "lease_expires_at", "created_at", "heartbeat_at")
     SCHEMA_VERSION_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     OWNER_ID_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_ID_FIELD_NUMBER: _ClassVar[int]
-    CODE_VERSION_FIELD_NUMBER: _ClassVar[int]
     LEASE_EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     HEARTBEAT_AT_FIELD_NUMBER: _ClassVar[int]
@@ -407,11 +535,10 @@ class ClaimRecord(_message.Message):
     owner_id: str
     resource_type: ClaimResourceType
     resource_id: str
-    code_version: str
     lease_expires_at: _timestamp_pb2.Timestamp
     created_at: _timestamp_pb2.Timestamp
     heartbeat_at: _timestamp_pb2.Timestamp
-    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ClaimKey, _Mapping]] = ..., owner_id: _Optional[str] = ..., resource_type: _Optional[_Union[ClaimResourceType, str]] = ..., resource_id: _Optional[str] = ..., code_version: _Optional[str] = ..., lease_expires_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., heartbeat_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, schema_version: _Optional[_Union[RecordSchemaVersion, str]] = ..., key: _Optional[_Union[ClaimKey, _Mapping]] = ..., owner_id: _Optional[str] = ..., resource_type: _Optional[_Union[ClaimResourceType, str]] = ..., resource_id: _Optional[str] = ..., lease_expires_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., heartbeat_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class LatestWorkflowRunPointer(_message.Message):
     __slots__ = ("key", "status", "record_time", "updated_at", "run_order_time")
@@ -550,6 +677,18 @@ class PutEventRequest(_message.Message):
 class PutEventResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class DeliverEventRequest(_message.Message):
+    __slots__ = ("record",)
+    RECORD_FIELD_NUMBER: _ClassVar[int]
+    record: EventRecord
+    def __init__(self, record: _Optional[_Union[EventRecord, _Mapping]] = ...) -> None: ...
+
+class DeliverEventResponse(_message.Message):
+    __slots__ = ("disposition",)
+    DISPOSITION_FIELD_NUMBER: _ClassVar[int]
+    disposition: EventDeliveryDisposition
+    def __init__(self, disposition: _Optional[_Union[EventDeliveryDisposition, str]] = ...) -> None: ...
 
 class ListWorkflowsRequest(_message.Message):
     __slots__ = ("namespace", "status", "workflow_id", "order_by", "page_size", "page_token")
@@ -754,10 +893,12 @@ class GetStoreCapabilitiesRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class GetStoreCapabilitiesResponse(_message.Message):
-    __slots__ = ("claim_capability",)
+    __slots__ = ("claim_capability", "event_delivery_capability")
     CLAIM_CAPABILITY_FIELD_NUMBER: _ClassVar[int]
+    EVENT_DELIVERY_CAPABILITY_FIELD_NUMBER: _ClassVar[int]
     claim_capability: ClaimCapability
-    def __init__(self, claim_capability: _Optional[_Union[ClaimCapability, str]] = ...) -> None: ...
+    event_delivery_capability: EventDeliveryCapability
+    def __init__(self, claim_capability: _Optional[_Union[ClaimCapability, str]] = ..., event_delivery_capability: _Optional[_Union[EventDeliveryCapability, str]] = ...) -> None: ...
 
 class SweepRequest(_message.Message):
     __slots__ = ("namespace", "now", "max_age")

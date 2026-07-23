@@ -473,6 +473,30 @@ func (store *OpenDALStore) PutEvent(ctx context.Context, record *temporalessv1.E
 	return store.operator.Write(path, data)
 }
 
+func (store *OpenDALStore) EventDeliveryCapability(
+	context.Context,
+) (EventDeliveryCapability, error) {
+	// The current Go OpenDAL binding exposes only unconditional Write. Do not
+	// claim distributed create-once semantics until it exposes conditional
+	// writes.
+	return NoAtomicEventDelivery, nil
+}
+
+func (store *OpenDALStore) DeliverEvent(
+	ctx context.Context,
+	record *temporalessv1.EventRecord,
+) (EventDeliveryDisposition, error) {
+	if err := ctx.Err(); err != nil {
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+	}
+	key := EventKeyFromProto(record.GetKey())
+	if err := ValidateEventDeliveryRecord(record, key); err != nil {
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+	}
+	return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED,
+		ErrEventDeliveryUnsupported
+}
+
 func (store *OpenDALStore) DeleteWorkflow(ctx context.Context, key WorkflowKey) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

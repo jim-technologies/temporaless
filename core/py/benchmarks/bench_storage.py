@@ -56,7 +56,6 @@ async def bench_put_get_workflow(b: Bench) -> None:
             schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
             key=WorkflowKey(workflow_id="bench:wf", run_id="run").to_proto(),
             workflow_type="test:type",
-            code_version="v1",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             result=_result_any("benchmark-result"),
         )
@@ -76,7 +75,6 @@ async def bench_put_get_activity(b: Bench) -> None:
             schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
             key=ActivityKey(workflow_id="bench:wf", run_id="run", activity_id="fetch").to_proto(),
             activity_type="test:activity",
-            code_version="v1",
             status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
             result=_result_any("benchmark-result"),
         )
@@ -100,7 +98,6 @@ async def _populated_scoped_store(
                 schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
                 key=WorkflowKey(workflow_id=f"schedule-{s:03d}", run_id=f"run-{r:05d}").to_proto(),
                 workflow_type="test:type",
-                code_version="v1",
                 status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
                 created_at=ts,
                 completed_at=ts,
@@ -187,7 +184,6 @@ async def bench_run_scoped_prefetch_activities(b: Bench) -> None:
                     activity_id=f"act:{i:03d}",
                 ).to_proto(),
                 activity_type="test:activity",
-                code_version="v1",
                 status=temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
                 result=_result_any("benchmark-result"),
             )
@@ -209,7 +205,6 @@ def _fanout_record(idx: int) -> temporaless_pb2.WorkflowRecord:
         schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
         key=WorkflowKey(workflow_id="bench:fanout", run_id=f"run-{idx:05d}").to_proto(),
         workflow_type="test:type",
-        code_version="v1",
         status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
         result=_result_any("benchmark-result"),
     )
@@ -267,7 +262,6 @@ async def _seed_schedule_runs(store: OpenDALStore, workflow_id: str, count: int)
                 run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             ).to_proto(),
             workflow_type="test:type",
-            code_version="v1",
             status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
             created_at=ts,
             completed_at=ts,

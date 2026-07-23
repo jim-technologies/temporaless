@@ -34,7 +34,6 @@ func putWorkflow(t *testing.T, store *storage.OpenDALStore, namespace, workflowI
 			RunID:      runID,
 		}.Proto(),
 		WorkflowType: "test:type",
-		CodeVersion:  "v1",
 		Status:       status,
 	}); err != nil {
 		t.Fatal(err)
@@ -131,7 +130,6 @@ func putActivity(t *testing.T, store *storage.OpenDALStore, wf storage.WorkflowK
 			ActivityID: activityID,
 		}.Proto(),
 		ActivityType: "test:activity",
-		CodeVersion:  "v1",
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED,
 		Result:       resultAny,
 	}); err != nil {
@@ -175,10 +173,9 @@ func putTimer(t *testing.T, store *storage.OpenDALStore, wf storage.WorkflowKey,
 			RunID:      wf.RunID,
 			TimerID:    timerID,
 		}.Proto(),
-		TimerKind:   storage.SleepTimerKind,
-		CodeVersion: "v1",
-		Status:      status,
-		FireAt:      timestamppb.Now(),
+		TimerKind: storage.SleepTimerKind,
+		Status:    status,
+		FireAt:    timestamppb.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -239,12 +236,22 @@ func TestListEventsScopedToWorkflowRun(t *testing.T) {
 	wf := storage.WorkflowKey{Namespace: storage.DefaultNamespace, WorkflowID: "wf", RunID: "run"}
 
 	for _, eventID := range []string{"approval", "rejection", "timeout"} {
-		if err := storage.SendEvent(ctx, store, storage.EventKey{
+		key := storage.EventKey{
 			Namespace:  wf.Namespace,
 			WorkflowID: wf.WorkflowID,
 			RunID:      wf.RunID,
 			EventID:    eventID,
-		}, wrapperspb.String("payload-"+eventID)); err != nil {
+		}
+		payload, err := anypb.New(wrapperspb.String("payload-" + eventID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.PutEvent(ctx, &temporalessv1.EventRecord{
+			SchemaVersion: storage.EventRecordSchemaVersion,
+			Key:           key.Proto(),
+			Payload:       payload,
+			ReceivedAt:    timestamppb.Now(),
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

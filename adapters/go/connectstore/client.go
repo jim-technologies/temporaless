@@ -10,6 +10,7 @@ import (
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/temporalessv1connect"
 	"github.com/jim-technologies/temporaless/core/go/storage"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -17,6 +18,7 @@ var _ storage.Store = (*ClientStore)(nil)
 var _ storage.QueryStore = (*ClientStore)(nil)
 var _ storage.ClaimStore = (*ClientStore)(nil)
 var _ storage.ClaimRunStore = (*ClientStore)(nil)
+var _ storage.EventDeliveryStore = (*ClientStore)(nil)
 
 type ClientStore struct {
 	client      temporalessv1connect.RecordStoreServiceClient
@@ -393,12 +395,120 @@ func (store *ClientStore) PutEvent(ctx context.Context, record *temporalessv1.Ev
 	return clientStoreError(err)
 }
 
+func (store *ClientStore) EventDeliveryCapability(
+	ctx context.Context,
+) (storage.EventDeliveryCapability, error) {
+	resp, err := store.client.GetStoreCapabilities(
+		ctx,
+		connect.NewRequest(&temporalessv1.GetStoreCapabilitiesRequest{}),
+	)
+	if err != nil {
+		return storage.NoAtomicEventDelivery, clientStoreError(err)
+	}
+	capability := resp.Msg.GetEventDeliveryCapability()
+	switch capability {
+	case temporalessv1.EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED,
+		storage.NoAtomicEventDelivery:
+		return storage.NoAtomicEventDelivery, nil
+	case storage.CreateOnlyEventDelivery:
+		return capability, nil
+	default:
+		return storage.NoAtomicEventDelivery,
+			corruptClientResponsef(
+				"store capabilities response has invalid event delivery capability %s",
+				capability,
+			)
+	}
+}
+
+func (store *ClientStore) DeliverEvent(
+	ctx context.Context,
+	record *temporalessv1.EventRecord,
+) (storage.EventDeliveryDisposition, error) {
+	key := storage.EventKeyFromProto(record.GetKey())
+	if err := storage.ValidateEventDeliveryRecord(record, key); err != nil {
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED, err
+	}
+	resp, err := store.client.DeliverEvent(
+		ctx,
+		connect.NewRequest(&temporalessv1.DeliverEventRequest{Record: record}),
+	)
+	if err != nil {
+		if detailErr := validateEventDeliveryErrorDetails(err, key); detailErr != nil {
+			return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED,
+				detailErr
+		}
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED,
+			clientStoreError(err)
+	}
+	disposition := resp.Msg.GetDisposition()
+	switch disposition {
+	case temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_CREATED,
+		temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_IDEMPOTENT:
+		return disposition, nil
+	default:
+		return temporalessv1.EventDeliveryDisposition_EVENT_DELIVERY_DISPOSITION_UNSPECIFIED,
+			corruptClientResponsef("event delivery response has invalid disposition %s", disposition)
+	}
+}
+
+func validateEventDeliveryErrorDetails(err error, expected storage.EventKey) error {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) ||
+		connectErr.Code() != connect.CodeFailedPrecondition {
+		return nil
+	}
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			if detail.Type() == string(
+				(&temporalessv1.EventDeliveryErrorDetail{}).
+					ProtoReflect().
+					Descriptor().
+					FullName(),
+			) {
+				return corruptClientResponsef(
+					"event delivery error detail cannot be decoded: %v",
+					valueErr,
+				)
+			}
+			continue
+		}
+		delivery, ok := value.(*temporalessv1.EventDeliveryErrorDetail)
+		if !ok {
+			continue
+		}
+		actual := storage.EventKeyFromProto(delivery.GetKey())
+		if validationErr := actual.Validate(); validationErr != nil {
+			return corruptClientResponsef(
+				"event delivery error detail has invalid key: %v",
+				validationErr,
+			)
+		}
+		if !proto.Equal(delivery.GetKey(), expected.Proto()) {
+			return corruptClientResponsef(
+				"event delivery error detail key does not match request",
+			)
+		}
+		switch delivery.GetReason() {
+		case temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED,
+			temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT:
+		default:
+			return corruptClientResponsef(
+				"event delivery error detail has invalid reason %s",
+				delivery.GetReason(),
+			)
+		}
+	}
+	return nil
+}
+
 func (store *ClientStore) ClaimCapability(ctx context.Context) (storage.ClaimCapability, error) {
 	resp, err := store.client.GetStoreCapabilities(ctx, connect.NewRequest(&temporalessv1.GetStoreCapabilitiesRequest{}))
 	if err != nil {
 		return storage.NoClaims, clientStoreError(err)
 	}
-	return resp.Msg.GetClaimCapability(), nil
+	return currentClaimCapability(resp.Msg.GetClaimCapability())
 }
 
 func (store *ClientStore) GetClaim(ctx context.Context, key storage.ClaimKey) (*temporalessv1.ClaimRecord, bool, error) {
@@ -551,8 +661,37 @@ func corruptClientResponsef(format string, arguments ...any) error {
 
 func clientStoreError(err error) error {
 	var connectErr *connect.Error
-	if errors.As(err, &connectErr) && connectErr.Code() == connect.CodeDataLoss {
-		return fmt.Errorf("%w: %w", storage.ErrCorruptRecord, err)
+	if errors.As(err, &connectErr) {
+		if connectErr.Code() == connect.CodeDataLoss {
+			return fmt.Errorf("%w: %w", storage.ErrCorruptRecord, err)
+		}
+		if connectErr.Code() == connect.CodeFailedPrecondition {
+			for _, detail := range connectErr.Details() {
+				value, valueErr := detail.Value()
+				if valueErr != nil {
+					continue
+				}
+				delivery, ok := value.(*temporalessv1.EventDeliveryErrorDetail)
+				if !ok {
+					continue
+				}
+				detailKey := storage.EventKeyFromProto(delivery.GetKey())
+				if validationErr := detailKey.Validate(); validationErr != nil {
+					return corruptClientResponsef(
+						"event delivery error detail has invalid key: %v",
+						validationErr,
+					)
+				}
+				switch delivery.GetReason() {
+				case temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED:
+					return fmt.Errorf("%w: %w", storage.ErrEventDeliveryUnsupported, err)
+				case temporalessv1.EventDeliveryFailureReason_EVENT_DELIVERY_FAILURE_REASON_CONFLICT:
+					return &storage.EventDeliveryConflictError{
+						Key: detailKey,
+					}
+				}
+			}
+		}
 	}
 	return err
 }

@@ -96,10 +96,9 @@ func TestRetryingActivityRejectsInconsistentPersistedState(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore(t)
 			workflow := &Workflow{
-				store:       store,
-				workflowID:  "record-invariant",
-				runID:       fmt.Sprintf("retrying-%d", index),
-				codeVersion: "v1",
+				store:      store,
+				workflowID: "record-invariant",
+				runID:      fmt.Sprintf("retrying-%d", index),
 			}
 			plan, err := planRetries(test.policy)
 			if err != nil {
@@ -119,7 +118,6 @@ func TestRetryingActivityRejectsInconsistentPersistedState(t *testing.T) {
 					"act",
 				).Proto(),
 				ActivityType: activityClaimTestType,
-				CodeVersion:  workflow.codeVersion,
 				Input:        input,
 				Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
 				Failure:      proto.Clone(failure).(*temporalessv1.ActivityFailure),
@@ -263,7 +261,6 @@ func TestSleepRejectsMalformedPersistedTimer(t *testing.T) {
 				SchemaVersion: storage.TimerRecordSchemaVersion,
 				Key:           key.Proto(),
 				TimerKind:     temporalessv1.TimerKind_TIMER_KIND_SLEEP,
-				CodeVersion:   "v1",
 				Duration:      durationpb.New(test.duration),
 				Status:        temporalessv1.TimerStatus_TIMER_STATUS_SCHEDULED,
 				FireAt:        timestamppb.New(now.Add(time.Hour)),
@@ -276,10 +273,9 @@ func TestSleepRejectsMalformedPersistedTimer(t *testing.T) {
 				record: record,
 			}
 			workflow := &Workflow{
-				store:       store,
-				workflowID:  key.WorkflowID,
-				runID:       key.RunID,
-				codeVersion: "v1",
+				store:      store,
+				workflowID: key.WorkflowID,
+				runID:      key.RunID,
 			}
 			ctx := context.WithValue(context.Background(), workflowContextKey{}, workflow)
 
@@ -294,10 +290,9 @@ func TestSleepRejectsMalformedPersistedTimer(t *testing.T) {
 func TestSleepRejectsNegativeDurationWithoutWritingTimer(t *testing.T) {
 	store := newTestStore(t)
 	workflow := &Workflow{
-		store:       store,
-		workflowID:  "record-invariant",
-		runID:       "negative-sleep",
-		codeVersion: "v1",
+		store:      store,
+		workflowID: "record-invariant",
+		runID:      "negative-sleep",
 	}
 	ctx := context.WithValue(context.Background(), workflowContextKey{}, workflow)
 	key := storage.NewTimerKey(workflow.workflowID, workflow.runID, "wait")
@@ -317,10 +312,9 @@ func TestTerminalFailedActivityRequiresFailure(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	workflow := &Workflow{
-		store:       store,
-		workflowID:  "record-invariant",
-		runID:       "failed-activity",
-		codeVersion: "v1",
+		store:      store,
+		workflowID: "record-invariant",
+		runID:      "failed-activity",
 	}
 	input, err := anypb.New(wrapperspb.String("request"))
 	if err != nil {
@@ -335,7 +329,6 @@ func TestTerminalFailedActivityRequiresFailure(t *testing.T) {
 			"act",
 		).Proto(),
 		ActivityType: activityClaimTestType,
-		CodeVersion:  workflow.codeVersion,
 		Input:        input,
 		Status:       temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED,
 		CreatedAt:    now,
@@ -371,9 +364,8 @@ func TestTerminalFailedWorkflowRequiresFailure(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	options := &Options{
-		WorkflowId:  "record-invariant",
-		RunId:       "failed-workflow",
-		CodeVersion: "v1",
+		WorkflowId: "record-invariant",
+		RunId:      "failed-workflow",
 	}
 	input := wrapperspb.String("request")
 	inputAny, err := anypb.New(input)
@@ -388,7 +380,6 @@ func TestTerminalFailedWorkflowRequiresFailure(t *testing.T) {
 			options.GetRunId(),
 		).Proto(),
 		WorkflowType: messagePairType("workflow", input, &wrapperspb.StringValue{}),
-		CodeVersion:  options.GetCodeVersion(),
 		Input:        inputAny,
 		Status:       temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED,
 		CreatedAt:    now,

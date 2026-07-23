@@ -57,11 +57,10 @@ S3 PutObject overwrites the same key with the same content idempotently.
 
 ## Caveats
 
-- **`code_version` bumps don't rotate the key.** The framework's activity
-  replay treats a `code_version` bump as "all stored results are now
-  invalid" — but the vendor-side idempotency key doesn't know that. If the
-  rationale for a code bump is "the previous result was wrong", also rotate
-  the `activity_id` or `run_id` so the key changes.
+- **Deploying new handler code doesn't rotate the key.** Completed activity
+  records remain authoritative across deployments. If a previous result is
+  invalid, rotate the `activity_id` or `run_id` so both replay identity and
+  the vendor-side key change.
 - **Per-activity, not per-attempt.** All retry attempts (including durable
   resumes after a `TIMER_KIND_ACTIVITY_RETRY`) share the same key. This is
   the textbook strict-idempotency pattern: a vendor that charged the card

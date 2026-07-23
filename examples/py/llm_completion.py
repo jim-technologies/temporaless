@@ -109,7 +109,6 @@ async def main() -> None:
     options = Options(
         workflow_id="llm:answer",
         run_id="2026-05-02-r1",
-        code_version="example",
         # Application-owned diagnostic identity. Non-empty enables workflow
         # and activity single-flight; matching owners never bypass contention.
         claim_owner_id="llm-worker:example",

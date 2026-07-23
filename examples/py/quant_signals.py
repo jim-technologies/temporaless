@@ -1,9 +1,9 @@
 """Quant-flavored example: parallel symbol fetch + serial signal compute.
 
-Demonstrates the new async win — ``asyncio.gather`` over ``Workflow.execute_activity``
-fans out independent vendor calls so wall time is ``max(per-symbol latency)``
-instead of ``sum``. On replay each per-symbol activity short-circuits from its
-stored record, so re-running the workflow is one ``Get`` per symbol.
+``gather_activities`` fans out independent vendor calls so wall time is
+``max(per-symbol latency)`` instead of ``sum`` and waits for every branch to
+reach a durable boundary before propagating a failure. On replay each
+per-symbol activity short-circuits from its stored record.
 
 Run with ``uv run --project core/py python examples/py/quant_signals.py``.
 """
@@ -24,6 +24,7 @@ from temporaless import (
     Options,
     Workflow,
     annotate,
+    gather_activities,
     run,
 )
 
@@ -56,7 +57,7 @@ async def quant_pipeline(workflow: Workflow, _request: StringValue) -> StringVal
             _fake_vendor_fetch,
         )
 
-    prices = await asyncio.gather(*(fetch_one(s) for s in SYMBOLS))
+    prices = await gather_activities(*(fetch_one(s) for s in SYMBOLS))
 
     # Serial composition: one activity that consumes the joined output.
     joined = StringValue(value=",".join(p.value for p in prices))
@@ -73,9 +74,7 @@ async def main() -> None:
         "fs", root=tempfile.mkdtemp(prefix="temporaless-quant-")
     )
     store = OpenDALStore(operator)
-    options = Options(
-        workflow_id="quant:signals", run_id="2026-05-04", code_version="example"
-    )
+    options = Options(workflow_id="quant:signals", run_id="2026-05-04")
     seed = StringValue(value="batch")
 
     print(

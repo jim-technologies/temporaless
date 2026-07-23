@@ -2,8 +2,8 @@
 
 TypeScript support is a client SDK for the Temporaless protobuf and ConnectRPC
 boundary. It provides generated `temporaless.v1` types, thin store/query
-wrappers for Connect clients, and an optional Node-only invariantprotocol
-projection.
+wrappers for Connect clients, browser-compatible visual-plan helpers, and an
+optional Node-only invariantprotocol projection.
 
 It is intentionally not a workflow runtime. Go and Python own local replay and
 activity execution. TypeScript callers can inspect, query, or write records
@@ -55,11 +55,43 @@ const transport = createConnectTransport({
 
 const store = ConnectStore.fromTransport(transport);
 const capability = await store.claimCapability();
+const eventDelivery = await store.eventDeliveryCapability();
 ```
 
 Node services can use `@connectrpc/connect-node` to create the transport. The
 Temporaless package only depends on the common `@connectrpc/connect` interfaces
 so browser and server clients use the same wrapper.
+
+`eventDeliveryCapability()` reports whether the remote store can atomically
+establish an event payload. `deliverEvent(record)` preserves the server's
+created/idempotent disposition and typed Connect failure; it does not add
+atomicity to an incapable backend. `putEvent(record)` is the low-level replace
+operation and should stay behind an operator boundary.
+
+## Visual Plans
+
+An AI planner or graph editor can produce a protobuf `WorkflowPlan`, show it to
+a user, and bind approval to the deterministic digest. Once the Go or Python
+workflow starts, the same client can overlay durable run evidence on the plan:
+
+```ts
+import {
+  inspectRun,
+  projectWorkflowRun,
+  validateWorkflowPlan,
+  workflowPlanDigest,
+} from "@jim-technologies/temporaless";
+
+validateWorkflowPlan(plan);
+const approvedSha256 = await workflowPlanDigest(plan);
+
+const snapshot = await inspectRun(store, workflowKey);
+const projection = projectWorkflowRun(plan, snapshot);
+```
+
+The plan describes intended boxes and arrows; it is not a second execution
+language. The projection retains unplanned records and never invents running or
+skipped states that are absent from storage.
 
 ## Invariant Protocol Projection
 
@@ -87,7 +119,9 @@ const server = createTemporalessInvariantHttpProxy(
 );
 
 console.log(server.toolCatalog());
-console.log(await runCli(server, ["RecordQueryService", "ListWorkflows"]));
+console.log(
+  await runCli(server, ["temporaless.v1.RecordQueryService", "ListWorkflows"]),
+);
 ```
 
 The default catalog is inspection-only. It includes point reads, run-scoped

@@ -45,6 +45,7 @@ from temporaless import (
     Store,
     annotate,
     current_workflow,
+    gather_activities,
 )
 from temporaless_connectworkflow import WorkflowMethodWrapOptions, wrap_workflow_method
 
@@ -70,7 +71,6 @@ def _options_for_fetch_prices(_service: object, request: StringValue) -> Options
     return Options(
         workflow_id=f"prices:{request.value}",
         run_id="2026-05-04",
-        code_version="example",
         claim_owner_id="quant-service",
     )
 
@@ -79,7 +79,6 @@ def _options_for_compose_signal(_service: object, request: StringValue) -> Optio
     return Options(
         workflow_id="signals:batch",
         run_id=request.value,
-        code_version="example",
         claim_owner_id="quant-service",
     )
 
@@ -124,10 +123,9 @@ class QuantService:
     async def compose_signal(
         self, request: StringValue, ctx: object = None
     ) -> StringValue:
-        """Compose a signal across many symbols — uses asyncio.gather to fan
-        out parallel per-symbol activities. Each fetch has its own activity
-        record and default retry policy, so transient partial failures retry
-        only the failing symbols.
+        """Compose a signal across many symbols with structured parallel
+        fan-out. Each fetch has its own activity record and default retry
+        policy, so transient partial failures retry only the failing symbols.
         """
         symbols = ["AAPL", "MSFT", "GOOG", "TSLA", "NVDA", "AMZN", "META", "AMD"]
         annotate("symbols", str(len(symbols)))
@@ -140,7 +138,7 @@ class QuantService:
                 retry_timer_id=f"retry:fetch:{symbol}",
             )
 
-        prices = await asyncio.gather(*(fetch_one(s) for s in symbols))
+        prices = await gather_activities(*(fetch_one(s) for s in symbols))
         joined = StringValue(value=",".join(p.value for p in prices))
         return await current_workflow().execute_activity(
             ActivityOptions(activity_id="compose:signal"),

@@ -20,7 +20,7 @@ func TestRunRejectsOptionsUnsupportedByClaimCapability(t *testing.T) {
 		{
 			name: "claim owner with no claims",
 			options: &Options{
-				WorkflowId: "capability-owner", RunId: "run", CodeVersion: "v1",
+				WorkflowId: "capability-owner", RunId: "run",
 				ClaimOwnerId: "worker",
 			},
 			capability: storage.NoClaims,
@@ -29,11 +29,20 @@ func TestRunRejectsOptionsUnsupportedByClaimCapability(t *testing.T) {
 		{
 			name: "concurrency with unspecified capability",
 			options: &Options{
-				WorkflowId: "capability-concurrency", RunId: "run", CodeVersion: "v1",
+				WorkflowId: "capability-concurrency", RunId: "run",
 				ClaimOwnerId: "worker", ConcurrencyKey: "vendor", ConcurrencyLimit: 1,
 			},
 			capability: temporalessv1.ClaimCapability_CLAIM_CAPABILITY_UNSPECIFIED,
 			wantOption: "concurrency_key",
+		},
+		{
+			name: "claim owner with reserved CAS capability",
+			options: &Options{
+				WorkflowId: "capability-cas", RunId: "run",
+				ClaimOwnerId: "worker",
+			},
+			capability: storage.CASClaims,
+			wantOption: "claim_owner_id",
 		},
 	}
 
@@ -82,7 +91,7 @@ func TestRunRejectsOptionsUnsupportedByClaimCapability(t *testing.T) {
 func TestRunTerminalReplayDoesNotRequireClaimCapability(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	base := &Options{WorkflowId: "capability-replay", RunId: "run", CodeVersion: "v1"}
+	base := &Options{WorkflowId: "capability-replay", RunId: "run"}
 	first, err := Run(
 		ctx, store, base, nil,
 		wrapperspb.String("request"),
@@ -135,7 +144,6 @@ func protoCloneWorkflowOptions(options *Options) *Options {
 	return &Options{
 		WorkflowId:       options.GetWorkflowId(),
 		RunId:            options.GetRunId(),
-		CodeVersion:      options.GetCodeVersion(),
 		ClaimOwnerId:     options.GetClaimOwnerId(),
 		ConcurrencyKey:   options.GetConcurrencyKey(),
 		ConcurrencyLimit: options.GetConcurrencyLimit(),

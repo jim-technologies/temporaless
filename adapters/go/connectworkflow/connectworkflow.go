@@ -21,9 +21,8 @@ import (
 //	        Store: s.store,
 //	        OptionsFor: func(_ context.Context, r *pricesv1.FetchRequest) (*workflow.Options, error) {
 //	            return &workflow.Options{
-//	                WorkflowId:  "prices:" + r.GetSymbol(),
-//	                RunId:       r.GetRunId(),
-//	                CodeVersion: codeVersion(),
+//	                WorkflowId: "prices:" + r.GetSymbol(),
+//	                RunId:      r.GetRunId(),
 //	            }, nil
 //	        },
 //	        NewResult: func() *pricesv1.FetchResponse { return &pricesv1.FetchResponse{} },

@@ -5,8 +5,9 @@
 // Backfill is idempotent: already-COMPLETED runs replay from storage in
 // microseconds; already-FAILED runs re-execute (call inspector.ResetWorkflow
 // first to clear them); IN_PROGRESS runs are reported as Pending and need a
-// scanner / re-invoke to resume. Re-running Backfill over the same set is
-// free for COMPLETED runs.
+// later re-invocation. Sleeps and waits with PollOptions can receive that
+// re-invocation from the timer scanner; manual waits need an application
+// trigger. Re-running Backfill over the same set is free for COMPLETED runs.
 //
 // Usage:
 //

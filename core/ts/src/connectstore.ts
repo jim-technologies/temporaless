@@ -9,7 +9,10 @@ import {
   DeleteRunRequestSchema,
   DeleteTimerRequestSchema,
   DeleteWorkflowRequestSchema,
+  DeliverEventRequestSchema,
   DueTimersRequestSchema,
+  EventDeliveryCapability,
+  EventDeliveryDisposition,
   GetActivityRequestSchema,
   GetClaimRequestSchema,
   GetEventRequestSchema,
@@ -29,6 +32,7 @@ import {
   RecordQueryService,
   RecordQueryServiceDueTimersRequestSchema,
   RecordQueryServiceListActivitiesRequestSchema,
+  RecordSchemaVersion,
   RecordStoreService,
   SweepRequestSchema,
   TimerStatus,
@@ -198,6 +202,39 @@ export class ConnectStore {
     await this.client.putEvent(create(PutEventRequestSchema, { record }));
   }
 
+  async eventDeliveryCapability(): Promise<EventDeliveryCapability> {
+    const response = await this.client.getStoreCapabilities(
+      create(GetStoreCapabilitiesRequestSchema),
+    );
+    switch (response.eventDeliveryCapability) {
+      case EventDeliveryCapability.UNSPECIFIED:
+      case EventDeliveryCapability.NO_ATOMIC_CREATE:
+        return EventDeliveryCapability.NO_ATOMIC_CREATE;
+      case EventDeliveryCapability.CREATE_ONLY:
+        return EventDeliveryCapability.CREATE_ONLY;
+      default:
+        throw new Error(
+          `Store returned invalid event delivery capability ${response.eventDeliveryCapability}`,
+        );
+    }
+  }
+
+  async deliverEvent(record: EventRecord): Promise<EventDeliveryDisposition> {
+    validateDeliverableEventRecord(record);
+    const response = await this.client.deliverEvent(
+      create(DeliverEventRequestSchema, { record }),
+    );
+    switch (response.disposition) {
+      case EventDeliveryDisposition.CREATED:
+      case EventDeliveryDisposition.IDEMPOTENT:
+        return response.disposition;
+      default:
+        throw new Error(
+          `Store returned invalid event delivery disposition ${response.disposition}`,
+        );
+    }
+  }
+
   async listEvents(key: WorkflowKey): Promise<EventRecord[]> {
     const response = await this.client.listEvents(
       create(ListEventsRequestSchema, { key }),
@@ -245,6 +282,23 @@ export class ConnectStore {
       create(GetStoreCapabilitiesRequestSchema),
     );
     return response.claimCapability;
+  }
+}
+
+function validateDeliverableEventRecord(record: EventRecord): void {
+  if (record.schemaVersion !== RecordSchemaVersion.EVENT) {
+    throw new Error(
+      `Event record has schema version ${record.schemaVersion}, expected ${RecordSchemaVersion.EVENT}`,
+    );
+  }
+  if (record.key === undefined) {
+    throw new Error("Event record key is required");
+  }
+  if (record.payload === undefined) {
+    throw new Error("Event record payload is required");
+  }
+  if (record.receivedAt === undefined) {
+    throw new Error("Event record received_at is required");
   }
 }
 

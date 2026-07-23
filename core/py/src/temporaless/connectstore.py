@@ -14,9 +14,12 @@ from connectrpc.request import RequestContext
 from google.protobuf.duration_pb2 import Duration
 from google.protobuf.message import DecodeError, Message
 from google.protobuf.timestamp_pb2 import Timestamp
+from protobuf.wkt import Any as ConnectAny
 from protovalidate import ValidationError, validate
 
 from temporaless.storage import (
+    CREATE_ONLY_EVENT_DELIVERY,
+    NO_ATOMIC_EVENT_DELIVERY,
     NO_CLAIMS,
     ActivityKey,
     ClaimKey,
@@ -24,6 +27,9 @@ from temporaless.storage import (
     ClaimRunStore,
     ClaimStore,
     DueTimer,
+    EventDeliveryConflictError,
+    EventDeliveryStore,
+    EventDeliveryUnsupportedError,
     EventKey,
     QueryStore,
     RunRecordValidationError,
@@ -32,11 +38,13 @@ from temporaless.storage import (
     WorkflowKey,
     _activity_keys_for_run,
     _claim_keys_for_run,
+    _current_claim_capability,
     _event_keys_for_run,
     _timer_keys_for_run,
     _validate_activity_record,
     _validate_claim_record,
     _validate_due_timer,
+    _validate_event_delivery_record,
     _validate_event_record,
     _validate_latest_workflow_run_pointer,
     _validate_latest_workflow_run_reference,
@@ -105,6 +113,10 @@ class RecordStoreClient(Protocol):
         self, request: temporaless_pb2.PutEventRequest
     ) -> temporaless_pb2.PutEventResponse: ...
 
+    async def deliver_event(
+        self, request: temporaless_pb2.DeliverEventRequest
+    ) -> temporaless_pb2.DeliverEventResponse: ...
+
     async def list_activities(
         self, request: temporaless_pb2.ListActivitiesRequest
     ) -> temporaless_pb2.ListActivitiesResponse: ...
@@ -164,7 +176,11 @@ class RecordQueryClient(Protocol):
     ) -> temporaless_pb2.RecordQueryServiceDueTimersResponse: ...
 
 
-async def _storage_rpc[ResponseT](awaitable: Awaitable[ResponseT]) -> ResponseT:
+async def _storage_rpc[ResponseT](
+    awaitable: Awaitable[ResponseT],
+    *,
+    event_key: EventKey | None = None,
+) -> ResponseT:
     """Preserve permanent remote corruption as the Store's typed sentinel."""
     try:
         return await awaitable
@@ -173,6 +189,38 @@ async def _storage_rpc[ResponseT](awaitable: Awaitable[ResponseT]) -> ResponseT:
             raise RunRecordValidationError(
                 f"remote record service reported corrupt storage data: {exc}"
             ) from exc
+        if exc.code is Code.FAILED_PRECONDITION:
+            for detail in exc.details:
+                if (
+                    detail.type_name
+                    != temporaless_pb2.EventDeliveryErrorDetail.DESCRIPTOR.full_name
+                ):
+                    continue
+                try:
+                    value = temporaless_pb2.EventDeliveryErrorDetail()
+                    value.ParseFromString(detail.message_bytes)
+                except DecodeError as detail_error:
+                    raise RunRecordValidationError(
+                        "remote event delivery error detail cannot be decoded"
+                    ) from detail_error
+                try:
+                    detail_key = event_key_from_proto(value.key)
+                    detail_key.validate()
+                except (ValidationError, ValueError) as detail_error:
+                    raise RunRecordValidationError(
+                        "remote event delivery error detail has an invalid key"
+                    ) from detail_error
+                if event_key is not None and detail_key != event_key:
+                    raise RunRecordValidationError(
+                        "remote event delivery error detail key does not match request"
+                    ) from exc
+                if value.reason == temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED:
+                    raise EventDeliveryUnsupportedError(exc.message) from exc
+                if value.reason == temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_CONFLICT:
+                    raise EventDeliveryConflictError(detail_key) from exc
+                raise RunRecordValidationError(
+                    f"remote event delivery error detail has an invalid reason {value.reason}"
+                ) from exc
         raise
 
 
@@ -227,7 +275,28 @@ class ConnectStore:
         response = await _storage_rpc(
             self._client.get_store_capabilities(temporaless_pb2.GetStoreCapabilitiesRequest())
         )
-        return response.claim_capability or NO_CLAIMS
+        try:
+            return _current_claim_capability(response.claim_capability)
+        except ValueError as exc:
+            raise ConnectError(Code.FAILED_PRECONDITION, str(exc)) from exc
+
+    async def event_delivery_capability(
+        self,
+    ) -> temporaless_pb2.EventDeliveryCapability:
+        response = await _storage_rpc(
+            self._client.get_store_capabilities(temporaless_pb2.GetStoreCapabilitiesRequest())
+        )
+        capability = response.event_delivery_capability
+        if capability in (
+            temporaless_pb2.EVENT_DELIVERY_CAPABILITY_UNSPECIFIED,
+            NO_ATOMIC_EVENT_DELIVERY,
+        ):
+            return NO_ATOMIC_EVENT_DELIVERY
+        if capability == CREATE_ONLY_EVENT_DELIVERY:
+            return capability
+        raise RunRecordValidationError(
+            f"remote store returned unknown event delivery capability {capability}"
+        )
 
     async def get_activity(self, key: ActivityKey) -> temporaless_pb2.ActivityRecord | None:
         response = await _storage_rpc(
@@ -334,6 +403,22 @@ class ConnectStore:
     async def put_event(self, record: temporaless_pb2.EventRecord) -> None:
         _validate_event_record(record)
         await _storage_rpc(self._client.put_event(temporaless_pb2.PutEventRequest(record=record)))
+
+    async def deliver_event(
+        self,
+        record: temporaless_pb2.EventRecord,
+    ) -> temporaless_pb2.EventDeliveryDisposition:
+        key = _validate_event_delivery_record(record)
+        response = await _storage_rpc(
+            self._client.deliver_event(temporaless_pb2.DeliverEventRequest(record=record)),
+            event_key=key,
+        )
+        if response.disposition not in (
+            temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED,
+            temporaless_pb2.EVENT_DELIVERY_DISPOSITION_IDEMPOTENT,
+        ):
+            raise RunRecordValidationError("event delivery response has an invalid disposition")
+        return response.disposition
 
     async def list_activities(self, key: WorkflowKey) -> list[temporaless_pb2.ActivityRecord]:
         response = await _storage_rpc(
@@ -543,6 +628,7 @@ class ConnectQueryStore:
 
 class RecordStoreService:
     _claim_store: ClaimStore | None
+    _event_delivery_store: EventDeliveryStore | None
 
     def __init__(self, store: Store, claim_store: ClaimStore | None = None) -> None:
         self._store = store
@@ -552,6 +638,7 @@ class RecordStoreService:
             self._claim_store = store
         else:
             self._claim_store = None
+        self._event_delivery_store = store if isinstance(store, EventDeliveryStore) else None
 
     async def get_store_capabilities(
         self,
@@ -561,8 +648,27 @@ class RecordStoreService:
         _validate_rpc_request(request)
         capability = NO_CLAIMS
         if self._claim_store is not None:
-            capability = await self._claim_store.claim_capability()
-        return temporaless_pb2.GetStoreCapabilitiesResponse(claim_capability=capability)
+            try:
+                capability = _current_claim_capability(await self._claim_store.claim_capability())
+            except ValueError as exc:
+                raise ConnectError(Code.FAILED_PRECONDITION, str(exc)) from exc
+        event_capability = NO_ATOMIC_EVENT_DELIVERY
+        if self._event_delivery_store is not None:
+            event_capability = await self._event_delivery_store.event_delivery_capability()
+            if event_capability == temporaless_pb2.EVENT_DELIVERY_CAPABILITY_UNSPECIFIED:
+                event_capability = NO_ATOMIC_EVENT_DELIVERY
+            elif event_capability not in (
+                NO_ATOMIC_EVENT_DELIVERY,
+                CREATE_ONLY_EVENT_DELIVERY,
+            ):
+                raise ConnectError(
+                    Code.INTERNAL,
+                    f"event delivery store returned invalid capability {event_capability}",
+                )
+        return temporaless_pb2.GetStoreCapabilitiesResponse(
+            claim_capability=capability,
+            event_delivery_capability=event_capability,
+        )
 
     async def get_activity(
         self,
@@ -709,10 +815,11 @@ class RecordStoreService:
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
         capability = await self._claim_store.claim_capability()
-        if capability not in (
-            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-        ):
+        try:
+            capability = _current_claim_capability(capability)
+        except ValueError as exc:
+            raise ConnectError(Code.FAILED_PRECONDITION, str(exc)) from exc
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
             raise ConnectError(
                 Code.FAILED_PRECONDITION,
                 "configured claim store does not support atomic claim creation",
@@ -733,6 +840,16 @@ class RecordStoreService:
         _validate_rpc_request(request)
         if self._claim_store is None:
             raise ConnectError(Code.FAILED_PRECONDITION, "claim store is required")
+        capability = await self._claim_store.claim_capability()
+        try:
+            capability = _current_claim_capability(capability)
+        except ValueError as exc:
+            raise ConnectError(Code.FAILED_PRECONDITION, str(exc)) from exc
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
+            raise ConnectError(
+                Code.FAILED_PRECONDITION,
+                "configured claim store does not support claim release",
+            )
         return temporaless_pb2.DeleteClaimResponse(
             deleted=await self._claim_store.delete_claim(claim_key_from_proto(request.key))
         )
@@ -766,6 +883,68 @@ class RecordStoreService:
             raise _invalid_record_request("event", exc) from exc
         await self._store.put_event(request.record)
         return temporaless_pb2.PutEventResponse()
+
+    async def deliver_event(
+        self,
+        request: temporaless_pb2.DeliverEventRequest,
+        ctx: RequestContext | None,
+    ) -> temporaless_pb2.DeliverEventResponse:
+        _validate_rpc_request(request)
+        try:
+            key = _validate_event_delivery_record(request.record)
+        except (ValidationError, ValueError) as exc:
+            raise _invalid_record_request("event", exc) from exc
+        if self._event_delivery_store is None:
+            raise _event_delivery_precondition(
+                temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED,
+                key,
+                "configured store does not support atomic event creation",
+            )
+        capability = await self._event_delivery_store.event_delivery_capability()
+        if capability in (
+            temporaless_pb2.EVENT_DELIVERY_CAPABILITY_UNSPECIFIED,
+            NO_ATOMIC_EVENT_DELIVERY,
+        ):
+            raise _event_delivery_precondition(
+                temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED,
+                key,
+                "configured store does not support atomic event creation",
+            )
+        if capability != CREATE_ONLY_EVENT_DELIVERY:
+            raise ConnectError(
+                Code.INTERNAL,
+                f"event delivery store returned invalid capability {capability}",
+            )
+        try:
+            disposition = await self._event_delivery_store.deliver_event(request.record)
+        except (
+            DecodeError,
+            ValidationError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            raise _record_data_loss("event delivery", exc) from exc
+        except EventDeliveryUnsupportedError as exc:
+            raise _event_delivery_precondition(
+                temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED,
+                key,
+                str(exc),
+            ) from exc
+        except EventDeliveryConflictError as exc:
+            raise _event_delivery_precondition(
+                temporaless_pb2.EVENT_DELIVERY_FAILURE_REASON_CONFLICT,
+                key,
+                str(exc),
+            ) from exc
+        if disposition not in (
+            temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED,
+            temporaless_pb2.EVENT_DELIVERY_DISPOSITION_IDEMPOTENT,
+        ):
+            raise ConnectError(
+                Code.INTERNAL,
+                f"event delivery store returned invalid disposition {disposition}",
+            )
+        return temporaless_pb2.DeliverEventResponse(disposition=disposition)
 
     async def list_activities(
         self,
@@ -897,10 +1076,11 @@ class RecordStoreService:
         if self._claim_store is None:
             return []
         capability = await self._claim_store.claim_capability()
-        if capability not in (
-            temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS,
-            temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS,
-        ):
+        try:
+            capability = _current_claim_capability(capability)
+        except ValueError as exc:
+            raise ConnectError(Code.FAILED_PRECONDITION, str(exc)) from exc
+        if capability != temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS:
             return []
         if not isinstance(self._claim_store, ClaimRunStore):
             raise ConnectError(
@@ -1077,6 +1257,30 @@ def _invalid_record_request(record_kind: str, exc: Exception) -> ConnectError:
     return ConnectError(Code.INVALID_ARGUMENT, f"invalid {record_kind} record: {exc}")
 
 
+def _event_delivery_precondition(
+    reason: temporaless_pb2.EventDeliveryFailureReason,
+    key: EventKey,
+    message: str,
+) -> ConnectError:
+    detail = temporaless_pb2.EventDeliveryErrorDetail(
+        reason=reason,
+        key=key.to_proto(),
+    )
+    return ConnectError(
+        Code.FAILED_PRECONDITION,
+        message,
+        details=[
+            ConnectAny(
+                type_url=(
+                    "type.googleapis.com/"
+                    f"{temporaless_pb2.EventDeliveryErrorDetail.DESCRIPTOR.full_name}"
+                ),
+                value=detail.SerializeToString(deterministic=True),
+            )
+        ],
+    )
+
+
 def _validate_rpc_request(request: Message) -> None:
     try:
         validate(request)
@@ -1207,6 +1411,11 @@ class LocalRecordStoreClient:
         self, request: temporaless_pb2.PutEventRequest
     ) -> temporaless_pb2.PutEventResponse:
         return await self.service.put_event(request, None)
+
+    async def deliver_event(
+        self, request: temporaless_pb2.DeliverEventRequest
+    ) -> temporaless_pb2.DeliverEventResponse:
+        return await self.service.deliver_event(request, None)
 
     async def list_activities(
         self, request: temporaless_pb2.ListActivitiesRequest

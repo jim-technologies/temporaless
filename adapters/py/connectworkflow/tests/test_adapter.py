@@ -56,7 +56,6 @@ async def test_wrap_workflow_method_replays_connect_handler(store: OpenDALStore)
                 options_for=lambda _self, request: Options(
                     workflow_id=f"prices:{request.value}",
                     run_id="2026-05-04",
-                    code_version="v1",
                 ),
             )
         )
@@ -100,7 +99,6 @@ async def test_generated_asgi_service_executes_and_replays_workflow(
                 options_for=lambda _self, request: Options(
                     workflow_id=f"query:{request.workflow_id}",
                     run_id=request.page_token,
-                    code_version="v1",
                     claim_owner_id="connect-asgi-test",
                 ),
             )
@@ -195,7 +193,6 @@ async def test_wrapper_maps_pending_error_and_preserves_cause(store: OpenDALStor
                 options_for=lambda _self, request: Options(
                     workflow_id=f"sleep:{request.value}",
                     run_id="2026-05-04",
-                    code_version="v1",
                 ),
             )
         )
@@ -222,7 +219,6 @@ async def test_wrapper_preserves_unknown_application_error(store: OpenDALStore) 
                 options_for=lambda _self, request: Options(
                     workflow_id=f"broken:{request.value}",
                     run_id="2026-05-04",
-                    code_version="v1",
                 ),
             )
         )

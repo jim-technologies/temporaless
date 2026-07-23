@@ -26,12 +26,12 @@ temporaless/v2/{ns}/{wf}/{rid}/claim/{cid}.binpb
 ```
 
 The replay contract is identical across SDKs: a terminal workflow record is
-reused when `(workflow_id, run_id, code_version, workflow_type)` matches —
-likewise a completed/failed activity record matching `(workflow_id, run_id,
-activity_id, code_version, activity_type)`. Pending records instead drive
-resume. The user-supplied IDs are the de-duplication key; the runtime does NOT
+reused when `(workflow_id, run_id, workflow_type)` matches—likewise a
+completed/failed activity record matching `(workflow_id, run_id, activity_id,
+activity_type)`. Pending records instead drive resume with the current handler.
+The user-supplied IDs are the de-duplication key; the runtime does NOT
 fingerprint input bytes. If you want a distinct execution, choose a distinct
-id.
+ID.
 
 `workflow_type` and `activity_type` are formed from the protobuf
 descriptor's full name (`google.protobuf.StringValue`,
@@ -48,8 +48,8 @@ This means:
 
 - A workflow that runs in Python and writes its `WorkflowRecord` can be
   read AND replayed by Rust or Go without re-encoding — same `workflow_type`
-  string, same `code_version`, same id ⇒ the runtime returns the stored
-  result on the receiving side.
+  string and same IDs ⇒ the runtime returns the stored result on the receiving
+  side.
 - A workflow that runs partially in Python, crashes, and is resumed by a
   Go worker re-reading the same bucket completes cleanly — same ids, same
   shape, same replay.
@@ -123,7 +123,9 @@ from being first-class.
 | Concurrency keys (cluster-wide caps via claim slots) | ✓ | ✓ | — |
 | Claims (workflow single-flight + activity, GoCDK / OpenDAL backend) | ✓ | ✓ | — |
 | Durable timers (`workflow.Sleep`) | ✓ | ✓ | — |
-| Wait for event (`workflow.WaitEvent`) | ✓ | ✓ | — |
+| Manual event/dependency waits | ✓ | ✓ | — |
+| Optional durable polling (`PollOptions` + timer scanner) | ✓ | ✓ | — |
+| Atomic create-once event delivery | ✓ via capable `EventDeliveryStore` / remote `ConnectStore`; direct Go OpenDAL reports unsupported | ✓ when the OpenDAL operator advertises conditional create | — |
 | Annotate (per-record durable key/value) | ✓ | ✓ | ✓ |
 | Outbox idempotency-key helper | ✓ | ✓ | — |
 | ConnectRPC handler shape | ✓ | ✓ | — |
@@ -132,8 +134,15 @@ from being first-class.
 | Timer scanner | ✓ | ✓ | — |
 | Janitor | ✓ | ✓ | — |
 | Inspector / backfill / dependencies / prefectcompat / temporalcompat | ✓ | partial | — |
+| Visual plan validation/digest + plan-versus-record projection | ✓ | ✓ | — |
 | Background workers helper (opt-in cron + scanner + janitor in-process) | ✓ | ✓ | — |
 | Replay prefetch cache (one List per kind on resume) | ✓ | ✓ | — |
+
+Waits are manual unless the call supplies `PollOptions`: no hidden timer or
+scheduler subscription is created by default. A polled wait uses a stable
+caller-supplied timer ID and the same at-least-once due scanner as sleeps and
+durable activity retries. Event delivery is a separate create-once operation;
+polling controls when a run rereads the event, not how the payload is written.
 
 The Rust SDK is **storage + minimal workflow runtime** today. The runtime
 layers above (claims, durable timers, retries-as-timers, concurrency keys,
@@ -145,7 +154,8 @@ boundaries.
 
 The TypeScript package is not in the runtime matrix. Its root export ships
 generated `temporaless.v1` protobuf types plus `ConnectStore` /
-`ConnectQueryStore` wrappers for browser or Node Connect transports. Its
+`ConnectQueryStore` wrappers for browser or Node Connect transports, including
+visual-plan validation/digest and run projection helpers. Its
 `@jim-technologies/temporaless/invariant` subpath uses
 `@jim-technologies/invariant-protocol` to project the same descriptor into MCP,
 CLI, HTTP/Connect, and descriptor-backed tool catalogs. It is for clients,
@@ -191,9 +201,10 @@ compatibility target, operations helper).
 | `gocdkclaims` (Go) / `OpenDALStore.try_create_claim` (Py) | Create-only claims via blob `IfNotExist` (S3/GCS native atomicity) | ✓ | ✓ | — |
 | `temporalcompat` | Run Temporaless-shaped handlers on the real Temporal SDK | ✓ | ✓ | — |
 | `prefectcompat` | Run Temporaless-shaped handlers as Prefect 3 flows/tasks | — | ✓ | — |
-| `timerscanner` | Find due durable timers belonging to in-flight workflows | ✓ | ✓ | — |
+| `timerscanner` | Find due sleep, activity-retry, and poll timers belonging to in-flight workflows | ✓ | ✓ | — |
 | `cronscheduler` | In-process cron with stateless seeding from existing runs | ✓ | ✓ | — |
 | `inspector` | List in-flight/failed workflows, reset records for re-execution | ✓ | ✓ | — |
+| `visualization` | Validate/digest optional `WorkflowPlan`, inspect a run, and project node IDs onto durable record evidence | ✓ | ✓ | — |
 | `janitor` | Sweep COMPLETED runs older than max-age | ✓ | ✓ | — |
 | `backfill` | Run a workflow over many run_ids with bounded concurrency + report | ✓ | ✓ | — |
 | `dependencies` | Cross-pipeline durable wait — `WaitForWorkflow(...)` | ✓ | ✓ | — |
@@ -202,7 +213,7 @@ compatibility target, operations helper).
 | `dispatch` | Fire-and-forget pool for gRPC-shaped handlers — `DoAsync(method, req)` + graceful drain on shutdown (15s default). Options come from proto `DispatchOptions`. Default in-process; pluggable `Queue` interface lets users plug Kafka / Rabbit / NATS / SQS via a ~50-line adapter. | ✓ | ✓ | ✓ |
 
 Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
-`janitor`, `backfill`, `dependencies`, `outbox`, `background`) live inside
+`visualization`, `janitor`, `backfill`, `dependencies`, `outbox`, `background`) live inside
 `core/py/src/temporaless/` rather than `adapters/py/` because they have
 no third-party deps; `prefectcompat` and `temporalcompat` need their own
 heavyweight deps so they ship as separate uv projects under

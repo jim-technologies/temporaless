@@ -17,6 +17,8 @@ RPC client/server wiring, conflict-error variants):
 - ``from temporaless.connectstore import …`` — ``RecordStoreService``,
   ``RecordQueryService``, and client Protocols for custom RPC clients.
 - ``from temporaless.inspector import …`` — query-index-backed visibility helpers.
+- ``from temporaless.visualization import …`` — optional plan validation,
+  approval digests, and plan-versus-run evidence projection.
 - ``from temporaless.janitor import …`` / ``temporaless.timerscanner`` /
   ``temporaless.cronscheduler`` — periodic operations adapters.
 
@@ -28,12 +30,25 @@ submodule API is stable and documented.
 from temporaless.connectstore import ConnectStore, asgi_application
 from temporaless.storage import (
     ActivityKey,
+    EventDeliveryConflictError,
+    EventDeliveryUnsupportedError,
     EventKey,
     OpenDALStore,
     Store,
     TimerKey,
     WorkflowKey,
+    deliver_event,
     send_event,
+)
+from temporaless.visualization import (
+    ClaimLister,
+    NodeProjection,
+    RunInspection,
+    RunProjection,
+    inspect_run,
+    plan_digest,
+    project_workflow_run,
+    validate_plan,
 )
 from temporaless.workflow import (
     ActivityError,
@@ -44,6 +59,7 @@ from temporaless.workflow import (
     ClaimReleaseError,
     EventPendingError,
     Options,
+    PollOptions,
     RetryPolicy,
     TimerPendingError,
     Workflow,
@@ -53,6 +69,7 @@ from temporaless.workflow import (
     WorkflowWrapOptions,
     annotate,
     current_workflow,
+    gather_activities,
     run,
     wrap_activity,
     wrap_workflow,
@@ -66,13 +83,20 @@ __all__ = [
     "ActivityWrapOptions",
     "ClaimBusyError",
     "ClaimCapabilityError",
+    "ClaimLister",
     "ClaimReleaseError",
     "ConnectStore",
+    "EventDeliveryConflictError",
+    "EventDeliveryUnsupportedError",
     "EventKey",
     "EventPendingError",
     "OpenDALStore",
+    "NodeProjection",
     "Options",
+    "PollOptions",
     "RetryPolicy",
+    "RunInspection",
+    "RunProjection",
     "Store",
     "TimerKey",
     "TimerPendingError",
@@ -85,8 +109,14 @@ __all__ = [
     "annotate",
     "asgi_application",
     "current_workflow",
+    "deliver_event",
+    "gather_activities",
+    "inspect_run",
+    "plan_digest",
+    "project_workflow_run",
     "run",
     "send_event",
+    "validate_plan",
     "wrap_activity",
     "wrap_workflow",
 ]

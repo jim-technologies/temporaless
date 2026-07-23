@@ -26,7 +26,7 @@ func main() {
 	store := storage.NewOpenDALStore(operator)
 	handler := workflow.WrapWorkflow(workflow.WorkflowWrapOptions[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 		Store:     store,
-		Options:   &workflow.Options{WorkflowId: "prices:aapl", RunId: "2026-05-02", CodeVersion: "example"},
+		Options:   &workflow.Options{WorkflowId: "prices:aapl", RunId: "2026-05-02"},
 		NewResult: func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 		Execute:   fetchPriceWorkflow,
 	})

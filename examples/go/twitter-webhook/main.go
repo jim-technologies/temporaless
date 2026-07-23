@@ -9,18 +9,27 @@ import (
 
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
+	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Demonstrates the storage-first webhook/event flow:
 //   - workflow processes a tweet: classifies it, then waits for a moderation
-//     decision delivered out-of-band (e.g. by a Slack approval handler that
-//     calls storage.SendEvent)
+//     decision delivered out-of-band
 //   - first invocation returns ErrEventPending and leaves the workflow IN_PROGRESS
-//   - external service delivers the decision via storage.SendEvent
+//   - this local, single-process demo simulates delivery with the low-level
+//     PutEvent operator primitive
 //   - second invocation replays the workflow body, finds the event, completes
+//
+// Production Go delivery must call storage.SendEvent through a ConnectStore
+// whose RecordStoreService advertises atomic create-only delivery. Direct Go
+// OpenDAL intentionally reports delivery unsupported because its binding does
+// not expose a conditional write.
 //
 // Run with `go run ./examples/go/twitter-webhook/`.
 func main() {
@@ -37,9 +46,8 @@ func main() {
 
 	ctx := context.Background()
 	options := &workflow.Options{
-		WorkflowId:  "twitter:moderate",
-		RunId:       "tweet-12345",
-		CodeVersion: "example",
+		WorkflowId: "twitter:moderate",
+		RunId:      "tweet-12345",
 	}
 	tweet := wrapperspb.String("Markets up 2% today! /s")
 
@@ -57,14 +65,28 @@ func main() {
 	})
 	fmt.Printf("  workflow status mid-flight: %s\n\n", wf.GetStatus())
 
-	fmt.Println("external moderator approves via storage.SendEvent")
+	fmt.Println("external moderator approves (local demo fixture via PutEvent)")
 	approval := wrapperspb.String("approved:moderator-jane")
-	if err := storage.SendEvent(ctx, store, storage.EventKey{
+	eventKey := storage.EventKey{
 		Namespace:  storage.DefaultNamespace,
 		WorkflowID: "twitter:moderate",
 		RunID:      "tweet-12345",
 		EventID:    "moderation-decision",
-	}, approval); err != nil {
+	}
+	packed := &anypb.Any{}
+	if err := anypb.MarshalFrom(
+		packed,
+		approval,
+		proto.MarshalOptions{Deterministic: true},
+	); err != nil {
+		panic(err)
+	}
+	if err := store.PutEvent(ctx, &temporalessv1.EventRecord{
+		SchemaVersion: storage.EventRecordSchemaVersion,
+		Key:           eventKey.Proto(),
+		Payload:       packed,
+		ReceivedAt:    timestamppb.Now(),
+	}); err != nil {
 		panic(err)
 	}
 
@@ -94,7 +116,7 @@ func moderateWorkflow(ctx context.Context, tweet *wrapperspb.StringValue) (*wrap
 		return nil, err
 	}
 
-	decision, err := workflow.WaitEvent(ctx, "moderation-decision", newReply)
+	decision, err := workflow.WaitEvent(ctx, "moderation-decision", newReply, nil)
 	if err != nil {
 		return nil, err
 	}

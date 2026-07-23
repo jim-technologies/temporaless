@@ -54,7 +54,6 @@ async def bench_workflow_run_fresh_execution(b: Bench) -> None:
                 Options(
                     workflow_id="bench:fresh",
                     run_id=f"run-{i:05d}",
-                    code_version="v1",
                 ),
                 StringValue(value="input"),
                 StringValue,
@@ -67,7 +66,7 @@ async def bench_workflow_run_fresh_execution(b: Bench) -> None:
 async def bench_workflow_run_replay(b: Bench) -> None:
     store, tmp = _new_store()
     try:
-        options = Options(workflow_id="bench:replay", run_id="shared", code_version="v1")
+        options = Options(workflow_id="bench:replay", run_id="shared")
         await run(store, options, StringValue(value="input"), StringValue, _fetch_activity)
         b.reset_timer()
         for _ in range(b.n):
@@ -109,7 +108,6 @@ async def bench_retry_loop_in_process(b: Bench) -> None:
                 Options(
                     workflow_id="bench:retry",
                     run_id=f"run-{i:05d}",
-                    code_version="v1",
                 ),
                 StringValue(value="input"),
                 StringValue,

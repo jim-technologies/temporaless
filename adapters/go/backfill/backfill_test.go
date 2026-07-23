@@ -38,7 +38,7 @@ func invokeWorkflow(
 		return workflow.Run(
 			ctx,
 			store,
-			&workflow.Options{WorkflowId: "prices", RunId: runID, CodeVersion: "v1"},
+			&workflow.Options{WorkflowId: "prices", RunId: runID},
 			nil,
 			wrapperspb.String(runID),
 			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },

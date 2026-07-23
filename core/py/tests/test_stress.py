@@ -75,7 +75,6 @@ async def test_one_hundred_concurrent_workflows_complete(store: OpenDALStore) ->
                 Options(
                     workflow_id="prices",
                     run_id=run_id,
-                    code_version="v1",
                 ),
                 StringValue(value=run_id),
                 StringValue,
@@ -125,7 +124,7 @@ async def test_one_hundred_workflows_replay_with_zero_vendor_calls(store: OpenDA
             *(
                 run(
                     store,
-                    Options(workflow_id="prices", run_id=rid, code_version="v1"),
+                    Options(workflow_id="prices", run_id=rid),
                     StringValue(value=rid),
                     StringValue,
                     workflow_body,
@@ -181,7 +180,7 @@ async def test_fifty_parallel_activities_inside_one_workflow(store: OpenDALStore
     started = time.perf_counter()
     result = await run(
         store,
-        Options(workflow_id="fanout", run_id="2026-05-08", code_version="v1"),
+        Options(workflow_id="fanout", run_id="2026-05-08"),
         StringValue(value="batch"),
         StringValue,
         workflow_body,
@@ -214,7 +213,6 @@ async def test_backfill_at_high_concurrency_isolates_failures(store: OpenDALStor
                 options_for=lambda _self, request: Options(
                     workflow_id="backfill",
                     run_id=request.value,
-                    code_version="v1",
                 ),
             )
         )

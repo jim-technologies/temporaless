@@ -47,7 +47,6 @@ async fn python_authored_workflow_record_decodes_correctly() {
         schema_version: v1::RecordSchemaVersion::Workflow as i32,
         key: Some(key.to_proto()),
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
-        code_version: "v0.3.7".into(),
         input: Some(prost_types::Any {
             type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
             value: encode_string_value("AAPL"),
@@ -67,7 +66,6 @@ async fn python_authored_workflow_record_decodes_correctly() {
 
     let read_back = store.get_workflow(&key).await.unwrap().expect("present");
     assert_eq!(read_back.workflow_type, record.workflow_type);
-    assert_eq!(read_back.code_version, "v0.3.7");
     assert_eq!(read_back.status, v1::WorkflowStatus::Completed as i32);
     assert_eq!(
         read_back.annotations.get("source").map(String::as_str),
@@ -126,7 +124,6 @@ async fn python_authored_activity_record_with_retry_history() {
         schema_version: v1::RecordSchemaVersion::Activity as i32,
         key: Some(key.to_proto()),
         activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue".into(),
-        code_version: "v0.3.7".into(),
         input: Some(prost_types::Any {
             type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
             value: encode_string_value("AAPL"),
@@ -178,7 +175,6 @@ async fn rust_writes_canonical_v2_path() {
         schema_version: v1::RecordSchemaVersion::Workflow as i32,
         key: Some(key.to_proto()),
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
-        code_version: "v1".into(),
         input: None,
         status: v1::WorkflowStatus::Completed as i32,
         result: None,
@@ -225,7 +221,6 @@ async fn rust_replays_python_authored_workflow_record() {
         key: Some(key.to_proto()),
         // Exactly the string Python's `message_pair_type` produces.
         workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue".into(),
-        code_version: "v1".into(),
         input: Some(prost_types::Any {
             type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
             value: encode_string_value("AAPL"),
@@ -243,8 +238,7 @@ async fn rust_replays_python_authored_workflow_record() {
     };
     store.put_workflow(&seeded).await.unwrap();
 
-    let options =
-        WorkflowOptions::new("prices:aapl", "2026-05-04T09:30:00Z").with_code_version("v1");
+    let options = WorkflowOptions::new("prices:aapl", "2026-05-04T09:30:00Z");
     let body = |_w: Workflow, _input: TestStringValue| async move {
         panic!("body must not run — stored COMPLETED record should replay")
     };
@@ -261,7 +255,7 @@ async fn rust_replays_python_authored_workflow_record() {
 async fn rust_authored_records_use_canonical_any_type_urls() {
     let (_tmp, store) = new_store();
     let store = Arc::new(store);
-    let options = WorkflowOptions::new("prices:aapl", "rust-authored").with_code_version("v1");
+    let options = WorkflowOptions::new("prices:aapl", "rust-authored");
 
     let result: TestStringValue = run(
         store.clone(),
@@ -315,7 +309,6 @@ async fn rust_rejects_replayed_result_with_wrong_any_type_url() {
             key: Some(key.to_proto()),
             workflow_type: "workflow:google.protobuf.StringValue->google.protobuf.StringValue"
                 .into(),
-            code_version: "v1".into(),
             input: Some(prost_types::Any {
                 type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
                 value: encode_string_value("AAPL"),
@@ -336,7 +329,7 @@ async fn rust_rejects_replayed_result_with_wrong_any_type_url() {
 
     let err = run::<TestStringValue, TestStringValue, _, _>(
         store,
-        WorkflowOptions::new("prices:aapl", "wrong-type-url").with_code_version("v1"),
+        WorkflowOptions::new("prices:aapl", "wrong-type-url"),
         ts("AAPL"),
         |_workflow, _input| async { panic!("body must not run for a completed workflow record") },
     )
@@ -361,7 +354,6 @@ async fn rust_rejects_replayed_activity_result_with_wrong_any_type_url() {
             ),
             activity_type: "activity:google.protobuf.StringValue->google.protobuf.StringValue"
                 .into(),
-            code_version: "v1".into(),
             input: Some(prost_types::Any {
                 type_url: "type.googleapis.com/google.protobuf.StringValue".into(),
                 value: encode_string_value("AAPL"),
@@ -380,7 +372,7 @@ async fn rust_rejects_replayed_activity_result_with_wrong_any_type_url() {
 
     let err = run(
         store,
-        WorkflowOptions::new("prices:aapl", "wrong-activity-type-url").with_code_version("v1"),
+        WorkflowOptions::new("prices:aapl", "wrong-activity-type-url"),
         ts("AAPL"),
         |_workflow, input| async move {
             execute_activity(

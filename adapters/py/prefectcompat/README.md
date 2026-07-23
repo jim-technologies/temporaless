@@ -99,7 +99,13 @@ promoting the pin together with this adapter's compatibility suite.
   Prefect flow or task when you need settings outside the adapter's explicit
   compatibility surface. `Flow.with_options` is rejected; set the supported
   name and retry fields in `WorkflowWrapOptions`.
-- Mapping Temporaless typed errors (`TimerPendingError`, `EventPendingError`) to Prefect retry semantics — Prefect tracks the run state, but the underlying workflow stays IN_PROGRESS in Temporaless storage and resumes via the timer scanner.
+- Mapping Temporaless typed errors (`TimerPendingError`, `EventPendingError`)
+  to Prefect retry semantics. Prefect tracks its own run state, while the
+  underlying Temporaless workflow stays `IN_PROGRESS`. Sleeps and waits that
+  explicitly use `PollOptions` can be re-invoked through the Temporaless timer
+  scanner; a manual event/dependency wait requires the application delivery or
+  completion path to invoke it again. This adapter does not invent either
+  policy.
 - Persisting Prefect run state into Temporaless records — Prefect's database is canonical for its run tracking.
 - Two-way migration of existing Prefect `@flow` code to Temporaless storage — that's a separate, larger project.
 

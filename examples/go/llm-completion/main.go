@@ -78,7 +78,6 @@ func main() {
 	options := &workflow.Options{
 		WorkflowId:   "llm:answer",
 		RunId:        "2026-05-02-r1",
-		CodeVersion:  "example",
 		ClaimOwnerId: "llm-worker:example",
 		// ClaimOwnerId opts this run into live single-flight. It is supplied by
 		// the application (normally an invocation or logical-worker identity)

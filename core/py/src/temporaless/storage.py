@@ -22,10 +22,41 @@ TIMER_RECORD_SCHEMA_VERSION = temporaless_pb2.RECORD_SCHEMA_VERSION_TIMER
 CLAIM_RECORD_SCHEMA_VERSION = temporaless_pb2.RECORD_SCHEMA_VERSION_CLAIM
 EVENT_RECORD_SCHEMA_VERSION = temporaless_pb2.RECORD_SCHEMA_VERSION_EVENT
 SLEEP_TIMER_KIND = temporaless_pb2.TIMER_KIND_SLEEP
+POLL_TIMER_KIND = temporaless_pb2.TIMER_KIND_POLL
 NO_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_NO_CLAIMS
 CREATE_ONLY_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
+# Reserved for future wire compatibility. The current ClaimStore Protocol
+# cannot implement or advertise CAS semantics.
 CAS_CLAIMS = temporaless_pb2.CLAIM_CAPABILITY_CAS_CLAIMS
 ClaimCapability = temporaless_pb2.ClaimCapability
+NO_ATOMIC_EVENT_DELIVERY = temporaless_pb2.EVENT_DELIVERY_CAPABILITY_NO_ATOMIC_CREATE
+CREATE_ONLY_EVENT_DELIVERY = temporaless_pb2.EVENT_DELIVERY_CAPABILITY_CREATE_ONLY
+EventDeliveryCapability = temporaless_pb2.EventDeliveryCapability
+
+
+def _current_claim_capability(
+    capability: temporaless_pb2.ClaimCapability,
+) -> temporaless_pb2.ClaimCapability:
+    """Normalize capabilities implemented by the current ClaimStore surface.
+
+    UNSPECIFIED is fail-closed NO_CLAIMS. CAS is deliberately rejected: the
+    enum value is reserved for a future interface with fencing and conditional
+    refresh/release/takeover operations.
+    """
+    if capability in (
+        temporaless_pb2.CLAIM_CAPABILITY_UNSPECIFIED,
+        NO_CLAIMS,
+    ):
+        return NO_CLAIMS
+    if capability == CREATE_ONLY_CLAIMS:
+        return CREATE_ONLY_CLAIMS
+    try:
+        name = temporaless_pb2.ClaimCapability.Name(capability)
+    except ValueError:
+        name = str(capability)
+    raise ValueError(
+        f"claim capability {name} is unsupported by the current create-only claim interface"
+    )
 
 
 class ClaimRunListingUnsupportedError(TypeError):
@@ -34,6 +65,21 @@ class ClaimRunListingUnsupportedError(TypeError):
 
 class RunRecordValidationError(ValueError):
     """A stored or remote record violates its schema or requested location."""
+
+
+class EventDeliveryUnsupportedError(RuntimeError):
+    """The configured store cannot atomically establish an event payload."""
+
+
+class EventDeliveryConflictError(RuntimeError):
+    """An EventKey already contains a different protobuf payload."""
+
+    def __init__(self, key: EventKey) -> None:
+        super().__init__(
+            f"event {key.workflow_id!r}/{key.run_id!r}/{key.event_id!r} "
+            "already contains a different payload"
+        )
+        self.key = key
 
 
 # V2 storage is flat and constructed-only. Keys are never inverted back into
@@ -319,6 +365,24 @@ class EventStore(Protocol):
 
 
 @runtime_checkable
+class EventDeliveryStore(Protocol):
+    """Native atomic create-only event delivery.
+
+    Existing records must be strictly validated before canonical payload
+    comparison. Corrupt records are errors, never idempotent/conflict results.
+    """
+
+    async def event_delivery_capability(
+        self,
+    ) -> temporaless_pb2.EventDeliveryCapability: ...
+
+    async def deliver_event(
+        self,
+        record: temporaless_pb2.EventRecord,
+    ) -> temporaless_pb2.EventDeliveryDisposition: ...
+
+
+@runtime_checkable
 class ClaimStore(Protocol):
     async def claim_capability(self) -> temporaless_pb2.ClaimCapability: ...
 
@@ -410,6 +474,11 @@ class OpenDALStore:
         self._operator = operator
         self._claim_capability = (
             CREATE_ONLY_CLAIMS if capability.write_with_if_not_exists else NO_CLAIMS
+        )
+        self._event_delivery_capability = (
+            CREATE_ONLY_EVENT_DELIVERY
+            if capability.write_with_if_not_exists
+            else NO_ATOMIC_EVENT_DELIVERY
         )
         self._latest_pointer_lock = asyncio.Lock()
 
@@ -534,6 +603,42 @@ class OpenDALStore:
         key = _validate_event_record(record)
         await self._operator.create_dir(key.dir_path())
         await self._operator.write(key.path(), record.SerializeToString(deterministic=True))
+
+    async def event_delivery_capability(
+        self,
+    ) -> temporaless_pb2.EventDeliveryCapability:
+        return self._event_delivery_capability
+
+    async def deliver_event(
+        self,
+        record: temporaless_pb2.EventRecord,
+    ) -> temporaless_pb2.EventDeliveryDisposition:
+        key = _validate_event_delivery_record(record)
+        if self._event_delivery_capability != CREATE_ONLY_EVENT_DELIVERY:
+            raise EventDeliveryUnsupportedError(
+                "OpenDAL backend does not support atomic event creation"
+            )
+        await self._operator.create_dir(key.dir_path())
+        try:
+            await self._operator.write(
+                key.path(),
+                record.SerializeToString(deterministic=True),
+                if_not_exists=True,
+            )
+        except (
+            opendal.exceptions.AlreadyExists,
+            opendal.exceptions.ConditionNotMatch,
+        ):
+            existing = await self.get_event(key)
+            if existing is None:
+                raise RuntimeError(
+                    "conditional event create reported an existing object that could not be read"
+                ) from None
+            _validate_event_delivery_record(existing, expected_key=key)
+            if _same_event_payload(existing, record):
+                return temporaless_pb2.EVENT_DELIVERY_DISPOSITION_IDEMPOTENT
+            raise EventDeliveryConflictError(key) from None
+        return temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED
 
     async def try_create_claim(self, record: temporaless_pb2.ClaimRecord) -> bool:
         if self._claim_capability == NO_CLAIMS:
@@ -1230,6 +1335,47 @@ def _validate_event_record(
     return key
 
 
+def _validate_event_delivery_record(
+    record: temporaless_pb2.EventRecord,
+    *,
+    expected_key: EventKey | None = None,
+) -> EventKey:
+    key = _validate_event_record(record, expected_key=expected_key)
+    if not record.HasField("payload"):
+        raise RunRecordValidationError("event delivery payload is required")
+    if not record.HasField("received_at"):
+        raise RunRecordValidationError("event delivery received_at is required")
+    try:
+        _timestamp_from_proto(record.received_at)
+    except (ValueError, OverflowError) as exc:
+        raise RunRecordValidationError(f"event delivery has invalid received_at: {exc}") from exc
+    return key
+
+
+def _same_event_payload(
+    left: temporaless_pb2.EventRecord,
+    right: temporaless_pb2.EventRecord,
+) -> bool:
+    return left.key.SerializeToString(deterministic=True) == right.key.SerializeToString(
+        deterministic=True
+    ) and left.payload.SerializeToString(deterministic=True) == right.payload.SerializeToString(
+        deterministic=True
+    )
+
+
+def _validate_event_delivery_disposition(
+    disposition: temporaless_pb2.EventDeliveryDisposition,
+) -> temporaless_pb2.EventDeliveryDisposition:
+    if disposition not in (
+        temporaless_pb2.EVENT_DELIVERY_DISPOSITION_CREATED,
+        temporaless_pb2.EVENT_DELIVERY_DISPOSITION_IDEMPOTENT,
+    ):
+        raise RunRecordValidationError(
+            f"event delivery store returned invalid disposition {disposition}"
+        )
+    return disposition
+
+
 def _validate_claim_record(
     record: temporaless_pb2.ClaimRecord,
     *,
@@ -1614,11 +1760,27 @@ async def _delete_if_exists(operator: opendal.AsyncOperator, path: str) -> bool:
     return False
 
 
-async def send_event(store: EventStore, key: EventKey, payload) -> None:
-    """Pack payload as Any, build EventRecord with current time, write via store.
+async def send_event(store: EventDeliveryStore, key: EventKey, payload) -> None:
+    """Application-facing create-once event delivery.
 
-    Use from external services (webhooks, approval handlers) to deliver a signal
-    to a workflow waiting via Workflow.wait_event.
+    Stores without native conditional creation are rejected. ``put_event`` is
+    intentionally left as the low-level replace primitive for storage services
+    and migration tooling.
+    """
+    await deliver_event(store, key, payload)
+
+
+async def deliver_event(
+    store: EventDeliveryStore,
+    key: EventKey,
+    payload,
+) -> temporaless_pb2.EventDeliveryDisposition:
+    """Atomically establish the first payload for ``key``.
+
+    Identical duplicate deliveries are idempotent and retain the first
+    record's ``received_at``. A different payload raises
+    :class:`EventDeliveryConflictError`. Stores without native conditional
+    creation reject this operation rather than using check-then-write.
     """
     from google.protobuf.any_pb2 import Any
     from google.protobuf.message import Message
@@ -1626,17 +1788,31 @@ async def send_event(store: EventStore, key: EventKey, payload) -> None:
 
     if not isinstance(payload, Message):
         raise TypeError("event payload must be a protobuf message")
+    key.validate()
+    capability = await store.event_delivery_capability()
+    if capability in (
+        temporaless_pb2.EVENT_DELIVERY_CAPABILITY_UNSPECIFIED,
+        NO_ATOMIC_EVENT_DELIVERY,
+    ):
+        raise EventDeliveryUnsupportedError(
+            "configured store does not support atomic event creation"
+        )
+    if capability != CREATE_ONLY_EVENT_DELIVERY:
+        raise RunRecordValidationError(
+            f"event delivery store returned invalid capability {capability}"
+        )
 
     packed = Any()
-    packed.Pack(payload)
+    # Canonical bytes make retries of map-bearing messages compare
+    # idempotently even when their insertion order differs.
+    packed.Pack(payload, deterministic=True)
     received_at = Timestamp()
     received_at.GetCurrentTime()
-
-    await store.put_event(
-        temporaless_pb2.EventRecord(
-            schema_version=EVENT_RECORD_SCHEMA_VERSION,
-            key=key.to_proto(),
-            payload=packed,
-            received_at=received_at,
-        )
+    record = temporaless_pb2.EventRecord(
+        schema_version=EVENT_RECORD_SCHEMA_VERSION,
+        key=key.to_proto(),
+        payload=packed,
+        received_at=received_at,
     )
+    _validate_event_delivery_record(record, expected_key=key)
+    return _validate_event_delivery_disposition(await store.deliver_event(record))
