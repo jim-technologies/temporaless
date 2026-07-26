@@ -13,6 +13,52 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-26
+
+### Added
+
+- Go, Python, and TypeScript visual-plan helpers now provide an opt-in,
+  fail-closed application validation primitive that resolves every callable
+  against an application-supplied protobuf descriptor registry, requires an
+  exact operation allowlist, rejects streaming methods, type mismatches, and
+  unknown protobuf fields, and verifies the approved deterministic plan digest.
+  Protobuf-declared 64-node/128-edge limits and a cheap Python collection
+  preflight bound untrusted-plan validation work; the non-portable annotation
+  key `__proto__` is rejected across SDKs, including before Protobuf-ES decodes
+  raw binary maps. Structural validation remains available for display-only
+  plans, and cross-SDK digest fixtures cover Unicode and numeric-looking
+  protobuf map keys.
+
+### Documentation
+
+- The visual-workflow guide now separates resource reconciliation from
+  workflow replay: Terraform/OpenTofu-style or SQL-migration planners can emit
+  concrete protobuf actions for Temporaless without adding generic
+  `Get`/`Set`/`Diff`/`Delete` semantics to the core.
+
+### Changed
+
+- The lockstep repository version is now 0.10.0 for every Go, Python,
+  TypeScript, and Rust SDK or adapter.
+- Invariant Protocol is pinned to its immutable v0.12.0 release commit
+  `1af06b2febf321ba19bdff097d88a4a8ad5f8c9d`.
+- Direct dependency baselines and locks advance to Prefect 3.8.0, Ruff 0.16.0,
+  ty 0.0.63, `ulid` 2.1.2, and Temporal API 1.63.4.
+
+### Upgrade notes
+
+- Repin every Go, Python, TypeScript, and Rust consumer to the same Temporaless
+  v0.10.0 Git tag or its immutable commit SHA.
+- Plans approved for execution must pass descriptor-aware validation against
+  the application's exact operation allowlist. Structural validation remains
+  appropriate only for display-only plans.
+- Update plan producers that exceed the new size limits or emit `__proto__`
+  annotation keys. TypeScript consumers that decode raw untrusted plan bytes
+  should use `decodeWorkflowPlan`; authoritative execution approval remains a
+  trusted Go or Python service responsibility.
+- This release does not change v2 workflow storage keys or durable workflow,
+  activity, timer, event, or claim record layouts.
+
 ## [0.9.0] — 2026-07-23
 
 ### Added

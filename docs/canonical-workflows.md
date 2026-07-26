@@ -126,10 +126,13 @@ Temporaless storage.
 
 The protobuf request is also the clean UI contract. If an AI proposes a plan,
 embed the optional `temporaless.v1.WorkflowPlan` in the application's own
-request beside its concrete business input and approval digest. Render that
-message in the UI, verify the deterministic digest, and submit the exact
-confirmed request to the workflow RPC. Store the proposed/confirmed plan in
-the application's own service when it must be queried before execution.
+request beside its concrete business input and an opaque application-owned
+approval ID. Render that message in the UI, then load the authenticated
+approval record and verify its callable nodes against the application's
+protobuf descriptors and exact operation allowlist as well as its deterministic
+digest. Submit the exact confirmed request to the workflow RPC. Store the
+proposed/confirmed plan in the application's own service when it must be
+queried before execution.
 
 Temporaless records the request and each executed activity boundary. It does
 not infer a static DAG from arbitrary Python or Go control flow, so a UI should

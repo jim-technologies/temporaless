@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify that every Temporaless SDK and adapter uses one release version."""
 
 from __future__ import annotations
@@ -7,9 +6,10 @@ import json
 import os
 import re
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_COMPONENT = r"(?:0|[1-9][0-9]*)"

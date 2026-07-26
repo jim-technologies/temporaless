@@ -228,14 +228,15 @@ Workflow code may re-run from the beginning. Activity calls must be ordered and 
 
 Do not generate activity IDs from wall-clock time, random values, map iteration order, or vendor response order.
 
-For visual workflows, validate and approve deterministic `WorkflowPlan` bytes
-before execution. Plan node IDs must be reused as boundary IDs, and branch
-choices must derive from recorded protobuf inputs or activity results. Because
-the core deliberately treats IDs rather than input bytes as replay identity, a
-changed plan under the same workflow/run identity can otherwise mix new control
-flow with old activity records. Use a distinct caller-owned run ID per approved
-plan revision/digest, or reject drift against the original stored workflow
-input before calling the runtime.
+For visual workflows, validate callable nodes against the application's
+protobuf descriptors and exact operation allowlist, then approve deterministic
+`WorkflowPlan` bytes before execution. Plan node IDs must be reused as boundary
+IDs, and branch choices must derive from recorded protobuf inputs or activity
+results. Because the core deliberately treats IDs rather than input bytes as
+replay identity, a changed plan under the same workflow/run identity can
+otherwise mix new control flow with old activity records. Use a distinct
+caller-owned run ID per approved plan revision/digest, or reject drift against
+the original stored workflow input before calling the runtime.
 
 ## Schema Evolution
 

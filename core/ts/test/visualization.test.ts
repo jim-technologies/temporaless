@@ -1,4 +1,16 @@
-import { create } from "@bufbuild/protobuf";
+import {
+  create,
+  createFileRegistry,
+  createRegistry,
+} from "@bufbuild/protobuf";
+import {
+  DescriptorProtoSchema,
+  FileDescriptorProtoSchema,
+  FileDescriptorSetSchema,
+  MethodDescriptorProtoSchema,
+  ServiceDescriptorProtoSchema,
+} from "@bufbuild/protobuf/wkt";
+import { WireType } from "@bufbuild/protobuf/wire";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -22,10 +34,15 @@ import {
   WorkflowPlanSchema,
   WorkflowRecordSchema,
   WorkflowStatus,
+  decodeWorkflowPlan,
+  file_temporaless_v1_temporaless,
   inspectRun,
   projectWorkflowRun,
   validateWorkflowPlan,
+  validateWorkflowPlanWithDescriptors,
+  verifyApprovedWorkflowPlan,
   workflowPlanDigest,
+  type DescriptorValidationOptions,
   type RunInspectionStore,
   type RunSnapshot,
   type WorkflowPlan,
@@ -86,7 +103,104 @@ function plan(
   });
 }
 
+const GET_WORKFLOW_OPERATION =
+  "temporaless.v1.RecordStoreService.GetWorkflow";
+
+function descriptorPlan(
+  overrides: Partial<{
+    kind: WorkflowPlanNodeKind;
+    operation: string;
+    requestType: string;
+    responseType: string;
+  }> = {},
+): WorkflowPlan {
+  return plan(
+    [
+      node(
+        "get-workflow",
+        overrides.kind ?? WorkflowPlanNodeKind.ACTIVITY,
+        {
+          operation: overrides.operation ?? GET_WORKFLOW_OPERATION,
+          requestType:
+            overrides.requestType ?? "temporaless.v1.GetWorkflowRequest",
+          responseType:
+            overrides.responseType ?? "temporaless.v1.GetWorkflowResponse",
+        },
+      ),
+    ],
+    [],
+  );
+}
+
+function descriptorOptions(
+  ...allowedOperations: string[]
+): DescriptorValidationOptions {
+  return {
+    registry: createRegistry(file_temporaless_v1_temporaless),
+    allowedOperations: new Set(allowedOperations),
+  };
+}
+
+const STREAMING_OPERATION = "streaming.v1.StreamService.Watch";
+
+function streamingDescriptorOptions(): DescriptorValidationOptions {
+  const descriptorSet = create(FileDescriptorSetSchema, {
+    file: [
+      create(FileDescriptorProtoSchema, {
+        name: "streaming/v1/streaming.proto",
+        package: "streaming.v1",
+        syntax: "proto3",
+        messageType: [
+          create(DescriptorProtoSchema, { name: "WatchRequest" }),
+          create(DescriptorProtoSchema, { name: "WatchResponse" }),
+        ],
+        service: [
+          create(ServiceDescriptorProtoSchema, {
+            name: "StreamService",
+            method: [
+              create(MethodDescriptorProtoSchema, {
+                name: "Watch",
+                inputType: ".streaming.v1.WatchRequest",
+                outputType: ".streaming.v1.WatchResponse",
+                serverStreaming: true,
+              }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+  return {
+    registry: createFileRegistry(descriptorSet),
+    allowedOperations: new Set([STREAMING_OPERATION]),
+  };
+}
+
 describe("validateWorkflowPlan", () => {
+  it.each([
+    {
+      location: "plan annotations",
+      pythonFixture:
+        "Cgp1bnNhZmUtbWFwEAEaDgoEd2FpdBIEV2FpdCAGKhMKCV9fcHJvdG9fXxIGaGlkZGVuKhAKC2NvbnN0cnVjdG9yEgFjKgsKBm5vcm1hbBIBbg==",
+    },
+    {
+      location: "node annotations",
+      pythonFixture:
+        "Cg91bnNhZmUtbm9kZS1tYXAQARowCgR3YWl0EgRXYWl0IAZCEwoJX19wcm90b19fEgZoaWRkZW5CCwoGbm9ybWFsEgFu",
+    },
+  ])(
+    "rejects a non-portable key in Python-produced $location binary before decoding",
+    ({ pythonFixture }) => {
+      const binary = Uint8Array.from(
+        Buffer.from(pythonFixture, "base64"),
+      );
+
+      expect(() => decodeWorkflowPlan(binary)).toThrow(
+        "not portable across protobuf SDKs",
+      );
+    },
+  );
+
   it("accepts an explicit loop while keeping forward edges acyclic", () => {
     const workflowPlan = plan(
       [
@@ -121,6 +235,15 @@ describe("validateWorkflowPlan", () => {
   });
 
   it.each([
+    {
+      name: "revision exceeds uint64",
+      value: (() => {
+        const value = plan();
+        value.revision = 1n << 64n;
+        return value;
+      })(),
+      message: "must be a valid uint64",
+    },
     {
       name: "duplicate node IDs",
       value: plan(
@@ -303,6 +426,371 @@ describe("validateWorkflowPlan", () => {
   ])("rejects $name", ({ value, message }) => {
     expect(() => validateWorkflowPlan(value)).toThrow(message);
   });
+
+  it.each([
+    {
+      name: "node count",
+      value: plan(
+        Array.from({ length: 65 }, (_, index) =>
+          node(`wait:${index}`, WorkflowPlanNodeKind.WAIT_EVENT),
+        ),
+        [],
+      ),
+      message: "at most 64 nodes",
+    },
+    {
+      name: "edge count",
+      value: plan(
+        undefined,
+        Array.from({ length: 129 }, () => edge("validate", "approve")),
+      ),
+      message: "at most 128 edges",
+    },
+    {
+      name: "plan annotation count",
+      value: (() => {
+        const value = plan();
+        for (let index = 0; index < 65; index += 1) {
+          value.annotations[`key:${index}`] = "value";
+        }
+        return value;
+      })(),
+      message: "at most 64 entries",
+    },
+    {
+      name: "node annotation count",
+      value: (() => {
+        const value = plan();
+        for (let index = 0; index < 33; index += 1) {
+          value.nodes[0]!.annotations[`key:${index}`] = "value";
+        }
+        return value;
+      })(),
+      message: "at most 32 entries",
+    },
+    {
+      name: "plan identifier length",
+      value: (() => {
+        const value = plan();
+        value.planId = "a".repeat(257);
+        return value;
+      })(),
+      message: "storage-safe identifier",
+    },
+    {
+      name: "node identifier length",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.nodeId = "a".repeat(257);
+        return value;
+      })(),
+      message: "storage-safe identifier",
+    },
+    {
+      name: "UTF-8 display name bytes",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.displayName = "😀".repeat(65);
+        return value;
+      })(),
+      message: "display_name exceeds 256 bytes",
+    },
+    {
+      name: "non-portable annotation key",
+      value: (() => {
+        const value = plan();
+        Object.defineProperty(value.annotations, "__proto__", {
+          configurable: true,
+          enumerable: true,
+          value: "hidden",
+          writable: true,
+        });
+        return value;
+      })(),
+      message: "not portable across protobuf SDKs",
+    },
+    {
+      name: "annotation key bytes",
+      value: (() => {
+        const value = plan();
+        value.annotations["a".repeat(129)] = "value";
+        return value;
+      })(),
+      message: "annotation key exceeds 128 bytes",
+    },
+    {
+      name: "annotation value bytes",
+      value: (() => {
+        const value = plan();
+        value.annotations.key = "a".repeat(1025);
+        return value;
+      })(),
+      message: "annotation value exceeds 1024 bytes",
+    },
+    {
+      name: "non-portable node annotation key",
+      value: (() => {
+        const value = plan();
+        Object.defineProperty(value.nodes[0]!.annotations, "__proto__", {
+          configurable: true,
+          enumerable: true,
+          value: "hidden",
+          writable: true,
+        });
+        return value;
+      })(),
+      message: "not portable across protobuf SDKs",
+    },
+    {
+      name: "operation bytes",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.operation = "a".repeat(513);
+        return value;
+      })(),
+      message: "operation exceeds 512 bytes",
+    },
+    {
+      name: "request type bytes",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.requestType = "a".repeat(513);
+        return value;
+      })(),
+      message: "request_type exceeds 512 bytes",
+    },
+    {
+      name: "response type bytes",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.responseType = "a".repeat(513);
+        return value;
+      })(),
+      message: "response_type exceeds 512 bytes",
+    },
+    {
+      name: "UTF-8 description bytes",
+      value: (() => {
+        const value = plan();
+        value.nodes[0]!.description = "😀".repeat(1025);
+        return value;
+      })(),
+      message: "description exceeds 4096 bytes",
+    },
+    {
+      name: "edge label bytes",
+      value: (() => {
+        const value = plan();
+        value.edges[0]!.label = "a".repeat(257);
+        return value;
+      })(),
+      message: "label exceeds 256 bytes",
+    },
+  ])("rejects resource overflow: $name", ({ value, message }) => {
+    expect(() => validateWorkflowPlan(value)).toThrow(message);
+  });
+
+  it("accepts the exact collection limits", () => {
+    const nodes = [
+      node("loop", WorkflowPlanNodeKind.LOOP),
+      ...Array.from({ length: 63 }, (_, index) =>
+        node(`wait:${index + 1}`, WorkflowPlanNodeKind.WAIT_EVENT),
+      ),
+    ];
+    const edges = nodes.slice(1).flatMap((value) => [
+      edge("loop", value.nodeId, WorkflowPlanEdgeKind.LOOP_BACK),
+      edge(value.nodeId, "loop", WorkflowPlanEdgeKind.LOOP_BACK),
+    ]);
+    edges.push(
+      edge("loop", "loop", WorkflowPlanEdgeKind.LOOP_BACK, "first"),
+      edge("loop", "loop", WorkflowPlanEdgeKind.LOOP_BACK, "second"),
+    );
+    const value = plan(nodes, edges);
+    for (let index = 0; index < 64; index += 1) {
+      value.annotations[`plan:${index}`] = "value";
+    }
+    for (let index = 0; index < 32; index += 1) {
+      value.nodes[0]!.annotations[`node:${index}`] = "value";
+    }
+
+    expect(() => validateWorkflowPlan(value)).not.toThrow();
+  });
+
+  it("accepts the maximum uint64 revision", () => {
+    const value = plan();
+    value.revision = 0xffff_ffff_ffff_ffffn;
+    expect(() => validateWorkflowPlan(value)).not.toThrow();
+  });
+});
+
+describe("validateWorkflowPlanWithDescriptors", () => {
+  it("accepts an exactly allowlisted unary RPC with matching message types", () => {
+    expect(() =>
+      validateWorkflowPlanWithDescriptors(
+        descriptorPlan(),
+        descriptorOptions(GET_WORKFLOW_OPERATION),
+      ),
+    ).not.toThrow();
+  });
+
+  it("accepts a structural-only plan with an explicit empty allowlist", () => {
+    expect(() =>
+      validateWorkflowPlanWithDescriptors(
+        plan(
+          [node("approval", WorkflowPlanNodeKind.WAIT_EVENT)],
+          [],
+        ),
+        descriptorOptions(),
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    {
+      name: "non-RPC operation alias",
+      value: descriptorPlan({ operation: "get-workflow" }),
+      options: descriptorOptions("get-workflow"),
+      message: "exact package.Service.Method",
+    },
+    {
+      name: "RPC operation without a protobuf package",
+      value: descriptorPlan({
+        operation: "RecordStoreService.GetWorkflow",
+      }),
+      options: descriptorOptions("RecordStoreService.GetWorkflow"),
+      message: "exact package.Service.Method",
+    },
+    {
+      name: "operation absent from the exact allowlist",
+      value: descriptorPlan(),
+      options: descriptorOptions(),
+      message: "is not allowed",
+    },
+    {
+      name: "service absent from the descriptor",
+      value: descriptorPlan({
+        operation: "temporaless.v1.MissingService.GetWorkflow",
+      }),
+      options: descriptorOptions(
+        "temporaless.v1.MissingService.GetWorkflow",
+      ),
+      message: "missing protobuf service",
+    },
+    {
+      name: "method absent from the descriptor",
+      value: descriptorPlan({
+        operation: "temporaless.v1.RecordStoreService.Missing",
+      }),
+      options: descriptorOptions(
+        "temporaless.v1.RecordStoreService.Missing",
+      ),
+      message: "missing protobuf RPC",
+    },
+    {
+      name: "local JavaScript method name instead of the declared RPC name",
+      value: descriptorPlan({
+        operation: "temporaless.v1.RecordStoreService.getWorkflow",
+      }),
+      options: descriptorOptions(
+        "temporaless.v1.RecordStoreService.getWorkflow",
+      ),
+      message: "missing protobuf RPC",
+    },
+    {
+      name: "request type different from the RPC input",
+      value: descriptorPlan({
+        requestType: "temporaless.v1.PutWorkflowRequest",
+      }),
+      options: descriptorOptions(GET_WORKFLOW_OPERATION),
+      message: "does not match RPC input",
+    },
+    {
+      name: "response type different from the RPC output",
+      value: descriptorPlan({
+        responseType: "temporaless.v1.PutWorkflowResponse",
+      }),
+      options: descriptorOptions(GET_WORKFLOW_OPERATION),
+      message: "does not match RPC output",
+    },
+    {
+      name: "RPC metadata on a non-callable node",
+      value: descriptorPlan({ kind: WorkflowPlanNodeKind.SLEEP }),
+      options: descriptorOptions(GET_WORKFLOW_OPERATION),
+      message: "non-callable node",
+    },
+    {
+      name: "server-streaming RPC descriptor",
+      value: descriptorPlan({
+        operation: STREAMING_OPERATION,
+        requestType: "streaming.v1.WatchRequest",
+        responseType: "streaming.v1.WatchResponse",
+      }),
+      options: streamingDescriptorOptions(),
+      message: "must be unary",
+    },
+  ])("rejects $name", ({ value, options, message }) => {
+    expect(() =>
+      validateWorkflowPlanWithDescriptors(value, options),
+    ).toThrow(message);
+  });
+
+  it.each([
+    {
+      name: "options",
+      options: undefined as unknown as DescriptorValidationOptions,
+      message: "descriptor registry is required",
+    },
+    {
+      name: "registry",
+      options: {
+        allowedOperations: new Set([GET_WORKFLOW_OPERATION]),
+      } as unknown as DescriptorValidationOptions,
+      message: "descriptor registry is required",
+    },
+    {
+      name: "allowlist",
+      options: {
+        registry: createRegistry(file_temporaless_v1_temporaless),
+      } as unknown as DescriptorValidationOptions,
+      message: "operation allowlist is required",
+    },
+  ])("rejects missing $name after type erasure", ({ options, message }) => {
+    expect(() =>
+      validateWorkflowPlanWithDescriptors(descriptorPlan(), options),
+    ).toThrow(message);
+  });
+
+  it.each(["plan", "node", "edge"] as const)(
+    "rejects unknown protobuf fields on the $location",
+    (location) => {
+      const value = descriptorPlan();
+      if (location === "edge") {
+        value.nodes.push(
+          node("approval", WorkflowPlanNodeKind.WAIT_EVENT),
+        );
+        value.edges.push(edge("get-workflow", "approval"));
+      }
+      const target =
+        location === "plan"
+          ? value
+          : location === "node"
+            ? value.nodes[0]!
+            : value.edges[0]!;
+      target.$unknown = [
+        {
+          no: 100,
+          wireType: WireType.Varint,
+          data: new Uint8Array([1]),
+        },
+      ];
+      expect(() =>
+        validateWorkflowPlanWithDescriptors(
+          value,
+          descriptorOptions(GET_WORKFLOW_OPERATION),
+        ),
+      ).toThrow("unknown protobuf fields");
+    },
+  );
 });
 
 describe("workflowPlanDigest", () => {
@@ -326,6 +814,33 @@ describe("workflowPlanDigest", () => {
 
     await expect(workflowPlanDigest(workflowPlan)).resolves.toBe(
       "f3ed8cdf8a4aa2fe3d323661dfff0a50c7097aeac1d307784ed2a726810797f0",
+    );
+  });
+
+  it("matches the Unicode and numeric-map-key cross-SDK fixture", async () => {
+    const annotations = {
+      "2": "two",
+      "10": "ten",
+      é: "café",
+      "😀": "rocket",
+    };
+    const workflowPlan = create(WorkflowPlanSchema, {
+      planId: "approval:unicode",
+      revision: 2n,
+      annotations,
+      nodes: [
+        node("validate", WorkflowPlanNodeKind.ACTIVITY, {
+          displayName: "Vérifier 😀",
+          operation: "exports.v1.ExportService.Validate",
+          requestType: "exports.v1.ValidateRequest",
+          responseType: "exports.v1.ValidateResponse",
+        }),
+      ],
+    });
+    workflowPlan.nodes[0]!.annotations = { ...annotations };
+
+    await expect(workflowPlanDigest(workflowPlan)).resolves.toBe(
+      "c6f9214a9f270eabf45fc518eeb48faa3ca08628fc105264acdd825ca56f9662",
     );
   });
 
@@ -353,6 +868,47 @@ describe("workflowPlanDigest", () => {
     await expect(workflowPlanDigest(left)).resolves.toBe(
       await workflowPlanDigest(right),
     );
+  });
+});
+
+describe("verifyApprovedWorkflowPlan", () => {
+  it("returns the strictly matching digest for an authorized plan", async () => {
+    const workflowPlan = descriptorPlan();
+    const approved = await workflowPlanDigest(workflowPlan);
+
+    await expect(
+      verifyApprovedWorkflowPlan(
+        workflowPlan,
+        approved,
+        descriptorOptions(GET_WORKFLOW_OPERATION),
+      ),
+    ).resolves.toBe(approved);
+  });
+
+  it.each([
+    {
+      name: "uppercase digest",
+      approved: "A".repeat(64),
+      message: "64 lowercase hexadecimal",
+    },
+    {
+      name: "short digest",
+      approved: "a".repeat(63),
+      message: "64 lowercase hexadecimal",
+    },
+    {
+      name: "different lowercase digest",
+      approved: "0".repeat(64),
+      message: "does not match",
+    },
+  ])("rejects a $name", async ({ approved, message }) => {
+    await expect(
+      verifyApprovedWorkflowPlan(
+        descriptorPlan(),
+        approved,
+        descriptorOptions(GET_WORKFLOW_OPERATION),
+      ),
+    ).rejects.toThrow(message);
   });
 });
 

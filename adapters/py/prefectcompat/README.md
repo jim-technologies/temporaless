@@ -89,7 +89,7 @@ deployment and serve paths are rejected.
 - explicit `ActivityWrapOptions` / `WorkflowWrapOptions` fields for `name`,
   `retries`, and `retry_delay_seconds`
 
-This package targets exactly Prefect 3.7.8. It subclasses `Flow` and preserves
+This package targets exactly Prefect 3.8.0. It subclasses `Flow` and preserves
 Prefect's async deployment dispatch contract; a Prefect upgrade requires
 promoting the pin together with this adapter's compatibility suite.
 

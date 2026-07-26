@@ -75,23 +75,51 @@ a user, and bind approval to the deterministic digest. Once the Go or Python
 workflow starts, the same client can overlay durable run evidence on the plan:
 
 ```ts
+import { clone, createRegistry } from "@bufbuild/protobuf";
 import {
+  WorkflowPlanSchema,
+  decodeWorkflowPlan,
   inspectRun,
   projectWorkflowRun,
-  validateWorkflowPlan,
+  validateWorkflowPlanWithDescriptors,
+  verifyApprovedWorkflowPlan,
   workflowPlanDigest,
 } from "@jim-technologies/temporaless";
+import { file_exports_v1_exports } from "./gen/exports/v1/exports_pb.js";
 
-validateWorkflowPlan(plan);
-const approvedSha256 = await workflowPlanDigest(plan);
+const descriptorPolicy = {
+  registry: createRegistry(file_exports_v1_exports),
+  allowedOperations: new Set(["exports.v1.ExportService.ExecuteExport"]),
+};
+// When receiving raw untrusted protobuf bytes directly, use
+// decodeWorkflowPlan(bytes) instead of generic fromBinary(). A generated
+// Connect client has already decoded its response, so that remote server must
+// validate any approval plan before returning it.
+const proposalPlan = clone(WorkflowPlanSchema, plan);
+validateWorkflowPlanWithDescriptors(proposalPlan, descriptorPolicy);
+const candidateSha256 = await workflowPlanDigest(proposalPlan);
+// Send proposalPlan + candidateSha256 to the authenticated approval flow. A
+// digest supplied beside a plan by the same caller is not proof of approval.
+
+const executionPlan = clone(WorkflowPlanSchema, plan);
+const approvedSha256 = await approvals.approvedDigest(approvalId);
+await verifyApprovedWorkflowPlan(
+  executionPlan,
+  approvedSha256,
+  descriptorPolicy,
+);
 
 const snapshot = await inspectRun(store, workflowKey);
-const projection = projectWorkflowRun(plan, snapshot);
+const projection = projectWorkflowRun(executionPlan, snapshot);
 ```
 
-The plan describes intended boxes and arrows; it is not a second execution
-language. The projection retains unplanned records and never invents running or
-skipped states that are absent from storage.
+The strict validator requires canonical unary protobuf RPC names, exact
+request/response descriptors, and an explicit operation allowlist. A
+TypeScript check improves UI feedback, but an untrusted browser cannot approve
+itself: repeat approval verification in the Go or Python service immediately
+before execution. The plan describes intended boxes and arrows; it is not a
+second execution language. The projection retains unplanned records and never
+invents running or skipped states that are absent from storage.
 
 ## Invariant Protocol Projection
 

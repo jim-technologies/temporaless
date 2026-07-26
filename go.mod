@@ -9,10 +9,10 @@ require (
 	github.com/apache/opendal-go-services/fs v0.1.16
 	github.com/apache/opendal/bindings/go v0.1.16
 	github.com/google/uuid v1.6.0
-	github.com/oklog/ulid/v2 v2.1.1
+	github.com/oklog/ulid/v2 v2.1.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
-	go.temporal.io/api v1.63.3
+	go.temporal.io/api v1.63.4
 	go.temporal.io/sdk v1.46.0
 	gocloud.dev v0.46.0
 	google.golang.org/protobuf v1.36.11

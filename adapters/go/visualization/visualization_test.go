@@ -3,6 +3,7 @@ package visualization_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,10 @@ import (
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 func TestValidatePlan(t *testing.T) {
@@ -52,6 +57,76 @@ func TestValidatePlan(t *testing.T) {
 				return plan
 			},
 			wantContains: "revision",
+		},
+		{
+			name: "protobuf node limit",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				for len(plan.Nodes) <= 64 {
+					plan.Nodes = append(
+						plan.Nodes,
+						structuralNode(
+							fmt.Sprintf("wait:%d", len(plan.Nodes)),
+							temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+						),
+					)
+				}
+				return plan
+			},
+			wantContains: "nodes",
+		},
+		{
+			name: "protobuf edge limit",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				for len(plan.Edges) <= 128 {
+					plan.Edges = append(
+						plan.Edges,
+						proto.Clone(plan.Edges[0]).(*temporalessv1.WorkflowPlanEdge),
+					)
+				}
+				return plan
+			},
+			wantContains: "edges",
+		},
+		{
+			name: "protobuf annotation limit",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				plan.Annotations = make(map[string]string, 65)
+				for index := range 65 {
+					plan.Annotations[fmt.Sprintf("key:%d", index)] = "value"
+				}
+				return plan
+			},
+			wantContains: "annotations",
+		},
+		{
+			name: "protobuf annotation key portable across SDKs",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				plan.Annotations = map[string]string{"__proto__": "hidden"}
+				return plan
+			},
+			wantContains: "__proto__",
+		},
+		{
+			name: "protobuf node annotation key portable across SDKs",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				plan.Nodes[0].Annotations = map[string]string{"__proto__": "hidden"}
+				return plan
+			},
+			wantContains: "__proto__",
+		},
+		{
+			name: "protobuf UTF-8 description byte limit",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := digestFixture()
+				plan.Nodes[0].Description = strings.Repeat("😀", 1025)
+				return plan
+			},
+			wantContains: "description",
 		},
 		{
 			name: "duplicate node",
@@ -221,10 +296,436 @@ func TestValidatePlan(t *testing.T) {
 	}
 }
 
+func TestValidatePlanAcceptsExactCollectionLimits(t *testing.T) {
+	plan := exactLimitPlan()
+	if err := visualization.ValidatePlan(plan); err != nil {
+		t.Fatalf("ValidatePlan() error = %v", err)
+	}
+}
+
+func TestValidatePlanWithDescriptors(t *testing.T) {
+	tests := []struct {
+		name         string
+		plan         func() *temporalessv1.WorkflowPlan
+		options      func(t *testing.T) visualization.DescriptorValidationOptions
+		wantContains string
+		wantInvalid  bool
+	}{
+		{
+			name:    "generated unary method",
+			plan:    descriptorPlan,
+			options: generatedDescriptorOptions,
+		},
+		{
+			name: "structural plan with explicit empty allowlist",
+			plan: func() *temporalessv1.WorkflowPlan {
+				return &temporalessv1.WorkflowPlan{
+					PlanId:   "structural",
+					Revision: 1,
+					Nodes: []*temporalessv1.WorkflowPlanNode{
+						structuralNode("wait", temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT),
+					},
+				}
+			},
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver:          protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{},
+				}
+			},
+		},
+		{
+			name: "resolver required",
+			plan: descriptorPlan,
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				options := generatedDescriptorOptions(nil)
+				options.Resolver = nil
+				return options
+			},
+			wantContains: "descriptor resolver is required",
+		},
+		{
+			name: "typed nil resolver rejected",
+			plan: descriptorPlan,
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				var files *protoregistry.Files
+				options := generatedDescriptorOptions(nil)
+				options.Resolver = files
+				return options
+			},
+			wantContains: "descriptor resolver is required",
+		},
+		{
+			name: "allowlist required",
+			plan: descriptorPlan,
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				options := generatedDescriptorOptions(nil)
+				options.AllowedOperations = nil
+				return options
+			},
+			wantContains: "operation allowlist is required",
+		},
+		{
+			name: "operation must be explicitly allowed",
+			plan: descriptorPlan,
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver:          protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{},
+				}
+			},
+			wantContains: "is not allowed",
+			wantInvalid:  true,
+		},
+		{
+			name: "unknown protobuf fields rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "unknown protobuf fields",
+			wantInvalid:  true,
+		},
+		{
+			name: "unknown protobuf node fields rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "unknown protobuf fields",
+			wantInvalid:  true,
+		},
+		{
+			name: "unknown protobuf edge fields rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Edges[0].ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "unknown protobuf fields",
+			wantInvalid:  true,
+		},
+		{
+			name: "operation must be canonical protobuf name",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].Operation = "registry:key"
+				return plan
+			},
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver: protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{
+						"registry:key": {},
+					},
+				}
+			},
+			wantContains: "not a canonical protobuf full name",
+			wantInvalid:  true,
+		},
+		{
+			name: "operation must include protobuf package",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].Operation = "RecordStoreService.GetWorkflow"
+				return plan
+			},
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver: protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{
+						"RecordStoreService.GetWorkflow": {},
+					},
+				}
+			},
+			wantContains: "not a canonical protobuf full name",
+			wantInvalid:  true,
+		},
+		{
+			name: "operation must resolve",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].Operation = "missing.v1.Service.Method"
+				return plan
+			},
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver: protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{
+						"missing.v1.Service.Method": {},
+					},
+				}
+			},
+			wantContains: "resolve callable node",
+			wantInvalid:  true,
+		},
+		{
+			name: "operation must resolve to method",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].Operation = "temporaless.v1.RecordStoreService"
+				return plan
+			},
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver: protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{
+						"temporaless.v1.RecordStoreService": {},
+					},
+				}
+			},
+			wantContains: "is not a protobuf RPC method",
+			wantInvalid:  true,
+		},
+		{
+			name: "request type must match",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].RequestType = "temporaless.v1.PutWorkflowRequest"
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "does not match method input",
+			wantInvalid:  true,
+		},
+		{
+			name: "response type must match",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].ResponseType = "temporaless.v1.PutWorkflowResponse"
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "does not match method output",
+			wantInvalid:  true,
+		},
+		{
+			name: "client streaming rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				return streamingDescriptorPlan("streaming.v1.StreamService.Upload")
+			},
+			options: func(t *testing.T) visualization.DescriptorValidationOptions {
+				return streamingDescriptorOptions(t, true, false)
+			},
+			wantContains: "must be unary",
+			wantInvalid:  true,
+		},
+		{
+			name: "server streaming rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				return streamingDescriptorPlan("streaming.v1.StreamService.Upload")
+			},
+			options: func(t *testing.T) visualization.DescriptorValidationOptions {
+				return streamingDescriptorOptions(t, false, true)
+			},
+			wantContains: "must be unary",
+			wantInvalid:  true,
+		},
+		{
+			name: "structural operation metadata rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[1].Operation = "temporaless.v1.RecordStoreService.GetWorkflow"
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "structural node",
+			wantInvalid:  true,
+		},
+		{
+			name: "structural request metadata rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[1].RequestType = "temporaless.v1.GetWorkflowRequest"
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "structural node",
+			wantInvalid:  true,
+		},
+		{
+			name: "structural response metadata rejected",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[1].ResponseType = "temporaless.v1.GetWorkflowResponse"
+				return plan
+			},
+			options:      generatedDescriptorOptions,
+			wantContains: "structural node",
+			wantInvalid:  true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := visualization.ValidatePlanWithDescriptors(test.plan(), test.options(t))
+			if test.wantContains == "" {
+				if err != nil {
+					t.Fatalf("ValidatePlanWithDescriptors() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantContains) {
+				t.Fatalf(
+					"ValidatePlanWithDescriptors() error = %v, want substring %q",
+					err,
+					test.wantContains,
+				)
+			}
+			if got := errors.Is(err, visualization.ErrInvalidPlan); got != test.wantInvalid {
+				t.Fatalf(
+					"ValidatePlanWithDescriptors() errors.Is(ErrInvalidPlan) = %t, want %t",
+					got,
+					test.wantInvalid,
+				)
+			}
+		})
+	}
+}
+
+func TestVerifyApprovedPlan(t *testing.T) {
+	approved, err := visualization.Digest(descriptorPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		plan         func() *temporalessv1.WorkflowPlan
+		approved     func(string) string
+		options      func(t *testing.T) visualization.DescriptorValidationOptions
+		wantError    error
+		wantContains string
+	}{
+		{
+			name:     "exact approved plan",
+			plan:     descriptorPlan,
+			approved: func(value string) string { return value },
+			options:  generatedDescriptorOptions,
+		},
+		{
+			name:      "malformed digest",
+			plan:      descriptorPlan,
+			approved:  func(string) string { return "not-a-sha256" },
+			options:   generatedDescriptorOptions,
+			wantError: visualization.ErrApprovalDigestMismatch,
+		},
+		{
+			name:      "uppercase digest is noncanonical",
+			plan:      descriptorPlan,
+			approved:  strings.ToUpper,
+			options:   generatedDescriptorOptions,
+			wantError: visualization.ErrApprovalDigestMismatch,
+		},
+		{
+			name:      "different digest",
+			plan:      descriptorPlan,
+			approved:  func(string) string { return strings.Repeat("0", 64) },
+			options:   generatedDescriptorOptions,
+			wantError: visualization.ErrApprovalDigestMismatch,
+		},
+		{
+			name: "changed display metadata",
+			plan: func() *temporalessv1.WorkflowPlan {
+				plan := descriptorPlan()
+				plan.Nodes[0].DisplayName = "Changed after approval"
+				return plan
+			},
+			approved:  func(value string) string { return value },
+			options:   generatedDescriptorOptions,
+			wantError: visualization.ErrApprovalDigestMismatch,
+		},
+		{
+			name:     "descriptor policy is checked",
+			plan:     descriptorPlan,
+			approved: func(value string) string { return value },
+			options: func(_ *testing.T) visualization.DescriptorValidationOptions {
+				return visualization.DescriptorValidationOptions{
+					Resolver:          protoregistry.GlobalFiles,
+					AllowedOperations: map[protoreflect.FullName]struct{}{},
+				}
+			},
+			wantError:    visualization.ErrInvalidPlan,
+			wantContains: "is not allowed",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := visualization.VerifyApprovedPlan(
+				test.plan(),
+				test.approved(approved),
+				test.options(t),
+			)
+			if test.wantError == nil {
+				if err != nil {
+					t.Fatalf("VerifyApprovedPlan() error = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("VerifyApprovedPlan() error = %v, want %v", err, test.wantError)
+			}
+			if test.wantContains != "" && !strings.Contains(err.Error(), test.wantContains) {
+				t.Fatalf(
+					"VerifyApprovedPlan() error = %q, want substring %q",
+					err,
+					test.wantContains,
+				)
+			}
+		})
+	}
+}
+
 func TestDigest(t *testing.T) {
 	const want = "f3ed8cdf8a4aa2fe3d323661dfff0a50c7097aeac1d307784ed2a726810797f0"
 
 	got, err := visualization.Digest(digestFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("Digest() = %q, want %q", got, want)
+	}
+}
+
+func TestDigestMatchesUnicodeAndNumericMapKeyFixture(t *testing.T) {
+	const want = "c6f9214a9f270eabf45fc518eeb48faa3ca08628fc105264acdd825ca56f9662"
+
+	annotations := map[string]string{
+		"2":  "two",
+		"10": "ten",
+		"é":  "café",
+		"😀":  "rocket",
+	}
+	plan := &temporalessv1.WorkflowPlan{
+		PlanId:      "approval:unicode",
+		Revision:    2,
+		Annotations: annotations,
+		Nodes: []*temporalessv1.WorkflowPlanNode{
+			{
+				NodeId:       "validate",
+				DisplayName:  "Vérifier 😀",
+				Kind:         temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_ACTIVITY,
+				Operation:    "exports.v1.ExportService.Validate",
+				RequestType:  "exports.v1.ValidateRequest",
+				ResponseType: "exports.v1.ValidateResponse",
+				Annotations: map[string]string{
+					"2":  "two",
+					"10": "ten",
+					"é":  "café",
+					"😀":  "rocket",
+				},
+			},
+		},
+	}
+
+	got, err := visualization.Digest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -923,6 +1424,138 @@ func digestFixture() *temporalessv1.WorkflowPlan {
 				TargetNodeId: "approve",
 				Kind:         temporalessv1.WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_CONTROL,
 			},
+		},
+	}
+}
+
+func exactLimitPlan() *temporalessv1.WorkflowPlan {
+	plan := &temporalessv1.WorkflowPlan{
+		PlanId:      "exact-limits",
+		Revision:    1,
+		Nodes:       make([]*temporalessv1.WorkflowPlanNode, 0, 64),
+		Edges:       make([]*temporalessv1.WorkflowPlanEdge, 0, 128),
+		Annotations: make(map[string]string, 64),
+	}
+	plan.Nodes = append(
+		plan.Nodes,
+		structuralNode("loop", temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_LOOP),
+	)
+	plan.Nodes[0].Annotations = make(map[string]string, 32)
+	for index := range 64 {
+		plan.Annotations[fmt.Sprintf("plan:%d", index)] = "value"
+	}
+	for index := range 32 {
+		plan.Nodes[0].Annotations[fmt.Sprintf("node:%d", index)] = "value"
+	}
+	for index := 1; index < 64; index++ {
+		nodeID := fmt.Sprintf("wait:%d", index)
+		plan.Nodes = append(
+			plan.Nodes,
+			structuralNode(
+				nodeID,
+				temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+			),
+		)
+		plan.Edges = append(
+			plan.Edges,
+			&temporalessv1.WorkflowPlanEdge{
+				SourceNodeId: "loop",
+				TargetNodeId: nodeID,
+				Kind:         temporalessv1.WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+			},
+			&temporalessv1.WorkflowPlanEdge{
+				SourceNodeId: nodeID,
+				TargetNodeId: "loop",
+				Kind:         temporalessv1.WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+			},
+		)
+	}
+	for _, label := range []string{"first", "second"} {
+		plan.Edges = append(plan.Edges, &temporalessv1.WorkflowPlanEdge{
+			SourceNodeId: "loop",
+			TargetNodeId: "loop",
+			Kind:         temporalessv1.WorkflowPlanEdgeKind_WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+			Label:        label,
+		})
+	}
+	return plan
+}
+
+func descriptorPlan() *temporalessv1.WorkflowPlan {
+	plan := digestFixture()
+	plan.Nodes[0].Operation = "temporaless.v1.RecordStoreService.GetWorkflow"
+	plan.Nodes[0].RequestType = "temporaless.v1.GetWorkflowRequest"
+	plan.Nodes[0].ResponseType = "temporaless.v1.GetWorkflowResponse"
+	return plan
+}
+
+func generatedDescriptorOptions(_ *testing.T) visualization.DescriptorValidationOptions {
+	return visualization.DescriptorValidationOptions{
+		Resolver: protoregistry.GlobalFiles,
+		AllowedOperations: map[protoreflect.FullName]struct{}{
+			"temporaless.v1.RecordStoreService.GetWorkflow": {},
+		},
+	}
+}
+
+func streamingDescriptorPlan(operation string) *temporalessv1.WorkflowPlan {
+	return &temporalessv1.WorkflowPlan{
+		PlanId:   "streaming",
+		Revision: 1,
+		Nodes: []*temporalessv1.WorkflowPlanNode{
+			{
+				NodeId:       "upload",
+				DisplayName:  "Upload",
+				Kind:         temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_ACTIVITY,
+				Operation:    operation,
+				RequestType:  "streaming.v1.UploadRequest",
+				ResponseType: "streaming.v1.UploadResponse",
+			},
+		},
+	}
+}
+
+func streamingDescriptorOptions(
+	t *testing.T,
+	clientStreaming bool,
+	serverStreaming bool,
+) visualization.DescriptorValidationOptions {
+	t.Helper()
+	const operation = protoreflect.FullName("streaming.v1.StreamService.Upload")
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    proto.String("streaming/v1/streaming.proto"),
+				Package: proto.String("streaming.v1"),
+				Syntax:  proto.String("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{Name: proto.String("UploadRequest")},
+					{Name: proto.String("UploadResponse")},
+				},
+				Service: []*descriptorpb.ServiceDescriptorProto{
+					{
+						Name: proto.String("StreamService"),
+						Method: []*descriptorpb.MethodDescriptorProto{
+							{
+								Name:            proto.String("Upload"),
+								InputType:       proto.String(".streaming.v1.UploadRequest"),
+								OutputType:      proto.String(".streaming.v1.UploadResponse"),
+								ClientStreaming: proto.Bool(clientStreaming),
+								ServerStreaming: proto.Bool(serverStreaming),
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return visualization.DescriptorValidationOptions{
+		Resolver: files,
+		AllowedOperations: map[protoreflect.FullName]struct{}{
+			operation: {},
 		},
 	}
 }

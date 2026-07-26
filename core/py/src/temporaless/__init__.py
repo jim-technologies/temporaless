@@ -49,6 +49,8 @@ from temporaless.visualization import (
     plan_digest,
     project_workflow_run,
     validate_plan,
+    validate_plan_with_descriptors,
+    verify_approved_plan,
 )
 from temporaless.workflow import (
     ActivityError,
@@ -117,6 +119,8 @@ __all__ = [
     "run",
     "send_event",
     "validate_plan",
+    "validate_plan_with_descriptors",
+    "verify_approved_plan",
     "wrap_activity",
     "wrap_workflow",
 ]

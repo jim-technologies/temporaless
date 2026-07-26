@@ -92,7 +92,7 @@ work without a package registry; its source stays under `core/ts`.
 | [`adapters/go/timerscanner`](adapters/go/timerscanner) | Find due durable timers belonging to in-flight workflows |
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
 | [`adapters/go/inspector`](adapters/go/inspector) | List in-flight / failed workflows, reset records for re-execution |
-| [`adapters/go/visualization`](adapters/go/visualization) | Validate and digest optional `WorkflowPlan` messages, inspect one run, and project plan nodes onto durable record evidence for a UI |
+| [`adapters/go/visualization`](adapters/go/visualization) | Validate and digest optional `WorkflowPlan` messages, provide an opt-in descriptor + operation-allowlist approval validator, inspect one run, and project plan nodes onto durable record evidence for a UI |
 | [`adapters/go/janitor`](adapters/go/janitor) | Sweep COMPLETED runs older than a max-age threshold |
 | [`adapters/go/backfill`](adapters/go/backfill) | Run a workflow over many run_ids with bounded concurrency + per-run status (Dagster/Prefect/Airflow-style backfill) |
 | [`adapters/go/dependencies`](adapters/go/dependencies) | Cross-pipeline wait — `WaitForWorkflow(ctx, store, key, newResult, pollOptions)` returns the upstream result or a typed pending/failed error; final `nil` keeps manual re-invocation |

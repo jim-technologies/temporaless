@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Apply the narrow v0.9 code-version deletion exception to Buf FILE checks."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import json
 import subprocess
 import sys
 from typing import Any
-
 
 _V090_ALLOWED_DELETIONS = frozenset(
     {

@@ -86,7 +86,11 @@ contract. It describes application-owned nodes and edges but is not interpreted
 by core replay. A visual product validates and approves the plan, compiles it
 to ordinary workflow code, and projects the resulting activity/timer/event
 records back onto stable node IDs. This keeps graph editors optional and avoids
-adding a JSON expression language or control plane to the core.
+adding a JSON expression language or control plane to the core. Applications
+that let a plan reach execution must call the opt-in fail-closed validator against
+their protobuf RPC descriptors, exact operation allowlist, and authenticated
+approval record; the planner's operation and type-name strings are never
+authoritative by themselves.
 
 The point-storage RPC layer is defined by
 `temporaless.v1.RecordStoreService`. It includes workflow, activity, timer,

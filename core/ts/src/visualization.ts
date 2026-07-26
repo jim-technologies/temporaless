@@ -1,4 +1,10 @@
-import { clone, toBinary } from "@bufbuild/protobuf";
+import {
+  clone,
+  fromBinary,
+  toBinary,
+  type Registry,
+} from "@bufbuild/protobuf";
+import { BinaryReader, WireType } from "@bufbuild/protobuf/wire";
 
 import type { ConnectStore } from "./connectstore.js";
 import {
@@ -20,6 +26,11 @@ import {
 const PATH_SEGMENT = /^[A-Za-z0-9._:=-]+$/;
 const PROTOBUF_FULL_NAME =
   /^[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_][A-Za-z_0-9]*)*$/;
+const PROTOBUF_RPC_OPERATION =
+  /^[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_][A-Za-z_0-9]*){2,}$/;
+const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/;
+const UINT64_MAX = 0xffff_ffff_ffff_ffffn;
+const UTF8_ENCODER = new TextEncoder();
 const CALLABLE_NODE_KINDS = new Set<WorkflowPlanNodeKind>([
   WorkflowPlanNodeKind.ACTIVITY,
   WorkflowPlanNodeKind.BRANCH,
@@ -91,6 +102,28 @@ export interface RunProjection {
   unplanned: UnplannedEvidence;
 }
 
+/** Trusted descriptor and exact RPC allowlist used to authorize callable nodes. */
+export interface DescriptorValidationOptions {
+  registry: Registry;
+  allowedOperations: ReadonlySet<string>;
+}
+
+/**
+ * Decode and structurally validate untrusted WorkflowPlan binary without
+ * allowing JavaScript object-map semantics to discard "__proto__" keys.
+ *
+ * Use this helper when an application receives raw plan bytes directly.
+ * Generated Connect clients decode responses before application code runs, so
+ * their server must perform authoritative Go/Python validation before sending
+ * a plan used for approval.
+ */
+export function decodeWorkflowPlan(binary: Uint8Array): WorkflowPlan {
+  rejectNonPortableAnnotationKeys(binary);
+  const plan = fromBinary(WorkflowPlanSchema, binary);
+  validateWorkflowPlan(plan);
+  return plan;
+}
+
 /**
  * Validate the cross-node invariants that protobuf field validation cannot
  * express. It also enforces the protobuf-declared scalar constraints because
@@ -101,9 +134,19 @@ export function validateWorkflowPlan(plan: WorkflowPlan): void {
   if (plan.revision <= 0n) {
     throw new Error("workflow plan revision must be greater than zero");
   }
+  if (plan.revision > UINT64_MAX) {
+    throw new Error("workflow plan revision must be a valid uint64");
+  }
   if (plan.nodes.length === 0) {
     throw new Error("workflow plan must contain at least one node");
   }
+  if (plan.nodes.length > 64) {
+    throw new Error("workflow plan must contain at most 64 nodes");
+  }
+  if (plan.edges.length > 128) {
+    throw new Error("workflow plan must contain at most 128 edges");
+  }
+  validateAnnotations("plan", plan.annotations, 64);
 
   const nodes = new Map<string, WorkflowPlanNode>();
   for (const node of plan.nodes) {
@@ -116,6 +159,22 @@ export function validateWorkflowPlan(plan: WorkflowPlan): void {
         `workflow plan node ${quote(node.nodeId)} display_name is required`,
       );
     }
+    if (utf8Length(node.displayName) > 256) {
+      throw new Error(
+        `workflow plan node ${quote(node.nodeId)} display_name exceeds 256 bytes`,
+      );
+    }
+    if (utf8Length(node.description) > 4096) {
+      throw new Error(
+        `workflow plan node ${quote(node.nodeId)} description exceeds 4096 bytes`,
+      );
+    }
+    if (utf8Length(node.operation) > 512) {
+      throw new Error(
+        `workflow plan node ${quote(node.nodeId)} operation exceeds 512 bytes`,
+      );
+    }
+    validateAnnotations(`node ${quote(node.nodeId)}`, node.annotations, 32);
     if (!NODE_KINDS.has(node.kind)) {
       throw new Error(
         `workflow plan node ${quote(node.nodeId)} has invalid kind ${node.kind}`,
@@ -125,6 +184,11 @@ export function validateWorkflowPlan(plan: WorkflowPlan): void {
       ["request_type", node.requestType],
       ["response_type", node.responseType],
     ] as const) {
+      if (utf8Length(value) > 512) {
+        throw new Error(
+          `workflow plan node ${quote(node.nodeId)} ${field} exceeds 512 bytes`,
+        );
+      }
       if (value.length > 0 && !PROTOBUF_FULL_NAME.test(value)) {
         throw new Error(
           `workflow plan node ${quote(node.nodeId)} ${field} must be a protobuf full name`,
@@ -156,6 +220,11 @@ export function validateWorkflowPlan(plan: WorkflowPlan): void {
   for (const edge of plan.edges) {
     validateIdentifier("source_node_id", edge.sourceNodeId);
     validateIdentifier("target_node_id", edge.targetNodeId);
+    if (utf8Length(edge.label) > 256) {
+      throw new Error(
+        `workflow plan edge ${edgeName(edge)} label exceeds 256 bytes`,
+      );
+    }
     if (!EDGE_KINDS.has(edge.kind)) {
       throw new Error(
         `workflow plan edge ${edgeName(edge)} has invalid kind ${edge.kind}`,
@@ -252,11 +321,106 @@ export function validateWorkflowPlan(plan: WorkflowPlan): void {
 }
 
 /**
+ * Validate callable nodes against protobuf RPC descriptors and an exact
+ * application-owned allowlist.
+ *
+ * Descriptor presence is type evidence, not authorization. Every callable
+ * operation must also be present verbatim in allowedOperations.
+ */
+export function validateWorkflowPlanWithDescriptors(
+  plan: WorkflowPlan,
+  options: DescriptorValidationOptions,
+): void {
+  validateWorkflowPlan(plan);
+  if (
+    options === undefined ||
+    options === null ||
+    options.registry === undefined ||
+    options.registry === null ||
+    typeof options.registry.getService !== "function"
+  ) {
+    throw new Error("workflow plan descriptor registry is required");
+  }
+  if (
+    options.allowedOperations === undefined ||
+    options.allowedOperations === null ||
+    typeof options.allowedOperations.has !== "function"
+  ) {
+    throw new Error("workflow plan operation allowlist is required");
+  }
+  if (hasUnknownPlanFields(plan)) {
+    throw new Error(
+      "descriptor-verified workflow plan must not contain unknown protobuf fields",
+    );
+  }
+
+  for (const node of plan.nodes) {
+    if (!CALLABLE_NODE_KINDS.has(node.kind)) {
+      if (
+        node.operation.length > 0 ||
+        node.requestType.length > 0 ||
+        node.responseType.length > 0
+      ) {
+        throw new Error(
+          `workflow plan non-callable node ${quote(node.nodeId)} must not declare operation, request_type, or response_type`,
+        );
+      }
+      continue;
+    }
+
+    if (!PROTOBUF_RPC_OPERATION.test(node.operation)) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} operation must be an exact package.Service.Method protobuf RPC full name`,
+      );
+    }
+    if (!options.allowedOperations.has(node.operation)) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} operation ${quote(node.operation)} is not allowed`,
+      );
+    }
+
+    const separator = node.operation.lastIndexOf(".");
+    const serviceName = node.operation.slice(0, separator);
+    const methodName = node.operation.slice(separator + 1);
+    const service = options.registry.getService(serviceName);
+    if (service === undefined) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} references missing protobuf service ${quote(serviceName)}`,
+      );
+    }
+    const method = service.methods.find(
+      (candidate) => candidate.name === methodName,
+    );
+    if (method === undefined) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} references missing protobuf RPC ${quote(node.operation)}`,
+      );
+    }
+    if (method.methodKind !== "unary") {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} RPC ${quote(node.operation)} must be unary`,
+      );
+    }
+    if (node.requestType !== method.input.typeName) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} request_type ${quote(node.requestType)} does not match RPC input ${quote(method.input.typeName)}`,
+      );
+    }
+    if (node.responseType !== method.output.typeName) {
+      throw new Error(
+        `workflow plan callable node ${quote(node.nodeId)} response_type ${quote(node.responseType)} does not match RPC output ${quote(method.output.typeName)}`,
+      );
+    }
+  }
+}
+
+/**
  * Return the lowercase SHA-256 digest of canonical protobuf binary.
  *
  * Repeated node/edge order remains significant. Map entries are sorted before
  * serialization so equal plans hash identically across object insertion
- * orders and SDKs. Unknown fields remain part of the approved protobuf value.
+ * orders and SDKs. The general/display digest preserves unknown fields;
+ * descriptor-verified approval rejects them.
  */
 export async function workflowPlanDigest(plan: WorkflowPlan): Promise<string> {
   validateWorkflowPlan(plan);
@@ -270,6 +434,34 @@ export async function workflowPlanDigest(plan: WorkflowPlan): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+/**
+ * Verify a descriptor-authorized plan against an approved canonical digest.
+ *
+ * The caller must load the digest from an authenticated approval record or
+ * verify its signature. A digest supplied with the same untrusted plan is not
+ * proof of approval.
+ *
+ * UI and client checks are only convenience. A trusted server must enforce
+ * this check before accepting or executing the workflow plan.
+ */
+export async function verifyApprovedWorkflowPlan(
+  plan: WorkflowPlan,
+  approvedSHA256Hex: string,
+  options: DescriptorValidationOptions,
+): Promise<string> {
+  validateWorkflowPlanWithDescriptors(plan, options);
+  if (!LOWERCASE_SHA256.test(approvedSHA256Hex)) {
+    throw new Error(
+      "approved workflow plan SHA-256 digest must be exactly 64 lowercase hexadecimal characters",
+    );
+  }
+  const digest = await workflowPlanDigest(plan);
+  if (digest !== approvedSHA256Hex) {
+    throw new Error("approved workflow plan SHA-256 digest does not match");
+  }
+  return digest;
 }
 
 /** Read every run-scoped record kind concurrently from a ConnectStore. */
@@ -461,6 +653,7 @@ export function projectWorkflowRun(
 function validateIdentifier(field: string, value: string): void {
   if (
     value.length === 0 ||
+    value.length > 256 ||
     !PATH_SEGMENT.test(value) ||
     value === "." ||
     value === ".."
@@ -469,6 +662,94 @@ function validateIdentifier(field: string, value: string): void {
       `workflow plan ${field} must be a non-empty storage-safe identifier`,
     );
   }
+}
+
+function validateAnnotations(
+  owner: string,
+  annotations: Readonly<Record<string, string>>,
+  maxPairs: number,
+): void {
+  const entries = Object.entries(annotations);
+  if (entries.length > maxPairs) {
+    throw new Error(
+      `workflow plan ${owner} annotations must contain at most ${maxPairs} entries`,
+    );
+  }
+  for (const [key, value] of entries) {
+    if (key === "__proto__") {
+      throw new Error(
+        `workflow plan ${owner} annotation key "__proto__" is not portable across protobuf SDKs`,
+      );
+    }
+    if (utf8Length(key) > 128) {
+      throw new Error(
+        `workflow plan ${owner} annotation key exceeds 128 bytes`,
+      );
+    }
+    if (utf8Length(value) > 1024) {
+      throw new Error(
+        `workflow plan ${owner} annotation value exceeds 1024 bytes`,
+      );
+    }
+  }
+}
+
+function rejectNonPortableAnnotationKeys(binary: Uint8Array): void {
+  scanMessage(binary, 3, 5);
+}
+
+function scanMessage(
+  binary: Uint8Array,
+  nestedNodeField: number | undefined,
+  annotationField: number,
+): void {
+  const reader = new BinaryReader(binary);
+  while (reader.pos < reader.len) {
+    const [fieldNumber, wireType] = reader.tag();
+    if (wireType !== WireType.LengthDelimited) {
+      reader.skip(wireType, fieldNumber);
+      continue;
+    }
+    if (fieldNumber === annotationField) {
+      scanAnnotationEntry(reader.bytes());
+      continue;
+    }
+    if (nestedNodeField !== undefined && fieldNumber === nestedNodeField) {
+      scanMessage(reader.bytes(), undefined, 8);
+      continue;
+    }
+    reader.skip(wireType, fieldNumber);
+  }
+}
+
+function scanAnnotationEntry(binary: Uint8Array): void {
+  const reader = new BinaryReader(binary);
+  while (reader.pos < reader.len) {
+    const [fieldNumber, wireType] = reader.tag();
+    if (fieldNumber === 1 && wireType === WireType.LengthDelimited) {
+      if (reader.string(true) === "__proto__") {
+        throw new Error(
+          'workflow plan annotation key "__proto__" is not portable across protobuf SDKs',
+        );
+      }
+      continue;
+    }
+    reader.skip(wireType, fieldNumber);
+  }
+}
+
+function hasUnknownPlanFields(plan: WorkflowPlan): boolean {
+  if ((plan.$unknown?.length ?? 0) > 0) {
+    return true;
+  }
+  if (plan.nodes.some((node) => (node.$unknown?.length ?? 0) > 0)) {
+    return true;
+  }
+  return plan.edges.some((edge) => (edge.$unknown?.length ?? 0) > 0);
+}
+
+function utf8Length(value: string): number {
+  return UTF8_ENCODER.encode(value).length;
 }
 
 function assertAcyclicForwardGraph(targets: Map<string, string[]>): void {
@@ -539,9 +820,8 @@ function sortedBy<T>(values: readonly T[], identity: (value: T) => string): T[] 
 }
 
 function compareUtf8(left: string, right: string): number {
-  const encoder = new TextEncoder();
-  const leftBytes = encoder.encode(left);
-  const rightBytes = encoder.encode(right);
+  const leftBytes = UTF8_ENCODER.encode(left);
+  const rightBytes = UTF8_ENCODER.encode(right);
   const length = Math.min(leftBytes.length, rightBytes.length);
   for (let index = 0; index < length; index += 1) {
     const difference = leftBytes[index]! - rightBytes[index]!;

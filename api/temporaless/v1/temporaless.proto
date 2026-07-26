@@ -242,6 +242,7 @@ message WorkflowPlan {
   string plan_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
+      max_len: 256
       pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
@@ -254,11 +255,25 @@ message WorkflowPlan {
   // revision and a caller-owned execution identity that cannot replay records
   // from the previous revision.
   uint64 revision = 2 [(buf.validate.field).uint64.gt = 0];
-  repeated WorkflowPlanNode nodes = 3 [(buf.validate.field).repeated.min_items = 1];
-  repeated WorkflowPlanEdge edges = 4;
+  repeated WorkflowPlanNode nodes = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+  }];
+  repeated WorkflowPlanEdge edges = 4 [(buf.validate.field).repeated.max_items = 128];
   // Display/filter metadata only. Execution decisions must come from typed
   // request fields or recorded activity results, never from annotations.
-  map<string, string> annotations = 5;
+  map<string, string> annotations = 5 [(buf.validate.field).map = {
+    max_pairs: 64
+    // Protobuf-ES represents maps as JavaScript objects. Its decoder cannot
+    // faithfully retain this legacy prototype-setter name.
+    keys: {
+      string: {
+        max_bytes: 128
+        not_in: ["__proto__"]
+      }
+    }
+    values: {string: {max_bytes: 1024}}
+  }];
 }
 
 // WorkflowPlanNodeKind identifies the visual role of one node. These values do
@@ -288,7 +303,8 @@ enum WorkflowPlanNodeKind {
 // WorkflowPlanNode describes one box in a visual workflow. Callable nodes name
 // their unary protobuf operation and concrete request/response descriptors.
 // The application registry or generated RPC descriptor remains authoritative;
-// validators reject a mismatch before execution.
+// descriptor-aware validators reject a mismatch when the application invokes
+// the opt-in validation primitive before execution.
 message WorkflowPlanNode {
   // Stable application-owned identity. For activity, sleep, and event nodes,
   // use this exact value as the corresponding activity_id, timer_id, or
@@ -296,6 +312,7 @@ message WorkflowPlanNode {
   string node_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
+      max_len: 256
       pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
@@ -304,8 +321,11 @@ message WorkflowPlanNode {
       expression: "this != '.' && this != '..'"
     }
   ];
-  string display_name = 2 [(buf.validate.field).string.min_len = 1];
-  string description = 3;
+  string display_name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 256
+  }];
+  string description = 3 [(buf.validate.field).string.max_bytes = 4096];
   WorkflowPlanNodeKind kind = 4 [(buf.validate.field).enum = {
     defined_only: true
     not_in: 0
@@ -313,13 +333,29 @@ message WorkflowPlanNode {
   // Fully-qualified protobuf RPC procedure or application registry key for
   // callable ACTIVITY and BRANCH nodes. Examples:
   // `prices.v1.PriceService.Fetch` or `normalize:tweet`.
-  string operation = 5;
+  string operation = 5 [(buf.validate.field).string.max_bytes = 512];
   // Fully-qualified protobuf message names for callable nodes. These are
   // metadata for validation/UI display; payloads remain concrete protobuf
   // messages and are never converted to JSON or generic objects.
-  string request_type = 6 [(buf.validate.field).string = {pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"}];
-  string response_type = 7 [(buf.validate.field).string = {pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"}];
-  map<string, string> annotations = 8;
+  string request_type = 6 [(buf.validate.field).string = {
+    max_bytes: 512
+    pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"
+  }];
+  string response_type = 7 [(buf.validate.field).string = {
+    max_bytes: 512
+    pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"
+  }];
+  map<string, string> annotations = 8 [(buf.validate.field).map = {
+    max_pairs: 32
+    // Keep annotation maps identical in Go, Python, and Protobuf-ES.
+    keys: {
+      string: {
+        max_bytes: 128
+        not_in: ["__proto__"]
+      }
+    }
+    values: {string: {max_bytes: 1024}}
+  }];
 }
 
 // WorkflowPlanEdgeKind describes why two visual nodes are connected.
@@ -342,6 +378,7 @@ message WorkflowPlanEdge {
   string source_node_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
+      max_len: 256
       pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
@@ -353,6 +390,7 @@ message WorkflowPlanEdge {
   string target_node_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
+      max_len: 256
       pattern: "^[A-Za-z0-9._:=-]+$"
     },
     (buf.validate.field).cel = {
@@ -366,7 +404,7 @@ message WorkflowPlanEdge {
     not_in: 0
   }];
   // Required for CONDITIONAL edges, optional display text otherwise.
-  string label = 4;
+  string label = 4 [(buf.validate.field).string.max_bytes = 256];
 }
 
 // TaskStatus mirrors the lifecycle of one `DoAsync` submission.

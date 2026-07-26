@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from google.protobuf.descriptor_pool import DescriptorPool
 from protovalidate import validate
 
 from temporaless.storage import Store, WorkflowKey
@@ -102,7 +105,19 @@ async def inspect_run(store: Store, key: WorkflowKey) -> RunInspection:
 def validate_plan(plan: temporaless_pb2.WorkflowPlan) -> None:
     """Validate protobuf constraints and unambiguous visual-graph semantics."""
 
-    validate(plan)
+    if len(plan.nodes) > 64:
+        raise ValueError("workflow plan may contain at most 64 nodes")
+    if len(plan.edges) > 128:
+        raise ValueError("workflow plan may contain at most 128 edges")
+    if len(plan.annotations) > 64:
+        raise ValueError("workflow plan may contain at most 64 annotations")
+    for index, node in enumerate(plan.nodes):
+        if len(node.annotations) > 32:
+            raise ValueError(
+                f"workflow plan node at index {index} may contain at most 32 annotations"
+            )
+
+    validate(plan, fail_fast=True)
 
     nodes: dict[str, temporaless_pb2.WorkflowPlanNode] = {}
     for node in plan.nodes:
@@ -226,6 +241,105 @@ def plan_digest(plan: temporaless_pb2.WorkflowPlan) -> str:
     validate_plan(plan)
     payload = plan.SerializeToString(deterministic=True)
     return hashlib.sha256(payload).hexdigest()
+
+
+def validate_plan_with_descriptors(
+    plan: temporaless_pb2.WorkflowPlan,
+    *,
+    pool: DescriptorPool,
+    allowed_operations: Collection[str],
+) -> None:
+    """Validate a plan against an exact allowlist of unary protobuf RPCs."""
+
+    validate_plan(plan)
+    if pool is None:
+        raise ValueError("workflow plan descriptor pool is required")
+    if allowed_operations is None:
+        raise ValueError("workflow plan operation allowlist is required")
+    if _has_unknown_plan_fields(plan):
+        raise ValueError(
+            "descriptor-verified workflow plan must not contain unknown protobuf fields"
+        )
+
+    allowed = frozenset(allowed_operations)
+
+    callable_kinds = (
+        temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_ACTIVITY,
+        temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_BRANCH,
+    )
+    for node in plan.nodes:
+        if node.kind not in callable_kinds:
+            if node.operation or node.request_type or node.response_type:
+                raise ValueError(
+                    f"non-callable workflow plan node {node.node_id!r} must not declare "
+                    "operation, request_type, or response_type"
+                )
+            continue
+
+        if node.operation.count(".") < 2:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} operation "
+                "must be a canonical package.Service.Method protobuf RPC name"
+            )
+        if node.operation not in allowed:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} operation "
+                f"{node.operation!r} is not allowlisted"
+            )
+        try:
+            method = pool.FindMethodByName(node.operation)
+        except KeyError as error:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} operation "
+                f"{node.operation!r} does not resolve to a protobuf RPC"
+            ) from error
+        if method.full_name != node.operation:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} operation "
+                f"{node.operation!r} is not a canonical protobuf RPC"
+            )
+        if method.client_streaming or method.server_streaming:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} operation "
+                f"{node.operation!r} must be a unary protobuf RPC"
+            )
+        if node.request_type != method.input_type.full_name:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} request_type "
+                f"{node.request_type!r} does not match protobuf RPC input "
+                f"{method.input_type.full_name!r}"
+            )
+        if node.response_type != method.output_type.full_name:
+            raise ValueError(
+                f"callable workflow plan node {node.node_id!r} response_type "
+                f"{node.response_type!r} does not match protobuf RPC output "
+                f"{method.output_type.full_name!r}"
+            )
+
+
+def verify_approved_plan(
+    plan: temporaless_pb2.WorkflowPlan,
+    approved_sha256_hex: str,
+    *,
+    pool: DescriptorPool,
+    allowed_operations: Collection[str],
+) -> str:
+    """Compare a plan with a digest loaded from a trusted approval record."""
+
+    validate_plan_with_descriptors(
+        plan,
+        pool=pool,
+        allowed_operations=allowed_operations,
+    )
+    if len(approved_sha256_hex) != 64 or any(
+        character not in "0123456789abcdef" for character in approved_sha256_hex
+    ):
+        raise ValueError("approved plan digest must be exactly 64 lowercase hexadecimal characters")
+
+    actual_digest = hashlib.sha256(plan.SerializeToString(deterministic=True)).hexdigest()
+    if not hmac.compare_digest(actual_digest, approved_sha256_hex):
+        raise ValueError("workflow plan does not match the approved digest")
+    return actual_digest
 
 
 def project_workflow_run(
@@ -396,6 +510,13 @@ def _validate_inspection_keys(inspection: RunInspection) -> None:
         _assert_run_key("claim", record, inspection.key)
 
 
+def _has_unknown_plan_fields(plan: temporaless_pb2.WorkflowPlan) -> bool:
+    payload = plan.SerializeToString(deterministic=True)
+    known = temporaless_pb2.WorkflowPlan.FromString(payload)
+    known.DiscardUnknownFields()
+    return known.SerializeToString(deterministic=True) != payload
+
+
 def _assert_run_key(
     record_kind: str,
     record: (
@@ -430,4 +551,6 @@ __all__ = [
     "plan_digest",
     "project_workflow_run",
     "validate_plan",
+    "validate_plan_with_descriptors",
+    "verify_approved_plan",
 ]

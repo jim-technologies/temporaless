@@ -21,7 +21,8 @@ What this example demonstrates that maps to data-pipelining frameworks:
   ``gather_activities`` over per-partition activities.
 - **Conditional branching**: regular Python `if` around an activity call.
 - **Visual plan projection**: ``pipeline_plan`` describes the same stable
-  nodes and edges for approval/UI rendering; execution remains ordinary code.
+  nodes and edges for display/UI rendering; execution remains ordinary code.
+  This example does not implement an authenticated approval service.
 - **Idempotent re-runs / backfill**: replay short-circuits via stored
   records. Run for a different ``run_id`` to backfill a different date.
 - **Sensor / wait-for-condition**: `workflow.sleep` for time-based waits;
@@ -50,7 +51,6 @@ from datetime import UTC, datetime
 
 import opendal
 from google.protobuf.wrappers_pb2 import Int64Value, StringValue
-
 from temporaless import (
     ActivityOptions,
     OpenDALStore,
@@ -256,7 +256,7 @@ async def render_run(
     plan: temporaless_pb2.WorkflowPlan,
     run_id: str,
 ) -> None:
-    """Overlay authoritative records on the approved plan."""
+    """Overlay authoritative records on the declared display plan."""
     inspection = await inspect_run(
         store,
         WorkflowKey(workflow_id="pipeline:stocks_daily", run_id=run_id),
@@ -298,7 +298,7 @@ async def render_run(
 
 
 async def daily_pipeline(workflow: Workflow, date: StringValue) -> StringValue:
-    """One workflow run per (pipeline_id, date, approved plan revision).
+    """One workflow run per (pipeline_id, date, declared plan revision).
 
     Backfill = call run() with a different date. Re-run after a transient
     failure = call run() again with the same run ID — completed steps
@@ -374,18 +374,14 @@ async def main() -> None:
     current_plan = pipeline_plan(current_date)
     current_run_id = f"{current_date}:plan-r{current_plan.revision}"
     validate_plan(current_plan)
-    print("=== visual plan (render this before execution) ===")
+    print("=== display-only visual plan ===")
     render_plan(current_plan)
-    # A real UI persists this value only after the user presses Approve. Build
-    # the execution candidate again and verify its deterministic bytes at the
-    # trust boundary rather than treating rendering as approval.
-    approved_digest = plan_digest(current_plan)
-    execution_plan = pipeline_plan(current_date)
-    validate_plan(execution_plan)
-    if plan_digest(execution_plan) != approved_digest:
-        raise RuntimeError("workflow plan changed after approval")
-    current_plan = execution_plan
-    print(f"  approved SHA-256: {approved_digest}")
+    # This hash demonstrates stable display/projection identity only. It is
+    # not approval. Production approval must use an authenticated record plus
+    # validate_plan_with_descriptors() / verify_approved_plan() at the trusted
+    # service boundary; see docs/visual-workflows.md.
+    display_digest = plan_digest(current_plan)
+    print(f"  display SHA-256 (not approval): {display_digest}")
 
     print("=== first run (full DAG executes) ===")
     started = datetime.now(UTC)

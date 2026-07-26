@@ -1252,7 +1252,8 @@ func (x *WorkflowPlan) GetAnnotations() map[string]string {
 // WorkflowPlanNode describes one box in a visual workflow. Callable nodes name
 // their unary protobuf operation and concrete request/response descriptors.
 // The application registry or generated RPC descriptor remains authoritative;
-// validators reject a mismatch before execution.
+// descriptor-aware validators reject a mismatch when the application invokes
+// the opt-in validation primitive before execution.
 type WorkflowPlanNode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Stable application-owned identity. For activity, sleep, and event nodes,
@@ -5933,39 +5934,41 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0fDispatchOptions\x12>\n" +
 	"\rdrain_timeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\fdrainTimeout\x12!\n" +
 	"\fmax_inflight\x18\x02 \x01(\rR\vmaxInflight\x124\n" +
-	"\btask_ttl\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\ataskTtl\"\xe5\x03\n" +
-	"\fWorkflowPlan\x12\xa4\x01\n" +
-	"\aplan_id\x18\x01 \x01(\tB\x8a\x01\xbaH\x86\x01\xba\x01j\n" +
-	".temporaless.workflow_plan.plan_id.not_dot_path\x12\x1bplan_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x06planId\x12#\n" +
-	"\brevision\x18\x02 \x01(\x04B\a\xbaH\x042\x02 \x00R\brevision\x12@\n" +
-	"\x05nodes\x18\x03 \x03(\v2 .temporaless.v1.WorkflowPlanNodeB\b\xbaH\x05\x92\x01\x02\b\x01R\x05nodes\x126\n" +
-	"\x05edges\x18\x04 \x03(\v2 .temporaless.v1.WorkflowPlanEdgeR\x05edges\x12O\n" +
-	"\vannotations\x18\x05 \x03(\v2-.temporaless.v1.WorkflowPlan.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\btask_ttl\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\ataskTtl\"\x98\x04\n" +
+	"\fWorkflowPlan\x12\xa7\x01\n" +
+	"\aplan_id\x18\x01 \x01(\tB\x8d\x01\xbaH\x89\x01\xba\x01j\n" +
+	".temporaless.workflow_plan.plan_id.not_dot_path\x12\x1bplan_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x1a\x10\x01\x18\x80\x022\x13^[A-Za-z0-9._:=-]+$R\x06planId\x12#\n" +
+	"\brevision\x18\x02 \x01(\x04B\a\xbaH\x042\x02 \x00R\brevision\x12B\n" +
+	"\x05nodes\x18\x03 \x03(\v2 .temporaless.v1.WorkflowPlanNodeB\n" +
+	"\xbaH\a\x92\x01\x04\b\x01\x10@R\x05nodes\x12A\n" +
+	"\x05edges\x18\x04 \x03(\v2 .temporaless.v1.WorkflowPlanEdgeB\t\xbaH\x06\x92\x01\x03\x10\x80\x01R\x05edges\x12r\n" +
+	"\vannotations\x18\x05 \x03(\v2-.temporaless.v1.WorkflowPlan.AnnotationsEntryB!\xbaH\x1e\x9a\x01\x1b\x10@\"\x10r\x0e(\x80\x01Z\t__proto__*\x05r\x03(\x80\bR\vannotations\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x05\n" +
-	"\x10WorkflowPlanNode\x12\xa9\x01\n" +
-	"\anode_id\x18\x01 \x01(\tB\x8f\x01\xbaH\x8b\x01\xba\x01o\n" +
-	"3temporaless.workflow_plan_node.node_id.not_dot_path\x12\x1bnode_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\x06nodeId\x12*\n" +
-	"\fdisplay_name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\vdisplayName\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\x12D\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8e\x06\n" +
+	"\x10WorkflowPlanNode\x12\xac\x01\n" +
+	"\anode_id\x18\x01 \x01(\tB\x92\x01\xbaH\x8e\x01\xba\x01o\n" +
+	"3temporaless.workflow_plan_node.node_id.not_dot_path\x12\x1bnode_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x1a\x10\x01\x18\x80\x022\x13^[A-Za-z0-9._:=-]+$R\x06nodeId\x12-\n" +
+	"\fdisplay_name\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01(\x80\x02R\vdisplayName\x12*\n" +
+	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80 R\vdescription\x12D\n" +
 	"\x04kind\x18\x04 \x01(\x0e2$.temporaless.v1.WorkflowPlanNodeKindB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x1c\n" +
-	"\toperation\x18\x05 \x01(\tR\toperation\x12`\n" +
-	"\frequest_type\x18\x06 \x01(\tB=\xbaH:r826^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\vrequestType\x12b\n" +
-	"\rresponse_type\x18\a \x01(\tB=\xbaH:r826^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\fresponseType\x12S\n" +
-	"\vannotations\x18\b \x03(\v21.temporaless.v1.WorkflowPlanNode.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12&\n" +
+	"\toperation\x18\x05 \x01(\tB\b\xbaH\x05r\x03(\x80\x04R\toperation\x12c\n" +
+	"\frequest_type\x18\x06 \x01(\tB@\xbaH=r;(\x80\x0426^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\vrequestType\x12e\n" +
+	"\rresponse_type\x18\a \x01(\tB@\xbaH=r;(\x80\x0426^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$R\fresponseType\x12v\n" +
+	"\vannotations\x18\b \x03(\v21.temporaless.v1.WorkflowPlanNode.AnnotationsEntryB!\xbaH\x1e\x9a\x01\x1b\x10 \"\x10r\x0e(\x80\x01Z\t__proto__*\x05r\x03(\x80\bR\vannotations\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfc\x03\n" +
-	"\x10WorkflowPlanEdge\x12\xc4\x01\n" +
-	"\x0esource_node_id\x18\x01 \x01(\tB\x9d\x01\xbaH\x99\x01\xba\x01}\n" +
-	":temporaless.workflow_plan_edge.source_node_id.not_dot_path\x12\"source_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\fsourceNodeId\x12\xc4\x01\n" +
-	"\x0etarget_node_id\x18\x02 \x01(\tB\x9d\x01\xbaH\x99\x01\xba\x01}\n" +
-	":temporaless.workflow_plan_edge.target_node_id.not_dot_path\x12\"target_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\ftargetNodeId\x12D\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x04\n" +
+	"\x10WorkflowPlanEdge\x12\xc7\x01\n" +
+	"\x0esource_node_id\x18\x01 \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01}\n" +
+	":temporaless.workflow_plan_edge.source_node_id.not_dot_path\x12\"source_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x1a\x10\x01\x18\x80\x022\x13^[A-Za-z0-9._:=-]+$R\fsourceNodeId\x12\xc7\x01\n" +
+	"\x0etarget_node_id\x18\x02 \x01(\tB\xa0\x01\xbaH\x9c\x01\xba\x01}\n" +
+	":temporaless.workflow_plan_edge.target_node_id.not_dot_path\x12\"target_node_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x1a\x10\x01\x18\x80\x022\x13^[A-Za-z0-9._:=-]+$R\ftargetNodeId\x12D\n" +
 	"\x04kind\x18\x03 \x01(\x0e2$.temporaless.v1.WorkflowPlanEdgeKindB\n" +
-	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x14\n" +
-	"\x05label\x18\x04 \x01(\tR\x05label\"\xb5\x02\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x1e\n" +
+	"\x05label\x18\x04 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x05label\"\xb5\x02\n" +
 	"\bTaskInfo\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x16\n" +
 	"\x06method\x18\x02 \x01(\tR\x06method\x122\n" +

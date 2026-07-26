@@ -28,7 +28,6 @@ from datetime import timedelta
 
 import opendal
 from google.protobuf.wrappers_pb2 import StringValue
-
 from temporaless import outbox
 from temporaless.storage import ActivityKey, OpenDALStore, WorkflowKey
 from temporaless.workflow import (

@@ -52,7 +52,6 @@ import opendal
 import uvicorn
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
-
 from temporaless import OpenDALStore, asgi_application
 
 MAX_CONNECT_MESSAGE_BYTES = 8 << 20  # 8 MiB decoded protobuf message.
@@ -390,7 +389,8 @@ async def _main() -> int:
     try:
         operator = opendal.AsyncOperator(storage_scheme, **storage_options)
         store = OpenDALStore(operator)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # Backend plugins expose driver-specific initialization failures.
         _log.exception("storage.init_failed", extra={"scheme": storage_scheme})
         return 2
 
@@ -400,7 +400,7 @@ async def _main() -> int:
 
     config = uvicorn.Config(
         app,
-        host="0.0.0.0",  # noqa: S104  — production server, intentional
+        host="0.0.0.0",
         port=int(os.environ.get("PORT", "8080")),
         log_config=None,  # we control logging via _configure_logging
         access_log=False,

@@ -41,19 +41,43 @@ from temporaless import (
     inspect_run,
     plan_digest,
     project_workflow_run,
-    validate_plan,
+    validate_plan_with_descriptors,
+    verify_approved_plan,
 )
+from google.protobuf import descriptor_pool
 
-validate_plan(plan)
-approved_sha256 = plan_digest(plan)
+allowed_operations = {"exports.v1.ExportService.ExecuteExport"}
+proposal_plan = type(plan).FromString(plan.SerializeToString(deterministic=True))
+validate_plan_with_descriptors(
+    proposal_plan,
+    pool=descriptor_pool.Default(),
+    allowed_operations=allowed_operations,
+)
+candidate_sha256 = plan_digest(proposal_plan)
+# After the user approves, the application stores candidate_sha256 under an
+# authenticated, opaque approval_id.
+
+# At the trusted service boundary, after importing the application's generated
+# protobuf module so its service descriptor is registered:
+execution_plan = type(plan).FromString(plan.SerializeToString(deterministic=True))
+approved_sha256 = await approvals.approved_digest(approval_id)
+verify_approved_plan(
+    execution_plan,
+    approved_sha256,
+    pool=descriptor_pool.Default(),
+    allowed_operations=allowed_operations,
+)
+# Compile and execute execution_plan, not the caller-shared plan.
 
 # After or during execution, overlay durable evidence on the approved plan.
 inspection = await inspect_run(store, WorkflowKey("export", "run:plan-r1"))
-projection = project_workflow_run(plan, inspection)
+projection = project_workflow_run(execution_plan, inspection)
 ```
 
-The projection preserves unplanned records and does not invent running or
-skipped states. See
+The strict validator requires canonical unary protobuf RPC names, exact
+request/response descriptors, and an explicit operation allowlist. The
+projection preserves unplanned records and does not invent running or skipped
+states. See
 [`examples/py/data_pipeline.py`](../../examples/py/data_pipeline.py) for a
 runnable sequence, fan-out, branch, replay, and backfill example.
 

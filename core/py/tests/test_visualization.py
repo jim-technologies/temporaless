@@ -5,9 +5,11 @@ from typing import cast
 
 import opendal
 import pytest
+from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.wrappers_pb2 import StringValue
 from protovalidate import ValidationError
 
+import temporaless.visualization as visualization_module
 from temporaless.storage import (
     CLAIM_RECORD_SCHEMA_VERSION,
     ClaimKey,
@@ -24,6 +26,8 @@ from temporaless.visualization import (
     plan_digest,
     project_workflow_run,
     validate_plan,
+    validate_plan_with_descriptors,
+    verify_approved_plan,
 )
 from temporaless.workflow import ActivityOptions, Options, TimerPendingError, Workflow, run
 
@@ -153,9 +157,107 @@ def test_validate_plan_rejects_ambiguous_graphs(case: str, message: str) -> None
         validate_plan(_invalid_plan(case))
 
 
-def test_validate_plan_runs_protovalidate_first() -> None:
+def test_validate_plan_uses_protovalidate_for_field_rules() -> None:
     with pytest.raises(ValidationError):
         validate_plan(temporaless_pb2.WorkflowPlan())
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "nodes",
+        "edges",
+        "annotations",
+        "annotation_key",
+        "node_annotation_key",
+        "description_bytes",
+    ],
+)
+def test_validate_plan_rejects_resource_limit_overflow(case: str) -> None:
+    plan = _base_plan()
+    if case == "nodes":
+        plan.nodes.extend(
+            _node(
+                f"wait:{index}",
+                temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+            )
+            for index in range(63)
+        )
+    elif case == "edges":
+        for _ in range(128):
+            plan.edges.add().CopyFrom(plan.edges[0])
+    elif case == "annotations":
+        plan.annotations.update({f"key:{index}": "value" for index in range(65)})
+    elif case == "annotation_key":
+        plan.annotations["__proto__"] = "hidden"
+    elif case == "node_annotation_key":
+        plan.nodes[0].annotations["__proto__"] = "hidden"
+    elif case == "description_bytes":
+        plan.nodes[0].description = "😀" * 1025
+    else:
+        raise AssertionError(f"unknown resource-limit case {case!r}")
+
+    with pytest.raises(ValueError):
+        validate_plan(plan)
+
+
+def test_validate_plan_rejects_collection_overflow_before_protovalidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _base_plan()
+    plan.nodes.extend(
+        _node(
+            f"wait:{index}",
+            temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+        )
+        for index in range(63)
+    )
+
+    def unexpected_validation(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"Protovalidate called with {args!r} {kwargs!r}")
+
+    monkeypatch.setattr(visualization_module, "validate", unexpected_validation)
+    with pytest.raises(ValueError, match="at most 64 nodes"):
+        visualization_module.validate_plan(plan)
+
+
+def test_validate_plan_accepts_exact_collection_limits() -> None:
+    plan = temporaless_pb2.WorkflowPlan(
+        plan_id="exact-limits",
+        revision=1,
+        nodes=[
+            _node("loop", temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_LOOP),
+            *[
+                _node(
+                    f"wait:{index}",
+                    temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+                )
+                for index in range(1, 64)
+            ],
+        ],
+        annotations={f"plan:{index}": "value" for index in range(64)},
+    )
+    plan.nodes[0].annotations.update({f"node:{index}": "value" for index in range(32)})
+    for index in range(1, 64):
+        plan.edges.add(
+            source_node_id="loop",
+            target_node_id=f"wait:{index}",
+            kind=temporaless_pb2.WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+        )
+        plan.edges.add(
+            source_node_id=f"wait:{index}",
+            target_node_id="loop",
+            kind=temporaless_pb2.WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+        )
+    for label in ("first", "second"):
+        plan.edges.add(
+            source_node_id="loop",
+            target_node_id="loop",
+            kind=temporaless_pb2.WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK,
+            label=label,
+        )
+
+    validate_plan(plan)
 
 
 def test_validate_plan_allows_explicit_loop_back_without_forward_cycle() -> None:
@@ -234,6 +336,33 @@ def test_plan_digest_matches_cross_sdk_fixture() -> None:
     assert plan_digest(plan) == "f3ed8cdf8a4aa2fe3d323661dfff0a50c7097aeac1d307784ed2a726810797f0"
 
 
+def test_plan_digest_matches_unicode_and_numeric_map_key_fixture() -> None:
+    annotations = {
+        "2": "two",
+        "10": "ten",
+        "é": "café",
+        "😀": "rocket",
+    }
+    plan = temporaless_pb2.WorkflowPlan(
+        plan_id="approval:unicode",
+        revision=2,
+        annotations=annotations,
+        nodes=[
+            temporaless_pb2.WorkflowPlanNode(
+                node_id="validate",
+                display_name="Vérifier 😀",
+                kind=temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_ACTIVITY,
+                operation="exports.v1.ExportService.Validate",
+                request_type="exports.v1.ValidateRequest",
+                response_type="exports.v1.ValidateResponse",
+                annotations=annotations,
+            )
+        ],
+    )
+
+    assert plan_digest(plan) == "c6f9214a9f270eabf45fc518eeb48faa3ca08628fc105264acdd825ca56f9662"
+
+
 def test_plan_digest_canonicalizes_maps_but_retains_repeated_order() -> None:
     left = _base_plan()
     left.annotations["z"] = "last"
@@ -253,6 +382,256 @@ def test_plan_digest_canonicalizes_maps_but_retains_repeated_order() -> None:
     reordered.CopyFrom(right)
     reordered.nodes.reverse()
     assert plan_digest(left) != plan_digest(reordered)
+
+
+_GET_WORKFLOW_OPERATION = "temporaless.v1.RecordStoreService.GetWorkflow"
+
+
+def _descriptor_plan() -> temporaless_pb2.WorkflowPlan:
+    plan = _base_plan()
+    plan.nodes[0].operation = _GET_WORKFLOW_OPERATION
+    plan.nodes[0].request_type = "temporaless.v1.GetWorkflowRequest"
+    plan.nodes[0].response_type = "temporaless.v1.GetWorkflowResponse"
+    return plan
+
+
+def test_validate_plan_with_descriptors_accepts_allowlisted_unary_rpc() -> None:
+    validate_plan_with_descriptors(
+        _descriptor_plan(),
+        pool=descriptor_pool.Default(),
+        allowed_operations={_GET_WORKFLOW_OPERATION},
+    )
+
+
+def test_validate_plan_with_descriptors_accepts_structural_plan_with_empty_allowlist() -> None:
+    validate_plan_with_descriptors(
+        temporaless_pb2.WorkflowPlan(
+            plan_id="structural",
+            revision=1,
+            nodes=[
+                _node(
+                    "approval",
+                    temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_WAIT_EVENT,
+                )
+            ],
+        ),
+        pool=descriptor_pool.Default(),
+        allowed_operations=set(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("pool", "allowed_operations", "message"),
+    [
+        (
+            cast(descriptor_pool.DescriptorPool, None),
+            {_GET_WORKFLOW_OPERATION},
+            "descriptor pool is required",
+        ),
+        (
+            descriptor_pool.Default(),
+            cast(set[str], None),
+            "operation allowlist is required",
+        ),
+    ],
+)
+def test_validate_plan_with_descriptors_rejects_missing_policy_after_type_erasure(
+    pool: descriptor_pool.DescriptorPool,
+    allowed_operations: set[str],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_plan_with_descriptors(
+            _descriptor_plan(),
+            pool=pool,
+            allowed_operations=allowed_operations,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("operation", "temporaless.v1.RecordStoreService.PutWorkflow", "not allowlisted"),
+        ("request_type", "temporaless.v1.PutWorkflowRequest", "does not match protobuf RPC input"),
+        (
+            "response_type",
+            "temporaless.v1.PutWorkflowResponse",
+            "does not match protobuf RPC output",
+        ),
+    ],
+)
+def test_validate_plan_with_descriptors_rejects_callable_mismatch(
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    plan = _descriptor_plan()
+    setattr(plan.nodes[0], field, value)
+
+    with pytest.raises(ValueError, match=message):
+        validate_plan_with_descriptors(
+            plan,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ("temporaless.v1.RecordStoreService", "does not resolve to a protobuf RPC"),
+        ("/temporaless.v1.RecordStoreService/GetWorkflow", "does not resolve to a protobuf RPC"),
+        ("RecordStoreService.GetWorkflow", "canonical package.Service.Method"),
+    ],
+)
+def test_validate_plan_with_descriptors_rejects_noncanonical_operation(
+    operation: str,
+    message: str,
+) -> None:
+    plan = _descriptor_plan()
+    plan.nodes[0].operation = operation
+
+    with pytest.raises(ValueError, match=message):
+        validate_plan_with_descriptors(
+            plan,
+            pool=descriptor_pool.Default(),
+            allowed_operations={operation},
+        )
+
+
+def test_validate_plan_with_descriptors_ignores_unused_allowlist_entries() -> None:
+    validate_plan_with_descriptors(
+        _descriptor_plan(),
+        pool=descriptor_pool.Default(),
+        allowed_operations={_GET_WORKFLOW_OPERATION, "stale.invalid.Entry"},
+    )
+
+
+@pytest.mark.parametrize("location", ["plan", "node", "edge"])
+def test_validate_plan_with_descriptors_rejects_unknown_protobuf_fields(
+    location: str,
+) -> None:
+    plan = _descriptor_plan()
+    target = {
+        "plan": plan,
+        "node": plan.nodes[0],
+        "edge": plan.edges[0],
+    }[location]
+    target.MergeFromString(b"\xa0\x06\x01")
+
+    with pytest.raises(ValueError, match="unknown protobuf fields"):
+        validate_plan_with_descriptors(
+            plan,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
+
+
+@pytest.mark.parametrize(
+    ("client_streaming", "server_streaming"),
+    [(True, False), (False, True)],
+)
+def test_validate_plan_with_descriptors_rejects_streaming_rpc(
+    client_streaming: bool,
+    server_streaming: bool,
+) -> None:
+    file_descriptor = descriptor_pb2.FileDescriptorProto(
+        name="streaming/v1/streaming.proto",
+        package="streaming.v1",
+        syntax="proto3",
+    )
+    file_descriptor.message_type.add(name="UploadRequest")
+    file_descriptor.message_type.add(name="UploadResponse")
+    service = file_descriptor.service.add(name="StreamService")
+    service.method.add(
+        name="Upload",
+        input_type=".streaming.v1.UploadRequest",
+        output_type=".streaming.v1.UploadResponse",
+        client_streaming=client_streaming,
+        server_streaming=server_streaming,
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file_descriptor)
+    operation = "streaming.v1.StreamService.Upload"
+    plan = temporaless_pb2.WorkflowPlan(
+        plan_id="streaming",
+        revision=1,
+        nodes=[
+            temporaless_pb2.WorkflowPlanNode(
+                node_id="upload",
+                display_name="Upload",
+                kind=temporaless_pb2.WORKFLOW_PLAN_NODE_KIND_ACTIVITY,
+                operation=operation,
+                request_type="streaming.v1.UploadRequest",
+                response_type="streaming.v1.UploadResponse",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="must be a unary protobuf RPC"):
+        validate_plan_with_descriptors(
+            plan,
+            pool=pool,
+            allowed_operations={operation},
+        )
+
+
+@pytest.mark.parametrize("field", ["operation", "request_type", "response_type"])
+def test_validate_plan_with_descriptors_rejects_rpc_metadata_on_non_callable_node(
+    field: str,
+) -> None:
+    plan = _descriptor_plan()
+    setattr(plan.nodes[1], field, "unexpected")
+
+    with pytest.raises(ValueError, match="non-callable workflow plan node"):
+        validate_plan_with_descriptors(
+            plan,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
+
+
+@pytest.mark.parametrize(
+    "approved_digest",
+    [
+        "",
+        "0" * 63,
+        "0" * 65,
+        "G" * 64,
+        "A" * 64,
+        f"sha256:{'0' * 64}",
+    ],
+)
+def test_verify_approved_plan_rejects_noncanonical_digest(approved_digest: str) -> None:
+    with pytest.raises(ValueError, match="exactly 64 lowercase hexadecimal"):
+        verify_approved_plan(
+            _descriptor_plan(),
+            approved_digest,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
+
+
+def test_verify_approved_plan_returns_matching_digest_and_rejects_mismatch() -> None:
+    plan = _descriptor_plan()
+    digest = plan_digest(plan)
+
+    assert (
+        verify_approved_plan(
+            plan,
+            digest,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
+        == digest
+    )
+    with pytest.raises(ValueError, match="does not match the approved digest"):
+        verify_approved_plan(
+            plan,
+            "0" * 64,
+            pool=descriptor_pool.Default(),
+            allowed_operations={_GET_WORKFLOW_OPERATION},
+        )
 
 
 def _claim(

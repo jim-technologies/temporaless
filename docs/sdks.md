@@ -204,7 +204,7 @@ compatibility target, operations helper).
 | `timerscanner` | Find due sleep, activity-retry, and poll timers belonging to in-flight workflows | ✓ | ✓ | — |
 | `cronscheduler` | In-process cron with stateless seeding from existing runs | ✓ | ✓ | — |
 | `inspector` | List in-flight/failed workflows, reset records for re-execution | ✓ | ✓ | — |
-| `visualization` | Validate/digest optional `WorkflowPlan`, inspect a run, and project node IDs onto durable record evidence | ✓ | ✓ | — |
+| `visualization` | Structurally validate/digest optional `WorkflowPlan`, strictly verify callable RPC descriptors + approval, inspect a run, and project node IDs onto durable record evidence | ✓ | ✓ | — |
 | `janitor` | Sweep COMPLETED runs older than max-age | ✓ | ✓ | — |
 | `backfill` | Run a workflow over many run_ids with bounded concurrency + report | ✓ | ✓ | — |
 | `dependencies` | Cross-pipeline durable wait — `WaitForWorkflow(...)` | ✓ | ✓ | — |

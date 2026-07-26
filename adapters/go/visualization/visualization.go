@@ -9,19 +9,39 @@ package visualization
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"buf.build/go/protovalidate"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // ErrInvalidPlan marks protobuf or cross-field plan validation failures.
 var ErrInvalidPlan = errors.New("invalid workflow plan")
+
+// ErrApprovalDigestMismatch marks a malformed or non-matching approved plan
+// digest.
+var ErrApprovalDigestMismatch = errors.New("workflow plan approval digest mismatch")
+
+// DescriptorValidationOptions supplies the authoritative protobuf descriptors
+// and the explicit operation policy used by ValidatePlanWithDescriptors.
+//
+// Resolver is commonly a *protoregistry.Files returned by protodesc.NewFiles,
+// or protoregistry.GlobalFiles for generated descriptors linked into the
+// application. AllowedOperations must be non-nil. Every callable node must
+// name one entry exactly; there is no implicit allow-all mode.
+type DescriptorValidationOptions struct {
+	Resolver          protodesc.Resolver
+	AllowedOperations map[protoreflect.FullName]struct{}
+}
 
 // ClaimLister is the optional run-scoped claim surface used by InspectRun.
 // The default OpenDAL point store deliberately does not provide claim listing.
@@ -75,6 +95,24 @@ type RunProjection struct {
 func ValidatePlan(plan *temporalessv1.WorkflowPlan) error {
 	if plan == nil {
 		return fmt.Errorf("%w: plan is required", ErrInvalidPlan)
+	}
+	if len(plan.GetNodes()) > 64 {
+		return fmt.Errorf("%w: plan may contain at most 64 nodes", ErrInvalidPlan)
+	}
+	if len(plan.GetEdges()) > 128 {
+		return fmt.Errorf("%w: plan may contain at most 128 edges", ErrInvalidPlan)
+	}
+	if len(plan.GetAnnotations()) > 64 {
+		return fmt.Errorf("%w: plan may contain at most 64 annotations", ErrInvalidPlan)
+	}
+	for index, node := range plan.GetNodes() {
+		if node != nil && len(node.GetAnnotations()) > 32 {
+			return fmt.Errorf(
+				"%w: node at index %d may contain at most 32 annotations",
+				ErrInvalidPlan,
+				index,
+			)
+		}
 	}
 	if err := protovalidate.Validate(plan); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidPlan, err)
@@ -234,32 +272,146 @@ func ValidatePlan(plan *temporalessv1.WorkflowPlan) error {
 		indegree[identity.target]++
 	}
 
-	for nodeID := range adjacency {
-		sort.Strings(adjacency[nodeID])
-	}
 	ready := make([]string, 0, len(nodes))
 	for nodeID, degree := range indegree {
 		if degree == 0 {
 			ready = append(ready, nodeID)
 		}
 	}
-	sort.Strings(ready)
 
 	visited := 0
-	for len(ready) > 0 {
-		nodeID := ready[0]
-		ready = ready[1:]
+	for head := 0; head < len(ready); head++ {
+		nodeID := ready[head]
 		visited++
 		for _, targetID := range adjacency[nodeID] {
 			indegree[targetID]--
 			if indegree[targetID] == 0 {
 				ready = append(ready, targetID)
-				sort.Strings(ready)
 			}
 		}
 	}
 	if visited != len(nodes) {
 		return fmt.Errorf("%w: non-loop-back edges must form a DAG", ErrInvalidPlan)
+	}
+
+	return nil
+}
+
+// ValidatePlanWithDescriptors validates the visual graph and verifies every
+// callable node against one explicitly allowed unary protobuf RPC descriptor.
+//
+// This strict path rejects operation/request/response metadata on structural
+// nodes. It supports protobuf RPC names only; application-local registry keys
+// remain valid for the display-only ValidatePlan path but cannot pass
+// descriptor verification.
+func ValidatePlanWithDescriptors(
+	plan *temporalessv1.WorkflowPlan,
+	options DescriptorValidationOptions,
+) error {
+	if err := ValidatePlan(plan); err != nil {
+		return err
+	}
+	if isNilResolver(options.Resolver) {
+		return errors.New("visualization: descriptor resolver is required")
+	}
+	if options.AllowedOperations == nil {
+		return errors.New("visualization: operation allowlist is required")
+	}
+	if hasUnknownPlanFields(plan) {
+		return fmt.Errorf(
+			"%w: descriptor-verified plan must not contain unknown protobuf fields",
+			ErrInvalidPlan,
+		)
+	}
+
+	for _, node := range plan.GetNodes() {
+		if !isCallableNode(node) {
+			if node.GetOperation() != "" ||
+				node.GetRequestType() != "" ||
+				node.GetResponseType() != "" {
+				return fmt.Errorf(
+					"%w: structural node %q must not declare operation, request_type, or response_type",
+					ErrInvalidPlan,
+					node.GetNodeId(),
+				)
+			}
+			continue
+		}
+
+		operation := protoreflect.FullName(node.GetOperation())
+		if !operation.IsValid() || operation.Parent().Parent() == "" {
+			return fmt.Errorf(
+				"%w: callable node %q operation %q is not a canonical protobuf full name",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+			)
+		}
+		if _, allowed := options.AllowedOperations[operation]; !allowed {
+			return fmt.Errorf(
+				"%w: callable node %q operation %q is not allowed",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+			)
+		}
+
+		descriptor, err := options.Resolver.FindDescriptorByName(operation)
+		if err != nil {
+			return fmt.Errorf(
+				"%w: resolve callable node %q operation %q: %w",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+				err,
+			)
+		}
+		method, ok := descriptor.(protoreflect.MethodDescriptor)
+		if !ok || method.FullName() != operation || method.IsPlaceholder() {
+			return fmt.Errorf(
+				"%w: callable node %q operation %q is not a protobuf RPC method",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+			)
+		}
+		if method.IsStreamingClient() || method.IsStreamingServer() {
+			return fmt.Errorf(
+				"%w: callable node %q operation %q must be unary",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+			)
+		}
+
+		input := method.Input()
+		output := method.Output()
+		if input == nil || output == nil || input.IsPlaceholder() || output.IsPlaceholder() {
+			return fmt.Errorf(
+				"%w: callable node %q operation %q has unresolved request or response descriptors",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetOperation(),
+			)
+		}
+		if node.GetRequestType() != string(input.FullName()) {
+			return fmt.Errorf(
+				"%w: callable node %q request_type %q does not match method input %q",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetRequestType(),
+				input.FullName(),
+			)
+		}
+		if node.GetResponseType() != string(output.FullName()) {
+			return fmt.Errorf(
+				"%w: callable node %q response_type %q does not match method output %q",
+				ErrInvalidPlan,
+				node.GetNodeId(),
+				node.GetResponseType(),
+				output.FullName(),
+			)
+		}
 	}
 
 	return nil
@@ -278,6 +430,47 @@ func Digest(plan *temporalessv1.WorkflowPlan) (string, error) {
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// VerifyApprovedPlan verifies descriptor policy and binds execution to the
+// exact deterministic WorkflowPlan bytes approved by the application.
+//
+// The caller must load approvedSHA256Hex from an authenticated approval record
+// or verify its signature. A digest supplied beside the same untrusted plan is
+// not evidence that a user approved it.
+//
+// The digest binds the plan value, including operation/type names and
+// annotations. It deliberately does not bind the ambient descriptor registry,
+// operation allowlist, handler implementation, or business input outside the
+// plan. Applications that need those identities pinned must carry them in
+// their own canonical workflow request.
+func VerifyApprovedPlan(
+	plan *temporalessv1.WorkflowPlan,
+	approvedSHA256Hex string,
+	options DescriptorValidationOptions,
+) error {
+	if err := ValidatePlanWithDescriptors(plan, options); err != nil {
+		return err
+	}
+
+	approved, err := hex.DecodeString(approvedSHA256Hex)
+	if err != nil ||
+		len(approved) != sha256.Size ||
+		hex.EncodeToString(approved) != approvedSHA256Hex {
+		return ErrApprovalDigestMismatch
+	}
+	actualHex, err := Digest(plan)
+	if err != nil {
+		return err
+	}
+	actual, err := hex.DecodeString(actualHex)
+	if err != nil {
+		return fmt.Errorf("decode workflow plan digest: %w", err)
+	}
+	if subtle.ConstantTimeCompare(actual, approved) != 1 {
+		return ErrApprovalDigestMismatch
+	}
+	return nil
 }
 
 // InspectRun reads every authoritative point-store record for one run. It
@@ -531,6 +724,36 @@ func validateInspectionRecords(inspection *RunInspection) error {
 func isCallableNode(node *temporalessv1.WorkflowPlanNode) bool {
 	return node.GetKind() == temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_ACTIVITY ||
 		node.GetKind() == temporalessv1.WorkflowPlanNodeKind_WORKFLOW_PLAN_NODE_KIND_BRANCH
+}
+
+func hasUnknownPlanFields(plan *temporalessv1.WorkflowPlan) bool {
+	if len(plan.ProtoReflect().GetUnknown()) > 0 {
+		return true
+	}
+	for _, node := range plan.GetNodes() {
+		if len(node.ProtoReflect().GetUnknown()) > 0 {
+			return true
+		}
+	}
+	for _, edge := range plan.GetEdges() {
+		if len(edge.ProtoReflect().GetUnknown()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func isNilResolver(resolver protodesc.Resolver) bool {
+	if resolver == nil {
+		return true
+	}
+	value := reflect.ValueOf(resolver)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func claimMatchesNode(

@@ -85,11 +85,28 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   boundary and RPC-aware interceptors as ConnectStore.
 - [ ] **Direct path preserved for normal APIs.** Application services keep ordinary API reads and routine synchronous actions callable in-process without Temporaless. Workflow wrappers are opt-in for idempotent, retriable, scheduled, or long-running operations; if Temporaless storage or operators are down, direct APIs still serve and only the durable operation returns an explicit unavailable/deferred result.
 - [ ] **`workflow_id` and `run_id` are caller-provided.** The framework rejects empty / ambiguous IDs. Document your conventions: typically `{pipeline}:{symbol_or_partition}` for `workflow_id`; `{date}` or `{fire_time_iso}` for `run_id`.
-- [ ] **Approved visual plans are bound to execution identity.** If the
-  application accepts `WorkflowPlan`, validate it and verify its deterministic
-  SHA-256 approval before entering the runtime. A changed plan must use a new
+- [ ] **The application binds approved visual plans to execution identity.** If the
+  application accepts `WorkflowPlan`, use the descriptor-aware validator with
+  an exact operation allowlist, then verify its deterministic SHA-256 approval
+  immediately before entering the runtime. Do not treat planner-supplied
+  operation/type strings, a browser-only check, or a digest supplied beside the
+  same untrusted plan as authorization. Load the digest from an authenticated
+  approval record or verify a signed approval token, and compile the same
+  handler-owned plan snapshot that was verified. A changed plan must use a new
   caller-owned run identity or be rejected by comparing against the original
   stored workflow input; the core intentionally does not fingerprint inputs.
+  If the approval must pin more than topology, use an application-owned signed
+  protobuf envelope that also binds the canonical business-request digest,
+  namespace/workflow/run identity, descriptor and allowlist policy identity,
+  compiler/deployment release, approver, and expiry/revocation data. Reject
+  unknown plan fields, and keep product-specific size limits at or below the
+  protobuf ceiling of 64 nodes and 128 edges.
+- [ ] **Approval views render planner text safely.** Treat display names,
+  descriptions, edge labels, and annotations as untrusted text: escape them,
+  never inject raw HTML or unsanitized Markdown, and flag or reject bidi and
+  non-display control characters. Show the canonical
+  `package.Service.Method`, exact protobuf types, and typed business input
+  independently of friendly labels.
 - [ ] **Workflow changes preserve durable boundary meaning.** `IN_PROGRESS`
   runs resume under the current handler while completed activities replay by
   caller-owned ID. Use additive changes for existing runs; use a new
