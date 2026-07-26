@@ -44,6 +44,8 @@ lockstep policy.
   `1af06b2febf321ba19bdff097d88a4a8ad5f8c9d`.
 - Direct dependency baselines and locks advance to Prefect 3.8.0, Ruff 0.16.0,
   ty 0.0.63, `ulid` 2.1.2, and Temporal API 1.63.4.
+- The Rust lock captures the current compatible downstream graph, including
+  `cc` 1.4.0, `either` 1.17.0, and `jiff` 0.2.35.
 
 ### Upgrade notes
 
