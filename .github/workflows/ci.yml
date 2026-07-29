@@ -359,12 +359,11 @@ jobs:
           )
           PY
 
-          # Resolve like a real downstream Git consumer. The following
-          # comparison permits only third-party registry and Git package
-          # identities already committed in the workspace lock. Mutable
-          # registry state can reject a yanked/unresolvable dependency but
-          # cannot silently select a different graph for this source-boundary
-          # proof.
+          # Resolve like a real downstream Git consumer. Cargo intentionally
+          # does not propagate a library workspace's Cargo.lock, so compatible
+          # registry updates are expected here. Third-party Git dependencies
+          # must still match the immutable revisions audited in the workspace
+          # lock, and the generated consumer lock is compiled below.
           cargo generate-lockfile --manifest-path "$consumer/Cargo.toml"
           WORKSPACE_LOCK="$GITHUB_WORKSPACE/Cargo.lock" \
           CONSUMER_LOCK="$consumer/Cargo.lock" \
@@ -372,20 +371,6 @@ jobs:
           import os
           import tomllib
           from pathlib import Path
-
-          def registry_packages(path: str) -> set[tuple[str, str, str, str]]:
-              with Path(path).open("rb") as file:
-                  lock = tomllib.load(file)
-              return {
-                  (
-                      package["name"],
-                      package["version"],
-                      package["source"],
-                      package["checksum"],
-                  )
-                  for package in lock["package"]
-                  if str(package.get("source", "")).startswith("registry+")
-              }
 
           def third_party_git_packages(path: str) -> set[tuple[str, str, str]]:
               with Path(path).open("rb") as file:
@@ -401,20 +386,14 @@ jobs:
                   and str(package.get("source", "")).startswith("git+")
               }
 
-          committed = registry_packages(os.environ["WORKSPACE_LOCK"])
-          downstream = registry_packages(os.environ["CONSUMER_LOCK"])
-          unexpected_registry = sorted(downstream - committed)
           committed_git = third_party_git_packages(os.environ["WORKSPACE_LOCK"])
           downstream_git = third_party_git_packages(os.environ["CONSUMER_LOCK"])
           unexpected_git = sorted(downstream_git - committed_git)
-          unexpected = [
-              *(f"registry {item!r}" for item in unexpected_registry),
-              *(f"git {item!r}" for item in unexpected_git),
-          ]
-          if unexpected:
-              lines = "\n".join(f"  {item}" for item in unexpected)
+          if unexpected_git:
+              lines = "\n".join(f"  {item!r}" for item in unexpected_git)
               raise SystemExit(
-                  "downstream Cargo resolution drifted from Cargo.lock:\n" + lines
+                  "downstream Cargo resolution introduced an unaudited "
+                  "Git package:\n" + lines
               )
           PY
 

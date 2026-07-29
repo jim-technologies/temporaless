@@ -13,6 +13,17 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-07-28
+
+### Fixed
+
+- The committed Rust dependency graph advances to `displaydoc` 0.2.7, removing
+  the current lock drift from fresh downstream Git consumers.
+- The Rust Git-SHA consumer gate now reflects Cargo library semantics:
+  compatible registry resolution may advance independently, while Temporaless
+  still requires the exact source SHA and version, preserves audited
+  third-party Git revisions, and compiles the generated consumer lock.
+
 ## [0.10.1] — 2026-07-28
 
 ### Changed
