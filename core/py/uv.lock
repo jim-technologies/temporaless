@@ -419,7 +419,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.10.2"
+version = "0.10.3"
 source = { editable = "." }
 dependencies = [
     { name = "connectrpc" },
@@ -473,7 +473,7 @@ dev = [
 
 [[package]]
 name = "temporaless-connectworkflow"
-version = "0.10.2"
+version = "0.10.3"
 source = { editable = "../../adapters/py/connectworkflow" }
 dependencies = [
     { name = "connectrpc" },
@@ -497,7 +497,7 @@ dev = [
 
 [[package]]
 name = "temporaless-indexstore"
-version = "0.10.2"
+version = "0.10.3"
 source = { editable = "../../adapters/py/indexstore" }
 dependencies = [
     { name = "temporaless" },

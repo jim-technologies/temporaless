@@ -13,6 +13,15 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-07-28
+
+### Fixed
+
+- Release tags now use the non-cancelable full gate as their single Go
+  authority instead of running an identical standalone `go-check`; branches
+  and pull requests retain the fast parallel check without reducing tag
+  coverage.
+
 ## [0.10.2] — 2026-07-28
 
 ### Fixed

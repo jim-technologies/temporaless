@@ -103,6 +103,10 @@ jobs:
   go-check:
     # Go-only gate (gofmt-check + vet + golangci-lint + race tests) via the
     # top-level Makefile. Go comes from Flox; golangci-lint is a pinned Go tool.
+    # Release tags already run these exact checks inside the non-cancelable
+    # full gate; avoid a redundant tag-only copy while retaining fast feedback
+    # for branches and pull requests.
+    if: github.ref_type != 'tag'
     name: go-check
     runs-on: ubuntu-latest
     timeout-minutes: 20
