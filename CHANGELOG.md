@@ -13,6 +13,15 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-07-28
+
+### Changed
+
+- Invariant Protocol is pinned to its immutable v0.13.0 release commit
+  `80c1f2cf511a1c3af121763ed5b2b7708eb43a34`.
+- Python type checking advances to ty 0.0.64, with compatible lock refreshes
+  across the core and adapter environments.
+
 ## [0.10.0] — 2026-07-26
 
 ### Added
