@@ -9,7 +9,7 @@ from google.protobuf.message import DecodeError
 from google.protobuf.struct_pb2 import Struct
 from google.protobuf.timestamp_pb2 import Timestamp
 from google.protobuf.wrappers_pb2 import Int32Value, StringValue
-from protovalidate import ValidationError
+from protovalidate import ValidationError, validate
 
 from temporaless.storage import (
     CLAIM_RECORD_SCHEMA_VERSION,
@@ -51,6 +51,59 @@ from temporaless.workflow import (
     wrap_activity,
     wrap_workflow,
 )
+
+
+@pytest.mark.parametrize(
+    ("message", "valid"),
+    [
+        (
+            RetryPolicy(
+                initial_interval=Duration(seconds=1),
+                maximum_attempts=temporaless_pb2.RuntimeDefaults().maximum_retry_attempts,
+            ),
+            True,
+        ),
+        (
+            RetryPolicy(
+                initial_interval=Duration(seconds=1),
+                maximum_attempts=(temporaless_pb2.RuntimeDefaults().maximum_retry_attempts + 1),
+            ),
+            False,
+        ),
+        (
+            Options(
+                workflow_id="bounded-workflow",
+                run_id="bounded-run",
+                claim_owner_id="worker:bounded",
+                concurrency_key="vendor:bounded",
+                concurrency_limit=(temporaless_pb2.RuntimeDefaults().maximum_concurrency_slots),
+            ),
+            True,
+        ),
+        (
+            Options(
+                workflow_id="bounded-workflow",
+                run_id="bounded-run",
+                claim_owner_id="worker:bounded",
+                concurrency_key="vendor:bounded",
+                concurrency_limit=(temporaless_pb2.RuntimeDefaults().maximum_concurrency_slots + 1),
+            ),
+            False,
+        ),
+    ],
+    ids=(
+        "retry-at-bound",
+        "retry-above-bound",
+        "concurrency-at-bound",
+        "concurrency-above-bound",
+    ),
+)
+def test_work_amplifying_option_bounds(message, valid: bool) -> None:
+    if valid:
+        validate(message)
+        return
+    with pytest.raises(ValidationError):
+        validate(message)
 
 
 @pytest.fixture

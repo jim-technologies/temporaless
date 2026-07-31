@@ -13,10 +13,11 @@ complexity the framework explicitly rejects. The simpler answer: deployers
 configure only the replicas they want to run background work.
 
 **Safety net if you mis-configure.** If two replicas accidentally both run the
-same loop, the framework's replay model still produces correct results — the
-second ``workflow.run`` short-circuits via stored records, and indexed sweeps
-mirror idempotent run-prefix deletes. The opt-in is purely an efficiency
-optimization, not a correctness one.
+same loop, timer and cron dispatch remains at-least-once. Terminal records
+replay and indexed sweeps mirror idempotent run-prefix deletes, but overlapping
+first execution is serialized only when the workflow opts into an atomic
+execution claim. Without claims, every activity boundary and external side
+effect must tolerate duplicate dispatch.
 
 Typical wiring (operator replica)::
 

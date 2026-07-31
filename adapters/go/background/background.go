@@ -18,10 +18,11 @@
 //
 // # Safety net if you mis-configure
 //
-// If two replicas accidentally both run the same loop, the framework's replay
-// model still produces correct results — the second workflow.Run short-circuits
-// via stored records; query-adapter sweeps and point deletes are idempotent. The
-// opt-in is purely an efficiency optimization, not a correctness one.
+// If two replicas accidentally both run the same loop, timer and cron dispatch
+// remains at-least-once. Terminal records replay and query-adapter sweeps mirror
+// idempotent point deletes, but overlapping first execution is serialized only
+// when the workflow opts into an atomic execution claim. Without claims, every
+// activity boundary and external side effect must tolerate duplicate dispatch.
 //
 // # Typical wiring (operator replica)
 //

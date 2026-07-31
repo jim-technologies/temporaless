@@ -501,31 +501,33 @@ func TestActivityRetryTimer_PreparedWakeSurvivesActivityWriteFailureAndCrash(t *
 	ctx := context.Background()
 	base := newTestStore(t)
 	writeErr := errors.New("initial RETRYING activity write failed")
-	store := &retryActivityWriteFaultStore{
+	faultStore := &retryActivityWriteFaultStore{
 		Store:    base,
 		failures: map[int]retryTimerWriteFailureMode{1: retryTimerWriteBeforeCommit},
 		err:      writeErr,
 	}
+	store := &panicTerminalActivityStore{Store: faultStore}
 	options := &Options{WorkflowId: "retry-timer-due-crash", RunId: "run"}
 	policy := durableRepairPolicy()
 	activityCalls := 0
+	activity := func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+		activityCalls++
+		switch activityCalls {
+		case 1:
+			return nil, NewActivityError("transient", "try again", nil)
+		case 2:
+			return wrapperspb.String("not-committed"), nil
+		default:
+			return wrapperspb.String("recovered"), nil
+		}
+	}
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		return ExecuteActivity(
 			ctx,
 			&ActivityOptions{ActivityId: "retrying", RetryPolicy: policy, RetryTimerId: testRetryTimerID("retrying")},
 			input,
 			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
-			func(context.Context, *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
-				activityCalls++
-				switch activityCalls {
-				case 1:
-					return nil, NewActivityError("transient", "try again", nil)
-				case 2:
-					panic("simulated process crash")
-				default:
-					return wrapperspb.String("recovered"), nil
-				}
-			},
+			activity,
 		)
 	}
 
@@ -555,12 +557,27 @@ func TestActivityRetryTimer_PreparedWakeSurvivesActivityWriteFailureAndCrash(t *
 		t.Fatal(err)
 	}
 
+	store.panicTerminal = true
+	wf := &Workflow{
+		store:      store,
+		workflowID: options.GetWorkflowId(),
+		runID:      options.GetRunId(),
+	}
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
-		_, _ = Run(
-			ctx, store, options, nil, wrapperspb.String("request"),
-			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, body,
+		_, _ = runActivity(
+			ctx,
+			wf,
+			"retrying",
+			activityClaimTestType,
+			policy,
+			testRetryTimerID("retrying"),
+			wrapperspb.String("request"),
+			func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+			func(ctx context.Context) (*wrapperspb.StringValue, error) {
+				return activity(ctx, wrapperspb.String("request"))
+			},
 		)
 	}()
 	if recovered == nil {

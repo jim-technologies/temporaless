@@ -9,7 +9,8 @@ use std::time::Duration;
 use opendal::{Operator, services::Fs};
 use prost::{Message, Name};
 use tempfile::TempDir;
-use temporaless::storage::{OpenDALStore, Store, WorkflowKey};
+use temporaless::runtime_defaults;
+use temporaless::storage::{ActivityKey, OpenDALStore, Store, WorkflowKey};
 use temporaless::workflow::{
     ActivityError, ActivityOptions, RetryPolicy, RunError, Workflow, WorkflowOptions, annotate,
     current, execute_activity, run,
@@ -326,6 +327,200 @@ async fn execute_activity_retries_and_succeeds() {
     .unwrap();
     assert_eq!(result.value, "ok:x");
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn retry_policy_accepts_proto_maximum_attempts_bound() {
+    let (_tmp, store) = new_store();
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = run::<StringValue, StringValue, _, _>(
+        store,
+        WorkflowOptions::new("wf", "retry-bound"),
+        s("x"),
+        {
+            let attempts = attempts.clone();
+            move |_w, input| {
+                let attempts = attempts.clone();
+                async move {
+                    execute_activity(
+                        ActivityOptions::new("bounded").with_retry_policy(RetryPolicy {
+                            maximum_attempts: runtime_defaults::MAXIMUM_RETRY_ATTEMPTS,
+                            initial_interval: Duration::from_millis(1),
+                            backoff_coefficient: 1.0,
+                            maximum_interval: Duration::from_millis(1),
+                            non_retryable_error_codes: vec!["stop".into()],
+                        }),
+                        input,
+                        |_req: StringValue| {
+                            let attempts = attempts.clone();
+                            async move {
+                                attempts.fetch_add(1, Ordering::SeqCst);
+                                Err::<StringValue, _>(ActivityError::new("stop", "done"))
+                            }
+                        },
+                    )
+                    .await
+                }
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, RunError::Activity(_)));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn retry_policy_rejects_above_proto_maximum_before_execution() {
+    let (_tmp, store) = new_store();
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = run::<StringValue, StringValue, _, _>(
+        store,
+        WorkflowOptions::new("wf", "retry-above-bound"),
+        s("x"),
+        {
+            let attempts = attempts.clone();
+            move |_w, input| {
+                let attempts = attempts.clone();
+                async move {
+                    execute_activity(
+                        ActivityOptions::new("unbounded").with_retry_policy(RetryPolicy {
+                            maximum_attempts: runtime_defaults::MAXIMUM_RETRY_ATTEMPTS + 1,
+                            initial_interval: Duration::from_millis(1),
+                            backoff_coefficient: 1.0,
+                            maximum_interval: Duration::from_millis(1),
+                            non_retryable_error_codes: Vec::new(),
+                        }),
+                        input,
+                        |_req: StringValue| {
+                            let attempts = attempts.clone();
+                            async move {
+                                attempts.fetch_add(1, Ordering::SeqCst);
+                                Ok::<StringValue, ActivityError>(s("unexpected"))
+                            }
+                        },
+                    )
+                    .await
+                }
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, RunError::ActivityConflict(message) if message.contains(&format!(
+            "must be <= {}", runtime_defaults::MAXIMUM_RETRY_ATTEMPTS
+        ))),
+        "unexpected error: {err}",
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn retry_policy_rejects_late_schedule_overflow_before_execution() {
+    let (_tmp, store) = new_store();
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = run::<StringValue, StringValue, _, _>(
+        store.clone(),
+        WorkflowOptions::new("wf", "retry-overflow"),
+        s("x"),
+        {
+            let attempts = attempts.clone();
+            move |_w, input| {
+                let attempts = attempts.clone();
+                async move {
+                    execute_activity(
+                        ActivityOptions::new("overflow").with_retry_policy(RetryPolicy {
+                            maximum_attempts: 3,
+                            initial_interval: Duration::from_secs(1),
+                            backoff_coefficient: f64::MAX,
+                            maximum_interval: Duration::ZERO,
+                            non_retryable_error_codes: Vec::new(),
+                        }),
+                        input,
+                        |_req: StringValue| {
+                            let attempts = attempts.clone();
+                            async move {
+                                attempts.fetch_add(1, Ordering::SeqCst);
+                                Err::<StringValue, _>(ActivityError::new("retry", "unexpected"))
+                            }
+                        },
+                    )
+                    .await
+                }
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(&err, RunError::ActivityConflict(message) if message.contains(
+            "out-of-range backoff interval"
+        )),
+        "unexpected error: {err}",
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert!(
+        store
+            .get_activity(&ActivityKey::new("wf", "retry-overflow", "overflow"))
+            .await
+            .unwrap()
+            .is_none(),
+        "an invalid retry schedule must not persist activity state",
+    );
+}
+
+#[tokio::test]
+async fn execute_activity_single_attempt_failure_is_terminal() {
+    let (_tmp, store) = new_store();
+    let attempts = Arc::new(AtomicUsize::new(0));
+
+    let err = run::<StringValue, StringValue, _, _>(
+        store.clone(),
+        WorkflowOptions::new("wf", "single-failure"),
+        s("x"),
+        {
+            let attempts = attempts.clone();
+            move |_w, input| {
+                let attempts = attempts.clone();
+                async move {
+                    execute_activity(
+                        ActivityOptions::new("fails-once"),
+                        input,
+                        |_req: StringValue| {
+                            let attempts = attempts.clone();
+                            async move {
+                                attempts.fetch_add(1, Ordering::SeqCst);
+                                Err::<StringValue, _>(ActivityError::new("nope", "terminal"))
+                            }
+                        },
+                    )
+                    .await
+                }
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, RunError::Activity(_)));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let record = store
+        .get_activity(&ActivityKey::new("wf", "single-failure", "fails-once"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record.status,
+        temporaless::v1::ActivityStatus::Failed as i32
+    );
+    assert_eq!(record.attempts.len(), 1);
 }
 
 #[tokio::test]

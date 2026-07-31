@@ -862,7 +862,8 @@ type WorkflowOptions struct {
 	ConcurrencyKey string `protobuf:"bytes,5,opt,name=concurrency_key,json=concurrencyKey" json:"concurrency_key,omitempty"`
 	// Maximum number of concurrent in-flight workflow invocations sharing
 	// `concurrency_key`. Must be > 0 when `concurrency_key` is set; must be 0
-	// when `concurrency_key` is empty.
+	// when `concurrency_key` is empty. Capped to bound the number of claim slots
+	// one invocation may inspect before reporting that the pool is full.
 	ConcurrencyLimit uint32 `protobuf:"varint,6,opt,name=concurrency_limit,json=concurrencyLimit" json:"concurrency_limit,omitempty"`
 	// Caller-supplied logical ordering time for this run. Schedule adapters set
 	// this to the scheduled fire time so a later-created backfill cannot replace
@@ -1551,7 +1552,8 @@ type RetryPolicy struct {
 	// Cap on backoff growth. Zero means uncapped.
 	MaximumInterval *durationpb.Duration `protobuf:"bytes,3,opt,name=maximum_interval,json=maximumInterval" json:"maximum_interval,omitempty"`
 	// Total attempts including the initial one. Must be > 0 when a policy is
-	// set; an unset policy implies a single attempt.
+	// set; an unset policy implies a single attempt. Capped to bound retry-loop
+	// work and the number of ActivityAttempt records retained on replay.
 	MaximumAttempts uint32 `protobuf:"varint,4,opt,name=maximum_attempts,json=maximumAttempts" json:"maximum_attempts,omitempty"`
 	// Activity error codes (carried via `ActivityFailure.code`) that should
 	// skip remaining retries and surface the failure immediately.
@@ -1645,8 +1647,8 @@ func (x *RetryPolicy) GetDurableBackoffThreshold() *durationpb.Duration {
 }
 
 // ReservedNames is the canonical source of framework-reserved string
-// literals — workflow_ids and claim_id prefixes — that both
-// SDKs use to namespace runtime state. The values live HERE (via Edition
+// literals — workflow IDs, claim ID prefixes, and failure codes — that all
+// SDKs use to identify runtime state. The values live HERE (via Edition
 // 2023 field defaults) so that:
 //
 //  1. Every SDK reads them from the same place via generated code:
@@ -1683,8 +1685,12 @@ type ReservedNames struct {
 	// The activity_id is appended verbatim; the surrounding ClaimKey already
 	// carries namespace, workflow_id, and run_id.
 	ActivityClaimIdPrefix *string `protobuf:"bytes,5,opt,name=activity_claim_id_prefix,json=activityClaimIdPrefix,def=activity:" json:"activity_claim_id_prefix,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Stable ActivityFailure.code used when the Go runtime recovers a panic
+	// raised by a user workflow, activity, fan-out item, or result constructor.
+	// The Go runtime treats recovered user panics as non-retryable.
+	UserPanicErrorCode *string `protobuf:"bytes,6,opt,name=user_panic_error_code,json=userPanicErrorCode,def=temporaless.user_panic" json:"user_panic_error_code,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 // Default values for ReservedNames fields.
@@ -1694,6 +1700,7 @@ const (
 	Default_ReservedNames_ConcurrencySlotIdPrefix    = string("slot:")
 	Default_ReservedNames_WorkflowExecutionClaimId   = string("workflow:execution")
 	Default_ReservedNames_ActivityClaimIdPrefix      = string("activity:")
+	Default_ReservedNames_UserPanicErrorCode         = string("temporaless.user_panic")
 )
 
 func (x *ReservedNames) Reset() {
@@ -1762,10 +1769,17 @@ func (x *ReservedNames) GetActivityClaimIdPrefix() string {
 	return Default_ReservedNames_ActivityClaimIdPrefix
 }
 
-// RuntimeDefaults is the canonical source for cross-language defaults that
-// affect persisted records. Like ReservedNames, SDKs read Edition 2023 field
-// defaults from a fresh zero-value instance rather than serializing this
-// message.
+func (x *ReservedNames) GetUserPanicErrorCode() string {
+	if x != nil && x.UserPanicErrorCode != nil {
+		return *x.UserPanicErrorCode
+	}
+	return Default_ReservedNames_UserPanicErrorCode
+}
+
+// RuntimeDefaults is the canonical source for cross-language runtime limits
+// and defaults that affect persisted records. Like ReservedNames, SDKs read
+// Edition 2023 field defaults from a fresh zero-value instance rather than
+// serializing this message.
 type RuntimeDefaults struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Diagnostic expiry recorded on create-only claims. The current core does
@@ -1773,13 +1787,22 @@ type RuntimeDefaults struct {
 	// owner-conditioned delete, and fenced writes, expiry is only operator
 	// information and stale claims require verified manual cleanup.
 	ClaimLeaseDurationSeconds *uint32 `protobuf:"varint,1,opt,name=claim_lease_duration_seconds,json=claimLeaseDurationSeconds,def=900" json:"claim_lease_duration_seconds,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// Upper bound enforced by RetryPolicy.maximum_attempts. Keeping the value
+	// here lets SDKs that cannot run Protovalidate consume the same canonical
+	// limit instead of introducing a language-local constant.
+	MaximumRetryAttempts *uint32 `protobuf:"varint,2,opt,name=maximum_retry_attempts,json=maximumRetryAttempts,def=100" json:"maximum_retry_attempts,omitempty"`
+	// Upper bound enforced by WorkflowOptions.concurrency_limit. Slot-based
+	// claim adapters may inspect this many deterministic keys per acquisition.
+	MaximumConcurrencySlots *uint32 `protobuf:"varint,3,opt,name=maximum_concurrency_slots,json=maximumConcurrencySlots,def=1000" json:"maximum_concurrency_slots,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 // Default values for RuntimeDefaults fields.
 const (
 	Default_RuntimeDefaults_ClaimLeaseDurationSeconds = uint32(900)
+	Default_RuntimeDefaults_MaximumRetryAttempts      = uint32(100)
+	Default_RuntimeDefaults_MaximumConcurrencySlots   = uint32(1000)
 )
 
 func (x *RuntimeDefaults) Reset() {
@@ -1817,6 +1840,20 @@ func (x *RuntimeDefaults) GetClaimLeaseDurationSeconds() uint32 {
 		return *x.ClaimLeaseDurationSeconds
 	}
 	return Default_RuntimeDefaults_ClaimLeaseDurationSeconds
+}
+
+func (x *RuntimeDefaults) GetMaximumRetryAttempts() uint32 {
+	if x != nil && x.MaximumRetryAttempts != nil {
+		return *x.MaximumRetryAttempts
+	}
+	return Default_RuntimeDefaults_MaximumRetryAttempts
+}
+
+func (x *RuntimeDefaults) GetMaximumConcurrencySlots() uint32 {
+	if x != nil && x.MaximumConcurrencySlots != nil {
+		return *x.MaximumConcurrencySlots
+	}
+	return Default_RuntimeDefaults_MaximumConcurrencySlots
 }
 
 // Structured ConnectRPC error detail returned by DeliverEvent failures.
@@ -5903,7 +5940,7 @@ var File_temporaless_v1_temporaless_proto protoreflect.FileDescriptor
 
 const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
-	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\v\n" +
+	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe5\v\n" +
 	"\x0fWorkflowOptions\x12\xb0\x02\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x8e\x02\xbaH\x8a\x02\xba\x01u\n" +
 	"5temporaless.workflow_options.workflow_id.not_dot_path\x12\x1fworkflow_id must not be . or ..\x1a\x1bthis != '.' && this != '..'\xba\x01v\n" +
@@ -5914,8 +5951,8 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0eclaim_owner_id\x18\x04 \x01(\tB\xad\x01\xbaH\xa9\x01\xba\x01\x8b\x01\n" +
 	"8temporaless.workflow_options.claim_owner_id.not_dot_path\x12\"claim_owner_id must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\fclaimOwnerId\x12\xd9\x01\n" +
 	"\x0fconcurrency_key\x18\x05 \x01(\tB\xaf\x01\xbaH\xab\x01\xba\x01\x8d\x01\n" +
-	"9temporaless.workflow_options.concurrency_key.not_dot_path\x12#concurrency_key must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\x0econcurrencyKey\x12+\n" +
-	"\x11concurrency_limit\x18\x06 \x01(\rR\x10concurrencyLimit\x12@\n" +
+	"9temporaless.workflow_options.concurrency_key.not_dot_path\x12#concurrency_key must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\x0econcurrencyKey\x125\n" +
+	"\x11concurrency_limit\x18\x06 \x01(\rB\b\xbaH\x05*\x03\x18\xe8\aR\x10concurrencyLimit\x12@\n" +
 	"\x0erun_order_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\frunOrderTime:\xb8\x03\xbaH\xb4\x03\x1a\xfe\x01\n" +
 	"9temporaless.workflow_options.concurrency_key_limit_paired\x12Dconcurrency_key and concurrency_limit must both be set or both empty\x1a{(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)\x1a\xb0\x01\n" +
 	"=temporaless.workflow_options.concurrency_requires_claim_owner\x126claim_owner_id must be set when concurrency_key is set\x1a7this.concurrency_key == '' || this.claim_owner_id != ''J\x04\b\x03\x10\x04R\fcode_version\"\xba\x06\n" +
@@ -5976,23 +6013,26 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\bresponse\x18\x04 \x01(\v2\x14.google.protobuf.AnyR\bresponse\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12=\n" +
 	"\fsubmitted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vsubmittedAt\x12=\n" +
-	"\fcompleted_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\x9c\x05\n" +
+	"\fcompleted_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\x9e\x05\n" +
 	"\vRetryPolicy\x12N\n" +
 	"\x10initial_interval\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x022\x00R\x0finitialInterval\x12A\n" +
 	"\x13backoff_coefficient\x18\x02 \x01(\x01B\x10\xbaH\r\x12\v@\x01)\x00\x00\x00\x00\x00\x00\x00\x00R\x12backoffCoefficient\x12N\n" +
-	"\x10maximum_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x022\x00R\x0fmaximumInterval\x122\n" +
-	"\x10maximum_attempts\x18\x04 \x01(\rB\a\xbaH\x04*\x02 \x00R\x0fmaximumAttempts\x129\n" +
+	"\x10maximum_interval\x18\x03 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x022\x00R\x0fmaximumInterval\x124\n" +
+	"\x10maximum_attempts\x18\x04 \x01(\rB\t\xbaH\x06*\x04\x18d \x00R\x0fmaximumAttempts\x129\n" +
 	"\x19non_retryable_error_codes\x18\x05 \x03(\tR\x16nonRetryableErrorCodes\x12_\n" +
 	"\x19durable_backoff_threshold\x18\x06 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x022\x00R\x17durableBackoffThreshold:\xd9\x01\xbaH\xd5\x01\x1a\xd2\x01\n" +
-	"2temporaless.retry_policy.initial_interval_required\x126initial_interval must be > 0 when maximum_attempts > 1\x1adthis.maximum_attempts <= 1 || (has(this.initial_interval) && this.initial_interval > duration('0s'))\"\xad\x03\n" +
+	"2temporaless.retry_policy.initial_interval_required\x126initial_interval must be > 0 when maximum_attempts > 1\x1adthis.maximum_attempts <= 1 || (has(this.initial_interval) && this.initial_interval > duration('0s'))\"\xff\x03\n" +
 	"\rReservedNames\x12N\n" +
 	"\x17concurrency_workflow_id\x18\x01 \x01(\t:\x0f__concurrency__B\x05\xaa\x01\x02\b\x01R\x15concurrencyWorkflowId\x12\\\n" +
 	"\x1eactivity_retry_timer_id_prefix\x18\x02 \x01(\t:\x0factivity-retry:B\a\x18\x01\xaa\x01\x02\b\x01R\x1aactivityRetryTimerIdPrefix\x12I\n" +
 	"\x1aconcurrency_slot_id_prefix\x18\x03 \x01(\t:\x05slot:B\x05\xaa\x01\x02\b\x01R\x17concurrencySlotIdPrefix\x12X\n" +
 	"\x1bworkflow_execution_claim_id\x18\x04 \x01(\t:\x12workflow:executionB\x05\xaa\x01\x02\b\x01R\x18workflowExecutionClaimId\x12I\n" +
-	"\x18activity_claim_id_prefix\x18\x05 \x01(\t:\tactivity:B\x05\xaa\x01\x02\b\x01R\x15activityClaimIdPrefix\"^\n" +
+	"\x18activity_claim_id_prefix\x18\x05 \x01(\t:\tactivity:B\x05\xaa\x01\x02\b\x01R\x15activityClaimIdPrefix\x12P\n" +
+	"\x15user_panic_error_code\x18\x06 \x01(\t:\x16temporaless.user_panicB\x05\xaa\x01\x02\b\x01R\x12userPanicErrorCode\"\xe9\x01\n" +
 	"\x0fRuntimeDefaults\x12K\n" +
-	"\x1cclaim_lease_duration_seconds\x18\x01 \x01(\r:\x03900B\x05\xaa\x01\x02\b\x01R\x19claimLeaseDurationSeconds\"\x8a\x01\n" +
+	"\x1cclaim_lease_duration_seconds\x18\x01 \x01(\r:\x03900B\x05\xaa\x01\x02\b\x01R\x19claimLeaseDurationSeconds\x12@\n" +
+	"\x16maximum_retry_attempts\x18\x02 \x01(\r:\x03100B\x05\xaa\x01\x02\b\x01R\x14maximumRetryAttempts\x12G\n" +
+	"\x19maximum_concurrency_slots\x18\x03 \x01(\r:\x041000B\x05\xaa\x01\x02\b\x01R\x17maximumConcurrencySlots\"\x8a\x01\n" +
 	"\x18EventDeliveryErrorDetail\x12B\n" +
 	"\x06reason\x18\x01 \x01(\x0e2*.temporaless.v1.EventDeliveryFailureReasonR\x06reason\x12*\n" +
 	"\x03key\x18\x02 \x01(\v2\x18.temporaless.v1.EventKeyR\x03key\"\xfa\x05\n" +

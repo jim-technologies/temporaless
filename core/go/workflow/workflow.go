@@ -412,7 +412,10 @@ func Run[Req proto.Message, Resp proto.Message](
 		return zero, fmt.Errorf("claim store is required when claim_owner_id is set")
 	}
 
-	resultTemplate := newResult()
+	resultTemplate, err := invokeUserConstructor("workflow result constructor", newResult)
+	if err != nil {
+		return zero, err
+	}
 	if isNilMessage(resultTemplate) {
 		return zero, fmt.Errorf("workflow result constructor returned nil")
 	}
@@ -682,7 +685,9 @@ func Run[Req proto.Message, Resp proto.Message](
 	}
 	ctx = context.WithValue(ctx, annotationsKey{}, workflowAnnotations)
 
-	result, runErr := execute(ctx, input)
+	result, runErr := invokeUser("workflow", func() (Resp, error) {
+		return execute(ctx, input)
+	})
 	if runErr == nil && isNilMessage(result) {
 		runErr = fmt.Errorf("workflow %q returned a nil result", runOptions.GetWorkflowId())
 	}
@@ -719,6 +724,9 @@ func Run[Req proto.Message, Resp proto.Message](
 		// FAILED is now authoritative. Timer acknowledgement is best-effort and
 		// cannot replace the workflow body's terminal error.
 		_ = workflowContext.acknowledgeConsumedWakeTimers(ctx, "")
+		if failure.GetCode() == temporalessv1.Default_ReservedNames_UserPanicErrorCode {
+			return zero, durableUserPanicError(failure, runErr)
+		}
 		return zero, runErr
 	}
 
@@ -811,7 +819,10 @@ func ExecuteActivity[Req proto.Message, Resp proto.Message](
 		return zero, fmt.Errorf("activity executor is required")
 	}
 
-	resultTemplate := newResult()
+	resultTemplate, err := invokeUserConstructor("activity result constructor", newResult)
+	if err != nil {
+		return zero, err
+	}
 	if isNilMessage(resultTemplate) {
 		return zero, fmt.Errorf("activity result constructor returned nil")
 	}
@@ -1765,7 +1776,9 @@ func runActivity[T proto.Message](
 
 	for attemptIdx := startIdx; attemptIdx <= plan.maxAttempts; attemptIdx++ {
 		startedAt := time.Now().UTC()
-		result, runErr := execute(activityCtx)
+		result, runErr := invokeUser("activity", func() (T, error) {
+			return execute(activityCtx)
+		})
 		completedAt := time.Now().UTC()
 		invalidResult := runErr == nil && isNilMessage(result)
 		if invalidResult {
@@ -1815,7 +1828,11 @@ func runActivity[T proto.Message](
 			Failure:     failure,
 		})
 
-		nonRetryable := invalidResult || plan.nonRetryable[failure.GetCode()]
+		var panicErr *UserPanicError
+		nonRetryable := invalidResult ||
+			errors.As(runErr, &panicErr) ||
+			failure.GetCode() == temporalessv1.Default_ReservedNames_UserPanicErrorCode ||
+			plan.nonRetryable[failure.GetCode()]
 		if attemptIdx >= plan.maxAttempts || nonRetryable {
 			failedRecord := &temporalessv1.ActivityRecord{
 				SchemaVersion: storage.ActivityRecordSchemaVersion,
@@ -1962,7 +1979,10 @@ func replayRecord[T proto.Message](
 		if record.GetResult() == nil {
 			return zero, fmt.Errorf("%w: stored activity has no result", ErrActivityConflict)
 		}
-		result := newResult()
+		result, constructorErr := invokeUserConstructor("activity result constructor", newResult)
+		if constructorErr != nil {
+			return zero, constructorErr
+		}
 		if isNilMessage(result) {
 			return zero, fmt.Errorf("activity result constructor returned nil")
 		}
@@ -1974,6 +1994,13 @@ func replayRecord[T proto.Message](
 		failure := record.GetFailure()
 		if failure == nil {
 			return zero, fmt.Errorf("%w: stored failed activity has no failure", ErrActivityConflict)
+		}
+		if failure.GetCode() == temporalessv1.Default_ReservedNames_UserPanicErrorCode {
+			return zero, &ActivityError{
+				Code:    failure.GetCode(),
+				Message: failure.GetMessage(),
+				Cause:   &UserPanicError{Message: failure.GetMessage()},
+			}
 		}
 		return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage()}
 	default:
@@ -2016,6 +2043,12 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 	if plan.maxAttempts == 0 {
 		return retryPlan{}, fmt.Errorf("retry policy maximum_attempts must be > 0")
 	}
+	if plan.maxAttempts > temporalessv1.Default_RuntimeDefaults_MaximumRetryAttempts {
+		return retryPlan{}, fmt.Errorf(
+			"retry policy maximum_attempts exceeds the supported maximum of %d",
+			temporalessv1.Default_RuntimeDefaults_MaximumRetryAttempts,
+		)
+	}
 	if plan.initialInterval < 0 {
 		return retryPlan{}, fmt.Errorf("retry policy initial_interval must be >= 0")
 	}
@@ -2037,6 +2070,9 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 	if plan.durableThreshold < 0 {
 		return retryPlan{}, fmt.Errorf("retry policy durable_backoff_threshold must be >= 0")
 	}
+	if err := validateRetrySchedule(plan); err != nil {
+		return retryPlan{}, err
+	}
 	if codes := policy.GetNonRetryableErrorCodes(); len(codes) > 0 {
 		plan.nonRetryable = make(map[string]bool, len(codes))
 		for _, code := range codes {
@@ -2044,6 +2080,25 @@ func planRetries(policy *temporalessv1.RetryPolicy) (retryPlan, error) {
 		}
 	}
 	return plan, nil
+}
+
+func validateRetrySchedule(plan retryPlan) error {
+	interval := plan.initialInterval
+	for failedAttempt := uint32(1); failedAttempt < plan.maxAttempts; failedAttempt++ {
+		if failedAttempt+1 >= plan.maxAttempts {
+			continue
+		}
+		next, err := nextInterval(interval, plan)
+		if err != nil {
+			return fmt.Errorf(
+				"retry policy interval after attempt %d is invalid: %w",
+				failedAttempt+1,
+				err,
+			)
+		}
+		interval = next
+	}
+	return nil
 }
 
 func retryPolicyDuration(name string, value *durationpb.Duration) (time.Duration, error) {
@@ -2137,6 +2192,12 @@ func assertRetryingActivity(
 	lastFailure := lastAttempt.GetFailure()
 	if record.GetFailure() == nil || !proto.Equal(record.GetFailure(), lastFailure) {
 		return fmt.Errorf("%w: RETRYING activity failure does not match its last attempt", ErrActivityConflict)
+	}
+	if lastFailure.GetCode() == temporalessv1.Default_ReservedNames_UserPanicErrorCode {
+		return fmt.Errorf(
+			"%w: RETRYING activity ends with the reserved user-panic failure code",
+			ErrActivityConflict,
+		)
 	}
 	if plan.nonRetryable[lastFailure.GetCode()] {
 		return fmt.Errorf(
@@ -2734,6 +2795,13 @@ func sleepCtx(ctx context.Context, duration time.Duration) error {
 }
 
 func failureFromError(err error) *temporalessv1.ActivityFailure {
+	var panicErr *UserPanicError
+	if errors.As(err, &panicErr) {
+		return &temporalessv1.ActivityFailure{
+			Code:    temporalessv1.Default_ReservedNames_UserPanicErrorCode,
+			Message: panicErr.Error(),
+		}
+	}
 	var typed *ActivityError
 	if errors.As(err, &typed) {
 		failure := &temporalessv1.ActivityFailure{Code: typed.Code, Message: typed.Message}
@@ -2760,7 +2828,10 @@ func replayWorkflowRecord[T proto.Message](
 		if record.GetResult() == nil {
 			return zero, fmt.Errorf("%w: stored workflow has no result", ErrWorkflowConflict)
 		}
-		result := newResult()
+		result, constructorErr := invokeUserConstructor("workflow result constructor", newResult)
+		if constructorErr != nil {
+			return zero, constructorErr
+		}
 		if isNilMessage(result) {
 			return zero, fmt.Errorf("workflow result constructor returned nil")
 		}
@@ -2772,6 +2843,9 @@ func replayWorkflowRecord[T proto.Message](
 		failure := record.GetFailure()
 		if failure == nil {
 			return zero, fmt.Errorf("%w: stored failed workflow has no failure", ErrWorkflowConflict)
+		}
+		if failure.GetCode() == temporalessv1.Default_ReservedNames_UserPanicErrorCode {
+			return zero, durableUserPanicError(failure, nil)
 		}
 		return zero, &ActivityError{Code: failure.GetCode(), Message: failure.GetMessage()}
 	default:

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,44 @@ func testRetryTimerID(activityID string) string {
 type cancelAfterRetryingStore struct {
 	storage.Store
 	cancel context.CancelFunc
+}
+
+func TestRetryScheduleOverflowIsRejectedBeforeActivityExecution(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	wf := &Workflow{store: store, workflowID: "wf", runID: "schedule-overflow"}
+	activityCalls := 0
+
+	_, err := runActivity(
+		ctx,
+		wf,
+		"act:overflow",
+		activityClaimTestType,
+		&temporalessv1.RetryPolicy{
+			InitialInterval:    durationpb.New(time.Nanosecond),
+			BackoffCoefficient: math.MaxFloat64,
+			MaximumAttempts:    3,
+		},
+		"",
+		wrapperspb.String("request"),
+		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+		func(context.Context) (*wrapperspb.StringValue, error) {
+			activityCalls++
+			return nil, NewActivityError("transient", "retry", nil)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "out-of-range backoff interval") {
+		t.Fatalf("error = %v, want out-of-range retry schedule", err)
+	}
+	if activityCalls != 0 {
+		t.Fatalf("activity calls = %d, want 0", activityCalls)
+	}
+	if _, found, getErr := store.GetActivity(
+		ctx,
+		storage.NewActivityKey(wf.workflowID, wf.runID, "act:overflow"),
+	); getErr != nil || found {
+		t.Fatalf("activity record after rejected schedule: err=%v found=%v", getErr, found)
+	}
 }
 
 func (store *cancelAfterRetryingStore) PutActivity(ctx context.Context, record *temporalessv1.ActivityRecord) error {
@@ -687,6 +726,37 @@ func TestRetryingActivityRejectsNegativePersistedRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRetryingActivityRejectsReservedUserPanicCode(t *testing.T) {
+	policy := &temporalessv1.RetryPolicy{
+		InitialInterval:    durationpb.New(time.Minute),
+		BackoffCoefficient: 2,
+		MaximumAttempts:    3,
+	}
+	plan, err := planRetries(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := &temporalessv1.ActivityFailure{
+		Code:    temporalessv1.Default_ReservedNames_UserPanicErrorCode,
+		Message: "forged retrying panic",
+	}
+	record := &temporalessv1.ActivityRecord{
+		Status:      temporalessv1.ActivityStatus_ACTIVITY_STATUS_RETRYING,
+		RetryPolicy: normalizeRetryPolicy(policy, plan),
+		Failure:     failure,
+		Attempts: []*temporalessv1.ActivityAttempt{
+			{Attempt: 1, Failure: failure},
+		},
+	}
+	err = assertRetryingActivity(record, normalizeRetryPolicy(policy, plan), "", plan)
+	if !errors.Is(err, ErrActivityConflict) {
+		t.Fatalf("error = %v, want activity conflict", err)
+	}
+	if !strings.Contains(err.Error(), "reserved user-panic failure code") {
+		t.Fatalf("error = %v, want reserved marker explanation", err)
+	}
+}
+
 func TestDurableRetry_RetryingPolicyChangeConflictsBeforeExecution(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -796,7 +866,7 @@ func TestDurableRetry_CrashDuringDueAttemptLeavesWakeupScheduled(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			store := newTestStore(t)
+			store := &panicTerminalActivityStore{Store: newTestStore(t)}
 			wf := &Workflow{
 				store:      store,
 				workflowID: "wf",
@@ -846,6 +916,7 @@ func TestDurableRetry_CrashDuringDueAttemptLeavesWakeupScheduled(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			store.panicTerminal = true
 			var recovered any
 			func() {
 				defer func() { recovered = recover() }()
@@ -855,7 +926,7 @@ func TestDurableRetry_CrashDuringDueAttemptLeavesWakeupScheduled(t *testing.T) {
 					wrapperspb.String("x"),
 					func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
 					func(context.Context) (*wrapperspb.StringValue, error) {
-						panic("simulated process crash")
+						return wrapperspb.String("not-committed"), nil
 					},
 				)
 			}()
@@ -917,6 +988,24 @@ func TestDurableRetry_CrashDuringDueAttemptLeavesWakeupScheduled(t *testing.T) {
 			}
 		})
 	}
+}
+
+type panicTerminalActivityStore struct {
+	storage.Store
+	panicTerminal bool
+}
+
+func (store *panicTerminalActivityStore) PutActivity(
+	ctx context.Context,
+	record *temporalessv1.ActivityRecord,
+) error {
+	if store.panicTerminal &&
+		(record.GetStatus() == temporalessv1.ActivityStatus_ACTIVITY_STATUS_COMPLETED ||
+			record.GetStatus() == temporalessv1.ActivityStatus_ACTIVITY_STATUS_FAILED) {
+		store.panicTerminal = false
+		panic("simulated process crash during terminal activity persistence")
+	}
+	return store.Store.PutActivity(ctx, record)
 }
 
 type retryTimerCleanupFailStore struct {

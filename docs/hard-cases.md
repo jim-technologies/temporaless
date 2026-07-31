@@ -6,6 +6,10 @@ Two serverless invocations can reach the same missing or `IN_PROGRESS` workflow 
 
 A non-empty `WorkflowOptions.claim_owner_id` opts the run into single-flight execution. The runtime atomically creates the deterministic per-run `workflow:execution` claim before entering the body. A loser re-reads storage: it replays a terminal record if the winner already finished, otherwise it receives `ClaimBusyError` (`ALREADY_EXISTS`). Every existing execution claim is busy, including one with the same owner ID.
 
+`WorkflowOptions.concurrency_limit` is capped at 1,000. Slot acquisition may
+probe each deterministic claim slot, so an unbounded caller-supplied limit
+would turn one workflow invocation into unbounded storage work.
+
 When `claim_owner_id` is empty, overlapping execution remains at-least-once and `concurrency_key` is rejected because the framework will not invent a slot owner. Completed and failed records still replay, but an `IN_PROGRESS` record is observable state, not by itself a lock.
 
 For production, one of these must be added:
@@ -49,6 +53,23 @@ The convention is:
 - order placement should use broker/exchange idempotency where available
 - database writes should be upserts keyed by workflow and activity identity
 
+## User Panics In Go
+
+The Go runtime recovers panics raised by workflow bodies, activity bodies,
+result constructors, and individual `AllActivities` branches. It converts them
+to `UserPanicError`, persists the protobuf-defined
+`temporaless.user_panic` failure code at the applicable durable boundary, and
+reconstructs the typed error on replay. Activity panics are always
+non-retryable, regardless of the configured retry policy, and fan-out waits for
+every sibling to settle before returning the panic error.
+
+This containment is not a substitute for crash recovery. Process termination,
+runtime-fatal failures, and a crash during storage persistence can still leave
+an `IN_PROGRESS` record or an ambiguous side effect; ordinary replay, claims,
+and operator recovery retain the semantics described elsewhere in this guide.
+Application code should return errors for expected failures and reserve panics
+for programmer faults.
+
 ## Activity ID Reuse
 
 The activity_id is the de-duplication key. Reusing the same activity_id replays the stored result — including when the new input bytes differ. This is deliberate: the caller chose the id and owns its meaning. If you want the activity body to run again with different input, pick a different activity_id.
@@ -81,7 +102,7 @@ Production side-effect activities need an outbox or domain-specific idempotency 
 
 ## Retries
 
-Activities accept an optional `temporaless.v1.RetryPolicy` on `ActivityOptions`. When set, the runtime retries with exponential backoff (`initial_interval`, `backoff_coefficient`, `maximum_interval`, `maximum_attempts`). Short backoffs remain in-process; waits at or above `durable_backoff_threshold` use durable timers. Errors carrying a `code` listed in `non_retryable_error_codes` skip remaining retries and fail immediately.
+Activities accept an optional `temporaless.v1.RetryPolicy` on `ActivityOptions`. When set, the runtime retries with exponential backoff (`initial_interval`, `backoff_coefficient`, `maximum_interval`, `maximum_attempts`). `maximum_attempts` is bounded to 100 because retry bookkeeping and execution are linear in that value. The complete policy-derived schedule is validated before the first activity attempt, so an interval that would overflow or round to zero cannot leave a `RETRYING` record without a valid successor. Short backoffs remain in-process; waits at or above `durable_backoff_threshold` use durable timers. Errors carrying a `code` listed in `non_retryable_error_codes` skip remaining retries and fail immediately.
 
 When durable backoff is enabled, `ActivityOptions.retry_timer_id` is required
 and caller-supplied. Keep it stable and unique within the workflow run, just

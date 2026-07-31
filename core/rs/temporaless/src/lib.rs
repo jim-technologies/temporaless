@@ -36,6 +36,15 @@ pub mod dispatch;
 pub mod storage;
 pub mod workflow;
 
+#[cfg(test)]
+#[path = "../proto_defaults.rs"]
+mod proto_defaults;
+
+pub mod runtime_defaults {
+    //! Runtime bounds and defaults generated from protobuf Edition defaults.
+    include!(concat!(env!("OUT_DIR"), "/runtime_defaults.rs"));
+}
+
 #[allow(clippy::all)]
 #[allow(missing_docs)]
 pub mod v1 {

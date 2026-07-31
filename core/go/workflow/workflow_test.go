@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/apache/opendal-go-services/fs"
 	opendal "github.com/apache/opendal/bindings/go"
 	"github.com/jim-technologies/temporaless/adapters/go/gocdkclaims"
@@ -24,6 +25,62 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func TestWorkAmplifyingOptionBounds(t *testing.T) {
+	maximumRetryAttempts := temporalessv1.Default_RuntimeDefaults_MaximumRetryAttempts
+	maximumConcurrencySlots := temporalessv1.Default_RuntimeDefaults_MaximumConcurrencySlots
+	tests := []struct {
+		name    string
+		message proto.Message
+		wantErr bool
+	}{
+		{
+			name: "maximum retry attempts at bound",
+			message: &temporalessv1.RetryPolicy{
+				InitialInterval: durationpb.New(time.Second),
+				MaximumAttempts: maximumRetryAttempts,
+			},
+		},
+		{
+			name: "maximum retry attempts above bound",
+			message: &temporalessv1.RetryPolicy{
+				InitialInterval: durationpb.New(time.Second),
+				MaximumAttempts: maximumRetryAttempts + 1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "concurrency limit at bound",
+			message: &temporalessv1.WorkflowOptions{
+				WorkflowId:       "bounded-workflow",
+				RunId:            "bounded-run",
+				ClaimOwnerId:     "worker:bounded",
+				ConcurrencyKey:   "vendor:bounded",
+				ConcurrencyLimit: maximumConcurrencySlots,
+			},
+		},
+		{
+			name: "concurrency limit above bound",
+			message: &temporalessv1.WorkflowOptions{
+				WorkflowId:       "bounded-workflow",
+				RunId:            "bounded-run",
+				ClaimOwnerId:     "worker:bounded",
+				ConcurrencyKey:   "vendor:bounded",
+				ConcurrencyLimit: maximumConcurrencySlots + 1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := protovalidate.Validate(test.message)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}
 
 func TestRunNilResultPersistsFailureAndReplays(t *testing.T) {
 	tests := []struct {

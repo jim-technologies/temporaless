@@ -116,8 +116,9 @@ message WorkflowOptions {
   ];
   // Maximum number of concurrent in-flight workflow invocations sharing
   // `concurrency_key`. Must be > 0 when `concurrency_key` is set; must be 0
-  // when `concurrency_key` is empty.
-  uint32 concurrency_limit = 6;
+  // when `concurrency_key` is empty. Capped to bound the number of claim slots
+  // one invocation may inspect before reporting that the pool is full.
+  uint32 concurrency_limit = 6 [(buf.validate.field).uint32.lte = 1000];
   option (buf.validate.message).cel = {
     id: "temporaless.workflow_options.concurrency_key_limit_paired"
     message: "concurrency_key and concurrency_limit must both be set or both empty"
@@ -462,8 +463,12 @@ message RetryPolicy {
   // Cap on backoff growth. Zero means uncapped.
   google.protobuf.Duration maximum_interval = 3 [(buf.validate.field).duration.gte = {}];
   // Total attempts including the initial one. Must be > 0 when a policy is
-  // set; an unset policy implies a single attempt.
-  uint32 maximum_attempts = 4 [(buf.validate.field).uint32.gt = 0];
+  // set; an unset policy implies a single attempt. Capped to bound retry-loop
+  // work and the number of ActivityAttempt records retained on replay.
+  uint32 maximum_attempts = 4 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 100
+  }];
   // Activity error codes (carried via `ActivityFailure.code`) that should
   // skip remaining retries and surface the failure immediately.
   repeated string non_retryable_error_codes = 5;
@@ -547,8 +552,8 @@ enum TimerKind {
 }
 
 // ReservedNames is the canonical source of framework-reserved string
-// literals — workflow_ids and claim_id prefixes — that both
-// SDKs use to namespace runtime state. The values live HERE (via Edition
+// literals — workflow IDs, claim ID prefixes, and failure codes — that all
+// SDKs use to identify runtime state. The values live HERE (via Edition
 // 2023 field defaults) so that:
 //
 //   1. Every SDK reads them from the same place via generated code:
@@ -602,12 +607,20 @@ message ReservedNames {
     features.field_presence = EXPLICIT,
     default = "activity:"
   ];
+
+  // Stable ActivityFailure.code used when the Go runtime recovers a panic
+  // raised by a user workflow, activity, fan-out item, or result constructor.
+  // The Go runtime treats recovered user panics as non-retryable.
+  string user_panic_error_code = 6 [
+    features.field_presence = EXPLICIT,
+    default = "temporaless.user_panic"
+  ];
 }
 
-// RuntimeDefaults is the canonical source for cross-language defaults that
-// affect persisted records. Like ReservedNames, SDKs read Edition 2023 field
-// defaults from a fresh zero-value instance rather than serializing this
-// message.
+// RuntimeDefaults is the canonical source for cross-language runtime limits
+// and defaults that affect persisted records. Like ReservedNames, SDKs read
+// Edition 2023 field defaults from a fresh zero-value instance rather than
+// serializing this message.
 message RuntimeDefaults {
   // Diagnostic expiry recorded on create-only claims. The current core does
   // not use this timestamp for automatic takeover: without CAS refresh,
@@ -616,6 +629,21 @@ message RuntimeDefaults {
   uint32 claim_lease_duration_seconds = 1 [
     features.field_presence = EXPLICIT,
     default = 900
+  ];
+
+  // Upper bound enforced by RetryPolicy.maximum_attempts. Keeping the value
+  // here lets SDKs that cannot run Protovalidate consume the same canonical
+  // limit instead of introducing a language-local constant.
+  uint32 maximum_retry_attempts = 2 [
+    features.field_presence = EXPLICIT,
+    default = 100
+  ];
+
+  // Upper bound enforced by WorkflowOptions.concurrency_limit. Slot-based
+  // claim adapters may inspect this many deterministic keys per acquisition.
+  uint32 maximum_concurrency_slots = 3 [
+    features.field_presence = EXPLICIT,
+    default = 1000
   ];
 }
 

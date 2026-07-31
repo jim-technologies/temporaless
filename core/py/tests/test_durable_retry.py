@@ -162,6 +162,216 @@ async def test_long_backoff_persists_and_bails(store):
     assert timer.fire_at.ToDatetime() == record.next_attempt_at.ToDatetime()
 
 
+async def test_unschedulable_policy_deadline_is_rejected_before_activity(store):
+    workflow = _workflow(store)
+    calls = 0
+
+    async def execute() -> StringValue:
+        nonlocal calls
+        calls += 1
+        return StringValue(value="unexpected")
+
+    policy = RetryPolicy(
+        initial_interval=_make_duration(timedelta(days=3_650_000)),
+        maximum_attempts=2,
+        durable_backoff_threshold=_make_duration(timedelta(seconds=1)),
+    )
+    with pytest.raises(ValueError, match="activity retry interval is outside"):
+        await workflow.run_activity(
+            "act:unschedulable-policy",
+            "activity:google.protobuf.StringValue->google.protobuf.StringValue",
+            StringValue(value="x"),
+            StringValue,
+            execute,
+            retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:unschedulable-policy"),
+        )
+
+    assert calls == 0
+    assert (
+        await store.get_activity(
+            ActivityKey(
+                workflow_id="wf",
+                run_id="r",
+                activity_id="act:unschedulable-policy",
+            )
+        )
+        is None
+    )
+
+
+async def test_overflowing_exponential_schedule_is_rejected_before_activity(store):
+    workflow = _workflow(store)
+    calls = 0
+
+    async def execute() -> StringValue:
+        nonlocal calls
+        calls += 1
+        raise ActivityError("transient", "retry")
+
+    policy = RetryPolicy(
+        initial_interval=_make_duration(timedelta(microseconds=1)),
+        backoff_coefficient=1e308,
+        maximum_attempts=3,
+        durable_backoff_threshold=_make_duration(timedelta(seconds=1)),
+    )
+    with pytest.raises(ValueError, match="out-of-range backoff interval"):
+        await workflow.run_activity(
+            "act:overflowing-schedule",
+            "activity:google.protobuf.StringValue->google.protobuf.StringValue",
+            StringValue(value="x"),
+            StringValue,
+            execute,
+            retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:overflowing-schedule"),
+        )
+
+    assert calls == 0
+    assert (
+        await store.get_activity(
+            ActivityKey(
+                workflow_id="wf",
+                run_id="r",
+                activity_id="act:overflowing-schedule",
+            )
+        )
+        is None
+    )
+
+
+async def test_overflowing_resumed_schedule_is_conflict_without_execution(store):
+    workflow = _workflow(store)
+    policy = RetryPolicy(
+        initial_interval=_make_duration(timedelta(microseconds=1)),
+        backoff_coefficient=1e308,
+        maximum_attempts=3,
+        durable_backoff_threshold=_make_duration(timedelta(seconds=1)),
+    )
+    now = Timestamp()
+    now.GetCurrentTime()
+    failure = temporaless_pb2.ActivityFailure(code="transient", message="retry")
+    key = ActivityKey(
+        workflow_id="wf",
+        run_id="r",
+        activity_id="act:overflowing-resume",
+    )
+    await store.put_activity(
+        temporaless_pb2.ActivityRecord(
+            schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            activity_type="activity:google.protobuf.StringValue->google.protobuf.StringValue",
+            status=temporaless_pb2.ACTIVITY_STATUS_RETRYING,
+            retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:overflowing-resume"),
+            created_at=now,
+            failure=failure,
+            attempts=[
+                temporaless_pb2.ActivityAttempt(
+                    attempt=1,
+                    started_at=now,
+                    completed_at=now,
+                    failure=failure,
+                )
+            ],
+        )
+    )
+    calls = 0
+
+    async def execute() -> StringValue:
+        nonlocal calls
+        calls += 1
+        return StringValue(value="unexpected")
+
+    with pytest.raises(ActivityConflictError, match="invalid retry schedule"):
+        await workflow.run_activity(
+            "act:overflowing-resume",
+            "activity:google.protobuf.StringValue->google.protobuf.StringValue",
+            StringValue(value="x"),
+            StringValue,
+            execute,
+            retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:overflowing-resume"),
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "cause_message", "persisted_retry_after"),
+    [
+        (
+            timedelta(days=3_650_000),
+            "activity retry interval is outside",
+            True,
+        ),
+        (
+            timedelta(days=4_000_000),
+            "activity retry_after is outside the protobuf range",
+            False,
+        ),
+    ],
+    ids=("timestamp-overflow", "duration-overflow"),
+)
+async def test_unschedulable_retry_after_persists_terminal_failure(
+    store,
+    retry_after: timedelta,
+    cause_message: str,
+    persisted_retry_after: bool,
+) -> None:
+    workflow = _workflow(store)
+    calls = 0
+
+    async def execute() -> StringValue:
+        nonlocal calls
+        calls += 1
+        raise ActivityError("rate_limited", "vendor 429", retry_after=retry_after)
+
+    policy = RetryPolicy(
+        initial_interval=_make_duration(timedelta(seconds=1)),
+        maximum_attempts=2,
+        durable_backoff_threshold=_make_duration(timedelta(seconds=1)),
+    )
+    with pytest.raises(ActivityError) as info:
+        await workflow.run_activity(
+            "act:unschedulable-retry-after",
+            "activity:google.protobuf.StringValue->google.protobuf.StringValue",
+            StringValue(value="x"),
+            StringValue,
+            execute,
+            retry_policy=policy,
+            retry_timer_id=_retry_timer_id("act:unschedulable-retry-after"),
+        )
+
+    assert calls == 1
+    assert info.value.code == "rate_limited"
+    assert isinstance(info.value.cause, ValueError)
+    assert cause_message in str(info.value.cause)
+
+    activity = await store.get_activity(
+        ActivityKey(
+            workflow_id="wf",
+            run_id="r",
+            activity_id="act:unschedulable-retry-after",
+        )
+    )
+    assert activity is not None
+    assert activity.status == temporaless_pb2.ACTIVITY_STATUS_FAILED
+    assert activity.failure.code == "rate_limited"
+    assert len(activity.attempts) == 1
+    assert activity.attempts[0].failure.HasField("retry_after") is persisted_retry_after
+    if persisted_retry_after:
+        assert activity.attempts[0].failure.retry_after.ToTimedelta() == retry_after
+    assert (
+        await store.get_timer(
+            TimerKey(
+                workflow_id="wf",
+                run_id="r",
+                timer_id=_retry_timer_id("act:unschedulable-retry-after"),
+            )
+        )
+        is None
+    )
+
+
 async def test_replay_before_fire_at_returns_pending(store):
     """A re-invocation that lands BEFORE next_attempt_at must not run the
     activity body — it raises TimerPendingError again."""

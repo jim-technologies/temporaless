@@ -133,7 +133,9 @@ from being first-class.
 | Cron scheduler | ✓ | ✓ | — |
 | Timer scanner | ✓ | ✓ | — |
 | Janitor | ✓ | ✓ | — |
-| Inspector / backfill / dependencies / prefectcompat / temporalcompat | ✓ | partial | — |
+| Inspector / backfill / dependencies | ✓ | ✓ | — |
+| Temporal compatibility | ✓ | ✓ | — |
+| Prefect compatibility | — | ✓ | — |
 | Visual plan validation/digest + plan-versus-record projection | ✓ | ✓ | — |
 | Background workers helper (opt-in cron + scanner + janitor in-process) | ✓ | ✓ | — |
 | Replay prefetch cache (one List per kind on resume) | ✓ | ✓ | — |

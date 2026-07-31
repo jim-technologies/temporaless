@@ -56,9 +56,9 @@ func requireTimerStatus(
 
 func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 	ctx := context.Background()
-	store := newTestStore(t)
+	base := newTestStore(t)
+	store := &panicTerminalWorkflowStore{Store: base}
 	options := &Options{WorkflowId: "sleep-crash", RunId: "run"}
-	crashAfterActivity := false
 	activityCalls := 0
 	body := func(ctx context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
 		if err := Sleep(ctx, "wake", time.Hour); err != nil {
@@ -77,9 +77,6 @@ func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if crashAfterActivity {
-			panic("simulated process crash")
-		}
 		return result, nil
 	}
 
@@ -92,7 +89,7 @@ func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 	}
 	timerKey := forceSleepTimerDue(t, ctx, store, options.GetWorkflowId(), options.GetRunId(), "wake")
 
-	crashAfterActivity = true
+	store.panicTerminal = true
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
@@ -123,7 +120,7 @@ func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 		t.Fatalf("due timers after crash = %+v, want wake timer", due)
 	}
 
-	crashAfterActivity = false
+	store.panicTerminal = false
 	result, err := Run(
 		ctx, store, options, nil, wrapperspb.String("request"),
 		func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, body,
@@ -138,6 +135,23 @@ func TestSleepDueTimerSurvivesCrashAfterActivityRecord(t *testing.T) {
 		t.Fatalf("activity calls after replay = %d, want 1", activityCalls)
 	}
 	requireTimerStatus(t, ctx, store, timerKey, temporalessv1.TimerStatus_TIMER_STATUS_FIRED)
+}
+
+type panicTerminalWorkflowStore struct {
+	storage.Store
+	panicTerminal bool
+}
+
+func (store *panicTerminalWorkflowStore) PutWorkflow(
+	ctx context.Context,
+	record *temporalessv1.WorkflowRecord,
+) error {
+	if store.panicTerminal &&
+		(record.GetStatus() == temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED ||
+			record.GetStatus() == temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED) {
+		panic("simulated process crash during terminal workflow persistence")
+	}
+	return store.Store.PutWorkflow(ctx, record)
 }
 
 func TestSleepLaterScheduledTimerAcknowledgesConsumedTimer(t *testing.T) {

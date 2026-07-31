@@ -13,6 +13,36 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-07-31
+
+### Changed
+
+- Invariant Protocol is pinned to its immutable v0.14.0 release commit
+  `f924e602582402476f257571852fabb0e1e1cf43`.
+- Protobuf validation now caps activity retry policies at 100 attempts and
+  workflow concurrency pools at 1,000 slots, preventing unbounded retry,
+  allocation, and claim-probe work from one options message. The limits live
+  in protobuf `RuntimeDefaults` so every runtime consumes one canonical value.
+
+### Fixed
+
+- Python durable retries now reject policy deadlines that cannot form a valid
+  protobuf timestamp before activity execution. An unschedulable dynamic
+  `retry_after` discovered after an activity failure is persisted as a terminal
+  typed failure instead of leaking `OverflowError` or losing the failed
+  attempt.
+- Go, Python, and the experimental Rust SDK now validate the complete bounded
+  exponential retry schedule before activity execution, so coefficient
+  overflow or precision underflow cannot strand an activity in `RETRYING`.
+- Go now contains panics from user workflow, activity, result-constructor, and
+  fan-out callbacks as typed errors. Workflow and activity body panics persist
+  the protobuf-defined failure marker, activity panics are non-retryable,
+  replay reconstructs the typed cause, and fan-out drains every sibling before
+  returning.
+- Background-worker documentation now states the actual at-least-once behavior
+  of duplicate operators, and the SDK matrix reports Prefect compatibility as
+  Python-only.
+
 ## [0.10.3] — 2026-07-28
 
 ### Fixed

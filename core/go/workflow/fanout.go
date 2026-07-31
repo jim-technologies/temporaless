@@ -56,7 +56,10 @@ func AllActivities[Resp proto.Message](
 	for index, call := range calls {
 		go func() {
 			defer group.Done()
-			results[index], failures[index] = call(ctx)
+			results[index], failures[index] = invokeUser(
+				"AllActivities branch",
+				func() (Resp, error) { return call(ctx) },
+			)
 		}()
 	}
 	group.Wait()

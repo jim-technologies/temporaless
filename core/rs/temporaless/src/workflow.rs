@@ -416,22 +416,17 @@ where
         }
     }
 
-    let plan = options
+    let mut plan = options
         .retry_policy
         .clone()
         .unwrap_or_else(RetryPolicy::single_attempt);
-    if plan.maximum_attempts == 0 {
-        return Err(RunError::ActivityConflict(
-            "retry policy maximum_attempts must be > 0".into(),
-        ));
-    }
+    let retry_intervals = plan_retry_intervals(&mut plan)?;
 
     let input_any = pack_any(&input)?;
     let mut attempts: Vec<v1::ActivityAttempt> = existing
         .as_ref()
         .map(|r| r.attempts.clone())
         .unwrap_or_default();
-    let mut interval = plan.initial_interval;
     let start_attempt = attempts.len() as u32 + 1;
     let annotations = Arc::new(Mutex::new(HashMap::new()));
     // Restore prior annotations from RETRYING record so per-attempt metadata
@@ -500,14 +495,6 @@ where
                     }),
                 });
 
-                // Retry-After overrides the configured interval when it's
-                // longer — vendor pacing wins over our exponential floor.
-                if let Some(ra) = err.retry_after
-                    && ra > interval
-                {
-                    interval = ra;
-                }
-
                 let non_retryable = plan
                     .non_retryable_error_codes
                     .iter()
@@ -538,6 +525,24 @@ where
                     return Err(RunError::Activity(err));
                 }
 
+                // This is necessarily a non-terminal failure, so the bounded
+                // schedule has one interval for its one-based attempt index.
+                // Retry-After overrides only this attempt's wait and does not
+                // become the exponential base for later attempts.
+                let mut interval =
+                    *retry_intervals
+                        .get((attempt_idx - 1) as usize)
+                        .ok_or_else(|| {
+                            RunError::ActivityConflict(format!(
+                                "retry schedule has no interval after attempt {attempt_idx}"
+                            ))
+                        })?;
+                if let Some(ra) = err.retry_after
+                    && ra > interval
+                {
+                    interval = ra;
+                }
+
                 // Persist RETRYING so a process death during the backoff
                 // sleep doesn't lose the attempt history.
                 let snapshot = annotations.lock().map(|m| m.clone()).unwrap_or_default();
@@ -564,7 +569,6 @@ where
                 workflow.store.put_activity(&retrying).await?;
 
                 tokio::time::sleep(interval).await;
-                interval = next_interval(interval, &plan);
             }
         }
     }
@@ -659,13 +663,69 @@ fn assert_any_type<M: Name>(any: &prost_types::Any) -> Result<(), String> {
     ))
 }
 
-fn next_interval(prev: Duration, plan: &RetryPolicy) -> Duration {
-    let next = prev.mul_f64(plan.backoff_coefficient);
-    if !plan.maximum_interval.is_zero() && next > plan.maximum_interval {
-        plan.maximum_interval
-    } else {
-        next
+/// Validate and materialize every policy-derived wait before an activity body
+/// can perform an external side effect. The proto-sourced attempt cap keeps
+/// this schedule bounded, and precomputation prevents a late float overflow
+/// from leaving an ActivityRecord stranded in RETRYING.
+fn plan_retry_intervals(plan: &mut RetryPolicy) -> Result<Vec<Duration>, RunError> {
+    if plan.maximum_attempts == 0 {
+        return Err(RunError::ActivityConflict(
+            "retry policy maximum_attempts must be > 0".into(),
+        ));
     }
+    if plan.maximum_attempts > crate::runtime_defaults::MAXIMUM_RETRY_ATTEMPTS {
+        return Err(RunError::ActivityConflict(format!(
+            "retry policy maximum_attempts must be <= {}",
+            crate::runtime_defaults::MAXIMUM_RETRY_ATTEMPTS,
+        )));
+    }
+    if plan.maximum_attempts > 1 && plan.initial_interval.is_zero() {
+        return Err(RunError::ActivityConflict(
+            "retry policy initial_interval must be > 0 when maximum_attempts > 1".into(),
+        ));
+    }
+    if plan.backoff_coefficient == 0.0 {
+        plan.backoff_coefficient = 1.0;
+    }
+    if !plan.backoff_coefficient.is_finite() || plan.backoff_coefficient <= 0.0 {
+        return Err(RunError::ActivityConflict(
+            "retry policy backoff_coefficient must be finite and > 0".into(),
+        ));
+    }
+    if !plan.maximum_interval.is_zero() && plan.initial_interval > plan.maximum_interval {
+        return Err(RunError::ActivityConflict(
+            "retry policy maximum_interval must be >= initial_interval".into(),
+        ));
+    }
+
+    let mut intervals = Vec::with_capacity(plan.maximum_attempts.saturating_sub(1) as usize);
+    if plan.maximum_attempts == 1 {
+        return Ok(intervals);
+    }
+
+    let mut interval = plan.initial_interval;
+    intervals.push(interval);
+    for _ in 2..plan.maximum_attempts {
+        interval = next_interval(interval, plan)?;
+        intervals.push(interval);
+    }
+    Ok(intervals)
+}
+
+fn next_interval(prev: Duration, plan: &RetryPolicy) -> Result<Duration, RunError> {
+    let next_seconds = prev.as_secs_f64() * plan.backoff_coefficient;
+    if !plan.maximum_interval.is_zero() && next_seconds >= plan.maximum_interval.as_secs_f64() {
+        return Ok(plan.maximum_interval);
+    }
+    let next = Duration::try_from_secs_f64(next_seconds).map_err(|_| {
+        RunError::ActivityConflict("retry policy produced an out-of-range backoff interval".into())
+    })?;
+    if !prev.is_zero() && next.is_zero() {
+        return Err(RunError::ActivityConflict(
+            "retry policy produced a non-positive backoff interval".into(),
+        ));
+    }
+    Ok(next)
 }
 
 fn prost_duration(d: Duration) -> prost_types::Duration {

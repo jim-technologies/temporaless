@@ -658,6 +658,12 @@ class Workflow:
                 return stored, [], {}, None
             if stored.status != temporaless_pb2.ACTIVITY_STATUS_RETRYING:
                 raise ActivityConflictError("stored activity has unknown status")
+            try:
+                _validate_retry_schedule(plan)
+            except ValueError as exc:
+                raise ActivityConflictError(
+                    "stored RETRYING activity has an invalid retry schedule"
+                ) from exc
             _assert_activity_identity(stored, activity_type)
             _assert_activity_retry_policy(stored, plan.record_policy)
             if stored.retry_timer_id != retry_timer_id:
@@ -919,6 +925,12 @@ class Workflow:
             "read activity",
             self._store.get_activity(key),
         )
+        if record is None:
+            # Validate the complete policy-derived schedule before the first
+            # activity attempt can perform an external side effect. This also
+            # guarantees the retry loop cannot publish RETRYING and only then
+            # discover that a later exponential interval is unrepresentable.
+            _validate_retry_schedule(plan)
         terminal, attempts, seeded_annotations, retry_wake_at = inspect_record(record)
         if terminal is not None:
             return await replay_terminal(terminal)
@@ -1071,6 +1083,16 @@ class Workflow:
             annotations_token = _annotations_var.set(activity_annotations)
             try:
                 while attempt_idx < plan.maximum_attempts:
+                    # Validate a policy-derived durable deadline before the
+                    # activity body can perform an external side effect. A
+                    # protobuf Duration may be valid while `now + duration`
+                    # lies beyond Timestamp's year-9999 ceiling.
+                    if (
+                        attempt_idx + 1 < plan.maximum_attempts
+                        and plan.durable_threshold > timedelta(0)
+                        and policy_interval >= plan.durable_threshold
+                    ):
+                        _activity_retry_deadline(policy_interval)
                     attempt_idx += 1
                     started_at = datetime.now(UTC)
                     try:
@@ -1087,7 +1109,23 @@ class Workflow:
                         raise
                     except BaseException as run_err:  # noqa: BLE001
                         completed_at = datetime.now(UTC)
-                        failure = _failure_from_exception(run_err)
+                        failure, retry_schedule_error = _activity_failure_from_exception(run_err)
+                        retry_after: timedelta | None = None
+                        if failure.HasField("retry_after"):
+                            try:
+                                retry_after = _validated_proto_duration(
+                                    failure.retry_after,
+                                    "activity retry_after",
+                                )
+                            except OverflowError, ValueError:
+                                # Never persist an invalid protobuf Duration.
+                                # The original code/message still identify the
+                                # failed user attempt; the scheduling error
+                                # makes this outcome terminal below.
+                                failure.ClearField("retry_after")
+                                retry_schedule_error = ValueError(
+                                    "activity retry_after is outside the protobuf range"
+                                )
                         attempt_record = temporaless_pb2.ActivityAttempt(
                             attempt=attempt_idx,
                             failure=failure,
@@ -1097,16 +1135,34 @@ class Workflow:
                         attempts.append(attempt_record)
 
                         retry_interval = policy_interval
-                        if failure.HasField("retry_after"):
-                            retry_after = failure.retry_after.ToTimedelta()
-                            if retry_after > retry_interval:
-                                retry_interval = retry_after
+                        if retry_after is not None and retry_after > retry_interval:
+                            retry_interval = retry_after
 
                         non_retryable = (
                             isinstance(run_err, _ResultTypeError)
                             or failure.code in plan.non_retryable_codes
                         )
-                        if attempt_idx >= plan.maximum_attempts or non_retryable:
+                        next_attempt_at: datetime | None = None
+                        next_at_ts: Timestamp | None = None
+                        if (
+                            retry_schedule_error is None
+                            and attempt_idx < plan.maximum_attempts
+                            and not non_retryable
+                            and plan.durable_threshold > timedelta(0)
+                            and retry_interval >= plan.durable_threshold
+                        ):
+                            try:
+                                next_attempt_at, next_at_ts = _activity_retry_deadline(
+                                    retry_interval
+                                )
+                            except ValueError as exc:
+                                retry_schedule_error = exc
+
+                        if (
+                            attempt_idx >= plan.maximum_attempts
+                            or non_retryable
+                            or retry_schedule_error is not None
+                        ):
                             failed_record = temporaless_pb2.ActivityRecord(
                                 schema_version=ACTIVITY_RECORD_SCHEMA_VERSION,
                                 key=key.to_proto(),
@@ -1130,6 +1186,12 @@ class Workflow:
                             )
                             release_activity_claim = True
                             await reconcile_terminal_retry_timer(failed_record)
+                            if retry_schedule_error is not None:
+                                raise ActivityError(
+                                    failure.code,
+                                    failure.message,
+                                    retry_schedule_error,
+                                ) from retry_schedule_error
                             raise ActivityError(failure.code, failure.message, run_err) from run_err
 
                         retrying_record = temporaless_pb2.ActivityRecord(
@@ -1151,9 +1213,8 @@ class Workflow:
                             plan.durable_threshold > timedelta(0)
                             and retry_interval >= plan.durable_threshold
                         ):
-                            next_attempt_at = datetime.now(UTC) + retry_interval
-                            next_at_ts = Timestamp()
-                            next_at_ts.FromDatetime(next_attempt_at)
+                            assert next_attempt_at is not None
+                            assert next_at_ts is not None
                             retrying_record.next_attempt_at.CopyFrom(next_at_ts)
                             pending = TimerPendingError(retry_timer_id, next_attempt_at)
                             try:
@@ -2396,6 +2457,17 @@ def _validated_proto_timestamp(value: Timestamp, name: str) -> datetime:
         raise ValueError(f"{name} is invalid") from exc
 
 
+def _activity_retry_deadline(interval: timedelta) -> tuple[datetime, Timestamp]:
+    try:
+        deadline = datetime.now(UTC) + interval
+        timestamp = Timestamp()
+        timestamp.FromDatetime(deadline)
+        _validated_proto_timestamp(timestamp, "activity retry deadline")
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("activity retry interval is outside the supported range") from exc
+    return deadline, timestamp
+
+
 def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
     if policy is None:
         return _RetryPlan(
@@ -2410,6 +2482,11 @@ def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
     maximum_attempts = policy.maximum_attempts
     if maximum_attempts == 0:
         raise ValueError("retry policy maximum_attempts must be > 0")
+    if maximum_attempts > _RUNTIME_DEFAULTS.maximum_retry_attempts:
+        raise ValueError(
+            "retry policy maximum_attempts exceeds the supported maximum "
+            f"of {_RUNTIME_DEFAULTS.maximum_retry_attempts}"
+        )
     initial_interval = _validated_proto_duration(policy.initial_interval, "initial_interval")
     if initial_interval < timedelta(0):
         raise ValueError("retry policy initial_interval must be >= 0")
@@ -2449,6 +2526,21 @@ def _plan_retries(policy: RetryPolicy | None) -> _RetryPlan:
         non_retryable_codes=non_retryable_codes,
         record_policy=record_policy,
     )
+
+
+def _validate_retry_schedule(plan: _RetryPlan) -> None:
+    """Fail closed if any configured retry wait cannot be represented.
+
+    The full schedule is bounded by the protobuf-declared attempt ceiling, so
+    validating it eagerly is cheap and prevents a later attempt from executing
+    before discovering that its successor wait cannot be persisted.
+    """
+    interval = plan.initial_interval
+    for failed_attempt in range(1, plan.maximum_attempts):
+        if plan.durable_threshold > timedelta(0) and interval >= plan.durable_threshold:
+            _activity_retry_deadline(interval)
+        if failed_attempt + 1 < plan.maximum_attempts:
+            interval = _next_interval(interval, plan)
 
 
 def _next_interval(prev: timedelta, plan: _RetryPlan) -> timedelta:
@@ -2504,12 +2596,25 @@ def _retry_interval_after_attempts(
 
 
 def _failure_from_exception(exc: BaseException) -> temporaless_pb2.ActivityFailure:
+    failure, _ = _activity_failure_from_exception(exc)
+    return failure
+
+
+def _activity_failure_from_exception(
+    exc: BaseException,
+) -> tuple[temporaless_pb2.ActivityFailure, ValueError | None]:
     if isinstance(exc, ActivityError):
         failure = temporaless_pb2.ActivityFailure(code=exc.code, message=exc.message)
         if exc.retry_after is not None and exc.retry_after > timedelta(0):
-            failure.retry_after.FromTimedelta(exc.retry_after)
-        return failure
-    return temporaless_pb2.ActivityFailure(message=str(exc))
+            retry_after = Duration()
+            try:
+                retry_after.FromTimedelta(exc.retry_after)
+                _validated_proto_duration(retry_after, "activity retry_after")
+            except OverflowError, ValueError:
+                return failure, ValueError("activity retry_after is outside the protobuf range")
+            failure.retry_after.CopyFrom(retry_after)
+        return failure, None
+    return temporaless_pb2.ActivityFailure(message=str(exc)), None
 
 
 def _replay_workflow_record(

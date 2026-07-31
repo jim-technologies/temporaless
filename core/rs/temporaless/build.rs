@@ -7,13 +7,15 @@
 //! preprocess the canonical proto into a proto3-equivalent for Rust
 //! codegen only — same on-wire bytes, same field numbers, same RPCs.
 //!
-//! The reserved-name defaults that the editions version expresses via
-//! `[default = "..."]` are emitted as Rust constants in a small generated
-//! `reserved_names.rs` so the SDK still exposes them as a single source of
-//! truth tied to the canonical proto.
+//! The `ReservedNames` and `RuntimeDefaults` values that the editions version
+//! expresses via `[default = ...]` are emitted as Rust constants so the SDK
+//! still consumes the canonical proto as its single source of truth.
 
 use std::fs;
+use std::io;
 use std::path::PathBuf;
+
+mod proto_defaults;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -25,6 +27,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed={}", canonical_proto.display());
 
     let canonical = fs::read_to_string(&canonical_proto)?;
+    let runtime_defaults = proto_defaults::runtime_u32_defaults(&canonical)?;
+    for required in [
+        "claim_lease_duration_seconds",
+        "maximum_retry_attempts",
+        "maximum_concurrency_slots",
+    ] {
+        if !runtime_defaults.iter().any(|(name, _)| name == required) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("RuntimeDefaults.{required} must declare a uint32 default"),
+            )
+            .into());
+        }
+    }
     let (proto3_text, reserved_defaults) = downgrade_editions_to_proto3(&canonical);
 
     // Write the proto3-flavored file into OUT_DIR with the same path
@@ -49,6 +65,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     fs::write(out_dir.join("reserved_names.rs"), reserved_rs)?;
+    let mut runtime_defaults_rs = String::from(
+        "// Auto-generated from `RuntimeDefaults` field defaults in the\n\
+         // canonical proto. Single source of truth — do not edit.\n\n",
+    );
+    for (name, value) in &runtime_defaults {
+        runtime_defaults_rs.push_str(&format!(
+            "pub const {}: u32 = {value};\n",
+            name.to_uppercase()
+        ));
+    }
+    fs::write(out_dir.join("runtime_defaults.rs"), runtime_defaults_rs)?;
 
     // protox parses (pure-Rust, no protoc); prost-build compiles to Rust.
     let descriptor_set = protox::Compiler::new([proto_out_root.as_path()])?
@@ -83,10 +110,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///   * Within `message ReservedNames { ... }`, multi-line fields that carry
 ///     `[features.field_presence = EXPLICIT, default = "..."]` collapse to
 ///     bare `string foo = N;` and the default is exported as a Rust const.
-///   * Edition-only defaults on other option messages collapse to their bare
-///     proto3 field. Rust is not a first-class runtime and does not consume
-///     those option defaults; this keeps its generated storage client wire
-///     compatible until prost supports editions directly.
+///   * `RuntimeDefaults` values are extracted by the build entrypoint before
+///     their Edition-only defaults collapse to bare proto3 fields; other
+///     option-message defaults are not consumed by the experimental Rust SDK.
+///     This keeps its generated storage client wire compatible until prost
+///     supports editions directly.
 ///   * `import "buf/validate/validate.proto";` → deleted (Rust SDK doesn't
 ///     run protovalidate — validation happens in Go/Python at write time).
 ///   * Multi-line and inline `(buf.validate.field)` / `(buf.validate.message)`
