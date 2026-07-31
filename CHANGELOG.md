@@ -42,6 +42,9 @@ lockstep policy.
 - Background-worker documentation now states the actual at-least-once behavior
   of duplicate operators, and the SDK matrix reports Prefect compatibility as
   Python-only.
+- The Go Git-SHA consumer gate keeps Temporaless on its immutable Git source
+  while resolving third-party modules through the checksum-verified Go proxy,
+  with clean retries instead of depending on every vanity-domain VCS endpoint.
 
 ## [0.10.3] — 2026-07-28
 

@@ -267,9 +267,6 @@ jobs:
         run: |
           set -euo pipefail
           consumer="$RUNNER_TEMP/go-git-install"
-          mkdir -p "$consumer"
-          cd "$consumer"
-          flox activate -d "$GITHUB_WORKSPACE" -- go mod init example.com/temporaless-install-check
           export GIT_CONFIG_COUNT=3
           export GIT_CONFIG_KEY_0="url.file://${TEMPORALESS_GIT_REPO}.insteadOf"
           export GIT_CONFIG_VALUE_0="https://github.com/$GITHUB_REPOSITORY.git"
@@ -279,13 +276,34 @@ jobs:
           export GIT_CONFIG_VALUE_2=always
           export GOPRIVATE="github.com/$GITHUB_REPOSITORY"
           export GONOSUMDB="github.com/$GITHUB_REPOSITORY"
-          export GOPROXY=direct
-          flox activate -d "$GITHUB_WORKSPACE" -- go get \
-            "github.com/$GITHUB_REPOSITORY/core/go/workflow@$TEMPORALESS_GIT_SHA"
-          flox activate -d "$GITHUB_WORKSPACE" -- go list \
-            "github.com/$GITHUB_REPOSITORY/core/go/workflow"
-          flox activate -d "$GITHUB_WORKSPACE" -- go build \
-            "github.com/$GITHUB_REPOSITORY/core/go/workflow"
+          # GOPRIVATE keeps Temporaless on the immutable Git source above.
+          # Third-party modules use the checksum-verified public proxy first;
+          # forcing every transitive dependency through its VCS host makes a
+          # Git-install check depend on unrelated vanity-domain availability.
+          export GOPROXY="https://proxy.golang.org,direct"
+          for attempt in 1 2 3; do
+            if (
+              rm -rf "$consumer" &&
+                mkdir -p "$consumer" &&
+                cd "$consumer" &&
+                flox activate -d "$GITHUB_WORKSPACE" -- go mod init \
+                  example.com/temporaless-install-check &&
+                flox activate -d "$GITHUB_WORKSPACE" -- go get \
+                  "github.com/$GITHUB_REPOSITORY/core/go/workflow@$TEMPORALESS_GIT_SHA" &&
+                flox activate -d "$GITHUB_WORKSPACE" -- go list \
+                  "github.com/$GITHUB_REPOSITORY/core/go/workflow" &&
+                flox activate -d "$GITHUB_WORKSPACE" -- go build \
+                  "github.com/$GITHUB_REPOSITORY/core/go/workflow"
+            ); then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Go Git install attempt $attempt failed; retrying cleanly." >&2
+              sleep $((attempt * 5))
+            fi
+          done
+          echo "Go Git install failed after 3 clean attempts." >&2
+          exit 1
 
       - name: Check Rust workspace from Git SHA
         if: matrix.sdk == 'rust'
