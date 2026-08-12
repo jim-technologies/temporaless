@@ -1,0 +1,45 @@
+version: v2
+plugins:
+  # Dagster 1.13 is constrained to protobuf <7. Generate its application
+  # client with the last protobuf-6 compiler used by this fixture.
+  - remote: buf.build/protocolbuffers/python:v33.5
+    out: adapters/py/dagstercompat/tests/gen
+  - remote: buf.build/protocolbuffers/pyi:v33.5
+    out: adapters/py/dagstercompat/tests/gen
+  # The Temporaless server deliberately runs in the repository's protobuf-7
+  # environment. Both sides are generated from the exact same application
+  # schema below.
+  - remote: buf.build/protocolbuffers/python:v35.1
+    out: adapters/py/dagstercompat/tests/server_gen
+  - remote: buf.build/protocolbuffers/pyi:v35.1
+    out: adapters/py/dagstercompat/tests/server_gen
+  - local:
+      - env
+      - -u
+      - BUF_TOKEN
+      - uv
+      - run
+      - --frozen
+      - --project
+      - core/py
+      - protoc-gen-connectrpc
+    out: adapters/py/dagstercompat/tests/gen
+    opt:
+      - protobuf=google
+      - io=async
+  - local:
+      - env
+      - -u
+      - BUF_TOKEN
+      - uv
+      - run
+      - --frozen
+      - --project
+      - core/py
+      - protoc-gen-connectrpc
+    out: adapters/py/dagstercompat/tests/server_gen
+    opt:
+      - protobuf=google
+      - io=async
+inputs:
+  - directory: adapters/py/dagstercompat/tests/proto

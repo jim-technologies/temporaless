@@ -123,7 +123,7 @@ async def fetch_price_op(context) -> str:
     return response.price
 ```
 
-Dagster 1.13.14 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
+Dagster 1.13.17 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
 or newer. Generate the Dagster client and Temporaless server independently
 from the same application `.proto`, run them in separate environments, and
 exchange only protobuf wire bytes. Dagster remains responsible for asset/job
@@ -229,9 +229,17 @@ Going from Temporaless to another framework:
 - `adapters/py/prefectcompat/tests` exercises direct flows/tasks, retries,
   Temporaless replay composition, and protobuf deployment-parameter
   serialization.
+- `adapters/py/dagstercompat/tests` executes a real Dagster 1.13.17 job in a
+  protobuf-6 environment with no Temporaless import. Its generated test-only
+  application client crosses a real ConnectRPC HTTP boundary twice into a
+  separate protobuf-7 process using Temporaless `OpenDALStore` and
+  `wrap_workflow_method`. The duplicate replays the first response and a
+  side-effect witness proves the workflow body ran once. Buf also verifies
+  both generated contracts against their one application proto.
 - `adapters/py/connectworkflow/tests` sends a binary protobuf request through
-  a generated ConnectRPC ASGI service method and proves terminal replay. That
-  transport boundary is also the supported Dagster integration boundary.
+  generated ConnectRPC ASGI service methods and exercises the adapter's wider
+  error-mapping and replay behavior.
 
-There is no same-process Dagster test because the official dependency ranges
-are unsatisfiable. Do not install with `--no-deps` or suppress that conflict.
+There is no same-process Dagster test or adapter because the official
+dependency ranges are unsatisfiable. Do not install with `--no-deps` or
+suppress that conflict; the tested integration is the process boundary above.

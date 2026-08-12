@@ -28,10 +28,16 @@ Use a query index when you need interactive operations:
 - sweep completed runs older than a retention threshold
 - query due timers with a database `SELECT`
 
-Python ships `temporaless-indexstore`, a write-through SQLite index adapter.
-It stores only keys, statuses, and timestamps; protobuf payloads stay in the
-bucket and remain the source of truth. The index can be rebuilt by scanning the
-bucket:
+The backend-neutral contract is `temporaless.v1.RecordQueryService`. A
+deployment may implement it with any database, search engine, warehouse,
+hosted service, or application-owned metadata index. Temporaless defines the
+protobuf request/response semantics; it does not require SQL or prescribe a
+physical schema.
+
+Python also ships `temporaless-indexstore`, an optional write-through SQLite
+reference adapter for small deployments and local operation. It stores only
+keys, statuses, and timestamps; protobuf payloads stay in the bucket and remain
+the source of truth. The index can be rebuilt by scanning the bucket:
 
 ```python
 import opendal
@@ -50,9 +56,8 @@ records, token = await store.list_workflows(
 )
 ```
 
-The same query surface is exposed over ConnectRPC as
-`temporaless.v1.RecordQueryService`. Core workflow replay never imports SQL and
-never needs this service.
+The same query surface is exposed locally or over ConnectRPC. Core workflow
+replay never imports an index database and never needs this service.
 
 The SQLite index is derived infrastructure. A bucket write can commit and the
 SQLite upsert can still fail, leaving a missing or stale row until `rebuild()`.

@@ -3,7 +3,10 @@
 //
 // Callers hand in a list of cron schedules and a dispatcher callback; Tick(now)
 // computes which schedules are due since the last fire and invokes the
-// dispatcher with the schedule ID and fire time.
+// dispatcher with the schedule ID and fire time. A fire is committed only after
+// the callback returns successfully. The callback owns the mapping to the
+// application's concrete protobuf workflow RPC; this package owns no workflow
+// registry or transport.
 //
 // The scheduler is stateful but the state is fully serializable. For
 // distributed or restartable use:

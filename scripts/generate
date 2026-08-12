@@ -2,17 +2,22 @@
 set -eu
 
 buf generate
+buf generate --template adapters/py/dagstercompat/buf.gen.yaml
 
 # protoc-gen-connectrpc-py 0.11.1 currently emits trailing spaces on generated
 # optional-header parameters. Use Python instead of GNU-only `sed -i` so the
 # one-command generator is identical on Linux and macOS Flox environments.
-python3 - core/py/src/temporaless/v1/temporaless_connect.py <<'PY'
+python3 - \
+  core/py/src/temporaless/v1/temporaless_connect.py \
+  adapters/py/dagstercompat/tests/gen/compat/v1/workflow_connect.py \
+  adapters/py/dagstercompat/tests/server_gen/compat/v1/workflow_connect.py <<'PY'
 from pathlib import Path
 import sys
 
-path = Path(sys.argv[1])
-lines = path.read_text(encoding="utf-8").splitlines()
-path.write_text("".join(f"{line.rstrip()}\n" for line in lines), encoding="utf-8")
+for value in sys.argv[1:]:
+    path = Path(value)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("".join(f"{line.rstrip()}\n" for line in lines), encoding="utf-8")
 PY
 
 # The TypeScript Invariant projection consumes the application descriptor at

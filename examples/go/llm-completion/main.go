@@ -17,8 +17,8 @@
 //     share the vendor quota at any moment, regardless of how many worker
 //     replicas dispatch.
 //   - workflow.Annotate — durable per-activity metadata (model, tokens,
-//     vendor) that survives replay and is queryable via Hive partitioning
-//   - DuckDB.
+//     vendor) that survives replay and is available to application-selected
+//     derived indexes or offline protobuf export.
 //
 // Run with `go run ./examples/go/llm-completion`.
 package main

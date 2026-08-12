@@ -3,8 +3,10 @@ handlers as Prefect flows and tasks.
 
 The adapter does not emulate Prefect's runtime. It wraps a Temporaless
 handler in ``prefect.flow`` / ``prefect.task`` so the same handler runs
-inside Prefect's orchestration (run tracking, UI visibility, scheduling)
-*and* against a Temporaless ``Store`` if the body uses ``current_workflow``.
+inside Prefect's orchestration (run tracking, UI visibility, scheduling).
+The adapter does not create a Temporaless workflow context; a handler must
+explicitly enter ``temporaless.run`` or call a canonical wrapped ConnectRPC
+workflow before it can use ``current_workflow`` and storage-first replay.
 
 **Async-only.** Like the rest of the framework, only ``async def`` handlers
 are accepted. Sync callables fail loud at wrap time.
@@ -484,9 +486,11 @@ def wrap_workflow(
 
     The wrapped callable is ``await``-able just like the original. Calling
     it triggers a Prefect flow run (visible in the Prefect UI / API);
-    internally the body runs as written, including any
-    ``current_workflow().execute_activity`` / ``sleep`` / ``wait_event``
-    calls against your Temporaless ``Store``.
+    internally the body runs as written. The adapter does not create a
+    Temporaless workflow context: ``current_workflow().execute_activity`` /
+    ``sleep`` / ``wait_event`` are available only if the body explicitly
+    enters ``temporaless.run`` or invokes an already wrapped canonical
+    ConnectRPC workflow method.
 
     Args:
         execute: ``async def(req: ProtoMessage) -> ProtoMessage``.

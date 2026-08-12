@@ -46,6 +46,71 @@ domain idempotency for external side effects.
 
 The same operation is exposed as the `DueTimers` RPC on `RecordStoreService`. When the storage backend lives behind ConnectRPC (`ConnectStore`), the client makes one round-trip and the server reads the due ledger locally.
 
+## External Scheduler And Queue Contract
+
+There is intentionally no generic Temporaless `StartWorkflow` or
+`ResumeWorkflow` service. A workflow trigger is the application's ordinary
+unary protobuf RPC, decorated with Temporaless replay. Keeping the concrete
+request and response at that boundary means Airflow, NATS, a cloud scheduler,
+or a custom worker does not need scheduler-specific behavior in core.
+
+The replaceable handoff points are:
+
+| Cause | Durable/protobuf handoff | External component does |
+|---|---|---|
+| cron, backfill, or manual start | the application's concrete protobuf workflow request | call the generated application RPC with explicit workflow/run identity; set `run_order_time` to the logical fire time for schedule-derived recovery |
+| sleep, durable activity retry, or poll | `RecordStoreService.DueTimers(DueTimersRequest)` returning protobuf `DueTimer` values | route each due key to the owning application workflow RPC and invoke the same run again |
+| approval, webhook, or other signal | `RecordStoreService.DeliverEvent(DeliverEventRequest)` plus the application workflow RPC | durably deliver the event first, then re-invoke the same workflow run; retrying either step with the same key and payload is safe |
+
+An external scheduler may speak only generated protobuf/ConnectRPC clients; it
+does not need to import the workflow runtime. Airflow can call the application
+RPC from an operator. A NATS adapter can publish the application procedure and
+deterministically serialized request, then have a consumer call the registered
+handler or generated client. The bundled `dispatch.Queue` seam is one way to
+do that, but queue subjects, headers, acknowledgements, retries, and dead-letter
+policy remain deployment concerns.
+
+Routing is application-owned. `DueTimer` includes the exact `TimerKey`,
+`TimerRecord`, and parent `WorkflowRecord` (including its original protobuf
+input), but `WorkflowRecord.workflow_type` is request/response type identity,
+not an RPC procedure name. Do not infer a handler from it. Keep a procedure
+mapping in the application/operator, or put enough route and explicit
+workflow/run identity in the application request or queue envelope to invoke
+the same generated RPC after a restart.
+
+Acknowledgement has two distinct meanings:
+
+- A cron dispatcher advances its `last_fire` only after its callback returns
+  successfully. For an external queue, return success after the broker has
+  durably accepted the message. For a direct in-process call, a typed
+  timer/event/dependency-pending result can mean the workflow durably advanced
+  to its next wait; the application callback must normalize that expected
+  result if it wants the cron fire committed.
+- A queue acknowledgement does not consume a Temporaless timer. A due wake
+  stays visible until replay persists a later wake-bearing timer or a terminal
+  workflow record. If enqueue, delivery, or the consumer crashes, publish or
+  invoke the same key again.
+- When a local queue consumer invokes the workflow, ACK an expected direct
+  timer/event/dependency-pending result: that message reached the durable
+  continuation boundary. The timer scanner or an application-owned
+  event/dependency completion hook must submit the later invocation. Every
+  other outcome, including claim contention or release failure, follows the
+  deployment's retry/backoff/dead-letter policy. Do not treat every Go error
+  containing a pending sentinel as success because a joined error may also
+  carry an infrastructure failure.
+
+The standard ConnectRPC workflow adapter maps both expected pending waits and
+workflow-infrastructure failures to `UNAVAILABLE`. A remote scheduler therefore
+must not infer "durable wait committed" from that status alone. Retrying the
+same IDs is safe; when a cron producer must commit a fire immediately after
+handoff, put a durable queue acceptance or an application-specific receipt in
+front of the workflow call.
+
+These rules deliberately provide at-least-once triggering. Use the same
+caller-owned IDs on every retry, opt into execution claims when overlapping
+live invocations must be single-flighted, and keep activity side effects
+idempotent.
+
 ## Manual Waits And Optional Durable Polling
 
 Event and workflow-dependency waits do not create a timer by default. With

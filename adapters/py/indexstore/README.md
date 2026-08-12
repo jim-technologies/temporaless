@@ -1,6 +1,6 @@
 # temporaless-indexstore
 
-Optional SQLite query index for Temporaless Python stores.
+Optional SQLite reference query index for Temporaless Python stores.
 
 `IndexedStore` wraps a bucket/file `Store` and mirrors record keys plus query
 metadata into SQLite. The bucket remains the source of truth; query results are
@@ -26,4 +26,8 @@ Operational notes:
   does not block the async runtime. Call `await store.close()` during graceful
   shutdown; close waits for any in-flight index operation without blocking the
   event loop.
-- Postgres is future work. This package currently opens SQLite files only.
+- This package intentionally opens SQLite files only. It is a convenience
+  implementation, not Temporaless's database contract. Other databases,
+  search engines, warehouses, or remote index services implement the generated
+  `RecordQueryService` (or the matching language-local `QueryStore` seam) in a
+  separate adapter without changing core workflow code.

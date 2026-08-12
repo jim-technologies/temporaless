@@ -12,6 +12,15 @@ The Go adapter in `adapters/go/temporalcompat` takes this position. It runs Temp
 
 The Python adapter in `adapters/py/temporalcompat` follows the same boundary. It runs Temporaless-shaped unary protobuf handlers on the real Temporal Python SDK and tests against Temporal's time-skipping test environment.
 
+The Go module's tested direct requirement resolves SDK `v1.47.0`; Go's minimal
+version selection may promote it when a downstream module requires a newer
+release. Python exact-pins its tested SDK in the adapter's own `pyproject.toml`
+(as well as its development lock). The Python declaration must not be a lower
+bound because a Git-subdirectory install does not consume `uv.lock` and would
+otherwise admit an SDK version that this compatibility suite never tested.
+
+The currently tested pair is Go SDK `v1.47.0` and Python SDK `1.31.0`.
+
 The Python `wrap_workflow` helper generates a workflow class around an existing unary protobuf function, so it disables Temporal's Python workflow sandbox for that generated class. Native sandboxed workflows should be written directly with Temporal's `@workflow.defn` and can still call this adapter's `execute_activity`, `sleep`, and wrapped activities.
 
 Both adapters are outbound: Temporaless-shaped handlers run on the real
@@ -20,17 +29,26 @@ The adapters do not execute arbitrary existing Temporal workflows on
 Temporaless object storage, and they do not provide an import-only inverse
 migration layer.
 
-## Core Rules
+## Handler Rules And Outbound Identity
 
-A Temporal adapter may translate familiar usage into Temporaless conventions, but it must not weaken these rules:
+The outbound adapters preserve the canonical business-handler shape:
 
 - one protobuf request
 - one protobuf response
-- explicit workflow ID
-- explicit run ID
-- explicit activity/timer IDs
-- explicit claim owner ID when claims are enabled
-- protobuf storage only
+
+They do not run the Temporaless storage engine. The application supplies a
+Temporal workflow ID when starting through the Temporal client, while the
+Temporal server owns run identity and history. A caller-supplied activity ID is
+forwarded unchanged, but the native SDK may choose it when omitted. The native
+`Sleep` API records a Temporal timer in history and therefore has no
+Temporaless timer ID. Temporaless protobuf bucket records, claims, claim-owner
+IDs, and storage codecs do not participate in this outbound mode.
+
+An adapter that instead executes Temporal-flavored work on Temporaless storage
+must retain the core conventions: explicit caller-owned workflow, run,
+activity, timer, and claim-owner IDs as applicable, with protobuf binary as the
+only framework storage format. The current outbound adapters make no such
+inverse-compatibility claim.
 
 Compatibility adapters must cover the common Temporal execution controls before they are considered useful for migration:
 
@@ -64,8 +82,10 @@ Current tests:
 - wrapped unary protobuf workflow and activity values register with Temporal's
   SDK test environments
 - activity execution delegates to Temporal SDK activity scheduling
+- caller-supplied activity identity remains stable across SDK retries
 - timer/sleep delegates to Temporal SDK timers
 - retry policies are honored by the SDK
-- timeout options are passed to the SDK and timeout failures propagate
+- timeout and routed task-queue options are passed to the SDK, and
+  schedule-to-start timeout failures preserve their SDK classification
 
 These tests should prove adapter behavior, not drive the core into becoming a Temporal server.

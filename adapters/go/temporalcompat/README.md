@@ -2,6 +2,11 @@
 
 This is a strict compatibility adapter for running Temporaless-shaped handlers on the real Temporal Go SDK.
 
+The root `go.mod` currently requires and tests `go.temporal.io/sdk v1.47.0`;
+the adapter does not float independently from that module graph. A downstream
+Go module can still promote the selected SDK through minimal version selection,
+so consumers should run this compatibility suite when doing so.
+
 It does not emulate the Temporal server. It delegates activities and durable timers to `go.temporal.io/sdk/workflow`, and the tests run against Temporal's SDK test environment.
 
 The wrapper values are registered with the normal Temporal worker API. Use
@@ -41,7 +46,9 @@ import.
 - one protobuf activity request and one protobuf activity response
 - Temporal SDK activity scheduling through `workflow.ExecuteActivity`
 - Temporal SDK durable timers through `workflow.Sleep`
-- Temporal SDK `workflow.ActivityOptions`
+- Temporal SDK retry policy, caller-supplied activity ID/task queue, and
+  start-to-close, schedule-to-close, schedule-to-start, and heartbeat timeouts
+  through `workflow.ActivityOptions`
 
 ## Rejected
 
@@ -51,6 +58,9 @@ import.
 - child workflows, signals, queries, updates, cancellation scopes, and side effects
 
 Those features should use the Temporal SDK directly until the adapter can prove exact compatibility for them.
+
+No supported feature is approximated: supported controls delegate directly to
+the SDK, and unsupported controls are intentionally absent.
 
 ## Compatibility Position
 

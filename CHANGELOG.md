@@ -13,6 +13,35 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Added
+
+- A separately locked Dagster 1.13.17 process-boundary proof now executes a
+  real Dagster job through a generated, test-only application ConnectRPC
+  client under protobuf 6 against a separate protobuf-7 process running the
+  real Temporaless `OpenDALStore` and `connectworkflow` wrapper. It proves that
+  a duplicate invocation preserves explicit workflow/run IDs, replays the
+  persisted response, and executes the workflow body side effect only once.
+  Buf descriptor checks keep both generated sides aligned with their one
+  application proto.
+
+### Changed
+
+- The Temporal compatibility adapters now test Go's direct SDK requirement
+  (`go.temporal.io/sdk` 1.47.0) and exact-pin Python (`temporalio` 1.31.0), with stronger real-SDK
+  coverage for caller-owned activity IDs, retries, timeout propagation, task
+  queues, and durable sleeps.
+- The Prefect compatibility adapter now targets exactly Prefect 3.8.2; its
+  flow/task, deployment reload, protobuf envelope, retry, and Temporaless
+  replay-composition suites remain compatible without an API workaround.
+- Scheduler integration is now documented as three replaceable protobuf
+  handoffs: application workflow RPCs for starts/resumes, `DueTimers` for
+  durable wakes, and `DeliverEvent` plus re-invocation for external events.
+  Queue acknowledgement remains distinct from consuming a durable timer.
+- Current documentation and examples no longer prescribe a particular query
+  database. Cross-run search and retention use the backend-neutral
+  `RecordQueryService`; any rebuildable index may implement it, while the
+  bundled SQLite adapter remains an optional reference implementation.
+
 ## [0.10.4] — 2026-07-31
 
 ### Changed

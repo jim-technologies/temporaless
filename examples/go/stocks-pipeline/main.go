@@ -14,6 +14,7 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/cronscheduler"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -39,7 +40,7 @@ func main() {
 	ctx := context.Background()
 	scheduler, err := cronscheduler.New(
 		[]cronscheduler.Schedule{{ID: "prices:aapl", Expression: "* * * * *"}},
-		dispatchPrices(ctx, store),
+		dispatchPrices(store),
 	)
 	if err != nil {
 		panic(err)
@@ -73,8 +74,8 @@ func main() {
 	fmt.Printf("\nstorage root: %s\n", root)
 }
 
-func dispatchPrices(ctx context.Context, store *storage.OpenDALStore) cronscheduler.Dispatcher {
-	return func(_ context.Context, _ string, fireTime time.Time) error {
+func dispatchPrices(store *storage.OpenDALStore) cronscheduler.Dispatcher {
+	return func(ctx context.Context, _ string, fireTime time.Time) error {
 		_, err := runPricesWorkflow(ctx, store, fireTime)
 		// Idempotent: if the workflow already completed for this fire_time, the
 		// scheduler still considers the dispatch successful.
@@ -87,8 +88,9 @@ func dispatchPrices(ctx context.Context, store *storage.OpenDALStore) cronschedu
 
 func runPricesWorkflow(ctx context.Context, store *storage.OpenDALStore, fireTime time.Time) (*wrapperspb.StringValue, error) {
 	options := &workflow.Options{
-		WorkflowId: "prices:aapl",
-		RunId:      fireTime.UTC().Format("2006-01-02T15-04-05Z"),
+		WorkflowId:   "prices:aapl",
+		RunId:        fireTime.UTC().Format("2006-01-02T15-04-05Z"),
+		RunOrderTime: timestamppb.New(fireTime),
 	}
 	return workflow.Run(
 		ctx,

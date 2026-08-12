@@ -219,7 +219,11 @@ Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
 `core/py/src/temporaless/` rather than `adapters/py/` because they have
 no third-party deps; `prefectcompat` and `temporalcompat` need their own
 heavyweight deps so they ship as separate uv projects under
-`adapters/py/`. The smaller `connectworkflow` transport boundary is also a
+`adapters/py/`. `adapters/py/dagstercompat` is not an adapter package: it is a
+development-only, non-installable uv project that gates the isolated Dagster
+job → generated application ConnectRPC path. It has no Temporaless dependency
+because Dagster requires protobuf below version 7.
+The smaller `connectworkflow` transport boundary is also a
 separate uv project so the core replay package does not own ConnectRPC handler
 policy.
 

@@ -15,7 +15,8 @@ A realistic vendor-LLM activity uses the full stack:
     cap on in-flight vendor calls. At most N workflows share the vendor
     quota at any moment, regardless of how many worker replicas dispatch.
   - ``annotate()`` — durable per-activity metadata (model, tokens, vendor)
-    that survives replay and is queryable via Hive partitioning + DuckDB.
+    that survives replay and is available to application-selected derived
+    indexes or offline protobuf export.
 
 Run with ``uv run --project core/py python examples/py/llm_completion.py``.
 """

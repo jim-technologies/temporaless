@@ -337,7 +337,20 @@ scheduler, _ := cronscheduler.New(
             RunId:        fireTime.UTC().Format(time.RFC3339),
             RunOrderTime: timestamppb.New(fireTime),
         }, nil, /* input */, /* newResult */, /* body */)
-        return err
+        if err == nil {
+            return nil
+        }
+        // Reaching a durable wait means this cron fire was accepted. Match
+        // only the direct continuation values: infrastructure or activity
+        // errors that happen to wrap one must still keep the fire due.
+        switch err.(type) {
+        case *workflow.TimerPendingError,
+            *workflow.EventPendingError,
+            *workflow.WorkflowDependencyPendingError:
+            return nil
+        default:
+            return err
+        }
     },
 )
 
@@ -362,23 +375,38 @@ from temporaless.cronscheduler import (
     Scheduler,
     last_fires_from_runs,
 )
-from temporaless.workflow import Options, run
+from temporaless.workflow import (
+    EventPendingError,
+    Options,
+    TimerPendingError,
+    WorkflowDependencyPendingError,
+    run,
+)
 
 
 async def dispatch(schedule_id: str, fire_time: datetime) -> None:
     run_order_time = Timestamp()
     run_order_time.FromDatetime(fire_time)
-    await run(
-        store,
-        Options(
-            workflow_id=schedule_id,
-            run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            run_order_time=run_order_time,
-        ),
-        input_message,
-        ResultType,
-        workflow_body,
-    )
+    try:
+        await run(
+            store,
+            Options(
+                workflow_id=schedule_id,
+                run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                run_order_time=run_order_time,
+            ),
+            input_message,
+            ResultType,
+            workflow_body,
+        )
+    except (
+        TimerPendingError,
+        EventPendingError,
+        WorkflowDependencyPendingError,
+    ):
+        # The workflow durably reached its next wait, so this fire was
+        # accepted. Other errors escape and leave the fire due for retry.
+        return
 
 
 scheduler = Scheduler(
@@ -398,6 +426,13 @@ scheduler.restore(snapshot)
 # Run a tick on a 1-minute cron / Kubernetes CronJob / EventBridge schedule.
 await scheduler.tick(datetime.now(UTC))
 ```
+
+Both examples treat only those expected, direct durable waits as a successful
+dispatch. Application failures, claim failures, and storage/infrastructure
+failures still escape, so the scheduler does not commit that fire. A remote
+ConnectRPC call cannot make this distinction because expected waits and
+infrastructure failures both map to `UNAVAILABLE`; use a durable queue
+acceptance or an application-specific receipt for that case.
 
 Two cron-scheduler processes may dispatch the same fire concurrently. Terminal reruns replay, but suppressing overlapping first execution requires the dispatched `WorkflowOptions` to include `claim_owner_id` and an atomic claim store. Without that opt-in, scheduler delivery is at-least-once and activities must remain idempotent.
 
@@ -643,7 +678,7 @@ Workflow service     N replicas    serves the ConnectRPC trigger surface
 Cron scheduler tick  1/min         calls Scheduler.tick(now)
 Timer scanner tick   1/min         dispatches due sleep, retry, and poll wakes
 Janitor (optional)   1/day         quiesces eligible runs, then calls claim-aware RecordQueryService.Sweep
-Query index           optional      SQLite adapter for search and indexed retention
+Query index           optional      Any RecordQueryService; SQLite reference adapter included
 Storage credentials  S3 / GCS / Azure Blob via your secret manager
 Bucket               production-temporaless
 ```

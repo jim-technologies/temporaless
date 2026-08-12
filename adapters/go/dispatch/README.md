@@ -1,15 +1,32 @@
 # dispatch
 
-Bounded fire-and-forget goroutine pool for gRPC-shaped handlers.
+Bounded fire-and-forget dispatch for gRPC-shaped handlers.
 
-Complements `workflow.Run` (synchronous + durable) with an asynchronous,
-in-process path for side effects whose result the caller doesn't need to
-wait on — webhook notifications, telemetry pushes, best-effort vendor
-pings, fan-out where the caller wants its own request to return quickly.
+With the default queue, this complements `workflow.Run` (synchronous +
+durable) with an asynchronous, in-process path for side effects whose result
+the caller doesn't need to wait on — webhook notifications, telemetry pushes,
+best-effort vendor pings, and fan-out where the caller wants its own request to
+return quickly.
 
-**Not durable.** If the process dies before a handler finishes, the work
-is lost. When you need durability across crashes, write a workflow
-instead — this package is for at-most-once + best-effort.
+The default in-process queue is **best-effort and at-most-once per accepted
+submission**: if the process dies before a handler finishes, the work is lost.
+A custom external queue may instead durably accept and redeliver messages;
+Temporaless deliberately leaves acknowledgement, retry, and dead-letter policy
+to that queue. Queue redelivery is transport durability, not Temporaless
+workflow replay. Have the consumer invoke a workflow when execution of the
+handler itself needs durable checkpoints and replay.
+
+After a consumer invokes that workflow, ACK an expected **direct**
+`*workflow.TimerPendingError`, `*workflow.EventPendingError`, or
+`*workflow.WorkflowDependencyPendingError`: the workflow has reached the
+durable boundary. The timer scanner or an application-owned event/dependency
+completion hook must submit the later invocation. Every other outcome,
+including claim contention or release failure, follows the deployment's
+retry/backoff/dead-letter policy. In Go, use a concrete type switch for this
+decision rather than `errors.Is` / `errors.As`; a joined error can contain both
+a pending value and an infrastructure failure. A remote ConnectRPC
+`UNAVAILABLE` cannot distinguish the two, so put an application-specific
+receipt in front of the ACK when the consumer is remote.
 
 **Managed graceful shutdown.** `Shutdown(ctx)` stops accepting new
 submissions, gives admitted producer sends a bounded drain window, calls
@@ -106,7 +123,7 @@ blocks until a slot is available, respecting:
 This gives you natural per-process backpressure without a queue: bursty
 callers get throttled at the submit point.
 
-## External queues (Kafka, RabbitMQ, NATS, SQS, ...)
+## External queues (Kafka, RabbitMQ, NATS JetStream, SQS, ...)
 
 Pass `Options.Queue` with any type that implements the `Queue` interface:
 
@@ -125,7 +142,8 @@ field) so consumers can correlate. Your consumer process pulls messages
 off the bus and calls `dispatcher.Invoke(ctx, method, payload)`
 — which looks up the registered handler, unmarshals the bytes back into
 the typed `Req`, and runs the handler synchronously on the consumer
-goroutine. Use the returned error to drive your queue's ack / nack.
+goroutine. Apply the direct-pending ACK classification above; other returned
+errors drive your queue's nack/retry policy.
 
 On shutdown, already-admitted `Submit` calls get one `DrainTimeout` window to
 finish naturally. The dispatcher then calls `Close(ctx)` exactly once; `Close`
@@ -133,7 +151,7 @@ must safely flush, release, or fail any producer send that is still blocked and
 must honor `ctx`. A submission that remains blocked after a second bounded
 window makes `Shutdown` return `ErrSubmissionDrainTimeout`.
 
-The framework intentionally doesn't ship Kafka / Rabbit adapters — each
+The framework intentionally doesn't ship Kafka / Rabbit / NATS adapters — each
 has its own connection management, consumer-group semantics, and
 prefetch tuning. Writing the adapter is ~50 LOC of the `Queue`
 interface + your usual client setup.

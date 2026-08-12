@@ -32,6 +32,12 @@ are written.
 ## Rejected Behavior
 
 - no re-invocation built in: callers decide how to dispatch (HTTP, queue, in-process)
+- no generic handler inference: `WorkflowRecord.workflow_type` identifies the
+  protobuf request/response pair, not an RPC procedure; the application owns
+  the mapping from a due workflow key to its concrete trigger RPC
+- queue acknowledgement does not consume a wake: only replay crossing a later
+  wake-bearing or terminal durable boundary does, so consumers must tolerate
+  redelivery with the same workflow/run IDs
 - no timer for manual event/dependency waits: callers must supply
   `PollOptions` or dispatch from the application completion/delivery path
 - no claim coordination between concurrent scanners: set `claim_owner_id` on

@@ -8,7 +8,7 @@ returning or deleting anything.
 Use it for small local instances, one-shot exports, tests, and index rebuilds.
 It does not provide ordering or pagination and should not serve production
 operator traffic. Production cross-run search and retention should use a
-rebuildable SQL/DuckLake-style index behind `RecordQueryService`.
+rebuildable deployment-selected index behind `RecordQueryService`.
 
 The core `storage.OpenDALStore` remains point-operation and run-listing only;
 installing this adapter is an explicit choice to pay for full bucket scans.

@@ -20,9 +20,14 @@ opaque and application-owned.
 - per-schedule last-fire tracking
 - point-operation seeding from the core store's latest-run pointer
 - caller-owned dispatcher, so the workflow trigger transport (in-process, ConnectRPC, queue) is up to the caller
-- at-least-once dispatch when ticks overlap; workflow execution claims can
-  single-flight cooperating recipients, but the dispatcher itself does not
-  claim a fire
+- a fire is committed only after the dispatcher returns success; queue-backed
+  dispatchers should return after durable broker acceptance, while direct
+  workflow dispatchers must normalize an expected typed pending result when it
+  represents a successfully persisted wait
+- concurrent ticks on one `Scheduler` are serialized; separate scheduler
+  processes still provide at-least-once dispatch, and workflow execution
+  claims can single-flight cooperating recipients because the dispatcher
+  itself does not claim a fire
 
 ## Rejected Behavior
 
@@ -34,3 +39,5 @@ opaque and application-owned.
 - storage-derived recovery requires retaining the pointed workflow run; use
   `Snapshot`/`Restore` when retention may be shorter than an outage
 - not a replacement for cloud cron services or Dagster/Prefect schedules — those remain valid adapters that produce the same workflow trigger semantics
+- no generic workflow routing: the application maps each schedule ID to its
+  concrete protobuf workflow RPC and supplies explicit workflow/run identity

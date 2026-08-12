@@ -15,8 +15,8 @@ contracts. Deployment decides how those service-shaped clients dispatch:
   network hop
 - remote clients use generated ConnectRPC/gRPC stubs
 - OpenDAL-style bucket stores implement the point `RecordStoreService`
-- SQL, DuckLake, or another rebuildable index implements production
-  `RecordQueryService`
+- any database, search engine, warehouse, or application-owned rebuildable
+  index may implement production `RecordQueryService`
 
 The domain-facing store interfaces still exist in each language:
 
@@ -129,9 +129,11 @@ nontransactional and is not an execution fence, so the operator must externally
 quiesce eligible runs while retention executes.
 
 Production inspectors, large operational search, and exact retention sweeps
-should use an indexed `RecordQueryService` backed by SQL, DuckLake, or another
-rebuildable metadata index. The Go `scanquery` adapter is an explicit
-offline/development fallback and never expands the core bucket interface.
+should use an indexed `RecordQueryService` backed by the deployment's chosen
+rebuildable metadata index. Temporaless prescribes the protobuf requests,
+responses, and semantics—not a database product, query language, or physical
+schema. The Go `scanquery` adapter is an explicit offline/development fallback
+and never expands the core bucket interface.
 
 The bundled `cmd/temporaless` binary is another offline/development fallback:
 it registers only OpenDAL `fs`. For cloud stores, use authenticated

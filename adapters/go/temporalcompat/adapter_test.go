@@ -3,6 +3,7 @@ package temporalcompat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,12 @@ func TestRetryPolicyUsesTemporalSDK(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(retryWorkflow)
 	env.RegisterActivity(flakyPriceActivity)
+	activityIDs := make([]string, 0, 3)
+	attempts := make([]int32, 0, 3)
+	env.SetOnActivityStartedListener(func(activityInfo *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		activityIDs = append(activityIDs, activityInfo.ActivityID)
+		attempts = append(attempts, activityInfo.Attempt)
+	})
 
 	env.ExecuteWorkflow(retryWorkflow, wrapperspb.String("AAPL"))
 
@@ -110,6 +117,12 @@ func TestRetryPolicyUsesTemporalSDK(t *testing.T) {
 	if retryActivityAttempts != 3 {
 		t.Fatalf("attempts = %d, want 3", retryActivityAttempts)
 	}
+	if got := strings.Join(activityIDs, ","); got != "fetch:retry,fetch:retry,fetch:retry" {
+		t.Fatalf("activity IDs across retries = %q, want stable caller-supplied ID", got)
+	}
+	if len(attempts) != 3 || attempts[0] != 1 || attempts[1] != 2 || attempts[2] != 3 {
+		t.Fatalf("Temporal attempts = %v, want [1 2 3]", attempts)
+	}
 }
 
 func TestTimeoutUsesTemporalSDK(t *testing.T) {
@@ -120,6 +133,12 @@ func TestTimeoutUsesTemporalSDK(t *testing.T) {
 	observedOptions := false
 	env.SetOnActivityStartedListener(func(activityInfo *activity.Info, _ context.Context, _ converter.EncodedValues) {
 		observedOptions = true
+		if activityInfo.ActivityID != "fetch:timeout" {
+			t.Fatalf("activity ID = %q, want %q", activityInfo.ActivityID, "fetch:timeout")
+		}
+		if activityInfo.TaskQueue != "prices-timeouts" {
+			t.Fatalf("task queue = %q, want %q", activityInfo.TaskQueue, "prices-timeouts")
+		}
 		if activityInfo.ScheduleToCloseTimeout != time.Minute {
 			t.Fatalf("schedule-to-close timeout = %s, want %s", activityInfo.ScheduleToCloseTimeout, time.Minute)
 		}
@@ -131,7 +150,7 @@ func TestTimeoutUsesTemporalSDK(t *testing.T) {
 		}
 	})
 	env.OnActivity(fetchPriceActivity, mock.Anything, mock.Anything).
-		Return((*wrapperspb.StringValue)(nil), temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)).
+		Return((*wrapperspb.StringValue)(nil), temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, nil)).
 		Once()
 
 	env.ExecuteWorkflow(timeoutWorkflow, wrapperspb.String("AAPL"))
@@ -226,6 +245,7 @@ func retryWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrappe
 		ActivityCall[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 			Activity: flakyPriceActivity,
 			Options: workflow.ActivityOptions{
+				ActivityID:          "fetch:retry",
 				StartToCloseTimeout: 10 * time.Second,
 				RetryPolicy: &temporal.RetryPolicy{
 					InitialInterval:    time.Millisecond,
@@ -245,6 +265,8 @@ func timeoutWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrap
 		ActivityCall[*wrapperspb.StringValue, *wrapperspb.StringValue]{
 			Activity: fetchPriceActivity,
 			Options: workflow.ActivityOptions{
+				ActivityID:             "fetch:timeout",
+				TaskQueue:              "prices-timeouts",
 				ScheduleToCloseTimeout: time.Minute,
 				ScheduleToStartTimeout: 30 * time.Second,
 				StartToCloseTimeout:    time.Minute,
@@ -260,6 +282,9 @@ func timeoutWorkflow(ctx workflow.Context, input *wrapperspb.StringValue) (*wrap
 	if err != nil {
 		var timeoutErr *temporal.TimeoutError
 		if errors.As(err, &timeoutErr) {
+			if timeoutErr.TimeoutType() != enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START {
+				return nil, fmt.Errorf("timeout type = %s, want SCHEDULE_TO_START", timeoutErr.TimeoutType())
+			}
 			return wrapperspb.String("timeout"), nil
 		}
 		return nil, err

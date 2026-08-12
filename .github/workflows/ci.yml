@@ -65,13 +65,17 @@ jobs:
             core/go/gen \
             core/py/src/buf \
             core/py/src/temporaless/v1 \
-            core/ts/src/gen
+            core/ts/src/gen \
+            adapters/py/dagstercompat/tests/gen \
+            adapters/py/dagstercompat/tests/server_gen
           generated_untracked="$(git ls-files --others --exclude-standard -- \
             api \
             core/go/gen \
             core/py/src/buf \
             core/py/src/temporaless/v1 \
-            core/ts/src/gen)"
+            core/ts/src/gen \
+            adapters/py/dagstercompat/tests/gen \
+            adapters/py/dagstercompat/tests/server_gen)"
           if [ -n "$generated_untracked" ]; then
             echo "Buf generation produced untracked files:" >&2
             echo "$generated_untracked" >&2
@@ -169,6 +173,7 @@ jobs:
           for project in \
             core/py \
             adapters/py/connectworkflow \
+            adapters/py/dagstercompat \
             adapters/py/indexstore \
             adapters/py/prefectcompat \
             adapters/py/temporalcompat

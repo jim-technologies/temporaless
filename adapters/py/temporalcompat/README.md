@@ -2,6 +2,10 @@
 
 Strict compatibility adapter that runs Temporaless-shaped unary protobuf handlers on the real Temporal Python SDK.
 
+The adapter exact-pins `temporalio==1.31.0`. Git-subdirectory installs do not
+consume this directory's `uv.lock`, so the project metadata itself carries the
+tested SDK version instead of permitting an untested future release.
+
 It does not emulate the Temporal server. It delegates activities, retries,
 timeouts, and durable timers to `temporalio`. Async unary protobuf business and
 activity functions can be wrapped without rewriting their bodies. Workflow
@@ -77,6 +81,9 @@ If a workflow needs full Temporal Python sandbox behavior, define a native `@wor
 - child workflows, signals, queries, updates, cancellation scopes, side effects
 
 Those features should use the Temporal SDK directly until this adapter can prove exact compatibility for them.
+
+No supported feature is approximated: supported controls delegate directly to
+the SDK, and unsupported controls are intentionally absent.
 
 ## Compatibility position
 

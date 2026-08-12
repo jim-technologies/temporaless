@@ -526,10 +526,10 @@ func cmdTail(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts
 // export -------------------------------------------------------------------
 
 // cmdExport bulk-decodes records under a prefix and emits one decoded
-// protojson object per line. Useful for ingesting audit data into BigQuery /
-// DuckDB / dbt / Snowflake — operators don't need our decoder or runtime;
-// they just need `aws s3 cp` access to the bucket and `temporaless export`
-// to read the binpb.
+// protojson object per line. Useful for ingesting audit data into any
+// warehouse or analytics pipeline — operators don't need our decoder or
+// runtime; they just need bucket access and `temporaless export` to read the
+// binpb.
 //
 // Output: stdout by default; --output FILE for redirection. One JSONL record
 // per stored record; each line is independently parseable.

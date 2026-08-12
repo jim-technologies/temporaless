@@ -7,8 +7,9 @@ from uuid import uuid4
 
 import pytest
 from google.protobuf.wrappers_pb2 import StringValue
+from temporalio import activity as temporal_activity
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError, ApplicationError, TimeoutError
+from temporalio.exceptions import ActivityError, ApplicationError, TimeoutError, TimeoutType
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -24,6 +25,8 @@ from temporaless_temporalcompat import (
 
 TASK_QUEUE = "temporaless-python-temporalcompat"
 retry_attempts = 0
+retry_activity_ids: list[str] = []
+retry_attempt_ordinals: list[int] = []
 
 
 def test_wrappers_reject_non_temporaless_shape() -> None:
@@ -65,25 +68,43 @@ def test_execute_activity_uses_temporal_sdk() -> None:
 
 
 def test_sleep_uses_temporal_sdk_timer() -> None:
-    result = asyncio.run(run_temporal_workflow(SleepWorkflow, []))
+    result = asyncio.run(
+        run_temporal_workflow(
+            SleepWorkflow,
+            [],
+            minimum_elapsed=timedelta(hours=1),
+        )
+    )
 
     assert result.value == "done:AAPL"
 
 
 def test_retry_policy_uses_temporal_sdk() -> None:
-    global retry_attempts
+    global retry_attempts, retry_activity_ids, retry_attempt_ordinals
     retry_attempts = 0
+    retry_activity_ids = []
+    retry_attempt_ordinals = []
 
     result = asyncio.run(run_temporal_workflow(RetryWorkflow, [flaky_price_activity]))
 
     assert result.value == "attempts:3"
     assert retry_attempts == 3
+    assert retry_activity_ids == ["fetch:retry"] * 3
+    assert retry_attempt_ordinals == [1, 2, 3]
 
 
 def test_timeout_uses_temporal_sdk() -> None:
     result = asyncio.run(run_temporal_workflow(TimeoutWorkflow, []))
 
-    assert result.value == "timeout"
+    assert result.value == f"timeout:{TimeoutType.SCHEDULE_TO_START.name}"
+
+
+def test_activity_options_are_observed_by_temporal_sdk() -> None:
+    result = asyncio.run(
+        run_temporal_workflow(OptionsWorkflow, [inspect_activity_options_activity])
+    )
+
+    assert result.value == "fetch:options|temporaless-python-temporalcompat|20|10|5"
 
 
 def test_wrap_rejects_sync_executors() -> None:
@@ -172,26 +193,36 @@ def test_execute_activity_validates_call_inputs() -> None:
     asyncio.run(cases())
 
 
-async def run_temporal_workflow(workflow_type: type, activities: list) -> StringValue:
-    env = await WorkflowEnvironment.start_time_skipping()
-    async with (
-        env,
-        Worker(
-            env.client,
-            task_queue=TASK_QUEUE,
-            workflows=[workflow_type],
-            activities=activities,
-        ),
-    ):
-        result = await env.client.execute_workflow(
-            workflow_type.run,  # ty: ignore[unresolved-attribute]
-            StringValue(value="AAPL"),
-            id=f"temporaless-{uuid4()}",
-            task_queue=TASK_QUEUE,
-            result_type=StringValue,
-        )
-        assert isinstance(result, StringValue)
-        return result
+async def run_temporal_workflow(
+    workflow_type: type,
+    activities: list,
+    *,
+    minimum_elapsed: timedelta | None = None,
+) -> StringValue:
+    async with asyncio.timeout(30):
+        env = await WorkflowEnvironment.start_time_skipping()
+        async with (
+            env,
+            Worker(
+                env.client,
+                task_queue=TASK_QUEUE,
+                workflows=[workflow_type],
+                activities=activities,
+            ),
+        ):
+            started_at = await env.get_current_time()
+            result = await env.client.execute_workflow(
+                workflow_type.run,  # ty: ignore[unresolved-attribute]
+                StringValue(value="AAPL"),
+                id=f"temporaless-{uuid4()}",
+                task_queue=TASK_QUEUE,
+                result_type=StringValue,
+            )
+            completed_at = await env.get_current_time()
+            if minimum_elapsed is not None:
+                assert completed_at - started_at >= minimum_elapsed
+            assert isinstance(result, StringValue)
+            return result
 
 
 async def echo_activity(input_message: StringValue) -> StringValue:
@@ -217,6 +248,9 @@ async def fetch_price(input_message: StringValue) -> StringValue:
 async def flaky_price(_input_message: StringValue) -> StringValue:
     global retry_attempts
     retry_attempts += 1
+    info = temporal_activity.info()
+    retry_activity_ids.append(info.activity_id)
+    retry_attempt_ordinals.append(info.attempt)
     if retry_attempts < 3:
         raise ApplicationError("vendor unavailable", type="VendorUnavailable")
     return StringValue(value=f"attempts:{retry_attempts}")
@@ -245,6 +279,7 @@ async def retry_workflow(input_message: StringValue) -> StringValue:
         ActivityCall(
             activity=flaky_price_activity,
             result_type=StringValue,
+            activity_id="fetch:retry",
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(
                 initial_interval=timedelta(milliseconds=1),
@@ -262,6 +297,26 @@ async def async_fetch_price(input_message: StringValue) -> StringValue:
     return StringValue(value=f"{input_message.value} 100.00")
 
 
+async def inspect_activity_options(_input_message: StringValue) -> StringValue:
+    info = temporal_activity.info()
+    schedule_to_close = info.schedule_to_close_timeout
+    start_to_close = info.start_to_close_timeout
+    heartbeat = info.heartbeat_timeout
+    if schedule_to_close is None or start_to_close is None or heartbeat is None:
+        return StringValue(value="missing-timeout")
+    return StringValue(
+        value="|".join(
+            (
+                info.activity_id,
+                info.task_queue,
+                str(int(schedule_to_close.total_seconds())),
+                str(int(start_to_close.total_seconds())),
+                str(int(heartbeat.total_seconds())),
+            )
+        )
+    )
+
+
 async def async_activity_workflow(input_message: StringValue) -> StringValue:
     result = await execute_activity(
         ActivityCall(
@@ -275,22 +330,43 @@ async def async_activity_workflow(input_message: StringValue) -> StringValue:
     return result
 
 
+async def activity_options_workflow(input_message: StringValue) -> StringValue:
+    result = await execute_activity(
+        ActivityCall(
+            activity=inspect_activity_options_activity,
+            result_type=StringValue,
+            activity_id="fetch:options",
+            task_queue=TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(seconds=20),
+            start_to_close_timeout=timedelta(seconds=10),
+            heartbeat_timeout=timedelta(seconds=5),
+        ),
+        input_message,
+    )
+    assert isinstance(result, StringValue)
+    return result
+
+
 async def timeout_workflow(input_message: StringValue) -> StringValue:
     try:
         await execute_activity(
             ActivityCall(
                 activity=fetch_price_activity,
                 result_type=StringValue,
+                activity_id="fetch:timeout",
                 task_queue=f"{TASK_QUEUE}-missing",
                 schedule_to_start_timeout=timedelta(seconds=1),
-                schedule_to_close_timeout=timedelta(seconds=1),
+                schedule_to_close_timeout=timedelta(seconds=10),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             ),
             input_message,
         )
     except ActivityError as err:
         if isinstance(err.cause, TimeoutError):
-            return StringValue(value="timeout")
+            timeout_type = err.cause.type
+            return StringValue(
+                value=f"timeout:{timeout_type.name if timeout_type is not None else 'NONE'}"
+            )
         raise
     return StringValue(value="unexpected")
 
@@ -307,6 +383,9 @@ flaky_price_activity = wrap_activity(flaky_price, ActivityWrapOptions(name="flak
 async_fetch_price_activity = wrap_activity(
     async_fetch_price, ActivityWrapOptions(name="async_fetch_price_activity")
 )
+inspect_activity_options_activity = wrap_activity(
+    inspect_activity_options, ActivityWrapOptions(name="inspect_activity_options")
+)
 
 EchoWorkflow = wrap_workflow(echo_workflow, WorkflowWrapOptions(name="EchoWorkflow"))
 NilWorkflow = wrap_workflow(cast(Any, nil_workflow), WorkflowWrapOptions(name="NilWorkflow"))
@@ -316,4 +395,7 @@ RetryWorkflow = wrap_workflow(retry_workflow, WorkflowWrapOptions(name="RetryWor
 TimeoutWorkflow = wrap_workflow(timeout_workflow, WorkflowWrapOptions(name="TimeoutWorkflow"))
 AsyncActivityWorkflow = wrap_workflow(
     async_activity_workflow, WorkflowWrapOptions(name="AsyncActivityWorkflow")
+)
+OptionsWorkflow = wrap_workflow(
+    activity_options_workflow, WorkflowWrapOptions(name="OptionsWorkflow")
 )

@@ -42,8 +42,11 @@ await PriceFlow(PriceRequest(symbol="AAPL"))
 ```
 
 The wrapped functions retain their unary protobuf shape; Prefect handles run
-tracking, retries, scheduling, and UI visibility. A handler that calls
-`current_workflow().execute_activity` retains Temporaless storage-first replay.
+tracking, retries, scheduling, and UI visibility. The adapter does not create a
+Temporaless workflow context. Storage-first replay applies only when the
+handler explicitly calls `temporaless.run` or invokes a canonical ConnectRPC
+method already wrapped by `temporaless_connectworkflow`; only inside that
+boundary may it use `current_workflow()`.
 
 ## Deployment parameters
 
@@ -89,7 +92,7 @@ deployment and serve paths are rejected.
 - explicit `ActivityWrapOptions` / `WorkflowWrapOptions` fields for `name`,
   `retries`, and `retry_delay_seconds`
 
-This package targets exactly Prefect 3.8.0. It subclasses `Flow` and preserves
+This package targets exactly Prefect 3.8.2. It subclasses `Flow` and preserves
 Prefect's async deployment dispatch contract; a Prefect upgrade requires
 promoting the pin together with this adapter's compatibility suite.
 
@@ -107,6 +110,8 @@ promoting the pin together with this adapter's compatibility suite.
   completion path to invoke it again. This adapter does not invent either
   policy.
 - Persisting Prefect run state into Temporaless records — Prefect's database is canonical for its run tracking.
+- Making `current_workflow()` available to an otherwise plain Prefect flow.
+  Enter a Temporaless `run` or wrapped ConnectRPC workflow boundary explicitly.
 - Two-way migration of existing Prefect `@flow` code to Temporaless storage — that's a separate, larger project.
 
 ## Direction

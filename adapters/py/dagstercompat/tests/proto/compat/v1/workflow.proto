@@ -1,0 +1,20 @@
+// Test-only application schema for the process-isolated Dagster proof.
+// This is not a Temporaless framework API and must not be imported by users.
+syntax = "proto3";
+
+package compat.v1;
+
+message RunRequest {
+  string workflow_id = 1;
+  string run_id = 2;
+  string value = 3;
+}
+
+message RunResponse {
+  string value = 1;
+  bool replayed = 2;
+}
+
+service WorkflowService {
+  rpc Run(RunRequest) returns (RunResponse);
+}

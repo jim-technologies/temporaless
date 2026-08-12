@@ -33,8 +33,9 @@ activity dispatch, durable waits, and caller-owned IDs.
 
 ## Prefect
 
-`adapters/py/prefectcompat` wraps async unary protobuf handlers with the real
-Prefect 3 flow/task APIs. It supports explicit name/retry options and encodes
+`adapters/py/prefectcompat` wraps async unary protobuf handlers with the real,
+exactly pinned Prefect 3.8.2 flow/task APIs. It supports explicit name/retry
+options and encodes
 workflow requests as deterministic protobuf binary inside a typed,
 JSON-safe deployment parameter. A scheduled worker therefore reconstructs the
 original protobuf request instead of Prefect replacing it with a display
@@ -56,11 +57,13 @@ claim that the two run-state machines are one lifecycle.
 ## Dagster
 
 There is no supported same-process Dagster adapter today. Dagster
-[`1.13.14`](https://github.com/dagster-io/dagster/releases/tag/1.13.14) requires
+[`1.13.17`](https://github.com/dagster-io/dagster/releases/tag/1.13.17) requires
 `protobuf>=4,<7` on Python 3.11+, while Temporaless requires protobuf 7.35.1 or
 newer. The official
-[`1.13.14` package metadata](https://github.com/dagster-io/dagster/blob/1.13.14/python_modules/dagster/pyproject.toml)
-and current Dagster main branch both retain that upper bound.
+[`1.13.17` package metadata](https://github.com/dagster-io/dagster/blob/1.13.17/python_modules/dagster/pyproject.toml)
+declares both that upper bound and `requires-python = ">=3.10,<3.15"`. The
+latest stable Dagster therefore cannot share Temporaless's protobuf 7 runtime,
+even though both support Python 3.14.
 
 The production-safe integration is process isolation:
 
@@ -86,6 +89,24 @@ Temporaless workflow service (protobuf >=7.35.1)
   Dagster interpreter, and do not let Dagster write Temporaless bucket records
   directly.
 
+`adapters/py/dagstercompat` is the executable gate for this boundary, not an
+installable package or same-process adapter. Its separately locked virtual uv
+environment contains Dagster 1.13.17, protobuf 6, and a tiny test-only
+generated application ConnectRPC client, but no Temporaless dependency or
+framework proto. A real Dagster job invokes a separate protobuf-7 process that
+uses the real Temporaless OpenDAL `fs` store and `connectworkflow` wrapper.
+Calling twice proves explicit workflow/run IDs cross unchanged, the duplicate
+replays the persisted response, and the workflow body side effect runs once.
+The gate compiles the one test application proto with Buf and checks both
+generated runtimes against that descriptor.
+
+That is deliberately a process-boundary proof, not a full Dagster workflow
+adapter. It does not exercise Temporaless activities or activity IDs, durable
+pending/error mapping, network-failure recovery, Dagster retries, schedules,
+sensors, or production concerns such as authentication and process
+supervision. Applications that claim any of those semantics must add their own
+end-to-end proof across the same isolated boundary.
+
 Same-process support can be reconsidered only after an official Dagster release
 permits protobuf 7 and an exact-Git-SHA combined installation plus real
 end-to-end job test passes.
@@ -104,16 +125,23 @@ Temporal workflow rather than expecting an import substitution.
 
 ## Minimum Integration Proof
 
-An orchestrator integration should not be called production-compatible until
-tests prove:
+The proof must match the compatibility claim. A narrow process-boundary gate,
+such as the current Dagster gate, should prove:
 
 - the exact locked framework SDK and orchestrator versions install together,
   or the processes are deliberately isolated;
 - a real generated protobuf request crosses the actual runtime/transport
   boundary and returns the declared response type;
-- explicit workflow/run/activity IDs are preserved across retries;
-- a duplicate attempt replays without repeating an already completed activity
-  side effect;
-- pending, terminal application, and network failures have documented states
-  on both sides;
+- explicit workflow/run IDs cross unchanged;
+- a duplicate invocation replays its persisted workflow response without
+  repeating the workflow body side effect;
 - no orchestrator SDK dependency leaks into Temporaless core packages.
+
+An adapter that claims production workflow-semantic compatibility must go
+further and prove every additional behavior it advertises. At minimum for
+activity-aware orchestration, that includes stable caller-owned activity IDs
+across orchestrator retries, replay without repeating completed activity side
+effects, and documented/tested handling for durable pending results, terminal
+application failures, and transport failures on both sides. Retry, timeout,
+schedule, signal, or deployment claims require corresponding real-runtime
+tests; passing the narrow boundary gate alone does not establish them.

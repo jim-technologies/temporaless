@@ -17,7 +17,8 @@ deployed remotely.
 `RecordQueryService`; it never invents cross-run scans over a point store. For
 small local/offline use, pass `adapters/go/scanquery`. Production inspectors,
 operational search, and exact retention sweeps should pass an indexed query
-adapter backed by SQL, DuckLake, or another rebuildable index.
+adapter backed by any rebuildable database, search engine, warehouse, or
+application-owned index.
 
 HTTP mounting is explicit:
 

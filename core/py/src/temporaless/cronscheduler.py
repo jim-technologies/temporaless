@@ -2,7 +2,10 @@
 
 Callers hand in a list of cron schedules and a dispatcher callback;
 ``tick(now)`` computes which schedules are due since the last fire and invokes
-the dispatcher with the schedule ID and fire time.
+the async dispatcher with the schedule ID and fire time. A fire is committed
+only after that callback returns successfully. The callback owns the mapping to
+the application's concrete protobuf workflow RPC; this module owns no workflow
+registry or transport.
 
 The scheduler is stateful but the state is fully serializable. For distributed
 or restartable use:
@@ -20,6 +23,7 @@ scheduled fire time when constructing ``WorkflowOptions``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -40,6 +44,8 @@ class Schedule:
 
 class Scheduler:
     def __init__(self, schedules: list[Schedule], dispatch: Dispatcher) -> None:
+        if not inspect.iscoroutinefunction(dispatch):
+            raise TypeError("dispatch must be an async function (define it with `async def`)")
         seen: set[str] = set()
         self._schedules: list[Schedule] = []
         self._cron: dict[str, croniter] = {}

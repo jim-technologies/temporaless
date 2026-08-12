@@ -13,7 +13,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/api v1.63.4
-	go.temporal.io/sdk v1.46.0
+	go.temporal.io/sdk v1.47.0
 	gocloud.dev v0.46.0
 	google.golang.org/protobuf v1.36.11
 )

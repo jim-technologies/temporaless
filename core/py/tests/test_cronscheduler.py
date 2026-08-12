@@ -195,6 +195,12 @@ def test_constructor_rejects_bad_input(schedules: list[Schedule]) -> None:
         Scheduler(schedules, _noop_dispatch)
 
 
+@pytest.mark.parametrize("dispatch", [None, lambda _id, _fire_time: None])
+def test_constructor_rejects_non_async_dispatch(dispatch) -> None:
+    with pytest.raises(TypeError, match="dispatch must be an async function"):
+        Scheduler([], dispatch)
+
+
 async def test_snapshot_and_restore_carry_state_across_processes() -> None:
     dispatched: list[datetime] = []
 

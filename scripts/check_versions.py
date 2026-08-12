@@ -48,6 +48,14 @@ PYPROJECTS = {
     "adapters/py/prefectcompat/pyproject.toml": "temporaless-prefectcompat",
     "adapters/py/temporalcompat/pyproject.toml": "temporaless-temporalcompat",
 }
+# Development-only uv environments are intentionally not distributable SDK
+# packages and do not mirror the repository release version.
+VIRTUAL_PYPROJECTS = {
+    "adapters/py/dagstercompat/pyproject.toml": (
+        "temporaless-dagster-boundary-test",
+        "adapters/py/dagstercompat/uv.lock",
+    ),
+}
 LOCK_PACKAGES = {
     "core/py/uv.lock": {
         "temporaless",
@@ -259,10 +267,11 @@ def main() -> int:
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "adapters/py").glob("*/pyproject.toml")
     }
-    if discovered_pyprojects != set(PYPROJECTS):
+    expected_pyprojects = set(PYPROJECTS) | set(VIRTUAL_PYPROJECTS)
+    if discovered_pyprojects != expected_pyprojects:
         errors.append(
             f"Python project inventory is {sorted(discovered_pyprojects)}; "
-            f"checker declares {sorted(PYPROJECTS)}"
+            f"checker declares {sorted(expected_pyprojects)}"
         )
     if set(PY_TYPED_MARKERS) != set(PYPROJECTS):
         errors.append(
@@ -273,11 +282,50 @@ def main() -> int:
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "adapters/py").glob("*/uv.lock")
     }
-    if discovered_locks != set(LOCK_PACKAGES):
+    virtual_locks = {lock for _name, lock in VIRTUAL_PYPROJECTS.values()}
+    expected_locks = set(LOCK_PACKAGES) | virtual_locks
+    if discovered_locks != expected_locks:
         errors.append(
             f"Python lock inventory is {sorted(discovered_locks)}; "
-            f"checker declares {sorted(LOCK_PACKAGES)}"
+            f"checker declares {sorted(expected_locks)}"
         )
+
+    for path, (expected_name, lock_path) in VIRTUAL_PYPROJECTS.items():
+        pyproject = read_toml(path)
+        project = pyproject.get("project", {})
+        if project.get("name") != expected_name:
+            errors.append(
+                f"{path} declares {project.get('name')!r}; expected {expected_name!r}"
+            )
+        if project.get("version") != "0.0.0":
+            errors.append(f"{path} virtual test project must use version '0.0.0'")
+        if project.get("dependencies") != []:
+            errors.append(
+                f"{path} virtual test project must have no runtime dependencies"
+            )
+        if pyproject.get("tool", {}).get("uv", {}).get("package") is not False:
+            errors.append(f"{path} must set tool.uv.package=false")
+        if "build-system" in pyproject:
+            errors.append(
+                f"{path} virtual test project must not declare a build system"
+            )
+        if (ROOT / path).parent.joinpath("src").exists():
+            errors.append(f"{path} virtual test project must not ship a src package")
+        if temporaless_requirements(pyproject):
+            errors.append(f"{path} must not depend on a Temporaless SDK package")
+
+        lock = read_toml(lock_path)
+        roots = [item for item in lock["package"] if item["name"] == expected_name]
+        if len(roots) != 1:
+            errors.append(
+                f"{lock_path} must contain one virtual {expected_name} root; "
+                f"found {len(roots)}"
+            )
+        elif roots[0].get("source") != {"virtual": "."}:
+            errors.append(
+                f"{lock_path} {expected_name} source must be virtual='.'; "
+                f"found {roots[0].get('source')!r}"
+            )
 
     for path, expected_name in PYPROJECTS.items():
         pyproject = read_toml(path)

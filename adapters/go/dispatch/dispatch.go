@@ -498,9 +498,12 @@ func (d *Dispatcher) evictExpiredTasks() {
 
 // Invoke decodes `payload` as the request type registered for `method`
 // and runs the registered handler with the given context. Intended for
-// queue-backed consumers: pull a message off Kafka / Rabbit / NATS /
-// SQS, hand its method-name + payload to `Invoke`, and use the returned
-// error to drive ack / nack.
+// queue-backed consumers: pull a message off Kafka / Rabbit / NATS
+// JetStream / SQS and hand its method-name + payload to `Invoke`. ACK an
+// expected direct workflow timer/event/dependency-pending error because that
+// is a durable continuation boundary. NACK infrastructure, activity, and
+// application failures. Use a concrete type switch rather than errors.Is or
+// errors.As: a joined error can carry both pending and infrastructure errors.
 //
 // Unlike `DoAsync`, `Invoke` runs the handler synchronously on the
 // caller's goroutine and uses the caller's `ctx`. The producer-side

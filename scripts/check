@@ -4,6 +4,8 @@ set -eu
 python3 scripts/check_versions.py
 buf lint
 buf format --diff --exit-code api
+buf lint adapters/py/dagstercompat/tests/proto
+buf format --diff --exit-code adapters/py/dagstercompat/tests/proto
 head_commit="$(git rev-parse HEAD)"
 release_tag="v$(tr -d '\n' < VERSION)"
 baseline_tag=""
@@ -59,13 +61,17 @@ if [ "${CI:-}" = "true" ]; then
     core/go/gen \
     core/py/src/buf \
     core/py/src/temporaless/v1 \
-    core/ts/src/gen
+    core/ts/src/gen \
+    adapters/py/dagstercompat/tests/gen \
+    adapters/py/dagstercompat/tests/server_gen
   generated_untracked="$(git ls-files --others --exclude-standard -- \
     api \
     core/go/gen \
     core/py/src/buf \
     core/py/src/temporaless/v1 \
-    core/ts/src/gen)"
+    core/ts/src/gen \
+    adapters/py/dagstercompat/tests/gen \
+    adapters/py/dagstercompat/tests/server_gen)"
   if [ -n "$generated_untracked" ]; then
     echo "Buf generation produced untracked files:" >&2
     echo "$generated_untracked" >&2
@@ -105,6 +111,12 @@ uv run --project adapters/py/connectworkflow ruff format --check adapters/py/con
 uv run --project adapters/py/connectworkflow ruff check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
 uv run --project adapters/py/connectworkflow ty check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
 uv run --project adapters/py/connectworkflow pytest adapters/py/connectworkflow/tests
+uv sync --project adapters/py/dagstercompat --locked
+uv run --project adapters/py/dagstercompat ruff format --check adapters/py/dagstercompat/tests
+uv run --project adapters/py/dagstercompat ruff check adapters/py/dagstercompat/tests
+uv run --project adapters/py/dagstercompat ty check adapters/py/dagstercompat/tests/test_process_boundary.py --extra-search-path adapters/py/dagstercompat/tests/gen
+uv run --project core/py ty check adapters/py/dagstercompat/tests/temporaless_server.py --extra-search-path adapters/py/dagstercompat/tests/server_gen
+uv run --project adapters/py/dagstercompat pytest adapters/py/dagstercompat/tests
 uv sync --project adapters/py/temporalcompat --locked
 uv run --project adapters/py/temporalcompat ruff format --check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
 uv run --project adapters/py/temporalcompat ruff check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests

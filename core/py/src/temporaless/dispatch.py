@@ -24,8 +24,17 @@ The surface mirrors ``adapters/go/dispatch`` and
 ``do_async`` / ``invoke`` / ``shutdown`` shape, same 15-second default
 drain, same "always wait for every spawned task" guarantee.
 
-Use :func:`temporaless.workflow.run` when you need at-least-once
-delivery across crashes; this module is for at-most-once + best-effort.
+The default in-process backend is at-most-once and best-effort. An external
+queue may durably accept and redeliver messages, but its ack / nack policy
+covers message transport only; it does not create Temporaless workflow or
+activity records. Have the consumer invoke :func:`temporaless.workflow.run`
+when execution of the handler itself needs durable checkpoints and replay.
+When that invocation raises an expected direct ``TimerPendingError``,
+``EventPendingError``, or ``WorkflowDependencyPendingError``, the current
+message has reached its durable continuation boundary and should be ACKed;
+the timer scanner or an application-owned event/dependency completion hook must
+enqueue the later invocation. Every other outcome, including claim contention
+or release failures, follows the deployment's retry/backoff/dead-letter policy.
 """
 
 from __future__ import annotations
@@ -332,8 +341,11 @@ class Dispatcher:
         and run the registered handler on the caller's task.
 
         Intended for queue-backed consumers: pull a message off Kafka /
-        Rabbit / NATS / SQS, hand its method-name + payload here, use
-        the raised exception (or its absence) to drive ack / nack.
+        Rabbit / NATS JetStream / SQS and hand its method-name + payload
+        here. ACK an expected direct durable-pending result; NACK
+        infrastructure, activity, and application failures. A remote
+        transport may need an application receipt when it erases that
+        distinction.
 
         Unlike :meth:`do_async`, ``invoke`` runs the handler
         synchronously on the caller's task and respects the caller's
