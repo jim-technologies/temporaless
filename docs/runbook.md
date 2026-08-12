@@ -24,6 +24,20 @@ identity.
 
 **Diagnose:**
 
+For a local OpenDAL `fs` deployment, inspect the run-scoped durable view
+without a query index:
+
+```sh
+temporaless --store-root /var/lib/temporaless describe-run \
+  --workflow-id the-stuck-one --run-id the-run-id
+```
+
+The command reports workflow, activity, timer, and event records, including
+retry attempts and opaque application payload metadata. Its several point
+reads are not an atomic history snapshot; see
+[`docs/operator-cli.md`](operator-cli.md). Use the equivalent authenticated
+record clients for a cloud deployment.
+
 ```python
 from temporaless.inspector import list_in_flight_workflows
 from temporaless_indexstore import IndexedStore

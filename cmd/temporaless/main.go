@@ -6,14 +6,17 @@
 // Cloud deployments should use authenticated RecordStoreService /
 // RecordQueryService clients or Invariant Protocol's generic TypeScript
 // projection instead of adding cloud credentials and drivers to this local
-// binary. Output is text by default; --json switches to protojson for machine
-// consumption.
+// binary. Output is text by default; --json emits Temporaless CLI JSON for
+// machine consumption. Application Any payloads stay transport-neutral as
+// exact typeUrl/valueBase64 envelopes because this generic binary does not
+// link application descriptors.
 //
 // Subcommands:
 //
 //	list-workflows   --status STATUS [--workflow-id ID]
 //	list-activities  --workflow-id ID --run-id RID
 //	get-workflow     --workflow-id ID --run-id RID
+//	describe-run     --workflow-id ID --run-id RID
 //	reset-workflow   --workflow-id ID --run-id RID
 //	reset-activity   --workflow-id ID --run-id RID --activity-id AID
 //	reset-event      --workflow-id ID --run-id RID --event-id EID
@@ -40,9 +43,9 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/inspector"
 	"github.com/jim-technologies/temporaless/adapters/go/janitor"
 	"github.com/jim-technologies/temporaless/adapters/go/scanquery"
+	"github.com/jim-technologies/temporaless/adapters/go/visualization"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -64,12 +67,13 @@ USAGE
 GLOBAL FLAGS
   --store-scheme   OpenDAL scheme (only "fs" is registered).
   --store-root     OpenDAL root path/bucket (required).
-  --json           Output records as protojson instead of text summaries.
+  --json           Output Temporaless CLI JSON instead of text summaries.
 
 SUBCOMMANDS
   list-workflows   List workflow records, optionally filtered by status.
   list-activities  List activity records under a (workflow_id, run_id).
   get-workflow     Read and print a workflow record.
+  describe-run     Read the run-scoped durable record view (claims are capability-reported).
   reset-workflow   Delete a workflow record so the next invocation re-executes.
   reset-activity   Delete an activity record so its body re-executes.
   reset-event      Delete a stored event record so wait_event re-raises pending.
@@ -111,7 +115,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	gfs.SetOutput(io.Discard) // surface our own usage instead of flag's
 	gfs.StringVar(&global.scheme, "store-scheme", "fs", "OpenDAL scheme")
 	gfs.StringVar(&global.root, "store-root", "", "OpenDAL root path/bucket")
-	gfs.BoolVar(&global.json, "json", false, "Output protojson instead of text summaries")
+	gfs.BoolVar(&global.json, "json", false, "Output Temporaless CLI JSON instead of text summaries")
 	if err := gfs.Parse(args); err != nil {
 		return err
 	}
@@ -143,6 +147,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return cmdListActivities(ctx, store, global, subArgs, stdout)
 	case "get-workflow":
 		return cmdGetWorkflow(ctx, store, global, subArgs, stdout)
+	case "describe-run":
+		var claimLister visualization.ClaimLister
+		if supported, ok := store.(visualization.ClaimLister); ok {
+			claimLister = supported
+		}
+		return cmdDescribeRun(ctx, store, claimLister, global, subArgs, stdout)
 	case "reset-workflow":
 		return cmdResetWorkflow(ctx, store, subArgs, stdout)
 	case "reset-activity":
@@ -526,7 +536,7 @@ func cmdTail(ctx context.Context, query storage.WorkflowQueryStore, g globalOpts
 // export -------------------------------------------------------------------
 
 // cmdExport bulk-decodes records under a prefix and emits one decoded
-// protojson object per line. Useful for ingesting audit data into any
+// Temporaless CLI JSON object per line. Useful for ingesting audit data into any
 // warehouse or analytics pipeline — operators don't need our decoder or
 // runtime; they just need bucket access and `temporaless export` to read the
 // binpb.
@@ -574,7 +584,7 @@ func cmdExport(
 	}
 
 	emit := func(message proto.Message) error {
-		data, err := protojson.Marshal(message)
+		data, err := marshalCLIProto(message)
 		if err != nil {
 			return err
 		}
@@ -731,19 +741,24 @@ func parseWorkflowStatus(s string) (temporalessv1.WorkflowStatus, error) {
 }
 
 func emitJSON(w io.Writer, message proto.Message) error {
-	data, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(message)
+	data, err := marshalCLIProto(message)
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(append(data, '\n'))
+	formatted, err := json.MarshalIndent(json.RawMessage(data), "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(formatted, '\n'))
 	return err
 }
 
 func emitJSONList[T proto.Message](w io.Writer, records []T) error {
-	// emit as a JSON array of protojson messages
+	// Emit as a JSON array of CLI messages. Application Any
+	// payloads stay opaque so this generic CLI never needs app descriptors.
 	items := make([]json.RawMessage, 0, len(records))
 	for _, r := range records {
-		b, err := protojson.Marshal(r)
+		b, err := marshalCLIProto(r)
 		if err != nil {
 			return err
 		}
