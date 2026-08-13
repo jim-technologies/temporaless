@@ -14,9 +14,19 @@ Operational notes:
   `rebuild()` repairs the index.
 - `rebuild()` is idempotent and stages rows before an atomic merge. If rebuild
   is interrupted, the previous index stays visible. Rows written through the
-  same `IndexedStore` while rebuild walks the bucket survive the merge. Corrupt
-  bucket records are skipped and counted; records that disappear between LIST
-  and GET are treated as ordinary delete races.
+  same SQLite database while rebuild walks the bucket are tracked in a
+  temporary mutation journal; successful index updates and deletes win over
+  scanned rows. A failed best-effort SQLite update and an external bucket
+  writer bypass that journal, so quiesce external writers or reconcile again.
+  Exactly one rebuild coordinator may use a SQLite database at a time; a
+  second is rejected. After a process crash leaves rebuild staging state,
+  verify no rebuild is active and recreate the derived SQLite database.
+  Corrupt bucket records are skipped and counted; records that disappear
+  between LIST and GET are treated as ordinary delete races.
+- Page tokens are opaque and bound to their filters and ordering. The SQLite
+  reference uses offsets, so concurrent inserts/deletes between pages provide
+  weak cross-page consistency; production indexes should use an epoch-bound
+  keyset cursor when stable multi-page snapshots are required.
 - Indexed `due_timers()` scans all SQLite rows with `TIMER_STATUS_SCHEDULED`
   and reloads each timer/workflow pair from the bucket so stale index rows can
   self-heal. Runtime-created scheduled timers always set `fire_at`; malformed
@@ -31,3 +41,6 @@ Operational notes:
   search engines, warehouses, or remote index services implement the generated
   `RecordQueryService` (or the matching language-local `QueryStore` seam) in a
   separate adapter without changing core workflow code.
+
+For the production ClickHouse query-index and Iceberg analytical-projection
+contract, see [`docs/clickhouse-iceberg.md`](../../../docs/clickhouse-iceberg.md).

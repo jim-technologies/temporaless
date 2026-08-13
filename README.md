@@ -149,6 +149,7 @@ credentials.
 - [`docs/dependencies.md`](docs/dependencies.md) — what lives where (Flox vs go.mod vs uv)
 - [`docs/benchmarks.md`](docs/benchmarks.md) — Go and Python benchmark suites with cross-language baseline numbers
 - [`docs/analytics.md`](docs/analytics.md) — bucket archive, optional query index, and offline protobuf analytics
+- [`docs/clickhouse-iceberg.md`](docs/clickhouse-iceberg.md) — production ClickHouse query projection and Iceberg analytics/archive pattern
 - [`docs/sdks.md`](docs/sdks.md) — cross-SDK surface comparison + capability matrix (Go / Python / Rust / TypeScript)
 
 ## Development

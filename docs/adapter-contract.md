@@ -80,3 +80,24 @@ conflict outcomes.
 `PutEvent` is a separate low-level replace primitive for operators, migrations,
 and fixtures. Adapters must not silently route application `DeliverEvent`
 through it.
+
+## Query And Projection Adapters
+
+`RecordQueryService` implementations are derived indexes. They may store keys
+and metadata, but every returned protobuf record and every destructive decision
+must be rehydrated and revalidated against the authoritative point store.
+Adapters must document ordering, pagination-token scope, projection lag,
+source-version ordering, tombstones, and reconciliation. Ordering must be total
+and contain every protobuf identity component exactly once, appending missing
+components as tie-breakers. Activity ordering therefore includes `namespace`,
+`workflow_id`, `run_id`, and `activity_id` in the final sort tuple.
+
+An eventually updated query backend must delegate or union `DueTimers` with the
+authoritative due ledger so a projection miss cannot lose a wake. `Sweep` may
+use an index only for candidate selection and must run the normal authoritative,
+claim-aware preflight before deletion. If either method cannot meet that
+contract, a generated service implementation should return `UNIMPLEMENTED`
+instead of claiming the complete language-local `QueryStore` interface.
+
+ClickHouse and Iceberg-specific application of these rules is documented in
+[`clickhouse-iceberg.md`](clickhouse-iceberg.md).

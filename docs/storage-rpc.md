@@ -135,6 +135,14 @@ responses, and semantics—not a database product, query language, or physical
 schema. The Go `scanquery` adapter is an explicit offline/development fallback
 and never expands the core bucket interface.
 
+ClickHouse can implement this service as a low-latency metadata projection;
+Iceberg fits batched analytics/archive and, at most, eventual listing
+candidates. When either implements `RecordQueryService`, its query results must
+hydrate from the authoritative point store; an analytics-only Iceberg sink has
+no query obligation. Neither may become the replay, claim, event-delivery, or
+timer-correctness path. The complete integration contract is in
+[`clickhouse-iceberg.md`](clickhouse-iceberg.md).
+
 The bundled `cmd/temporaless` binary is another offline/development fallback:
 it registers only OpenDAL `fs`. For cloud stores, use authenticated
 ConnectStore/RecordQueryService clients or generated remote operator tooling

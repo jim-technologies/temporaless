@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import threading
+import uuid
 from collections.abc import AsyncIterable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -53,6 +55,20 @@ _REBUILD_TIMERS_TABLE = "_rebuild_timers"
 _REBUILD_EXISTING_WORKFLOWS_TABLE = "_rebuild_existing_workflows"
 _REBUILD_EXISTING_ACTIVITIES_TABLE = "_rebuild_existing_activities"
 _REBUILD_EXISTING_TIMERS_TABLE = "_rebuild_existing_timers"
+_REBUILD_DIRTY_WORKFLOWS_TABLE = "_rebuild_dirty_workflows"
+_REBUILD_DIRTY_ACTIVITIES_TABLE = "_rebuild_dirty_activities"
+_REBUILD_DIRTY_TIMERS_TABLE = "_rebuild_dirty_timers"
+_REBUILD_DIRTY_RUNS_TABLE = "_rebuild_dirty_runs"
+_REBUILD_OWNER_TABLE = "_rebuild_owner"
+_REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER = "_rebuild_track_workflows_insert"
+_REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER = "_rebuild_track_workflows_update"
+_REBUILD_TRACK_WORKFLOWS_DELETE_TRIGGER = "_rebuild_track_workflows_delete"
+_REBUILD_TRACK_ACTIVITIES_INSERT_TRIGGER = "_rebuild_track_activities_insert"
+_REBUILD_TRACK_ACTIVITIES_UPDATE_TRIGGER = "_rebuild_track_activities_update"
+_REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER = "_rebuild_track_activities_delete"
+_REBUILD_TRACK_TIMERS_INSERT_TRIGGER = "_rebuild_track_timers_insert"
+_REBUILD_TRACK_TIMERS_UPDATE_TRIGGER = "_rebuild_track_timers_update"
+_REBUILD_TRACK_TIMERS_DELETE_TRIGGER = "_rebuild_track_timers_delete"
 
 
 class IndexedStore:
@@ -84,6 +100,7 @@ class IndexedStore:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._rebuild_lock = asyncio.Lock()
         self._init_schema()
 
     @classmethod
@@ -125,7 +142,7 @@ class IndexedStore:
         deleted = await self._inner.delete_workflow(key)
         if deleted:
             try:
-                await self._run_db(lambda conn: _delete_workflow_row(conn, key))
+                await self._run_db(lambda conn: _delete_workflow_row(conn, key, mark_dirty=True))
             except Exception:
                 _LOGGER.exception("workflow index delete failed; rebuild will remove the stale row")
         return deleted
@@ -141,7 +158,7 @@ class IndexedStore:
                     deleted += 1
         deleted += await self._inner.delete_run(key)
         try:
-            await self._run_db(lambda conn: _delete_run_rows(conn, key))
+            await self._run_db(lambda conn: _delete_run_rows(conn, key, mark_dirty=True))
         except Exception:
             _LOGGER.exception("run index delete failed; rebuild will remove stale rows")
         return deleted
@@ -163,7 +180,7 @@ class IndexedStore:
         deleted = await self._inner.delete_activity(key)
         if deleted:
             try:
-                await self._run_db(lambda conn: _delete_activity_row(conn, key))
+                await self._run_db(lambda conn: _delete_activity_row(conn, key, mark_dirty=True))
             except Exception:
                 _LOGGER.exception("activity index delete failed; rebuild will remove the stale row")
         return deleted
@@ -192,7 +209,7 @@ class IndexedStore:
         deleted = await self._inner.delete_timer(key)
         if deleted:
             try:
-                await self._run_db(lambda conn: _delete_timer_row(conn, key))
+                await self._run_db(lambda conn: _delete_timer_row(conn, key, mark_dirty=True))
             except Exception:
                 _LOGGER.exception("timer index delete failed; rebuild will remove the stale row")
         return deleted
@@ -266,6 +283,7 @@ class IndexedStore:
         # This keeps pages full even when stale rows are repaired or pruned and
         # makes the returned offset point at the first unreturned valid row.
         select_size = 0 if page_size == 0 else 1
+        initial_cursor = page_token
         cursor = page_token
         records: list[temporaless_pb2.WorkflowRecord] = []
         while True:
@@ -309,8 +327,14 @@ class IndexedStore:
 
                 # Refresh every selected projection before applying the
                 # caller's filter. A stale FAILED/COMPLETED row must never be
-                # returned merely because SQLite missed the latest write.
+                # returned merely because SQLite missed the latest write. If
+                # any indexed metadata changed, reselect at the same offset:
+                # an updated sort field may have moved this row.
+                projection_current = _workflow_row_matches_record(row, record)
                 await self._run_db(lambda conn, record=record: _upsert_workflow(conn, record))
+                if not projection_current:
+                    removed_current_row = True
+                    continue
                 if not _workflow_matches_query(record, namespace, workflow_id, status):
                     removed_current_row = True
                     continue
@@ -319,6 +343,10 @@ class IndexedStore:
                     return records, row_cursor
                 records.append(record)
 
+            if removed_current_row and (records or page_size == 0):
+                records.clear()
+                cursor = initial_cursor
+                continue
             if page_size == 0:
                 return records, ""
             if removed_current_row:
@@ -345,6 +373,7 @@ class IndexedStore:
             raise ValueError("page_size must be >= 0")
 
         select_size = 0 if page_size == 0 else 1
+        initial_cursor = page_token
         cursor = page_token
         records: list[temporaless_pb2.ActivityRecord] = []
         while True:
@@ -383,7 +412,11 @@ class IndexedStore:
                     removed_current_row = True
                     continue
 
+                projection_current = _activity_row_matches_record(row, record)
                 await self._run_db(lambda conn, record=record: _upsert_activity(conn, record))
+                if not projection_current:
+                    removed_current_row = True
+                    continue
                 if not _activity_matches_query(record, namespace, workflow_id, run_id, status):
                     removed_current_row = True
                     continue
@@ -392,6 +425,10 @@ class IndexedStore:
                     return records, row_cursor
                 records.append(record)
 
+            if removed_current_row and (records or page_size == 0):
+                records.clear()
+                cursor = initial_cursor
+                continue
             if page_size == 0:
                 return records, ""
             if removed_current_row:
@@ -554,64 +591,81 @@ class IndexedStore:
         """Rebuild the whole index from a populated v2 bucket.
 
         This is the one sanctioned full bucket walk; it lives in the optional
-        query adapter, not in the core store protocol.
+        query adapter, not in the core store protocol. Mutations made through
+        this SQLite index during the walk win over the scanned snapshot.
         """
         if self._operator is None:
             raise ValueError("rebuild requires an OpenDAL operator")
-        skipped = 0
-        await self._run_db(_reset_rebuild_index)
-        try:
-            async for path in _walk_binpb(self._operator, "temporaless/v2/"):
-                kind = _v2_record_kind(path)
-                if kind == "workflow":
-                    record, count_skipped = await _read_rebuild_record(
-                        self._operator,
-                        path,
-                        temporaless_pb2.WorkflowRecord,
-                        _validate_workflow_record,
-                    )
-                    if record is None:
-                        if count_skipped:
-                            skipped += 1
-                        continue
-                    await self._run_db(
-                        lambda conn, record=record: _upsert_workflow(
-                            conn, record, table=_REBUILD_WORKFLOWS_TABLE
+        async with self._rebuild_lock:
+            rebuild_owner = uuid.uuid4().hex
+            skipped = 0
+            rebuild_error: BaseException | None = None
+            try:
+                await self._run_db(lambda conn: _reset_rebuild_index(conn, owner=rebuild_owner))
+                async for path in _walk_binpb(self._operator, "temporaless/v2/"):
+                    kind = _v2_record_kind(path)
+                    if kind == "workflow":
+                        record, count_skipped = await _read_rebuild_record(
+                            self._operator,
+                            path,
+                            temporaless_pb2.WorkflowRecord,
+                            _validate_workflow_record,
                         )
-                    )
-                elif kind == "activity":
-                    record, count_skipped = await _read_rebuild_record(
-                        self._operator,
-                        path,
-                        temporaless_pb2.ActivityRecord,
-                        _validate_activity_record,
-                    )
-                    if record is None:
-                        if count_skipped:
-                            skipped += 1
-                        continue
-                    await self._run_db(
-                        lambda conn, record=record: _upsert_activity(
-                            conn, record, table=_REBUILD_ACTIVITIES_TABLE
+                        if record is None:
+                            if count_skipped:
+                                skipped += 1
+                            continue
+                        await self._run_db(
+                            lambda conn, record=record: _upsert_workflow(
+                                conn, record, table=_REBUILD_WORKFLOWS_TABLE
+                            )
                         )
-                    )
-                elif kind == "timer":
-                    record, count_skipped = await _read_rebuild_record(
-                        self._operator, path, temporaless_pb2.TimerRecord, _validate_timer_record
-                    )
-                    if record is None:
-                        if count_skipped:
-                            skipped += 1
-                        continue
-                    await self._run_db(
-                        lambda conn, record=record: _upsert_timer(
-                            conn, record, table=_REBUILD_TIMERS_TABLE
+                    elif kind == "activity":
+                        record, count_skipped = await _read_rebuild_record(
+                            self._operator,
+                            path,
+                            temporaless_pb2.ActivityRecord,
+                            _validate_activity_record,
                         )
+                        if record is None:
+                            if count_skipped:
+                                skipped += 1
+                            continue
+                        await self._run_db(
+                            lambda conn, record=record: _upsert_activity(
+                                conn, record, table=_REBUILD_ACTIVITIES_TABLE
+                            )
+                        )
+                    elif kind == "timer":
+                        record, count_skipped = await _read_rebuild_record(
+                            self._operator,
+                            path,
+                            temporaless_pb2.TimerRecord,
+                            _validate_timer_record,
+                        )
+                        if record is None:
+                            if count_skipped:
+                                skipped += 1
+                            continue
+                        await self._run_db(
+                            lambda conn, record=record: _upsert_timer(
+                                conn, record, table=_REBUILD_TIMERS_TABLE
+                            )
+                        )
+                await self._run_db(_swap_rebuild_index)
+            except BaseException as exc:
+                rebuild_error = exc
+                raise
+            finally:
+                try:
+                    await asyncio.shield(
+                        self._run_db(lambda conn: _drop_rebuild_index(conn, owner=rebuild_owner))
                     )
-            await self._run_db(_swap_rebuild_index)
-        finally:
-            await self._run_db(_drop_rebuild_index)
-        return skipped
+                except sqlite3.OperationalError:
+                    if rebuild_error is None:
+                        raise
+                    _LOGGER.exception("failed to clean rebuild staging state after rebuild failure")
+            return skipped
 
     async def close(self) -> None:
         """Close the SQLite connection without blocking the event loop."""
@@ -839,14 +893,30 @@ def _validate_table(table: str, allowed: set[str]) -> None:
         raise ValueError(f"unsupported index table {table!r}")
 
 
-def _delete_workflow_row(conn: sqlite3.Connection, key: WorkflowKey) -> None:
+def _delete_workflow_row(
+    conn: sqlite3.Connection,
+    key: WorkflowKey,
+    *,
+    mark_dirty: bool = False,
+) -> None:
     conn.execute(
         "DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?",
         (key.namespace, key.workflow_id, key.run_id),
     )
+    if mark_dirty:
+        _mark_rebuild_dirty(
+            conn,
+            _REBUILD_DIRTY_WORKFLOWS_TABLE,
+            (key.namespace, key.workflow_id, key.run_id),
+        )
 
 
-def _delete_activity_row(conn: sqlite3.Connection, key: ActivityKey) -> None:
+def _delete_activity_row(
+    conn: sqlite3.Connection,
+    key: ActivityKey,
+    *,
+    mark_dirty: bool = False,
+) -> None:
     conn.execute(
         """
         DELETE FROM activities
@@ -854,9 +924,20 @@ def _delete_activity_row(conn: sqlite3.Connection, key: ActivityKey) -> None:
         """,
         (key.namespace, key.workflow_id, key.run_id, key.activity_id),
     )
+    if mark_dirty:
+        _mark_rebuild_dirty(
+            conn,
+            _REBUILD_DIRTY_ACTIVITIES_TABLE,
+            (key.namespace, key.workflow_id, key.run_id, key.activity_id),
+        )
 
 
-def _delete_timer_row(conn: sqlite3.Connection, key: TimerKey) -> None:
+def _delete_timer_row(
+    conn: sqlite3.Connection,
+    key: TimerKey,
+    *,
+    mark_dirty: bool = False,
+) -> None:
     conn.execute(
         """
         DELETE FROM timers
@@ -864,13 +945,56 @@ def _delete_timer_row(conn: sqlite3.Connection, key: TimerKey) -> None:
         """,
         (key.namespace, key.workflow_id, key.run_id, key.timer_id),
     )
+    if mark_dirty:
+        _mark_rebuild_dirty(
+            conn,
+            _REBUILD_DIRTY_TIMERS_TABLE,
+            (key.namespace, key.workflow_id, key.run_id, key.timer_id),
+        )
 
 
-def _delete_run_rows(conn: sqlite3.Connection, key: WorkflowKey) -> None:
+def _delete_run_rows(
+    conn: sqlite3.Connection,
+    key: WorkflowKey,
+    *,
+    mark_dirty: bool = False,
+) -> None:
     params = (key.namespace, key.workflow_id, key.run_id)
     conn.execute("DELETE FROM activities WHERE namespace=? AND workflow_id=? AND run_id=?", params)
     conn.execute("DELETE FROM timers WHERE namespace=? AND workflow_id=? AND run_id=?", params)
     conn.execute("DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?", params)
+    if mark_dirty:
+        _mark_rebuild_run_dirty(conn, key)
+
+
+def _mark_rebuild_dirty(
+    conn: sqlite3.Connection,
+    table: str,
+    values: tuple[str, ...],
+) -> None:
+    if not _table_exists(conn, table):
+        return
+    placeholders = ", ".join("?" for _ in values)
+    conn.execute(
+        f"INSERT INTO {table} VALUES({placeholders}) ON CONFLICT DO NOTHING",
+        values,
+    )
+
+
+def _mark_rebuild_run_dirty(conn: sqlite3.Connection, key: WorkflowKey) -> None:
+    params = (key.namespace, key.workflow_id, key.run_id)
+    _mark_rebuild_dirty(conn, _REBUILD_DIRTY_RUNS_TABLE, params)
+    _mark_rebuild_dirty(conn, _REBUILD_DIRTY_WORKFLOWS_TABLE, params)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _due_timer_sort_key(item: DueTimer) -> tuple[datetime, str, str, str, str]:
@@ -912,6 +1036,7 @@ def _select_workflows(
         page_size,
         page_token,
         allowed_order={"created_at", "completed_at", "workflow_id", "run_id", "status"},
+        key_columns=("namespace", "workflow_id", "run_id"),
     )
 
 
@@ -926,6 +1051,21 @@ def _workflow_matches_query(
         (not namespace or key.namespace == namespace)
         and (not workflow_id or key.workflow_id == workflow_id)
         and (status == temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED or record.status == status)
+    )
+
+
+def _workflow_row_matches_record(
+    row: sqlite3.Row,
+    record: temporaless_pb2.WorkflowRecord,
+) -> bool:
+    key = workflow_key_from_proto(record.key)
+    return (
+        row["namespace"] == key.namespace
+        and row["workflow_id"] == key.workflow_id
+        and row["run_id"] == key.run_id
+        and row["status"] == int(record.status)
+        and row["created_at"] == _ts(record, "created_at")
+        and row["completed_at"] == _ts(record, "completed_at")
     )
 
 
@@ -962,6 +1102,7 @@ def _select_activities(
         page_size,
         page_token,
         allowed_order={"created_at", "completed_at", "activity_id", "status"},
+        key_columns=("namespace", "workflow_id", "run_id", "activity_id"),
     )
 
 
@@ -981,6 +1122,22 @@ def _activity_matches_query(
     )
 
 
+def _activity_row_matches_record(
+    row: sqlite3.Row,
+    record: temporaless_pb2.ActivityRecord,
+) -> bool:
+    key = activity_key_from_proto(record.key)
+    return (
+        row["namespace"] == key.namespace
+        and row["workflow_id"] == key.workflow_id
+        and row["run_id"] == key.run_id
+        and row["activity_id"] == key.activity_id
+        and row["status"] == int(record.status)
+        and row["created_at"] == _ts(record, "created_at")
+        and row["completed_at"] == _ts(record, "completed_at")
+    )
+
+
 def _select_rows(
     conn: sqlite3.Connection,
     table: str,
@@ -991,8 +1148,11 @@ def _select_rows(
     page_token: str,
     *,
     allowed_order: set[str],
+    key_columns: tuple[str, ...],
 ) -> tuple[list[sqlite3.Row], str]:
-    offset = _decode_offset(page_token)
+    order_sql = _order_by_sql(order_by, allowed_order, key_columns=key_columns)
+    query_fingerprint = _query_fingerprint(table, where, params, order_sql)
+    offset = _decode_offset(page_token, query_fingerprint)
     limit_sql = ""
     limit_params: list[object] = []
     if page_size < 0:
@@ -1000,9 +1160,11 @@ def _select_rows(
     if page_size > 0:
         limit_sql = " LIMIT ? OFFSET ?"
         limit_params.extend([page_size + 1, offset])
+    elif offset > 0:
+        limit_sql = " LIMIT -1 OFFSET ?"
+        limit_params.append(offset)
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
-    order_sql = _order_by_sql(order_by, allowed_order)
     rows = list(
         conn.execute(
             f"SELECT * FROM {table}{where_sql} ORDER BY {order_sql}{limit_sql}",
@@ -1011,7 +1173,7 @@ def _select_rows(
     )
     if page_size <= 0 or len(rows) <= page_size:
         return rows, ""
-    return rows[:page_size], str(offset + page_size)
+    return rows[:page_size], _encode_offset(offset + page_size, query_fingerprint)
 
 
 def _select_sweep(conn: sqlite3.Connection, namespace: str, cutoff: str) -> list[sqlite3.Row]:
@@ -1032,10 +1194,13 @@ def _select_due_timers(conn: sqlite3.Connection, namespace: str, now: str) -> li
     return list(conn.execute(f"SELECT * FROM timers WHERE {where} ORDER BY fire_at ASC", params))
 
 
-def _reset_rebuild_index(conn: sqlite3.Connection) -> None:
-    _drop_rebuild_index(conn)
-    conn.executescript(
-        f"""
+def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
+    try:
+        conn.executescript(
+            f"""
+        BEGIN IMMEDIATE;
+        CREATE TABLE {_REBUILD_OWNER_TABLE}(owner TEXT PRIMARY KEY);
+        INSERT INTO {_REBUILD_OWNER_TABLE}(owner) VALUES('{owner}');
         CREATE TABLE {_REBUILD_WORKFLOWS_TABLE} AS SELECT * FROM workflows WHERE 0;
         CREATE TABLE {_REBUILD_ACTIVITIES_TABLE} AS SELECT * FROM activities WHERE 0;
         CREATE TABLE {_REBUILD_TIMERS_TABLE} AS SELECT * FROM timers WHERE 0;
@@ -1045,22 +1210,118 @@ def _reset_rebuild_index(conn: sqlite3.Connection) -> None:
             SELECT namespace, workflow_id, run_id, activity_id FROM activities;
         CREATE TABLE {_REBUILD_EXISTING_TIMERS_TABLE} AS
             SELECT namespace, workflow_id, run_id, timer_id FROM timers;
+        CREATE TABLE {_REBUILD_DIRTY_WORKFLOWS_TABLE} AS
+            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0;
+        CREATE TABLE {_REBUILD_DIRTY_ACTIVITIES_TABLE} AS
+            SELECT namespace, workflow_id, run_id, activity_id FROM activities WHERE 0;
+        CREATE TABLE {_REBUILD_DIRTY_TIMERS_TABLE} AS
+            SELECT namespace, workflow_id, run_id, timer_id FROM timers WHERE 0;
+        CREATE TABLE {_REBUILD_DIRTY_RUNS_TABLE} AS
+            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0;
         CREATE UNIQUE INDEX {_REBUILD_WORKFLOWS_TABLE}_pk
             ON {_REBUILD_WORKFLOWS_TABLE}(namespace, workflow_id, run_id);
         CREATE UNIQUE INDEX {_REBUILD_ACTIVITIES_TABLE}_pk
             ON {_REBUILD_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id);
         CREATE UNIQUE INDEX {_REBUILD_TIMERS_TABLE}_pk
             ON {_REBUILD_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id);
+        CREATE UNIQUE INDEX {_REBUILD_DIRTY_WORKFLOWS_TABLE}_pk
+            ON {_REBUILD_DIRTY_WORKFLOWS_TABLE}(namespace, workflow_id, run_id);
+        CREATE UNIQUE INDEX {_REBUILD_DIRTY_ACTIVITIES_TABLE}_pk
+            ON {_REBUILD_DIRTY_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id);
+        CREATE UNIQUE INDEX {_REBUILD_DIRTY_TIMERS_TABLE}_pk
+            ON {_REBUILD_DIRTY_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id);
+        CREATE UNIQUE INDEX {_REBUILD_DIRTY_RUNS_TABLE}_pk
+            ON {_REBUILD_DIRTY_RUNS_TABLE}(namespace, workflow_id, run_id);
+
+        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER}
+        AFTER INSERT ON workflows BEGIN
+            INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER}
+        AFTER UPDATE ON workflows BEGIN
+            INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id)
+                ON CONFLICT DO NOTHING;
+            INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_DELETE_TRIGGER}
+        AFTER DELETE ON workflows BEGIN
+            INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id)
+                ON CONFLICT DO NOTHING;
+        END;
+
+        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_INSERT_TRIGGER}
+        AFTER INSERT ON activities BEGIN
+            INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.activity_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_UPDATE_TRIGGER}
+        AFTER UPDATE ON activities BEGIN
+            INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.activity_id)
+                ON CONFLICT DO NOTHING;
+            INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.activity_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER}
+        AFTER DELETE ON activities BEGIN
+            INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.activity_id)
+                ON CONFLICT DO NOTHING;
+        END;
+
+        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_INSERT_TRIGGER}
+        AFTER INSERT ON timers BEGIN
+            INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.timer_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_UPDATE_TRIGGER}
+        AFTER UPDATE ON timers BEGIN
+            INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.timer_id)
+                ON CONFLICT DO NOTHING;
+            INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
+                VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.timer_id)
+                ON CONFLICT DO NOTHING;
+        END;
+        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_DELETE_TRIGGER}
+        AFTER DELETE ON timers BEGIN
+            INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
+                VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.timer_id)
+                ON CONFLICT DO NOTHING;
+        END;
         """
-    )
+        )
+    except sqlite3.OperationalError as exc:
+        if "already exists" in str(exc):
+            raise RuntimeError(
+                "another index rebuild is in progress or a crashed rebuild requires cleanup"
+            ) from exc
+        raise
 
 
 def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
+    # The connection lock serializes this transaction with write-through index
+    # updates from this instance. BEGIN IMMEDIATE also prevents another SQLite
+    # connection from writing after the tracking triggers are removed and
+    # before the staged merge commits.
+    conn.execute("BEGIN IMMEDIATE")
+    _drop_rebuild_tracking_triggers(conn)
     _delete_rows_absent_from_rebuild(
         conn,
         live_table=_TIMERS_TABLE,
         existing_table=_REBUILD_EXISTING_TIMERS_TABLE,
         rebuild_table=_REBUILD_TIMERS_TABLE,
+        dirty_table=_REBUILD_DIRTY_TIMERS_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id", "timer_id"),
     )
     _delete_rows_absent_from_rebuild(
@@ -1068,6 +1329,8 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         live_table=_ACTIVITIES_TABLE,
         existing_table=_REBUILD_EXISTING_ACTIVITIES_TABLE,
         rebuild_table=_REBUILD_ACTIVITIES_TABLE,
+        dirty_table=_REBUILD_DIRTY_ACTIVITIES_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id", "activity_id"),
     )
     _delete_rows_absent_from_rebuild(
@@ -1075,11 +1338,34 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         live_table=_WORKFLOWS_TABLE,
         existing_table=_REBUILD_EXISTING_WORKFLOWS_TABLE,
         rebuild_table=_REBUILD_WORKFLOWS_TABLE,
+        dirty_table=_REBUILD_DIRTY_WORKFLOWS_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id"),
     )
-    conn.execute(f"INSERT OR REPLACE INTO workflows SELECT * FROM {_REBUILD_WORKFLOWS_TABLE}")
-    conn.execute(f"INSERT OR REPLACE INTO activities SELECT * FROM {_REBUILD_ACTIVITIES_TABLE}")
-    conn.execute(f"INSERT OR REPLACE INTO timers SELECT * FROM {_REBUILD_TIMERS_TABLE}")
+    _merge_rebuild_rows(
+        conn,
+        live_table=_WORKFLOWS_TABLE,
+        rebuild_table=_REBUILD_WORKFLOWS_TABLE,
+        dirty_table=_REBUILD_DIRTY_WORKFLOWS_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
+        key_columns=("namespace", "workflow_id", "run_id"),
+    )
+    _merge_rebuild_rows(
+        conn,
+        live_table=_ACTIVITIES_TABLE,
+        rebuild_table=_REBUILD_ACTIVITIES_TABLE,
+        dirty_table=_REBUILD_DIRTY_ACTIVITIES_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
+        key_columns=("namespace", "workflow_id", "run_id", "activity_id"),
+    )
+    _merge_rebuild_rows(
+        conn,
+        live_table=_TIMERS_TABLE,
+        rebuild_table=_REBUILD_TIMERS_TABLE,
+        dirty_table=_REBUILD_DIRTY_TIMERS_TABLE,
+        dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
+        key_columns=("namespace", "workflow_id", "run_id", "timer_id"),
+    )
 
 
 def _delete_rows_absent_from_rebuild(
@@ -1088,6 +1374,8 @@ def _delete_rows_absent_from_rebuild(
     live_table: str,
     existing_table: str,
     rebuild_table: str,
+    dirty_table: str,
+    dirty_runs_table: str,
     key_columns: tuple[str, ...],
 ) -> None:
     live_match_existing = " AND ".join(
@@ -1095,6 +1383,13 @@ def _delete_rows_absent_from_rebuild(
     )
     live_match_rebuild = " AND ".join(
         f"{rebuild_table}.{column}={live_table}.{column}" for column in key_columns
+    )
+    live_match_dirty = " AND ".join(
+        f"{dirty_table}.{column}={live_table}.{column}" for column in key_columns
+    )
+    live_match_dirty_run = " AND ".join(
+        f"{dirty_runs_table}.{column}={live_table}.{column}"
+        for column in ("namespace", "workflow_id", "run_id")
     )
     conn.execute(
         f"""
@@ -1107,23 +1402,96 @@ def _delete_rows_absent_from_rebuild(
             SELECT 1 FROM {rebuild_table}
             WHERE {live_match_rebuild}
         )
+        AND NOT EXISTS (
+            SELECT 1 FROM {dirty_table}
+            WHERE {live_match_dirty}
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM {dirty_runs_table}
+            WHERE {live_match_dirty_run}
+        )
         """
     )
 
 
-def _drop_rebuild_index(conn: sqlite3.Connection) -> None:
+def _merge_rebuild_rows(
+    conn: sqlite3.Connection,
+    *,
+    live_table: str,
+    rebuild_table: str,
+    dirty_table: str,
+    dirty_runs_table: str,
+    key_columns: tuple[str, ...],
+) -> None:
+    rebuild_match_dirty = " AND ".join(
+        f"{dirty_table}.{column}={rebuild_table}.{column}" for column in key_columns
+    )
+    rebuild_match_dirty_run = " AND ".join(
+        f"{dirty_runs_table}.{column}={rebuild_table}.{column}"
+        for column in ("namespace", "workflow_id", "run_id")
+    )
+    conn.execute(
+        f"""
+        INSERT OR REPLACE INTO {live_table}
+        SELECT {rebuild_table}.* FROM {rebuild_table}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {dirty_table}
+            WHERE {rebuild_match_dirty}
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM {dirty_runs_table}
+            WHERE {rebuild_match_dirty_run}
+        )
+        """
+    )
+
+
+def _drop_rebuild_tracking_triggers(conn: sqlite3.Connection) -> None:
+    for trigger in (
+        _REBUILD_TRACK_TIMERS_DELETE_TRIGGER,
+        _REBUILD_TRACK_TIMERS_UPDATE_TRIGGER,
+        _REBUILD_TRACK_TIMERS_INSERT_TRIGGER,
+        _REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER,
+        _REBUILD_TRACK_ACTIVITIES_UPDATE_TRIGGER,
+        _REBUILD_TRACK_ACTIVITIES_INSERT_TRIGGER,
+        _REBUILD_TRACK_WORKFLOWS_DELETE_TRIGGER,
+        _REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER,
+        _REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER,
+    ):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+
+
+def _drop_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
+    try:
+        row = conn.execute(f"SELECT owner FROM {_REBUILD_OWNER_TABLE}").fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return
+        raise
+    if row is None or row["owner"] != owner:
+        return
+    _drop_rebuild_tracking_triggers(conn)
+    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_RUNS_TABLE}")
+    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_TIMERS_TABLE}")
+    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_ACTIVITIES_TABLE}")
+    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_WORKFLOWS_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_TIMERS_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_ACTIVITIES_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_WORKFLOWS_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_TIMERS_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_ACTIVITIES_TABLE}")
     conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_WORKFLOWS_TABLE}")
+    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_OWNER_TABLE}")
 
 
-def _order_by_sql(order_by: str, allowed: set[str]) -> str:
-    if not order_by:
-        return "created_at ASC, namespace ASC, workflow_id ASC, run_id ASC"
+def _order_by_sql(
+    order_by: str,
+    allowed: set[str],
+    *,
+    key_columns: tuple[str, ...],
+) -> str:
     parts: list[str] = []
+    ordered_fields: set[str] = set()
     for item in order_by.split(","):
         raw = item.strip()
         if not raw:
@@ -1135,21 +1503,44 @@ def _order_by_sql(order_by: str, allowed: set[str]) -> str:
             raise ValueError(f"unsupported order_by field {field!r}")
         if direction not in {"ASC", "DESC"} or len(tokens) > 2:
             raise ValueError(f"unsupported order_by direction in {raw!r}")
+        if field in ordered_fields:
+            raise ValueError(f"duplicate order_by field {field!r}")
         parts.append(f"{field} {direction}")
+        ordered_fields.add(field)
     if not parts:
-        return "created_at ASC, namespace ASC, workflow_id ASC, run_id ASC"
-    parts.extend(["namespace ASC", "workflow_id ASC", "run_id ASC"])
+        parts.append("created_at ASC")
+        ordered_fields.add("created_at")
+    parts.extend(f"{field} ASC" for field in key_columns if field not in ordered_fields)
     return ", ".join(parts)
 
 
-def _decode_offset(page_token: str) -> int:
+def _query_fingerprint(
+    table: str,
+    where: list[str],
+    params: list[object],
+    order_sql: str,
+) -> str:
+    digest = hashlib.sha256()
+    for value in (table, *where, *(repr(param) for param in params), order_sql):
+        encoded = value.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _encode_offset(offset: int, query_fingerprint: str) -> str:
+    return f"v1.{query_fingerprint}.{offset}"
+
+
+def _decode_offset(page_token: str, query_fingerprint: str) -> int:
     if not page_token:
         return 0
     try:
-        offset = int(page_token)
+        version, token_fingerprint, raw_offset = page_token.split(".", 2)
+        offset = int(raw_offset)
     except ValueError as exc:
         raise ValueError("page_token is invalid") from exc
-    if offset < 0:
+    if version != "v1" or token_fingerprint != query_fingerprint or offset < 0:
         raise ValueError("page_token is invalid")
     return offset
 

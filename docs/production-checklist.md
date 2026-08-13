@@ -167,6 +167,38 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   workflow, canonical timer, and prepared state before removing them. The
   generic ledger has no online compaction mode.
 
+## Optional query and lake projections
+
+- [ ] **The point store remains authoritative.** ClickHouse is a rebuildable
+  `RecordQueryService` projection and Iceberg is a batched analytics/archive
+  projection. Neither is used for workflow replay, claims, create-once event
+  delivery, or timer correctness.
+- [ ] **Projection mutations have a real order.** Use an object generation,
+  queue sequencer, or another source revision that is comparable and monotonic
+  for the same full record identity, plus versioned tombstones. A content
+  digest, opaque version ID, unrelated queue-partition sequence, or wall-clock
+  timestamp alone does not order update, delete, and recreate races.
+- [ ] **Notifications are repaired by reconciliation.** Treat object events as
+  invalidations, re-read canonical `.binpb`, acknowledge only after the sink
+  commit, and periodically compare the projection with an authoritative object
+  inventory or bounded scan. A delete event has no payload to re-read: use a
+  retained source-key-to-typed-identity mapping, a typed mutation envelope, or
+  reconciliation—never parse identity from a v2 path.
+- [ ] **Query compatibility is tested.** Resolve the latest ClickHouse row
+  before filtering, use total ordering and query-bound opaque tokens, hydrate
+  candidate records from the point store, refill pages after stale candidates,
+  and keep the authoritative due-ledger fallback.
+- [ ] **Required Iceberg archives gate deletion per run.** Publish a durable
+  manifest of the run's record identities and source revisions/digests only
+  after the Iceberg commit. A global time watermark is insufficient. The stock
+  `Sweep` has no archive-manifest input, so use it only through a `QueryStore`
+  that enforces this gate; otherwise verify the manifest before authoritative
+  `DeleteRun`. If Iceberg is analytics-only, monitor lag but keep it out of
+  deletion safety.
+
+The detailed deployment contract and method support matrix are in
+[`clickhouse-iceberg.md`](clickhouse-iceberg.md).
+
 ## Observability
 
 - [ ] **Metrics from interceptors, not from a parallel framework surface.** Wrap your interceptor list with the metrics middleware your service mesh provides (OpenTelemetry-Connect, Datadog interceptor, etc.). The framework deliberately does not ship `Observer` / `Tracer` Protocols — the gRPC interceptor is the universal seam.

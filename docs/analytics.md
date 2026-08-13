@@ -59,19 +59,37 @@ records, token = await store.list_workflows(
 The same query surface is exposed locally or over ConnectRPC. Core workflow
 replay never imports an index database and never needs this service.
 
+A common production arrangement is ClickHouse for this low-latency metadata
+query surface and Iceberg for batched analytics or archival tables. They are
+independent, optional projections; neither replaces the authoritative point
+store or due-timer ledger. See
+[`clickhouse-iceberg.md`](clickhouse-iceberg.md) for ingestion ordering,
+tombstones, hydration, pagination, reconciliation, and per-run archive-gate
+requirements.
+
 The SQLite index is derived infrastructure. A bucket write can commit and the
 SQLite upsert can still fail, leaving a missing or stale row until `rebuild()`.
 `rebuild()` is idempotent and stages rows before an atomic merge, so an
 interrupted rebuild leaves the previous index intact. Rows written through the
-same index while rebuild is walking the bucket survive the merge. Corrupt bucket
-records are skipped and logged with a skipped count; records that disappear
-between LIST and GET are treated as ordinary delete races.
+same SQLite database while rebuild is walking the bucket are tracked through a
+temporary mutation journal; successful index mutations win over scanned rows.
+A failed best-effort index update or an external bucket writer is not in that
+journal, so quiesce external writers or run another reconciliation. Only one
+rebuild coordinator may use a SQLite database at a time. Corrupt bucket records
+are skipped and logged with a skipped count; records that disappear between
+LIST and GET are treated as ordinary delete races.
 
 ## Bucket-Only Analytics
 
 For offline analytics, scan `temporaless/v2/`, read `.binpb` files, decode the
 protobuf payloads, and materialize the fields you need into a warehouse table.
 This is a batch job, not the runtime path.
+
+Iceberg is a natural target for these batched tables. Keep the lossless
+`record_binpb` and its deterministic digest alongside typed scalar columns,
+projection batch/source metadata, and the full record identity. Iceberg table
+snapshots describe projection commits; they are not workflow event history and
+cannot recover point states overwritten between scans.
 
 Common table shapes:
 

@@ -15,6 +15,15 @@ lockstep policy.
 
 ### Added
 
+- A production integration contract now defines ClickHouse as an optional
+  low-latency `RecordQueryService` projection and Iceberg as a batched
+  analytics/archive projection. It covers source-version ordering, typed
+  delete identity, reconciliation, latest-row resolution, pagination epochs,
+  authoritative hydration, timer/sweep safety, and per-run archive manifests
+  without adding database clients or SQL dependencies to core.
+- The local operator CLI now provides `describe-run`, which reads one bounded
+  run from the point-store surface and emits a deterministic protobuf-aware
+  snapshot of its workflow, activities, timers, events, and inspectable claims.
 - A separately locked Dagster 1.13.17 process-boundary proof now executes a
   real Dagster job through a generated, test-only application ConnectRPC
   client under protobuf 6 against a separate protobuf-7 process running the
@@ -41,6 +50,19 @@ lockstep policy.
   database. Cross-run search and retention use the backend-neutral
   `RecordQueryService`; any rebuildable index may implement it, while the
   bundled SQLite adapter remains an optional reference implementation.
+- The audited npm transitive dependency graph is refreshed while preserving
+  Git-only Temporaless and Invariant Protocol installation.
+
+### Fixed
+
+- The SQLite reference query index now uses complete identity tie-breakers,
+  query-bound opaque page tokens, and authoritative metadata reselection so a
+  stale sort field cannot duplicate or omit records within one page.
+- SQLite rebuild setup and cleanup are database-wide and owner-scoped. A
+  mutation journal preserves concurrent successful updates/deletes, run-level
+  tombstones prevent child resurrection after `DeleteRun`, competing rebuild
+  coordinators fail closed, cancellation cleans staging state, and cleanup
+  failures cannot be reported as successful rebuilds.
 
 ## [0.10.4] — 2026-07-31
 

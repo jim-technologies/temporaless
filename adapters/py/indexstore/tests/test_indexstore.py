@@ -222,6 +222,27 @@ async def test_failed_rebuild_leaves_previous_index_intact(tmp_path, monkeypatch
     assert [record.key.run_id for record in records] == ["r1"]
 
 
+async def test_successful_rebuild_reports_cleanup_failure(tmp_path, monkeypatch) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    await store.put_workflow(
+        _workflow("prices:aapl", "r1", temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    )
+    original_drop_rebuild_index = index_adapter._drop_rebuild_index
+
+    def fail_after_cleanup(conn, *, owner):
+        original_drop_rebuild_index(conn, owner=owner)
+        raise sqlite3.OperationalError("forced rebuild cleanup failure")
+
+    monkeypatch.setattr(index_adapter, "_drop_rebuild_index", fail_after_cleanup)
+
+    with pytest.raises(sqlite3.OperationalError, match="forced rebuild cleanup failure"):
+        await store.rebuild()
+
+    monkeypatch.setattr(index_adapter, "_drop_rebuild_index", original_drop_rebuild_index)
+    assert await store.rebuild() == 0
+
+
 async def test_rebuild_preserves_puts_written_during_walk(tmp_path, monkeypatch) -> None:
     operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
     bucket = OpenDALStore(operator)
@@ -256,6 +277,230 @@ async def test_rebuild_preserves_puts_written_during_walk(tmp_path, monkeypatch)
 
     due = await store.due_timers("", now)
     assert [timer.key.timer_id for timer in due] == ["wait"]
+
+
+async def test_rebuild_does_not_overwrite_or_resurrect_concurrent_mutations(
+    tmp_path, monkeypatch
+) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    db_path = tmp_path / "index.sqlite"
+    store = IndexedStore.from_opendal(operator, db_path)
+    writer = IndexedStore.from_opendal(operator, db_path)
+    workflow_id = "prices:aapl"
+    run_id = "r1"
+    activity_key = ActivityKey(workflow_id=workflow_id, run_id=run_id, activity_id="fetch")
+    await store.put_workflow(
+        _workflow(workflow_id, run_id, temporaless_pb2.WORKFLOW_STATUS_IN_PROGRESS)
+    )
+    await store.put_activity(
+        _activity(
+            workflow_id,
+            run_id,
+            activity_key.activity_id,
+            temporaless_pb2.ACTIVITY_STATUS_FAILED,
+        )
+    )
+    now = datetime.now(UTC)
+    await store.put_timer(
+        _timer(
+            workflow_id,
+            run_id,
+            "wait",
+            temporaless_pb2.TIMER_STATUS_SCHEDULED,
+            now + timedelta(hours=1),
+        )
+    )
+    original_read_rebuild_record = index_adapter._read_rebuild_record
+    mutated_kinds: set[str] = set()
+
+    async def mutate_after_rebuild_read(operator, path, factory, key_factory):
+        result = await original_read_rebuild_record(operator, path, factory, key_factory)
+        record, _ = result
+        if isinstance(record, temporaless_pb2.WorkflowRecord) and "workflow" not in mutated_kinds:
+            mutated_kinds.add("workflow")
+            await writer.put_workflow(
+                _workflow(workflow_id, run_id, temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+            )
+        elif isinstance(record, temporaless_pb2.ActivityRecord) and "activity" not in mutated_kinds:
+            mutated_kinds.add("activity")
+            assert await writer.delete_activity(activity_key)
+        elif isinstance(record, temporaless_pb2.TimerRecord) and "timer" not in mutated_kinds:
+            mutated_kinds.add("timer")
+            await writer.put_timer(
+                _timer(
+                    workflow_id,
+                    run_id,
+                    "wait",
+                    temporaless_pb2.TIMER_STATUS_CANCELED,
+                    now + timedelta(hours=1),
+                )
+            )
+        return result
+
+    monkeypatch.setattr(index_adapter, "_read_rebuild_record", mutate_after_rebuild_read)
+
+    await store.rebuild()
+
+    rows = await store._run_db(
+        lambda conn: (
+            list(conn.execute("SELECT status FROM workflows")),
+            list(conn.execute("SELECT status FROM activities")),
+            list(conn.execute("SELECT status FROM timers")),
+        )
+    )
+    workflow_rows, activity_rows, timer_rows = rows
+    assert mutated_kinds == {"workflow", "activity", "timer"}
+    assert [row["status"] for row in workflow_rows] == [
+        int(temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    ]
+    assert activity_rows == []
+    assert [row["status"] for row in timer_rows] == [int(temporaless_pb2.TIMER_STATUS_CANCELED)]
+
+
+async def test_rebuild_does_not_resurrect_deleted_unindexed_record(tmp_path, monkeypatch) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    db_path = tmp_path / "index.sqlite"
+    bucket = OpenDALStore(operator)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="r1")
+    await bucket.put_workflow(
+        _workflow(key.workflow_id, key.run_id, temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    )
+    rebuilder = IndexedStore.from_opendal(operator, db_path)
+    writer = IndexedStore.from_opendal(operator, db_path)
+    original_read_rebuild_record = index_adapter._read_rebuild_record
+    deleted = False
+
+    async def delete_staged_unindexed_record(operator, path, factory, key_factory):
+        nonlocal deleted
+        result = await original_read_rebuild_record(operator, path, factory, key_factory)
+        if isinstance(result[0], temporaless_pb2.WorkflowRecord) and not deleted:
+            deleted = True
+            assert await writer.delete_workflow(key)
+        return result
+
+    monkeypatch.setattr(
+        index_adapter,
+        "_read_rebuild_record",
+        delete_staged_unindexed_record,
+    )
+
+    await rebuilder.rebuild()
+
+    assert deleted
+    assert await bucket.get_workflow(key) is None
+    rows = await rebuilder._run_db(lambda conn: list(conn.execute("SELECT * FROM workflows")))
+    assert rows == []
+
+
+async def test_rebuild_does_not_resurrect_run_children_deleted_after_read(
+    tmp_path, monkeypatch
+) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    db_path = tmp_path / "index.sqlite"
+    bucket = OpenDALStore(operator)
+    key = WorkflowKey(workflow_id="prices:aapl", run_id="r1")
+    await bucket.put_workflow(
+        _workflow(key.workflow_id, key.run_id, temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    )
+    await bucket.put_activity(
+        _activity(
+            key.workflow_id,
+            key.run_id,
+            "fetch",
+            temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+    )
+    rebuilder = IndexedStore.from_opendal(operator, db_path)
+    writer = IndexedStore.from_opendal(operator, db_path)
+    original_read_rebuild_record = index_adapter._read_rebuild_record
+    deleted = False
+
+    async def delete_run_after_activity_read(operator, path, factory, key_factory):
+        nonlocal deleted
+        result = await original_read_rebuild_record(operator, path, factory, key_factory)
+        if isinstance(result[0], temporaless_pb2.ActivityRecord) and not deleted:
+            deleted = True
+            assert await writer.delete_run(key) == 2
+        return result
+
+    monkeypatch.setattr(
+        index_adapter,
+        "_read_rebuild_record",
+        delete_run_after_activity_read,
+    )
+
+    await rebuilder.rebuild()
+
+    rows = await rebuilder._run_db(
+        lambda conn: (
+            list(conn.execute("SELECT * FROM workflows")),
+            list(conn.execute("SELECT * FROM activities")),
+        )
+    )
+    assert deleted
+    assert rows == ([], [])
+
+
+async def test_second_rebuild_coordinator_is_rejected(tmp_path, monkeypatch) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    db_path = tmp_path / "index.sqlite"
+    first = IndexedStore.from_opendal(operator, db_path)
+    second = IndexedStore.from_opendal(operator, db_path)
+    await first.put_workflow(
+        _workflow("prices:aapl", "r1", temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    )
+    original_read_rebuild_record = index_adapter._read_rebuild_record
+    first_is_walking = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def pause_first_rebuild(operator, path, factory, key_factory):
+        result = await original_read_rebuild_record(operator, path, factory, key_factory)
+        if not first_is_walking.is_set():
+            first_is_walking.set()
+            await release_first.wait()
+        return result
+
+    monkeypatch.setattr(index_adapter, "_read_rebuild_record", pause_first_rebuild)
+    first_task = asyncio.create_task(first.rebuild())
+    await asyncio.wait_for(first_is_walking.wait(), timeout=2)
+    try:
+        with pytest.raises(RuntimeError, match="another index rebuild is in progress"):
+            await second.rebuild()
+    finally:
+        release_first.set()
+        await first_task
+
+
+async def test_canceled_rebuild_cleans_staging_state(tmp_path, monkeypatch) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    await store.put_workflow(
+        _workflow("prices:aapl", "r1", temporaless_pb2.WORKFLOW_STATUS_COMPLETED)
+    )
+    original_run_db = store._run_db
+    reset_completed = asyncio.Event()
+    release_reset = asyncio.Event()
+    first_call = True
+
+    async def pause_after_reset(fn):
+        nonlocal first_call
+        result = await original_run_db(fn)
+        if first_call:
+            first_call = False
+            reset_completed.set()
+            await release_reset.wait()
+        return result
+
+    monkeypatch.setattr(store, "_run_db", pause_after_reset)
+    task = asyncio.create_task(store.rebuild())
+    await asyncio.wait_for(reset_completed.wait(), timeout=2)
+    task.cancel()
+    release_reset.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    monkeypatch.setattr(store, "_run_db", original_run_db)
+    assert await store.rebuild() == 0
 
 
 async def test_rebuild_skips_not_found_race_without_counting_corrupt(tmp_path, monkeypatch) -> None:
@@ -388,6 +633,163 @@ async def test_list_workflows_repairs_stale_rows_and_fills_pages(tmp_path) -> No
     ]
 
 
+async def test_list_workflows_reselects_after_stale_sort_field_moves(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    for run_id, day in (("a", 1), ("b", 2), ("c", 3)):
+        await store.put_workflow(
+            _workflow(
+                "prices:aapl",
+                run_id,
+                temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+                created_at=datetime(2026, 7, day, tzinfo=UTC),
+            )
+        )
+    await bucket.put_workflow(
+        _workflow(
+            "prices:aapl",
+            "a",
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            created_at=datetime(2026, 7, 4, tzinfo=UTC),
+        )
+    )
+
+    run_ids: list[str] = []
+    page_token = ""
+    while True:
+        records, page_token = await store.list_workflows(
+            "",
+            "prices:aapl",
+            temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+            order_by="created_at asc",
+            page_size=1,
+            page_token=page_token,
+        )
+        run_ids.extend(record.key.run_id for record in records)
+        if not page_token:
+            break
+
+    assert run_ids == ["b", "c", "a"]
+
+
+async def test_list_workflows_restarts_page_when_later_candidate_moves(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    for run_id, day in (("a", 1), ("b", 2), ("c", 3)):
+        await store.put_workflow(
+            _workflow(
+                "prices:aapl",
+                run_id,
+                temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+                created_at=datetime(2026, 7, day, tzinfo=UTC),
+            )
+        )
+    await bucket.put_workflow(
+        _workflow(
+            "prices:aapl",
+            "b",
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            created_at=datetime(2026, 6, 30, tzinfo=UTC),
+        )
+    )
+
+    first, page_token = await store.list_workflows(
+        "",
+        "prices:aapl",
+        temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+        order_by="created_at asc",
+        page_size=2,
+    )
+    second, final_token = await store.list_workflows(
+        "",
+        "prices:aapl",
+        temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+        order_by="created_at asc",
+        page_size=2,
+        page_token=page_token,
+    )
+
+    assert [record.key.run_id for record in first] == ["b", "a"]
+    assert [record.key.run_id for record in second] == ["c"]
+    assert final_token == ""
+
+
+async def test_list_workflows_unlimited_restarts_after_only_row_is_repaired(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    await store.put_workflow(
+        _workflow(
+            "prices:aapl",
+            "r1",
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+    )
+    await bucket.put_workflow(
+        _workflow(
+            "prices:aapl",
+            "r1",
+            temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+    )
+
+    records, page_token = await store.list_workflows(
+        "",
+        "prices:aapl",
+        temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+    )
+
+    assert [record.key.run_id for record in records] == ["r1"]
+    assert page_token == ""
+
+
+async def test_page_token_is_bound_to_query(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    for run_id in ("a", "b"):
+        await store.put_workflow(
+            _workflow(
+                "prices:aapl",
+                run_id,
+                temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+            )
+        )
+    _, page_token = await store.list_workflows(
+        "",
+        "prices:aapl",
+        temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+        order_by="created_at asc",
+        page_size=1,
+    )
+
+    with pytest.raises(ValueError, match="page_token is invalid"):
+        await store.list_workflows(
+            "",
+            "prices:aapl",
+            temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+            order_by="created_at desc",
+            page_size=1,
+            page_token=page_token,
+        )
+
+
+async def test_duplicate_order_by_field_is_rejected(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+
+    with pytest.raises(ValueError, match="duplicate order_by field"):
+        await store.list_workflows(
+            "",
+            "",
+            temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
+            order_by="workflow_id desc, workflow_id asc",
+        )
+
+
 async def test_list_activities_query_honors_order_by(tmp_path) -> None:
     operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
     store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
@@ -411,6 +813,157 @@ async def test_list_activities_query_honors_order_by(tmp_path) -> None:
 
     assert token == ""
     assert [record.key.activity_id for record in records] == ["c", "b", "a"]
+
+
+async def test_list_activities_pages_equal_sort_values_by_full_key(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    created_at = Timestamp()
+    created_at.FromDatetime(datetime(2026, 1, 1, tzinfo=UTC))
+    for activity_id in ("c", "a", "b"):
+        record = _activity(
+            "prices:aapl",
+            "r1",
+            activity_id,
+            temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+        record.created_at.CopyFrom(created_at)
+        await store.put_activity(record)
+
+    activity_ids: list[str] = []
+    page_token = ""
+    while True:
+        records, page_token = await store.list_activities_query(
+            "",
+            "prices:aapl",
+            "r1",
+            temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED,
+            page_size=1,
+            page_token=page_token,
+        )
+        activity_ids.extend(record.key.activity_id for record in records)
+        if not page_token:
+            break
+
+    assert activity_ids == ["a", "b", "c"]
+
+
+async def test_list_activities_reselects_after_stale_sort_field_moves(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    for activity_id, day in (("a", 1), ("b", 2), ("c", 3)):
+        record = _activity(
+            "prices:aapl",
+            "r1",
+            activity_id,
+            temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+        record.created_at.FromDatetime(datetime(2026, 7, day, tzinfo=UTC))
+        await store.put_activity(record)
+    moved = _activity(
+        "prices:aapl",
+        "r1",
+        "a",
+        temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    moved.created_at.FromDatetime(datetime(2026, 7, 4, tzinfo=UTC))
+    await bucket.put_activity(moved)
+
+    activity_ids: list[str] = []
+    page_token = ""
+    while True:
+        records, page_token = await store.list_activities_query(
+            "",
+            "prices:aapl",
+            "r1",
+            temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED,
+            order_by="created_at asc",
+            page_size=1,
+            page_token=page_token,
+        )
+        activity_ids.extend(record.key.activity_id for record in records)
+        if not page_token:
+            break
+
+    assert activity_ids == ["b", "c", "a"]
+
+
+async def test_list_activities_restarts_page_when_later_candidate_moves(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    for activity_id, day in (("a", 1), ("b", 2), ("c", 3)):
+        record = _activity(
+            "prices:aapl",
+            "r1",
+            activity_id,
+            temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+        )
+        record.created_at.FromDatetime(datetime(2026, 7, day, tzinfo=UTC))
+        await store.put_activity(record)
+    moved = _activity(
+        "prices:aapl",
+        "r1",
+        "b",
+        temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    moved.created_at.FromDatetime(datetime(2026, 6, 30, tzinfo=UTC))
+    await bucket.put_activity(moved)
+
+    first, page_token = await store.list_activities_query(
+        "",
+        "prices:aapl",
+        "r1",
+        temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED,
+        order_by="created_at asc",
+        page_size=2,
+    )
+    second, final_token = await store.list_activities_query(
+        "",
+        "prices:aapl",
+        "r1",
+        temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED,
+        order_by="created_at asc",
+        page_size=2,
+        page_token=page_token,
+    )
+
+    assert [record.key.activity_id for record in first] == ["b", "a"]
+    assert [record.key.activity_id for record in second] == ["c"]
+    assert final_token == ""
+
+
+async def test_list_activities_unlimited_restarts_after_only_row_is_repaired(tmp_path) -> None:
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")
+    bucket = OpenDALStore(operator)
+    original = _activity(
+        "prices:aapl",
+        "r1",
+        "fetch",
+        temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    original.created_at.FromDatetime(datetime(2026, 7, 1, tzinfo=UTC))
+    await store.put_activity(original)
+    updated = _activity(
+        "prices:aapl",
+        "r1",
+        "fetch",
+        temporaless_pb2.ACTIVITY_STATUS_COMPLETED,
+    )
+    updated.created_at.FromDatetime(datetime(2026, 7, 2, tzinfo=UTC))
+    await bucket.put_activity(updated)
+
+    records, page_token = await store.list_activities_query(
+        "",
+        "prices:aapl",
+        "r1",
+        temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED,
+    )
+
+    assert [record.key.activity_id for record in records] == ["fetch"]
+    assert page_token == ""
 
 
 async def test_list_activities_query_rechecks_status_and_prunes_missing_rows(tmp_path) -> None:
