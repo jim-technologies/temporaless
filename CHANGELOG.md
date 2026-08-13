@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-08-12
+
 ### Added
 
 - A production integration contract now defines ClickHouse as an optional
