@@ -51,6 +51,20 @@ jim-technologies open-source Makefile contract.
 | No encrypted-secret store | **Conforms** | None exists; `.gitleaks.toml` configures the history secret *scanner*, and the repository holds no secrets. |
 | Furniture: `LICENSE` · `CHANGELOG.md` · one `VERSION` · `make help` | **Conforms** | All present; `scripts/check_versions.py` keeps every SDK mirror equal to the root `VERSION`, and `make help` self-documents every verb via the `## comment` convention. |
 
+## Buf / protobuf conventions
+
+Audit against the jim-technologies buf/protobuf conventions block. Where the
+block and existing config differed, the stricter of the two was adopted.
+
+| Convention | Status | Notes |
+|---|---|---|
+| buf comes from the Flox manifest (pinned); never installed in CI steps | **Conforms** | `.flox/env/manifest.toml` pins `buf` 1.71.0; both workflows run only `flox activate -- make <verb>` with no setup or install steps. |
+| One `buf.yaml` at module root; lint DEFAULT plus COMMENTS on public RPCs/messages/fields | **Fixed** (stricter adopted) | The root `buf.yaml` is the one module config (module `api`). v2 `STANDARD` (the v2 name of DEFAULT) was already on; `COMMENT_SERVICE`/`COMMENT_RPC`/`COMMENT_MESSAGE`/`COMMENT_FIELD` are now also enforced, and every previously undocumented public message and field gained a doc comment. The `dagstercompat` test-fixture proto lints with Buf defaults — it is a test fixture, not a published surface. |
+| Breaking-change detection against main runs inside `make validate` for any proto published or consumed outside the repo | **Intentional deviation** (stricter kept) | `scripts/validate` runs `buf breaking` against the newest reachable release tag — a superset of against-main for the published `temporaless.v1` module, since it also catches breakage already merged since the last release. The one narrow documented exception is the v0.8.2 → v0.9.0 `code_version` field deletions (`scripts/check_buf_breaking.py`). Never weakened. |
+| `make generate` regenerates all bindings; generated code is committed; `make validate` fails on drift | **Conforms** | `generate` delegates to `scripts/generate` (all language bindings + the descriptor). Every gate byte-compares the checked-in descriptor; CI additionally requires a clean tree after formatting/generation. Remote-plugin regeneration is skipped in secretless CI (the Makefile contract forbids CI secrets); maintainers prove it with `TEMPORALESS_REQUIRE_BUF_GENERATE=1` before releasing schema changes. |
+| Package naming: versioned suffix always; new majors are new packages | **Conforms** | The one published package is `temporaless.v1`; `STANDARD` enforces `PACKAGE_VERSION_SUFFIX`. A future v2 is a new package, not an edit of v1. |
+| Multiple language bindings share the single VERSION and release together | **Conforms** | Root `VERSION` is the release version for every SDK; `scripts/check_versions.py` runs first in every gate and `scripts/release` creates the one root `vX.Y.Z` tag. |
+
 ## Audit outcome
 
 - **Fixes applied this pass:** exact timer write-ahead recovery, retry/claim
