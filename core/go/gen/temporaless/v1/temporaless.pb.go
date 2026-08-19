@@ -1023,9 +1023,13 @@ func (x *ActivityOptions) GetRetryTimerId() string {
 // legacy storage-only behavior and rely on an application-triggered
 // re-invocation.
 type PollOptions struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TimerId       string                 `protobuf:"bytes,1,opt,name=timer_id,json=timerId" json:"timer_id,omitempty"`
-	Interval      *durationpb.Duration   `protobuf:"bytes,2,opt,name=interval" json:"interval,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Caller-owned durable timer ID for the poll wake. Must be deterministic
+	// across replays of the same logical wait.
+	TimerId string `protobuf:"bytes,1,opt,name=timer_id,json=timerId" json:"timer_id,omitempty"`
+	// Interval between durable poll wakes. The same timer is rearmed at this
+	// cadence until the awaited condition resolves.
+	Interval      *durationpb.Duration `protobuf:"bytes,2,opt,name=interval" json:"interval,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1170,14 +1174,17 @@ func (x *DispatchOptions) GetTaskTtl() *durationpb.Duration {
 // ordinary forward edges must remain acyclic, while an explicit LOOP_BACK edge
 // must touch a LOOP node. Adapter validators enforce those cross-field rules.
 type WorkflowPlan struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	PlanId string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId" json:"plan_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application-owned identity of this plan, stable across revisions.
+	PlanId string `protobuf:"bytes,1,opt,name=plan_id,json=planId" json:"plan_id,omitempty"`
 	// Application-owned revision. A changed approved plan must use a new
 	// revision and a caller-owned execution identity that cannot replay records
 	// from the previous revision.
-	Revision uint64              `protobuf:"varint,2,opt,name=revision" json:"revision,omitempty"`
-	Nodes    []*WorkflowPlanNode `protobuf:"bytes,3,rep,name=nodes" json:"nodes,omitempty"`
-	Edges    []*WorkflowPlanEdge `protobuf:"bytes,4,rep,name=edges" json:"edges,omitempty"`
+	Revision uint64 `protobuf:"varint,2,opt,name=revision" json:"revision,omitempty"`
+	// Boxes of the visual workflow. At least one node is required.
+	Nodes []*WorkflowPlanNode `protobuf:"bytes,3,rep,name=nodes" json:"nodes,omitempty"`
+	// Connections between nodes; see WorkflowPlanEdgeKind for edge semantics.
+	Edges []*WorkflowPlanEdge `protobuf:"bytes,4,rep,name=edges" json:"edges,omitempty"`
 	// Display/filter metadata only. Execution decisions must come from typed
 	// request fields or recorded activity results, never from annotations.
 	Annotations   map[string]string `protobuf:"bytes,5,rep,name=annotations" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -1260,10 +1267,13 @@ type WorkflowPlanNode struct {
 	// Stable application-owned identity. For activity, sleep, and event nodes,
 	// use this exact value as the corresponding activity_id, timer_id, or
 	// event_id so a UI can join the plan to durable records without inference.
-	NodeId      string               `protobuf:"bytes,1,opt,name=node_id,json=nodeId" json:"node_id,omitempty"`
-	DisplayName string               `protobuf:"bytes,2,opt,name=display_name,json=displayName" json:"display_name,omitempty"`
-	Description string               `protobuf:"bytes,3,opt,name=description" json:"description,omitempty"`
-	Kind        WorkflowPlanNodeKind `protobuf:"varint,4,opt,name=kind,enum=temporaless.v1.WorkflowPlanNodeKind" json:"kind,omitempty"`
+	NodeId string `protobuf:"bytes,1,opt,name=node_id,json=nodeId" json:"node_id,omitempty"`
+	// Human-readable name rendered by UIs.
+	DisplayName string `protobuf:"bytes,2,opt,name=display_name,json=displayName" json:"display_name,omitempty"`
+	// Optional longer description for display.
+	Description string `protobuf:"bytes,3,opt,name=description" json:"description,omitempty"`
+	// Visual role of the node; adapters map it onto core primitives.
+	Kind WorkflowPlanNodeKind `protobuf:"varint,4,opt,name=kind,enum=temporaless.v1.WorkflowPlanNodeKind" json:"kind,omitempty"`
 	// Fully-qualified protobuf RPC procedure or application registry key for
 	// callable ACTIVITY and BRANCH nodes. Examples:
 	// `prices.v1.PriceService.Fetch` or `normalize:tweet`.
@@ -1271,8 +1281,10 @@ type WorkflowPlanNode struct {
 	// Fully-qualified protobuf message names for callable nodes. These are
 	// metadata for validation/UI display; payloads remain concrete protobuf
 	// messages and are never converted to JSON or generic objects.
-	RequestType   string            `protobuf:"bytes,6,opt,name=request_type,json=requestType" json:"request_type,omitempty"`
-	ResponseType  string            `protobuf:"bytes,7,opt,name=response_type,json=responseType" json:"response_type,omitempty"`
+	RequestType string `protobuf:"bytes,6,opt,name=request_type,json=requestType" json:"request_type,omitempty"`
+	// Response counterpart of `request_type`; same metadata-only role.
+	ResponseType string `protobuf:"bytes,7,opt,name=response_type,json=responseType" json:"response_type,omitempty"`
+	// Display/filter metadata only, never an execution input.
 	Annotations   map[string]string `protobuf:"bytes,8,rep,name=annotations" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1364,11 +1376,16 @@ func (x *WorkflowPlanNode) GetAnnotations() map[string]string {
 	return nil
 }
 
+// WorkflowPlanEdge connects two plan nodes; `kind` says why they are
+// connected and `label` names conditional routes.
 type WorkflowPlanEdge struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	SourceNodeId string                 `protobuf:"bytes,1,opt,name=source_node_id,json=sourceNodeId" json:"source_node_id,omitempty"`
-	TargetNodeId string                 `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId" json:"target_node_id,omitempty"`
-	Kind         WorkflowPlanEdgeKind   `protobuf:"varint,3,opt,name=kind,enum=temporaless.v1.WorkflowPlanEdgeKind" json:"kind,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// node_id of the edge's origin.
+	SourceNodeId string `protobuf:"bytes,1,opt,name=source_node_id,json=sourceNodeId" json:"source_node_id,omitempty"`
+	// node_id of the edge's destination.
+	TargetNodeId string `protobuf:"bytes,2,opt,name=target_node_id,json=targetNodeId" json:"target_node_id,omitempty"`
+	// Why the two nodes are connected. CONDITIONAL edges also require `label`.
+	Kind WorkflowPlanEdgeKind `protobuf:"varint,3,opt,name=kind,enum=temporaless.v1.WorkflowPlanEdgeKind" json:"kind,omitempty"`
 	// Required for CONDITIONAL edges, optional display text otherwise.
 	Label         string `protobuf:"bytes,4,opt,name=label" json:"label,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1439,15 +1456,20 @@ func (x *WorkflowPlanEdge) GetLabel() string {
 // unpack into the original concrete type without the dispatcher needing
 // to know it.
 type TaskInfo struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	TaskId string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId" json:"task_id,omitempty"`
-	Method string                 `protobuf:"bytes,2,opt,name=method" json:"method,omitempty"`
-	Status TaskStatus             `protobuf:"varint,3,opt,name=status,enum=temporaless.v1.TaskStatus" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Dispatcher-generated ULID for one submission, returned by `DoAsync` and
+	// accepted by `Status`.
+	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId" json:"task_id,omitempty"`
+	// Name of the dispatched method or handler, for diagnostics and filtering.
+	Method string `protobuf:"bytes,2,opt,name=method" json:"method,omitempty"`
+	// Current lifecycle state of the submission.
+	Status TaskStatus `protobuf:"varint,3,opt,name=status,enum=temporaless.v1.TaskStatus" json:"status,omitempty"`
 	// Populated when status == TASK_STATUS_DONE. Carries the handler's
 	// typed Resp marshaled into Any (use `any.UnmarshalTo(&YourResp{})`).
 	Response *anypb.Any `protobuf:"bytes,4,opt,name=response" json:"response,omitempty"`
 	// Populated when status == TASK_STATUS_FAILED.
-	Error       string                 `protobuf:"bytes,5,opt,name=error" json:"error,omitempty"`
+	Error string `protobuf:"bytes,5,opt,name=error" json:"error,omitempty"`
+	// Wall-clock time the submission entered the dispatcher.
 	SubmittedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=submitted_at,json=submittedAt" json:"submitted_at,omitempty"`
 	// Set when status transitions to DONE or FAILED. Used as the TTL
 	// anchor for eviction.
@@ -1858,9 +1880,11 @@ func (x *RuntimeDefaults) GetMaximumConcurrencySlots() uint32 {
 
 // Structured ConnectRPC error detail returned by DeliverEvent failures.
 type EventDeliveryErrorDetail struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	Reason        EventDeliveryFailureReason `protobuf:"varint,1,opt,name=reason,enum=temporaless.v1.EventDeliveryFailureReason" json:"reason,omitempty"`
-	Key           *EventKey                  `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Why delivery failed: unsupported backend capability or a conflicting payload.
+	Reason EventDeliveryFailureReason `protobuf:"varint,1,opt,name=reason,enum=temporaless.v1.EventDeliveryFailureReason" json:"reason,omitempty"`
+	// The event key the failed delivery addressed.
+	Key           *EventKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1916,10 +1940,13 @@ func (x *EventDeliveryErrorDetail) GetKey() *EventKey {
 // rejects those values for application record keys; framework-owned claim keys
 // may use reserved workflow_ids such as "__concurrency__".
 type WorkflowKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application namespace segment of the storage key.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Stable identifier of the workflow definition.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Opaque caller-provided identifier of the run.
+	RunId         string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1977,11 +2004,15 @@ func (x *WorkflowKey) GetRunId() string {
 
 // ActivityKey addresses a single activity invocation within a workflow run.
 type ActivityKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	ActivityId    string                 `protobuf:"bytes,4,opt,name=activity_id,json=activityId" json:"activity_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application namespace segment of the storage key.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Stable identifier of the workflow definition.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Opaque caller-provided identifier of the run.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	// Caller-provided stable identifier of the activity within the run.
+	ActivityId    string `protobuf:"bytes,4,opt,name=activity_id,json=activityId" json:"activity_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2046,11 +2077,15 @@ func (x *ActivityKey) GetActivityId() string {
 
 // TimerKey addresses a single durable timer within a workflow run.
 type TimerKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	TimerId       string                 `protobuf:"bytes,4,opt,name=timer_id,json=timerId" json:"timer_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application namespace segment of the storage key.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Stable identifier of the workflow definition.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Opaque caller-provided identifier of the run.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	// Caller-provided stable identifier of the durable timer within the run.
+	TimerId       string `protobuf:"bytes,4,opt,name=timer_id,json=timerId" json:"timer_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2115,11 +2150,15 @@ func (x *TimerKey) GetTimerId() string {
 
 // EventKey addresses a single signal/event payload delivered to a workflow run.
 type EventKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	EventId       string                 `protobuf:"bytes,4,opt,name=event_id,json=eventId" json:"event_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application namespace segment of the storage key.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Stable identifier of the workflow definition.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Opaque caller-provided identifier of the run.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	// Caller-provided stable identifier of the event within the run.
+	EventId       string `protobuf:"bytes,4,opt,name=event_id,json=eventId" json:"event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2184,11 +2223,17 @@ func (x *EventKey) GetEventId() string {
 
 // ClaimKey addresses a single coordination claim within a workflow run.
 type ClaimKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	ClaimId       string                 `protobuf:"bytes,4,opt,name=claim_id,json=claimId" json:"claim_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Application namespace segment of the storage key.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Stable identifier of the workflow definition, or the framework-owned
+	// `__concurrency__` synthetic workflow for concurrency-slot claims.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Opaque caller-provided identifier of the run.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	// Claim identity within the run. Framework claims use the ReservedNames
+	// literals and prefixes.
+	ClaimId       string `protobuf:"bytes,4,opt,name=claim_id,json=claimId" json:"claim_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2331,8 +2376,10 @@ func (x *ActivityFailure) GetRetryAfter() *durationpb.Duration {
 type ActivityAttempt struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 1-indexed attempt counter.
-	Attempt     uint32                 `protobuf:"varint,1,opt,name=attempt" json:"attempt,omitempty"`
-	StartedAt   *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=started_at,json=startedAt" json:"started_at,omitempty"`
+	Attempt uint32 `protobuf:"varint,1,opt,name=attempt" json:"attempt,omitempty"`
+	// Wall-clock time the attempt began.
+	StartedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=started_at,json=startedAt" json:"started_at,omitempty"`
+	// Wall-clock time the attempt finished, success or failure.
 	CompletedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=completed_at,json=completedAt" json:"completed_at,omitempty"`
 	// Set when the attempt failed; absent when the attempt succeeded.
 	Failure       *ActivityFailure `protobuf:"bytes,4,opt,name=failure" json:"failure,omitempty"`
@@ -2401,20 +2448,26 @@ func (x *ActivityAttempt) GetFailure() *ActivityFailure {
 // ActivityRecord captures everything the runtime needs to replay or resume an
 // activity. Stored at `activity/{activity_id}.binpb` under the workflow run.
 type ActivityRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
-	Key           *ActivityKey           `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Always RECORD_SCHEMA_VERSION_ACTIVITY for this record family.
+	SchemaVersion RecordSchemaVersion `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
+	// Storage identity of this activity invocation.
+	Key *ActivityKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	// Derived from the request and response message types. Useful for analytics;
 	// checked against the stored value on replay so a code change that swaps
 	// input/output types fails loudly rather than returning a stale result.
-	ActivityType string         `protobuf:"bytes,3,opt,name=activity_type,json=activityType" json:"activity_type,omitempty"`
-	Input        *anypb.Any     `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
-	Status       ActivityStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
+	ActivityType string `protobuf:"bytes,3,opt,name=activity_type,json=activityType" json:"activity_type,omitempty"`
+	// Activity request message packed as Any, recorded for replay and audit.
+	Input *anypb.Any `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
+	// Lifecycle state; discriminates which optional fields below are set.
+	Status ActivityStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
 	Result *anypb.Any `protobuf:"bytes,8,opt,name=result" json:"result,omitempty"`
 	// Set when status is FAILED.
-	Failure     *ActivityFailure       `protobuf:"bytes,9,opt,name=failure" json:"failure,omitempty"`
-	CreatedAt   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	Failure *ActivityFailure `protobuf:"bytes,9,opt,name=failure" json:"failure,omitempty"`
+	// Wall-clock time the record was first persisted.
+	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	// Wall-clock time a terminal status (COMPLETED or FAILED) was reached.
 	CompletedAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=completed_at,json=completedAt" json:"completed_at,omitempty"`
 	// Per-attempt history. Always carries every attempt the runtime has run so
 	// far, including the one that produced the current `status`.
@@ -2575,16 +2628,23 @@ func (x *ActivityRecord) GetRetryTimerId() string {
 // WorkflowRecord captures workflow lifecycle state. Stored at `workflow.binpb`
 // under the workflow run.
 type WorkflowRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
-	Key           *WorkflowKey           `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
-	WorkflowType  string                 `protobuf:"bytes,3,opt,name=workflow_type,json=workflowType" json:"workflow_type,omitempty"`
-	Input         *anypb.Any             `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
-	Status        WorkflowStatus         `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Always RECORD_SCHEMA_VERSION_WORKFLOW for this record family.
+	SchemaVersion RecordSchemaVersion `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
+	// Storage identity of this workflow run.
+	Key *WorkflowKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	// Derived from the request and response message types and checked against
+	// the stored value on replay, like ActivityRecord.activity_type.
+	WorkflowType string `protobuf:"bytes,3,opt,name=workflow_type,json=workflowType" json:"workflow_type,omitempty"`
+	// Workflow request message packed as Any, recorded for replay and audit.
+	Input *anypb.Any `protobuf:"bytes,6,opt,name=input" json:"input,omitempty"`
+	// Lifecycle state; discriminates which optional fields below are set.
+	Status WorkflowStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
 	// Set when status is COMPLETED.
 	Result *anypb.Any `protobuf:"bytes,8,opt,name=result" json:"result,omitempty"`
 	// Set when status is FAILED.
-	Failure   *ActivityFailure       `protobuf:"bytes,9,opt,name=failure" json:"failure,omitempty"`
+	Failure *ActivityFailure `protobuf:"bytes,9,opt,name=failure" json:"failure,omitempty"`
+	// Wall-clock time the record was first persisted.
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
 	// Set when the workflow has reached a terminal status (COMPLETED or FAILED).
 	CompletedAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=completed_at,json=completedAt" json:"completed_at,omitempty"`
@@ -2710,16 +2770,22 @@ func (x *WorkflowRecord) GetRunOrderTime() *timestamppb.Timestamp {
 // TimerRecord backs durable sleep, activity-retry backoff, and polling wakes.
 // Stored at `timer/{timer_id}.binpb`.
 type TimerRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
-	Key           *TimerKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
-	TimerKind     TimerKind              `protobuf:"varint,3,opt,name=timer_kind,json=timerKind,enum=temporaless.v1.TimerKind" json:"timer_kind,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Always RECORD_SCHEMA_VERSION_TIMER for this record family.
+	SchemaVersion RecordSchemaVersion `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
+	// Storage identity of this durable timer.
+	Key *TimerKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	// What the timer backs: durable sleep, activity retry, or durable poll.
+	TimerKind TimerKind `protobuf:"varint,3,opt,name=timer_kind,json=timerKind,enum=temporaless.v1.TimerKind" json:"timer_kind,omitempty"`
 	// Canonical interval for a sleep, activity retry, or poll timer.
 	Duration *durationpb.Duration `protobuf:"bytes,6,opt,name=duration" json:"duration,omitempty"`
-	Status   TimerStatus          `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.TimerStatus" json:"status,omitempty"`
+	// Lifecycle state. A due timer stays SCHEDULED until a durable boundary
+	// confirms its wake was consumed.
+	Status TimerStatus `protobuf:"varint,7,opt,name=status,enum=temporaless.v1.TimerStatus" json:"status,omitempty"`
 	// Wall-clock instant at which the timer becomes due. Schedulers compare this
 	// against `now` to find re-invocations to dispatch.
-	FireAt    *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=fire_at,json=fireAt" json:"fire_at,omitempty"`
+	FireAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=fire_at,json=fireAt" json:"fire_at,omitempty"`
+	// Wall-clock time the record was first persisted.
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
 	// Set after the resumed workflow persists a later wake-bearing timer or a
 	// terminal workflow record. A due timer remains SCHEDULED until that durable
@@ -2832,14 +2898,17 @@ func (x *TimerRecord) GetRetryActivityId() string {
 // `DeliverEvent`. `PutEvent` is reserved for operators and migrations.
 // Stored at `event/{event_id}.binpb`.
 type EventRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
-	Key           *EventKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Always RECORD_SCHEMA_VERSION_EVENT for this record family.
+	SchemaVersion RecordSchemaVersion `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
+	// Storage identity of this event.
+	Key *EventKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	// Application-typed payload packed as Any. DeliverEvent helpers use
 	// deterministic protobuf bytes so byte-identical retries are idempotent.
 	// The waiting workflow declares the expected message type via `WaitEvent`'s
 	// payload factory.
-	Payload       *anypb.Any             `protobuf:"bytes,3,opt,name=payload" json:"payload,omitempty"`
+	Payload *anypb.Any `protobuf:"bytes,3,opt,name=payload" json:"payload,omitempty"`
+	// Wall-clock time the first delivery established the payload.
 	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=received_at,json=receivedAt" json:"received_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2907,18 +2976,24 @@ func (x *EventRecord) GetReceivedAt() *timestamppb.Timestamp {
 // at `claim/{claim_id}.binpb`. Write semantics depend on the backend's
 // `ClaimCapability`.
 type ClaimRecord struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion RecordSchemaVersion    `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
-	Key           *ClaimKey              `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Always RECORD_SCHEMA_VERSION_CLAIM for this record family.
+	SchemaVersion RecordSchemaVersion `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,enum=temporaless.v1.RecordSchemaVersion" json:"schema_version,omitempty"`
+	// Storage identity of this claim.
+	Key *ClaimKey `protobuf:"bytes,2,opt,name=key" json:"key,omitempty"`
 	// Caller-supplied diagnostic coordination identity. It does not prove
 	// liveness or grant re-entry: every existing core claim is busy even when
 	// this value matches.
-	OwnerId      string            `protobuf:"bytes,3,opt,name=owner_id,json=ownerId" json:"owner_id,omitempty"`
+	OwnerId string `protobuf:"bytes,3,opt,name=owner_id,json=ownerId" json:"owner_id,omitempty"`
+	// What kind of work this claim coordinates.
 	ResourceType ClaimResourceType `protobuf:"varint,4,opt,name=resource_type,json=resourceType,enum=temporaless.v1.ClaimResourceType" json:"resource_type,omitempty"`
 	// Domain ID of the resource being claimed (activity_id, timer_id, etc.).
-	ResourceId     string                 `protobuf:"bytes,5,opt,name=resource_id,json=resourceId" json:"resource_id,omitempty"`
+	ResourceId string `protobuf:"bytes,5,opt,name=resource_id,json=resourceId" json:"resource_id,omitempty"`
+	// Diagnostic expiry only; the core never performs automatic takeover. See
+	// RuntimeDefaults.claim_lease_duration_seconds.
 	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=lease_expires_at,json=leaseExpiresAt" json:"lease_expires_at,omitempty"`
-	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	// Wall-clock time the claim was created.
+	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
 	// Updated by CAS-capable adapters to extend the lease. Create-only adapters
 	// never update this after creation.
 	HeartbeatAt   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=heartbeat_at,json=heartbeatAt" json:"heartbeat_at,omitempty"`
@@ -3020,9 +3095,11 @@ func (x *ClaimRecord) GetHeartbeatAt() *timestamppb.Timestamp {
 // workflow runtime copies from caller-supplied WorkflowOptions; when it is
 // absent they fall back to record_time. Stores never parse opaque run IDs.
 type LatestWorkflowRunPointer struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Key    *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
-	Status WorkflowStatus         `protobuf:"varint,2,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identity of the run the pointer currently references.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Lifecycle state of the referenced run at pointer-write time.
+	Status WorkflowStatus `protobuf:"varint,2,opt,name=status,enum=temporaless.v1.WorkflowStatus" json:"status,omitempty"`
 	// Timestamp used for best-effort monotonic comparison. For IN_PROGRESS this
 	// is the workflow record's created_at; for terminal records it is
 	// completed_at.
@@ -3105,10 +3182,14 @@ func (x *LatestWorkflowRunPointer) GetRunOrderTime() *timestamppb.Timestamp {
 // DueTimerEntry is the deterministic write-ahead object written for timer
 // transitions. Its full prepared record repairs an interrupted canonical write.
 type DueTimerEntry struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	Key         *TimerKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
-	WorkflowKey *WorkflowKey           `protobuf:"bytes,2,opt,name=workflow_key,json=workflowKey" json:"workflow_key,omitempty"`
-	FireAt      *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=fire_at,json=fireAt" json:"fire_at,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identity of the timer this write-ahead entry shadows.
+	Key *TimerKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Run that owns the timer, letting scanners fetch the parent workflow with
+	// one point GET.
+	WorkflowKey *WorkflowKey `protobuf:"bytes,2,opt,name=workflow_key,json=workflowKey" json:"workflow_key,omitempty"`
+	// Wall-clock due instant, mirrored from the prepared record for scan filtering.
+	FireAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=fire_at,json=fireAt" json:"fire_at,omitempty"`
 	// Full prepared timer state. The due object is written before the canonical
 	// TimerRecord and is its exact fallback if a process dies between writes.
 	// Keeping one deterministic entry per TimerKey makes that crash window
@@ -3176,9 +3257,11 @@ func (x *DueTimerEntry) GetRecord() *TimerRecord {
 	return nil
 }
 
+// GetWorkflowRequest reads one workflow record by key.
 type GetWorkflowRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the workflow record to read.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3220,11 +3303,13 @@ func (x *GetWorkflowRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// GetWorkflowResponse carries an optional workflow record.
 type GetWorkflowResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// False when no record exists for the key. Read this before assuming
 	// `record` is populated.
-	Found         bool            `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored record; only meaningful when `found` is true.
 	Record        *WorkflowRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3274,9 +3359,11 @@ func (x *GetWorkflowResponse) GetRecord() *WorkflowRecord {
 	return nil
 }
 
+// PutWorkflowRequest writes or replaces one workflow record.
 type PutWorkflowRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *WorkflowRecord        `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete record to store at its embedded key.
+	Record        *WorkflowRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3318,6 +3405,7 @@ func (x *PutWorkflowRequest) GetRecord() *WorkflowRecord {
 	return nil
 }
 
+// PutWorkflowResponse is empty; success is the acknowledgement.
 type PutWorkflowResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3354,10 +3442,14 @@ func (*PutWorkflowResponse) Descriptor() ([]byte, []int) {
 	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{29}
 }
 
+// GetLatestWorkflowRunRequest reads the derived latest-run pointer for one
+// workflow definition.
 type GetLatestWorkflowRunRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Namespace of the workflow.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Workflow definition whose latest-run pointer is requested.
+	WorkflowId    string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3406,9 +3498,12 @@ func (x *GetLatestWorkflowRunRequest) GetWorkflowId() string {
 	return ""
 }
 
+// GetLatestWorkflowRunResponse carries an optional latest-run pointer.
 type GetLatestWorkflowRunResponse struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Found         bool                      `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no pointer object exists yet.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored pointer; only meaningful when `found` is true.
 	Pointer       *LatestWorkflowRunPointer `protobuf:"bytes,2,opt,name=pointer" json:"pointer,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3458,9 +3553,11 @@ func (x *GetLatestWorkflowRunResponse) GetPointer() *LatestWorkflowRunPointer {
 	return nil
 }
 
+// GetTimerRequest reads one timer record by key.
 type GetTimerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *TimerKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the timer record to read.
+	Key           *TimerKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3502,10 +3599,13 @@ func (x *GetTimerRequest) GetKey() *TimerKey {
 	return nil
 }
 
+// GetTimerResponse carries an optional timer record.
 type GetTimerResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Found         bool                   `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
-	Record        *TimerRecord           `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no record exists for the key.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored record; only meaningful when `found` is true.
+	Record        *TimerRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3554,9 +3654,11 @@ func (x *GetTimerResponse) GetRecord() *TimerRecord {
 	return nil
 }
 
+// PutTimerRequest writes or replaces one timer record.
 type PutTimerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *TimerRecord           `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete record to store at its embedded key.
+	Record        *TimerRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3598,6 +3700,7 @@ func (x *PutTimerRequest) GetRecord() *TimerRecord {
 	return nil
 }
 
+// PutTimerResponse is empty; success is the acknowledgement.
 type PutTimerResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3634,9 +3737,11 @@ func (*PutTimerResponse) Descriptor() ([]byte, []int) {
 	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{35}
 }
 
+// GetActivityRequest reads one activity record by key.
 type GetActivityRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *ActivityKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the activity record to read.
+	Key           *ActivityKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3678,10 +3783,13 @@ func (x *GetActivityRequest) GetKey() *ActivityKey {
 	return nil
 }
 
+// GetActivityResponse carries an optional activity record.
 type GetActivityResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Found         bool                   `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
-	Record        *ActivityRecord        `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no record exists for the key.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored record; only meaningful when `found` is true.
+	Record        *ActivityRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3730,9 +3838,11 @@ func (x *GetActivityResponse) GetRecord() *ActivityRecord {
 	return nil
 }
 
+// PutActivityRequest writes or replaces one activity record.
 type PutActivityRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *ActivityRecord        `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete record to store at its embedded key.
+	Record        *ActivityRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3774,6 +3884,7 @@ func (x *PutActivityRequest) GetRecord() *ActivityRecord {
 	return nil
 }
 
+// PutActivityResponse is empty; success is the acknowledgement.
 type PutActivityResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3810,9 +3921,11 @@ func (*PutActivityResponse) Descriptor() ([]byte, []int) {
 	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{39}
 }
 
+// GetEventRequest reads one event record by key.
 type GetEventRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *EventKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the event record to read.
+	Key           *EventKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3854,10 +3967,13 @@ func (x *GetEventRequest) GetKey() *EventKey {
 	return nil
 }
 
+// GetEventResponse carries an optional event record.
 type GetEventResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Found         bool                   `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
-	Record        *EventRecord           `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no record exists for the key.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored record; only meaningful when `found` is true.
+	Record        *EventRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3906,9 +4022,12 @@ func (x *GetEventResponse) GetRecord() *EventRecord {
 	return nil
 }
 
+// PutEventRequest writes or replaces one event record. This is the
+// operator/migration path; external delivery should use DeliverEvent.
 type PutEventRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *EventRecord           `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete record to store at its embedded key.
+	Record        *EventRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3950,6 +4069,7 @@ func (x *PutEventRequest) GetRecord() *EventRecord {
 	return nil
 }
 
+// PutEventResponse is empty; success is the acknowledgement.
 type PutEventResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -3989,8 +4109,9 @@ func (*PutEventResponse) Descriptor() ([]byte, []int) {
 // DeliverEventRequest atomically establishes the first payload for an event.
 // Unlike PutEvent, this operation never replaces an existing payload.
 type DeliverEventRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *EventRecord           `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Record whose payload becomes the one immutable payload for the key.
+	Record        *EventRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4032,8 +4153,10 @@ func (x *DeliverEventRequest) GetRecord() *EventRecord {
 	return nil
 }
 
+// DeliverEventResponse reports how the delivery resolved.
 type DeliverEventResponse struct {
-	state         protoimpl.MessageState   `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// CREATED for the first delivery, IDEMPOTENT for a byte-identical duplicate.
 	Disposition   EventDeliveryDisposition `protobuf:"varint,1,opt,name=disposition,enum=temporaless.v1.EventDeliveryDisposition" json:"disposition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4169,10 +4292,13 @@ func (x *ListWorkflowsRequest) GetPageToken() string {
 	return ""
 }
 
+// ListWorkflowsResponse is one page of workflow records.
 type ListWorkflowsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*WorkflowRecord      `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
-	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken" json:"next_page_token,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Matching workflow records in the requested order.
+	Records []*WorkflowRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	// Opaque token for the next page; empty when exhausted.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4223,8 +4349,9 @@ func (x *ListWorkflowsResponse) GetNextPageToken() string {
 
 // ListActivitiesRequest scopes to a single workflow run.
 type ListActivitiesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run whose activity records are listed.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4266,9 +4393,11 @@ func (x *ListActivitiesRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// ListActivitiesResponse carries every activity record under the run.
 type ListActivitiesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*ActivityRecord      `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Activity records under the run.
+	Records       []*ActivityRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4314,7 +4443,8 @@ func (x *ListActivitiesResponse) GetRecords() []*ActivityRecord {
 // timer status (e.g. `TIMER_STATUS_SCHEDULED` to find pending timers).
 type ListTimersRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Key   *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Run whose timer records are listed.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	// UNSPECIFIED matches all statuses.
 	Status        TimerStatus `protobuf:"varint,2,opt,name=status,enum=temporaless.v1.TimerStatus" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -4365,9 +4495,11 @@ func (x *ListTimersRequest) GetStatus() TimerStatus {
 	return TimerStatus_TIMER_STATUS_UNSPECIFIED
 }
 
+// ListTimersResponse carries the matching timer records.
 type ListTimersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*TimerRecord         `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Timer records under the run, filtered by status when requested.
+	Records       []*TimerRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4411,8 +4543,9 @@ func (x *ListTimersResponse) GetRecords() []*TimerRecord {
 
 // ListEventsRequest scopes to a single workflow run.
 type ListEventsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run whose event records are listed.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4454,9 +4587,11 @@ func (x *ListEventsRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// ListEventsResponse carries every event record under the run.
 type ListEventsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*EventRecord         `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Event records under the run.
+	Records       []*EventRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4502,8 +4637,9 @@ func (x *ListEventsResponse) GetRecords() []*EventRecord {
 // used for run deletion; cross-run claim search is intentionally not part of
 // the core storage contract.
 type ListClaimsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run whose claim records are listed.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4545,9 +4681,11 @@ func (x *ListClaimsRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// ListClaimsResponse carries every claim record under the run.
 type ListClaimsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*ClaimRecord         `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Claim records under the run.
+	Records       []*ClaimRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4589,15 +4727,24 @@ func (x *ListClaimsResponse) GetRecords() []*ClaimRecord {
 	return nil
 }
 
+// RecordQueryServiceListActivitiesRequest filters activity records across
+// runs on the derived index.
 type RecordQueryServiceListActivitiesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
-	RunId         string                 `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
-	Status        ActivityStatus         `protobuf:"varint,4,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
-	OrderBy       string                 `protobuf:"bytes,5,opt,name=order_by,json=orderBy" json:"order_by,omitempty"`
-	PageSize      int32                  `protobuf:"varint,6,opt,name=page_size,json=pageSize" json:"page_size,omitempty"`
-	PageToken     string                 `protobuf:"bytes,7,opt,name=page_token,json=pageToken" json:"page_token,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty namespace lists across all namespaces.
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Empty workflow_id lists across all workflow_ids.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId" json:"workflow_id,omitempty"`
+	// Empty run_id lists across all runs.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId" json:"run_id,omitempty"`
+	// UNSPECIFIED matches all statuses.
+	Status ActivityStatus `protobuf:"varint,4,opt,name=status,enum=temporaless.v1.ActivityStatus" json:"status,omitempty"`
+	// AIP-132 order_by; unsupported fields are rejected.
+	OrderBy string `protobuf:"bytes,5,opt,name=order_by,json=orderBy" json:"order_by,omitempty"`
+	// Maximum records to return. Zero lets the adapter choose its default.
+	PageSize int32 `protobuf:"varint,6,opt,name=page_size,json=pageSize" json:"page_size,omitempty"`
+	// Opaque token returned by the previous response.
+	PageToken     string `protobuf:"bytes,7,opt,name=page_token,json=pageToken" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4681,10 +4828,13 @@ func (x *RecordQueryServiceListActivitiesRequest) GetPageToken() string {
 	return ""
 }
 
+// RecordQueryServiceListActivitiesResponse is one page of activity records.
 type RecordQueryServiceListActivitiesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Records       []*ActivityRecord      `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
-	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken" json:"next_page_token,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Matching activity records in the requested order.
+	Records []*ActivityRecord `protobuf:"bytes,1,rep,name=records" json:"records,omitempty"`
+	// Opaque token for the next page; empty when exhausted.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4738,8 +4888,9 @@ func (x *RecordQueryServiceListActivitiesResponse) GetNextPageToken() string {
 // Delete* RPCs or use a higher-level adapter (e.g. `janitor.Sweep`) for
 // recursive deletion.
 type DeleteWorkflowRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the workflow record to remove.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4781,6 +4932,7 @@ func (x *DeleteWorkflowRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// DeleteWorkflowResponse reports whether a record was removed.
 type DeleteWorkflowResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// True if the record existed and was removed; false if it was already gone
@@ -4835,8 +4987,9 @@ func (x *DeleteWorkflowResponse) GetDeleted() bool {
 // run: this cleanup RPC is not an execution fence or a transaction against
 // concurrent claim/record creation.
 type DeleteRunRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *WorkflowKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run prefix to delete recursively.
+	Key           *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4878,9 +5031,12 @@ func (x *DeleteRunRequest) GetKey() *WorkflowKey {
 	return nil
 }
 
+// DeleteRunResponse reports how many records the recursive delete removed.
 type DeleteRunResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       uint32                 `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Total records removed across the workflow record, activities, timers,
+	// events, and claims.
+	Deleted       uint32 `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4922,9 +5078,11 @@ func (x *DeleteRunResponse) GetDeleted() uint32 {
 	return 0
 }
 
+// DeleteActivityRequest removes one activity record.
 type DeleteActivityRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *ActivityKey           `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the activity record to remove.
+	Key           *ActivityKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4966,9 +5124,12 @@ func (x *DeleteActivityRequest) GetKey() *ActivityKey {
 	return nil
 }
 
+// DeleteActivityResponse reports whether a record was removed.
 type DeleteActivityResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the record existed and was removed; false if it was already gone
+	// (idempotent).
+	Deleted       bool `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5010,9 +5171,11 @@ func (x *DeleteActivityResponse) GetDeleted() bool {
 	return false
 }
 
+// DeleteTimerRequest removes one timer record.
 type DeleteTimerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *TimerKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the timer record to remove.
+	Key           *TimerKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5054,9 +5217,12 @@ func (x *DeleteTimerRequest) GetKey() *TimerKey {
 	return nil
 }
 
+// DeleteTimerResponse reports whether a record was removed.
 type DeleteTimerResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the record existed and was removed; false if it was already gone
+	// (idempotent).
+	Deleted       bool `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5098,9 +5264,11 @@ func (x *DeleteTimerResponse) GetDeleted() bool {
 	return false
 }
 
+// DeleteEventRequest removes one event record.
 type DeleteEventRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *EventKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the event record to remove.
+	Key           *EventKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5142,9 +5310,12 @@ func (x *DeleteEventRequest) GetKey() *EventKey {
 	return nil
 }
 
+// DeleteEventResponse reports whether a record was removed.
 type DeleteEventResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the record existed and was removed; false if it was already gone
+	// (idempotent).
+	Deleted       bool `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5186,9 +5357,11 @@ func (x *DeleteEventResponse) GetDeleted() bool {
 	return false
 }
 
+// GetClaimRequest reads one claim record by key.
 type GetClaimRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *ClaimKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the claim record to read.
+	Key           *ClaimKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5230,10 +5403,13 @@ func (x *GetClaimRequest) GetKey() *ClaimKey {
 	return nil
 }
 
+// GetClaimResponse carries an optional claim record.
 type GetClaimResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Found         bool                   `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
-	Record        *ClaimRecord           `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// False when no record exists for the key.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The stored record; only meaningful when `found` is true.
+	Record        *ClaimRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5286,8 +5462,9 @@ func (x *GetClaimResponse) GetRecord() *ClaimRecord {
 // key. Other write semantics (refresh, takeover) are exposed via separate
 // adapter APIs only when the backend's `ClaimCapability` allows them.
 type TryCreateClaimRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Record        *ClaimRecord           `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Claim to create at its embedded key when the key is free.
+	Record        *ClaimRecord `protobuf:"bytes,1,opt,name=record" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5329,6 +5506,7 @@ func (x *TryCreateClaimRequest) GetRecord() *ClaimRecord {
 	return nil
 }
 
+// TryCreateClaimResponse reports whether the conditional create won.
 type TryCreateClaimResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// True if the claim was created; false if a claim already existed at the key.
@@ -5377,8 +5555,9 @@ func (x *TryCreateClaimResponse) GetCreated() bool {
 // DeleteClaimRequest releases a held claim so work is available to other
 // invocations. Idempotent: returns `deleted=false` when the claim wasn't present.
 type DeleteClaimRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *ClaimKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key of the claim to release.
+	Key           *ClaimKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5420,9 +5599,12 @@ func (x *DeleteClaimRequest) GetKey() *ClaimKey {
 	return nil
 }
 
+// DeleteClaimResponse reports whether a claim was removed.
 type DeleteClaimResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the claim existed and was removed; false if it was already gone
+	// (idempotent).
+	Deleted       bool `protobuf:"varint,1,opt,name=deleted" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5464,6 +5646,8 @@ func (x *DeleteClaimResponse) GetDeleted() bool {
 	return false
 }
 
+// GetStoreCapabilitiesRequest is empty; capabilities depend only on the
+// store's configuration.
 type GetStoreCapabilitiesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -5500,6 +5684,7 @@ func (*GetStoreCapabilitiesRequest) Descriptor() ([]byte, []int) {
 	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{74}
 }
 
+// GetStoreCapabilitiesResponse declares what the configured store can do.
 type GetStoreCapabilitiesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// What the configured claim store can do. Callers should treat
@@ -5629,6 +5814,7 @@ func (x *SweepRequest) GetMaxAge() *durationpb.Duration {
 	return nil
 }
 
+// SweepResponse summarizes an executed retention sweep.
 type SweepResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Number of COMPLETED workflow runs deleted (and their children swept).
@@ -5679,10 +5865,13 @@ func (x *SweepResponse) GetDeleted() uint32 {
 // An interrupted canonical write is repaired first and becomes dispatchable
 // only when a later scan observes both copies in agreement.
 type DueTimer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           *TimerKey              `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
-	Record        *TimerRecord           `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
-	Workflow      *WorkflowRecord        `protobuf:"bytes,3,opt,name=workflow" json:"workflow,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identity of the due timer.
+	Key *TimerKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Verified prepared TimerRecord for the wake.
+	Record *TimerRecord `protobuf:"bytes,2,opt,name=record" json:"record,omitempty"`
+	// Parent workflow record, confirming the run is still IN_PROGRESS.
+	Workflow      *WorkflowRecord `protobuf:"bytes,3,opt,name=workflow" json:"workflow,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5796,9 +5985,11 @@ func (x *DueTimersRequest) GetNow() *timestamppb.Timestamp {
 	return nil
 }
 
+// DueTimersResponse carries every dispatchable due wake found by the scan.
 type DueTimersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Due           []*DueTimer            `protobuf:"bytes,1,rep,name=due" json:"due,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Dispatchable due wakes, each paired with its owning workflow.
+	Due           []*DueTimer `protobuf:"bytes,1,rep,name=due" json:"due,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5840,9 +6031,13 @@ func (x *DueTimersResponse) GetDue() []*DueTimer {
 	return nil
 }
 
+// RecordQueryServiceDueTimersRequest scopes an indexed due-timer scan.
 type RecordQueryServiceDueTimersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Namespace to scope the scan to. Empty means "all namespaces".
+	Namespace string `protobuf:"bytes,1,opt,name=namespace" json:"namespace,omitempty"`
+	// Reference time. Timers with `fire_at <= now` and status=SCHEDULED are
+	// returned.
 	Now           *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=now" json:"now,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5892,9 +6087,11 @@ func (x *RecordQueryServiceDueTimersRequest) GetNow() *timestamppb.Timestamp {
 	return nil
 }
 
+// RecordQueryServiceDueTimersResponse carries the indexed scan results.
 type RecordQueryServiceDueTimersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Due           []*DueTimer            `protobuf:"bytes,1,rep,name=due" json:"due,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Dispatchable due wakes, each paired with its owning workflow.
+	Due           []*DueTimer `protobuf:"bytes,1,rep,name=due" json:"due,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

@@ -181,6 +181,8 @@ message ActivityOptions {
 // legacy storage-only behavior and rely on an application-triggered
 // re-invocation.
 message PollOptions {
+  // Caller-owned durable timer ID for the poll wake. Must be deterministic
+  // across replays of the same logical wait.
   string timer_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -192,6 +194,8 @@ message PollOptions {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Interval between durable poll wakes. The same timer is rearmed at this
+  // cadence until the awaited condition resolves.
   google.protobuf.Duration interval = 2 [
     (buf.validate.field).required = true,
     (buf.validate.field).duration.gt = {}
@@ -240,6 +244,7 @@ message DispatchOptions {
 // ordinary forward edges must remain acyclic, while an explicit LOOP_BACK edge
 // must touch a LOOP node. Adapter validators enforce those cross-field rules.
 message WorkflowPlan {
+  // Application-owned identity of this plan, stable across revisions.
   string plan_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -256,10 +261,12 @@ message WorkflowPlan {
   // revision and a caller-owned execution identity that cannot replay records
   // from the previous revision.
   uint64 revision = 2 [(buf.validate.field).uint64.gt = 0];
+  // Boxes of the visual workflow. At least one node is required.
   repeated WorkflowPlanNode nodes = 3 [(buf.validate.field).repeated = {
     min_items: 1
     max_items: 64
   }];
+  // Connections between nodes; see WorkflowPlanEdgeKind for edge semantics.
   repeated WorkflowPlanEdge edges = 4 [(buf.validate.field).repeated.max_items = 128];
   // Display/filter metadata only. Execution decisions must come from typed
   // request fields or recorded activity results, never from annotations.
@@ -322,11 +329,14 @@ message WorkflowPlanNode {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Human-readable name rendered by UIs.
   string display_name = 2 [(buf.validate.field).string = {
     min_len: 1
     max_bytes: 256
   }];
+  // Optional longer description for display.
   string description = 3 [(buf.validate.field).string.max_bytes = 4096];
+  // Visual role of the node; adapters map it onto core primitives.
   WorkflowPlanNodeKind kind = 4 [(buf.validate.field).enum = {
     defined_only: true
     not_in: 0
@@ -342,10 +352,12 @@ message WorkflowPlanNode {
     max_bytes: 512
     pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"
   }];
+  // Response counterpart of `request_type`; same metadata-only role.
   string response_type = 7 [(buf.validate.field).string = {
     max_bytes: 512
     pattern: "^$|^[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)*$"
   }];
+  // Display/filter metadata only, never an execution input.
   map<string, string> annotations = 8 [(buf.validate.field).map = {
     max_pairs: 32
     // Keep annotation maps identical in Go, Python, and Protobuf-ES.
@@ -375,7 +387,10 @@ enum WorkflowPlanEdgeKind {
   WORKFLOW_PLAN_EDGE_KIND_LOOP_BACK = 4;
 }
 
+// WorkflowPlanEdge connects two plan nodes; `kind` says why they are
+// connected and `label` names conditional routes.
 message WorkflowPlanEdge {
+  // node_id of the edge's origin.
   string source_node_id = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -388,6 +403,7 @@ message WorkflowPlanEdge {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // node_id of the edge's destination.
   string target_node_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -400,6 +416,7 @@ message WorkflowPlanEdge {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Why the two nodes are connected. CONDITIONAL edges also require `label`.
   WorkflowPlanEdgeKind kind = 3 [(buf.validate.field).enum = {
     defined_only: true
     not_in: 0
@@ -430,14 +447,19 @@ enum TaskStatus {
 // unpack into the original concrete type without the dispatcher needing
 // to know it.
 message TaskInfo {
+  // Dispatcher-generated ULID for one submission, returned by `DoAsync` and
+  // accepted by `Status`.
   string task_id = 1;
+  // Name of the dispatched method or handler, for diagnostics and filtering.
   string method = 2;
+  // Current lifecycle state of the submission.
   TaskStatus status = 3;
   // Populated when status == TASK_STATUS_DONE. Carries the handler's
   // typed Resp marshaled into Any (use `any.UnmarshalTo(&YourResp{})`).
   google.protobuf.Any response = 4;
   // Populated when status == TASK_STATUS_FAILED.
   string error = 5;
+  // Wall-clock time the submission entered the dispatcher.
   google.protobuf.Timestamp submitted_at = 6;
   // Set when status transitions to DONE or FAILED. Used as the TTL
   // anchor for eviction.
@@ -716,7 +738,9 @@ enum EventDeliveryFailureReason {
 
 // Structured ConnectRPC error detail returned by DeliverEvent failures.
 message EventDeliveryErrorDetail {
+  // Why delivery failed: unsupported backend capability or a conflicting payload.
   EventDeliveryFailureReason reason = 1;
+  // The event key the failed delivery addressed.
   EventKey key = 2;
 }
 
@@ -727,6 +751,7 @@ message EventDeliveryErrorDetail {
 // rejects those values for application record keys; framework-owned claim keys
 // may use reserved workflow_ids such as "__concurrency__".
 message WorkflowKey {
+  // Application namespace segment of the storage key.
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -743,6 +768,7 @@ message WorkflowKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Stable identifier of the workflow definition.
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -759,6 +785,7 @@ message WorkflowKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Opaque caller-provided identifier of the run.
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
@@ -774,6 +801,7 @@ message WorkflowKey {
 
 // ActivityKey addresses a single activity invocation within a workflow run.
 message ActivityKey {
+  // Application namespace segment of the storage key.
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -790,6 +818,7 @@ message ActivityKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Stable identifier of the workflow definition.
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -806,6 +835,7 @@ message ActivityKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Opaque caller-provided identifier of the run.
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
@@ -817,6 +847,7 @@ message ActivityKey {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Caller-provided stable identifier of the activity within the run.
   string activity_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
@@ -832,6 +863,7 @@ message ActivityKey {
 
 // TimerKey addresses a single durable timer within a workflow run.
 message TimerKey {
+  // Application namespace segment of the storage key.
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -848,6 +880,7 @@ message TimerKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Stable identifier of the workflow definition.
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -864,6 +897,7 @@ message TimerKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Opaque caller-provided identifier of the run.
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
@@ -875,6 +909,7 @@ message TimerKey {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Caller-provided stable identifier of the durable timer within the run.
   string timer_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
@@ -890,6 +925,7 @@ message TimerKey {
 
 // EventKey addresses a single signal/event payload delivered to a workflow run.
 message EventKey {
+  // Application namespace segment of the storage key.
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -906,6 +942,7 @@ message EventKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Stable identifier of the workflow definition.
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -922,6 +959,7 @@ message EventKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Opaque caller-provided identifier of the run.
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
@@ -933,6 +971,7 @@ message EventKey {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Caller-provided stable identifier of the event within the run.
   string event_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
@@ -948,6 +987,7 @@ message EventKey {
 
 // ClaimKey addresses a single coordination claim within a workflow run.
 message ClaimKey {
+  // Application namespace segment of the storage key.
   string namespace = 1 [
     (buf.validate.field).string = {
       min_len: 1
@@ -964,6 +1004,8 @@ message ClaimKey {
       expression: "!this.startsWith('_')"
     }
   ];
+  // Stable identifier of the workflow definition, or the framework-owned
+  // `__concurrency__` synthetic workflow for concurrency-slot claims.
   string workflow_id = 2 [
     (buf.validate.field).string = {
       min_len: 1
@@ -980,6 +1022,7 @@ message ClaimKey {
       expression: "this == '__concurrency__' || !this.startsWith('_')"
     }
   ];
+  // Opaque caller-provided identifier of the run.
   string run_id = 3 [
     (buf.validate.field).string = {
       min_len: 1
@@ -991,6 +1034,8 @@ message ClaimKey {
       expression: "this != '.' && this != '..'"
     }
   ];
+  // Claim identity within the run. Framework claims use the ReservedNames
+  // literals and prefixes.
   string claim_id = 4 [
     (buf.validate.field).string = {
       min_len: 1
@@ -1030,7 +1075,9 @@ message ActivityFailure {
 message ActivityAttempt {
   // 1-indexed attempt counter.
   uint32 attempt = 1;
+  // Wall-clock time the attempt began.
   google.protobuf.Timestamp started_at = 2;
+  // Wall-clock time the attempt finished, success or failure.
   google.protobuf.Timestamp completed_at = 3;
   // Set when the attempt failed; absent when the attempt succeeded.
   ActivityFailure failure = 4;
@@ -1045,19 +1092,25 @@ message ActivityRecord {
   reserved 4, 5;
   reserved code_version, input_digest;
 
+  // Always RECORD_SCHEMA_VERSION_ACTIVITY for this record family.
   RecordSchemaVersion schema_version = 1;
+  // Storage identity of this activity invocation.
   ActivityKey key = 2;
   // Derived from the request and response message types. Useful for analytics;
   // checked against the stored value on replay so a code change that swaps
   // input/output types fails loudly rather than returning a stale result.
   string activity_type = 3;
+  // Activity request message packed as Any, recorded for replay and audit.
   google.protobuf.Any input = 6;
+  // Lifecycle state; discriminates which optional fields below are set.
   ActivityStatus status = 7;
   // Set when status is COMPLETED.
   google.protobuf.Any result = 8;
   // Set when status is FAILED.
   ActivityFailure failure = 9;
+  // Wall-clock time the record was first persisted.
   google.protobuf.Timestamp created_at = 10;
+  // Wall-clock time a terminal status (COMPLETED or FAILED) was reached.
   google.protobuf.Timestamp completed_at = 11;
   // Per-attempt history. Always carries every attempt the runtime has run so
   // far, including the one that produced the current `status`.
@@ -1094,15 +1147,22 @@ message WorkflowRecord {
   reserved 4, 5;
   reserved code_version, input_digest;
 
+  // Always RECORD_SCHEMA_VERSION_WORKFLOW for this record family.
   RecordSchemaVersion schema_version = 1;
+  // Storage identity of this workflow run.
   WorkflowKey key = 2;
+  // Derived from the request and response message types and checked against
+  // the stored value on replay, like ActivityRecord.activity_type.
   string workflow_type = 3;
+  // Workflow request message packed as Any, recorded for replay and audit.
   google.protobuf.Any input = 6;
+  // Lifecycle state; discriminates which optional fields below are set.
   WorkflowStatus status = 7;
   // Set when status is COMPLETED.
   google.protobuf.Any result = 8;
   // Set when status is FAILED.
   ActivityFailure failure = 9;
+  // Wall-clock time the record was first persisted.
   google.protobuf.Timestamp created_at = 10;
   // Set when the workflow has reached a terminal status (COMPLETED or FAILED).
   google.protobuf.Timestamp completed_at = 11;
@@ -1125,15 +1185,21 @@ message TimerRecord {
   reserved 4, 5;
   reserved code_version, input_digest;
 
+  // Always RECORD_SCHEMA_VERSION_TIMER for this record family.
   RecordSchemaVersion schema_version = 1;
+  // Storage identity of this durable timer.
   TimerKey key = 2;
+  // What the timer backs: durable sleep, activity retry, or durable poll.
   TimerKind timer_kind = 3;
   // Canonical interval for a sleep, activity retry, or poll timer.
   google.protobuf.Duration duration = 6;
+  // Lifecycle state. A due timer stays SCHEDULED until a durable boundary
+  // confirms its wake was consumed.
   TimerStatus status = 7;
   // Wall-clock instant at which the timer becomes due. Schedulers compare this
   // against `now` to find re-invocations to dispatch.
   google.protobuf.Timestamp fire_at = 8;
+  // Wall-clock time the record was first persisted.
   google.protobuf.Timestamp created_at = 9;
   // Set after the resumed workflow persists a later wake-bearing timer or a
   // terminal workflow record. A due timer remains SCHEDULED until that durable
@@ -1151,13 +1217,16 @@ message TimerRecord {
 // `DeliverEvent`. `PutEvent` is reserved for operators and migrations.
 // Stored at `event/{event_id}.binpb`.
 message EventRecord {
+  // Always RECORD_SCHEMA_VERSION_EVENT for this record family.
   RecordSchemaVersion schema_version = 1;
+  // Storage identity of this event.
   EventKey key = 2;
   // Application-typed payload packed as Any. DeliverEvent helpers use
   // deterministic protobuf bytes so byte-identical retries are idempotent.
   // The waiting workflow declares the expected message type via `WaitEvent`'s
   // payload factory.
   google.protobuf.Any payload = 3;
+  // Wall-clock time the first delivery established the payload.
   google.protobuf.Timestamp received_at = 4;
 }
 
@@ -1171,16 +1240,22 @@ message ClaimRecord {
   reserved 6, 7;
   reserved code_version, input_digest;
 
+  // Always RECORD_SCHEMA_VERSION_CLAIM for this record family.
   RecordSchemaVersion schema_version = 1;
+  // Storage identity of this claim.
   ClaimKey key = 2;
   // Caller-supplied diagnostic coordination identity. It does not prove
   // liveness or grant re-entry: every existing core claim is busy even when
   // this value matches.
   string owner_id = 3;
+  // What kind of work this claim coordinates.
   ClaimResourceType resource_type = 4;
   // Domain ID of the resource being claimed (activity_id, timer_id, etc.).
   string resource_id = 5;
+  // Diagnostic expiry only; the core never performs automatic takeover. See
+  // RuntimeDefaults.claim_lease_duration_seconds.
   google.protobuf.Timestamp lease_expires_at = 8;
+  // Wall-clock time the claim was created.
   google.protobuf.Timestamp created_at = 9;
   // Updated by CAS-capable adapters to extend the lease. Create-only adapters
   // never update this after creation.
@@ -1195,7 +1270,9 @@ message ClaimRecord {
 // workflow runtime copies from caller-supplied WorkflowOptions; when it is
 // absent they fall back to record_time. Stores never parse opaque run IDs.
 message LatestWorkflowRunPointer {
+  // Identity of the run the pointer currently references.
   WorkflowKey key = 1;
+  // Lifecycle state of the referenced run at pointer-write time.
   WorkflowStatus status = 2;
   // Timestamp used for best-effort monotonic comparison. For IN_PROGRESS this
   // is the workflow record's created_at; for terminal records it is
@@ -1212,8 +1289,12 @@ message LatestWorkflowRunPointer {
 // DueTimerEntry is the deterministic write-ahead object written for timer
 // transitions. Its full prepared record repairs an interrupted canonical write.
 message DueTimerEntry {
+  // Identity of the timer this write-ahead entry shadows.
   TimerKey key = 1;
+  // Run that owns the timer, letting scanners fetch the parent workflow with
+  // one point GET.
   WorkflowKey workflow_key = 2;
+  // Wall-clock due instant, mirrored from the prepared record for scan filtering.
   google.protobuf.Timestamp fire_at = 3;
   // Full prepared timer state. The due object is written before the canonical
   // TimerRecord and is its exact fallback if a process dies between writes.
@@ -1222,85 +1303,127 @@ message DueTimerEntry {
   TimerRecord record = 4 [(buf.validate.field).required = true];
 }
 
+// GetWorkflowRequest reads one workflow record by key.
 message GetWorkflowRequest {
+  // Key of the workflow record to read.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// GetWorkflowResponse carries an optional workflow record.
 message GetWorkflowResponse {
   // False when no record exists for the key. Read this before assuming
   // `record` is populated.
   bool found = 1;
+  // The stored record; only meaningful when `found` is true.
   WorkflowRecord record = 2;
 }
 
+// PutWorkflowRequest writes or replaces one workflow record.
 message PutWorkflowRequest {
+  // Complete record to store at its embedded key.
   WorkflowRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// PutWorkflowResponse is empty; success is the acknowledgement.
 message PutWorkflowResponse {}
 
+// GetLatestWorkflowRunRequest reads the derived latest-run pointer for one
+// workflow definition.
 message GetLatestWorkflowRunRequest {
+  // Namespace of the workflow.
   string namespace = 1;
+  // Workflow definition whose latest-run pointer is requested.
   string workflow_id = 2;
 }
 
+// GetLatestWorkflowRunResponse carries an optional latest-run pointer.
 message GetLatestWorkflowRunResponse {
+  // False when no pointer object exists yet.
   bool found = 1;
+  // The stored pointer; only meaningful when `found` is true.
   LatestWorkflowRunPointer pointer = 2;
 }
 
+// GetTimerRequest reads one timer record by key.
 message GetTimerRequest {
+  // Key of the timer record to read.
   TimerKey key = 1 [(buf.validate.field).required = true];
 }
 
+// GetTimerResponse carries an optional timer record.
 message GetTimerResponse {
+  // False when no record exists for the key.
   bool found = 1;
+  // The stored record; only meaningful when `found` is true.
   TimerRecord record = 2;
 }
 
+// PutTimerRequest writes or replaces one timer record.
 message PutTimerRequest {
+  // Complete record to store at its embedded key.
   TimerRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// PutTimerResponse is empty; success is the acknowledgement.
 message PutTimerResponse {}
 
+// GetActivityRequest reads one activity record by key.
 message GetActivityRequest {
+  // Key of the activity record to read.
   ActivityKey key = 1 [(buf.validate.field).required = true];
 }
 
+// GetActivityResponse carries an optional activity record.
 message GetActivityResponse {
+  // False when no record exists for the key.
   bool found = 1;
+  // The stored record; only meaningful when `found` is true.
   ActivityRecord record = 2;
 }
 
+// PutActivityRequest writes or replaces one activity record.
 message PutActivityRequest {
+  // Complete record to store at its embedded key.
   ActivityRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// PutActivityResponse is empty; success is the acknowledgement.
 message PutActivityResponse {}
 
+// GetEventRequest reads one event record by key.
 message GetEventRequest {
+  // Key of the event record to read.
   EventKey key = 1 [(buf.validate.field).required = true];
 }
 
+// GetEventResponse carries an optional event record.
 message GetEventResponse {
+  // False when no record exists for the key.
   bool found = 1;
+  // The stored record; only meaningful when `found` is true.
   EventRecord record = 2;
 }
 
+// PutEventRequest writes or replaces one event record. This is the
+// operator/migration path; external delivery should use DeliverEvent.
 message PutEventRequest {
+  // Complete record to store at its embedded key.
   EventRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// PutEventResponse is empty; success is the acknowledgement.
 message PutEventResponse {}
 
 // DeliverEventRequest atomically establishes the first payload for an event.
 // Unlike PutEvent, this operation never replaces an existing payload.
 message DeliverEventRequest {
+  // Record whose payload becomes the one immutable payload for the key.
   EventRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// DeliverEventResponse reports how the delivery resolved.
 message DeliverEventResponse {
+  // CREATED for the first delivery, IDEMPOTENT for a byte-identical duplicate.
   EventDeliveryDisposition disposition = 1;
 }
 
@@ -1322,38 +1445,50 @@ message ListWorkflowsRequest {
   string page_token = 6;
 }
 
+// ListWorkflowsResponse is one page of workflow records.
 message ListWorkflowsResponse {
+  // Matching workflow records in the requested order.
   repeated WorkflowRecord records = 1;
+  // Opaque token for the next page; empty when exhausted.
   string next_page_token = 2;
 }
 
 // ListActivitiesRequest scopes to a single workflow run.
 message ListActivitiesRequest {
+  // Run whose activity records are listed.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// ListActivitiesResponse carries every activity record under the run.
 message ListActivitiesResponse {
+  // Activity records under the run.
   repeated ActivityRecord records = 1;
 }
 
 // ListTimersRequest scopes to a single workflow run, optionally filtering by
 // timer status (e.g. `TIMER_STATUS_SCHEDULED` to find pending timers).
 message ListTimersRequest {
+  // Run whose timer records are listed.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
   // UNSPECIFIED matches all statuses.
   TimerStatus status = 2;
 }
 
+// ListTimersResponse carries the matching timer records.
 message ListTimersResponse {
+  // Timer records under the run, filtered by status when requested.
   repeated TimerRecord records = 1;
 }
 
 // ListEventsRequest scopes to a single workflow run.
 message ListEventsRequest {
+  // Run whose event records are listed.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// ListEventsResponse carries every event record under the run.
 message ListEventsResponse {
+  // Event records under the run.
   repeated EventRecord records = 1;
 }
 
@@ -1361,25 +1496,40 @@ message ListEventsResponse {
 // used for run deletion; cross-run claim search is intentionally not part of
 // the core storage contract.
 message ListClaimsRequest {
+  // Run whose claim records are listed.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// ListClaimsResponse carries every claim record under the run.
 message ListClaimsResponse {
+  // Claim records under the run.
   repeated ClaimRecord records = 1;
 }
 
+// RecordQueryServiceListActivitiesRequest filters activity records across
+// runs on the derived index.
 message RecordQueryServiceListActivitiesRequest {
+  // Empty namespace lists across all namespaces.
   string namespace = 1;
+  // Empty workflow_id lists across all workflow_ids.
   string workflow_id = 2;
+  // Empty run_id lists across all runs.
   string run_id = 3;
+  // UNSPECIFIED matches all statuses.
   ActivityStatus status = 4;
+  // AIP-132 order_by; unsupported fields are rejected.
   string order_by = 5;
+  // Maximum records to return. Zero lets the adapter choose its default.
   int32 page_size = 6;
+  // Opaque token returned by the previous response.
   string page_token = 7;
 }
 
+// RecordQueryServiceListActivitiesResponse is one page of activity records.
 message RecordQueryServiceListActivitiesResponse {
+  // Matching activity records in the requested order.
   repeated ActivityRecord records = 1;
+  // Opaque token for the next page; empty when exhausted.
   string next_page_token = 2;
 }
 
@@ -1388,9 +1538,11 @@ message RecordQueryServiceListActivitiesResponse {
 // Delete* RPCs or use a higher-level adapter (e.g. `janitor.Sweep`) for
 // recursive deletion.
 message DeleteWorkflowRequest {
+  // Key of the workflow record to remove.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteWorkflowResponse reports whether a record was removed.
 message DeleteWorkflowResponse {
   // True if the record existed and was removed; false if it was already gone
   // (idempotent).
@@ -1405,43 +1557,67 @@ message DeleteWorkflowResponse {
 // run: this cleanup RPC is not an execution fence or a transaction against
 // concurrent claim/record creation.
 message DeleteRunRequest {
+  // Run prefix to delete recursively.
   WorkflowKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteRunResponse reports how many records the recursive delete removed.
 message DeleteRunResponse {
+  // Total records removed across the workflow record, activities, timers,
+  // events, and claims.
   uint32 deleted = 1;
 }
 
+// DeleteActivityRequest removes one activity record.
 message DeleteActivityRequest {
+  // Key of the activity record to remove.
   ActivityKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteActivityResponse reports whether a record was removed.
 message DeleteActivityResponse {
+  // True if the record existed and was removed; false if it was already gone
+  // (idempotent).
   bool deleted = 1;
 }
 
+// DeleteTimerRequest removes one timer record.
 message DeleteTimerRequest {
+  // Key of the timer record to remove.
   TimerKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteTimerResponse reports whether a record was removed.
 message DeleteTimerResponse {
+  // True if the record existed and was removed; false if it was already gone
+  // (idempotent).
   bool deleted = 1;
 }
 
+// DeleteEventRequest removes one event record.
 message DeleteEventRequest {
+  // Key of the event record to remove.
   EventKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteEventResponse reports whether a record was removed.
 message DeleteEventResponse {
+  // True if the record existed and was removed; false if it was already gone
+  // (idempotent).
   bool deleted = 1;
 }
 
+// GetClaimRequest reads one claim record by key.
 message GetClaimRequest {
+  // Key of the claim record to read.
   ClaimKey key = 1 [(buf.validate.field).required = true];
 }
 
+// GetClaimResponse carries an optional claim record.
 message GetClaimResponse {
+  // False when no record exists for the key.
   bool found = 1;
+  // The stored record; only meaningful when `found` is true.
   ClaimRecord record = 2;
 }
 
@@ -1449,9 +1625,11 @@ message GetClaimResponse {
 // key. Other write semantics (refresh, takeover) are exposed via separate
 // adapter APIs only when the backend's `ClaimCapability` allows them.
 message TryCreateClaimRequest {
+  // Claim to create at its embedded key when the key is free.
   ClaimRecord record = 1 [(buf.validate.field).required = true];
 }
 
+// TryCreateClaimResponse reports whether the conditional create won.
 message TryCreateClaimResponse {
   // True if the claim was created; false if a claim already existed at the key.
   bool created = 1;
@@ -1460,15 +1638,22 @@ message TryCreateClaimResponse {
 // DeleteClaimRequest releases a held claim so work is available to other
 // invocations. Idempotent: returns `deleted=false` when the claim wasn't present.
 message DeleteClaimRequest {
+  // Key of the claim to release.
   ClaimKey key = 1 [(buf.validate.field).required = true];
 }
 
+// DeleteClaimResponse reports whether a claim was removed.
 message DeleteClaimResponse {
+  // True if the claim existed and was removed; false if it was already gone
+  // (idempotent).
   bool deleted = 1;
 }
 
+// GetStoreCapabilitiesRequest is empty; capabilities depend only on the
+// store's configuration.
 message GetStoreCapabilitiesRequest {}
 
+// GetStoreCapabilitiesResponse declares what the configured store can do.
 message GetStoreCapabilitiesResponse {
   // What the configured claim store can do. Callers should treat
   // `CLAIM_CAPABILITY_NO_CLAIMS` as "claim-requiring options are unsupported";
@@ -1500,6 +1685,7 @@ message SweepRequest {
   ];
 }
 
+// SweepResponse summarizes an executed retention sweep.
 message SweepResponse {
   // Number of COMPLETED workflow runs deleted (and their children swept).
   uint32 deleted = 1;
@@ -1510,8 +1696,11 @@ message SweepResponse {
 // An interrupted canonical write is repaired first and becomes dispatchable
 // only when a later scan observes both copies in agreement.
 message DueTimer {
+  // Identity of the due timer.
   TimerKey key = 1;
+  // Verified prepared TimerRecord for the wake.
   TimerRecord record = 2;
+  // Parent workflow record, confirming the run is still IN_PROGRESS.
   WorkflowRecord workflow = 3;
 }
 
@@ -1526,16 +1715,24 @@ message DueTimersRequest {
   google.protobuf.Timestamp now = 2 [(buf.validate.field).required = true];
 }
 
+// DueTimersResponse carries every dispatchable due wake found by the scan.
 message DueTimersResponse {
+  // Dispatchable due wakes, each paired with its owning workflow.
   repeated DueTimer due = 1;
 }
 
+// RecordQueryServiceDueTimersRequest scopes an indexed due-timer scan.
 message RecordQueryServiceDueTimersRequest {
+  // Namespace to scope the scan to. Empty means "all namespaces".
   string namespace = 1;
+  // Reference time. Timers with `fire_at <= now` and status=SCHEDULED are
+  // returned.
   google.protobuf.Timestamp now = 2 [(buf.validate.field).required = true];
 }
 
+// RecordQueryServiceDueTimersResponse carries the indexed scan results.
 message RecordQueryServiceDueTimersResponse {
+  // Dispatchable due wakes, each paired with its owning workflow.
   repeated DueTimer due = 1;
 }
 

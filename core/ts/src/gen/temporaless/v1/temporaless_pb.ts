@@ -176,11 +176,17 @@ export const ActivityOptionsSchema: GenMessage<ActivityOptions> = /*@__PURE__*/
  */
 export type PollOptions = Message<"temporaless.v1.PollOptions"> & {
   /**
+   * Caller-owned durable timer ID for the poll wake. Must be deterministic
+   * across replays of the same logical wait.
+   *
    * @generated from field: string timer_id = 1;
    */
   timerId: string;
 
   /**
+   * Interval between durable poll wakes. The same timer is rearmed at this
+   * cadence until the awaited condition resolves.
+   *
    * @generated from field: google.protobuf.Duration interval = 2;
    */
   interval?: Duration | undefined;
@@ -265,6 +271,8 @@ export const DispatchOptionsSchema: GenMessage<DispatchOptions> = /*@__PURE__*/
  */
 export type WorkflowPlan = Message<"temporaless.v1.WorkflowPlan"> & {
   /**
+   * Application-owned identity of this plan, stable across revisions.
+   *
    * @generated from field: string plan_id = 1;
    */
   planId: string;
@@ -279,11 +287,15 @@ export type WorkflowPlan = Message<"temporaless.v1.WorkflowPlan"> & {
   revision: bigint;
 
   /**
+   * Boxes of the visual workflow. At least one node is required.
+   *
    * @generated from field: repeated temporaless.v1.WorkflowPlanNode nodes = 3;
    */
   nodes: WorkflowPlanNode[];
 
   /**
+   * Connections between nodes; see WorkflowPlanEdgeKind for edge semantics.
+   *
    * @generated from field: repeated temporaless.v1.WorkflowPlanEdge edges = 4;
    */
   edges: WorkflowPlanEdge[];
@@ -324,16 +336,22 @@ export type WorkflowPlanNode = Message<"temporaless.v1.WorkflowPlanNode"> & {
   nodeId: string;
 
   /**
+   * Human-readable name rendered by UIs.
+   *
    * @generated from field: string display_name = 2;
    */
   displayName: string;
 
   /**
+   * Optional longer description for display.
+   *
    * @generated from field: string description = 3;
    */
   description: string;
 
   /**
+   * Visual role of the node; adapters map it onto core primitives.
+   *
    * @generated from field: temporaless.v1.WorkflowPlanNodeKind kind = 4;
    */
   kind: WorkflowPlanNodeKind;
@@ -357,11 +375,15 @@ export type WorkflowPlanNode = Message<"temporaless.v1.WorkflowPlanNode"> & {
   requestType: string;
 
   /**
+   * Response counterpart of `request_type`; same metadata-only role.
+   *
    * @generated from field: string response_type = 7;
    */
   responseType: string;
 
   /**
+   * Display/filter metadata only, never an execution input.
+   *
    * @generated from field: map<string, string> annotations = 8;
    */
   annotations: { [key: string]: string };
@@ -375,20 +397,29 @@ export const WorkflowPlanNodeSchema: GenMessage<WorkflowPlanNode> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 5);
 
 /**
+ * WorkflowPlanEdge connects two plan nodes; `kind` says why they are
+ * connected and `label` names conditional routes.
+ *
  * @generated from message temporaless.v1.WorkflowPlanEdge
  */
 export type WorkflowPlanEdge = Message<"temporaless.v1.WorkflowPlanEdge"> & {
   /**
+   * node_id of the edge's origin.
+   *
    * @generated from field: string source_node_id = 1;
    */
   sourceNodeId: string;
 
   /**
+   * node_id of the edge's destination.
+   *
    * @generated from field: string target_node_id = 2;
    */
   targetNodeId: string;
 
   /**
+   * Why the two nodes are connected. CONDITIONAL edges also require `label`.
+   *
    * @generated from field: temporaless.v1.WorkflowPlanEdgeKind kind = 3;
    */
   kind: WorkflowPlanEdgeKind;
@@ -419,16 +450,23 @@ export const WorkflowPlanEdgeSchema: GenMessage<WorkflowPlanEdge> = /*@__PURE__*
  */
 export type TaskInfo = Message<"temporaless.v1.TaskInfo"> & {
   /**
+   * Dispatcher-generated ULID for one submission, returned by `DoAsync` and
+   * accepted by `Status`.
+   *
    * @generated from field: string task_id = 1;
    */
   taskId: string;
 
   /**
+   * Name of the dispatched method or handler, for diagnostics and filtering.
+   *
    * @generated from field: string method = 2;
    */
   method: string;
 
   /**
+   * Current lifecycle state of the submission.
+   *
    * @generated from field: temporaless.v1.TaskStatus status = 3;
    */
   status: TaskStatus;
@@ -449,6 +487,8 @@ export type TaskInfo = Message<"temporaless.v1.TaskInfo"> & {
   error: string;
 
   /**
+   * Wall-clock time the submission entered the dispatcher.
+   *
    * @generated from field: google.protobuf.Timestamp submitted_at = 6;
    */
   submittedAt?: Timestamp | undefined;
@@ -679,11 +719,15 @@ export const RuntimeDefaultsSchema: GenMessage<RuntimeDefaults> = /*@__PURE__*/
  */
 export type EventDeliveryErrorDetail = Message<"temporaless.v1.EventDeliveryErrorDetail"> & {
   /**
+   * Why delivery failed: unsupported backend capability or a conflicting payload.
+   *
    * @generated from field: temporaless.v1.EventDeliveryFailureReason reason = 1;
    */
   reason: EventDeliveryFailureReason;
 
   /**
+   * The event key the failed delivery addressed.
+   *
    * @generated from field: temporaless.v1.EventKey key = 2;
    */
   key?: EventKey | undefined;
@@ -708,16 +752,22 @@ export const EventDeliveryErrorDetailSchema: GenMessage<EventDeliveryErrorDetail
  */
 export type WorkflowKey = Message<"temporaless.v1.WorkflowKey"> & {
   /**
+   * Application namespace segment of the storage key.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Stable identifier of the workflow definition.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Opaque caller-provided identifier of the run.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
@@ -737,21 +787,29 @@ export const WorkflowKeySchema: GenMessage<WorkflowKey> = /*@__PURE__*/
  */
 export type ActivityKey = Message<"temporaless.v1.ActivityKey"> & {
   /**
+   * Application namespace segment of the storage key.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Stable identifier of the workflow definition.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Opaque caller-provided identifier of the run.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
 
   /**
+   * Caller-provided stable identifier of the activity within the run.
+   *
    * @generated from field: string activity_id = 4;
    */
   activityId: string;
@@ -771,21 +829,29 @@ export const ActivityKeySchema: GenMessage<ActivityKey> = /*@__PURE__*/
  */
 export type TimerKey = Message<"temporaless.v1.TimerKey"> & {
   /**
+   * Application namespace segment of the storage key.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Stable identifier of the workflow definition.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Opaque caller-provided identifier of the run.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
 
   /**
+   * Caller-provided stable identifier of the durable timer within the run.
+   *
    * @generated from field: string timer_id = 4;
    */
   timerId: string;
@@ -805,21 +871,29 @@ export const TimerKeySchema: GenMessage<TimerKey> = /*@__PURE__*/
  */
 export type EventKey = Message<"temporaless.v1.EventKey"> & {
   /**
+   * Application namespace segment of the storage key.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Stable identifier of the workflow definition.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Opaque caller-provided identifier of the run.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
 
   /**
+   * Caller-provided stable identifier of the event within the run.
+   *
    * @generated from field: string event_id = 4;
    */
   eventId: string;
@@ -839,21 +913,31 @@ export const EventKeySchema: GenMessage<EventKey> = /*@__PURE__*/
  */
 export type ClaimKey = Message<"temporaless.v1.ClaimKey"> & {
   /**
+   * Application namespace segment of the storage key.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Stable identifier of the workflow definition, or the framework-owned
+   * `__concurrency__` synthetic workflow for concurrency-slot claims.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Opaque caller-provided identifier of the run.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
 
   /**
+   * Claim identity within the run. Framework claims use the ReservedNames
+   * literals and prefixes.
+   *
    * @generated from field: string claim_id = 4;
    */
   claimId: string;
@@ -927,11 +1011,15 @@ export type ActivityAttempt = Message<"temporaless.v1.ActivityAttempt"> & {
   attempt: number;
 
   /**
+   * Wall-clock time the attempt began.
+   *
    * @generated from field: google.protobuf.Timestamp started_at = 2;
    */
   startedAt?: Timestamp | undefined;
 
   /**
+   * Wall-clock time the attempt finished, success or failure.
+   *
    * @generated from field: google.protobuf.Timestamp completed_at = 3;
    */
   completedAt?: Timestamp | undefined;
@@ -959,11 +1047,15 @@ export const ActivityAttemptSchema: GenMessage<ActivityAttempt> = /*@__PURE__*/
  */
 export type ActivityRecord = Message<"temporaless.v1.ActivityRecord"> & {
   /**
+   * Always RECORD_SCHEMA_VERSION_ACTIVITY for this record family.
+   *
    * @generated from field: temporaless.v1.RecordSchemaVersion schema_version = 1;
    */
   schemaVersion: RecordSchemaVersion;
 
   /**
+   * Storage identity of this activity invocation.
+   *
    * @generated from field: temporaless.v1.ActivityKey key = 2;
    */
   key?: ActivityKey | undefined;
@@ -978,11 +1070,15 @@ export type ActivityRecord = Message<"temporaless.v1.ActivityRecord"> & {
   activityType: string;
 
   /**
+   * Activity request message packed as Any, recorded for replay and audit.
+   *
    * @generated from field: google.protobuf.Any input = 6;
    */
   input?: Any | undefined;
 
   /**
+   * Lifecycle state; discriminates which optional fields below are set.
+   *
    * @generated from field: temporaless.v1.ActivityStatus status = 7;
    */
   status: ActivityStatus;
@@ -1002,11 +1098,15 @@ export type ActivityRecord = Message<"temporaless.v1.ActivityRecord"> & {
   failure?: ActivityFailure | undefined;
 
   /**
+   * Wall-clock time the record was first persisted.
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 10;
    */
   createdAt?: Timestamp | undefined;
 
   /**
+   * Wall-clock time a terminal status (COMPLETED or FAILED) was reached.
+   *
    * @generated from field: google.protobuf.Timestamp completed_at = 11;
    */
   completedAt?: Timestamp | undefined;
@@ -1076,26 +1176,37 @@ export const ActivityRecordSchema: GenMessage<ActivityRecord> = /*@__PURE__*/
  */
 export type WorkflowRecord = Message<"temporaless.v1.WorkflowRecord"> & {
   /**
+   * Always RECORD_SCHEMA_VERSION_WORKFLOW for this record family.
+   *
    * @generated from field: temporaless.v1.RecordSchemaVersion schema_version = 1;
    */
   schemaVersion: RecordSchemaVersion;
 
   /**
+   * Storage identity of this workflow run.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 2;
    */
   key?: WorkflowKey | undefined;
 
   /**
+   * Derived from the request and response message types and checked against
+   * the stored value on replay, like ActivityRecord.activity_type.
+   *
    * @generated from field: string workflow_type = 3;
    */
   workflowType: string;
 
   /**
+   * Workflow request message packed as Any, recorded for replay and audit.
+   *
    * @generated from field: google.protobuf.Any input = 6;
    */
   input?: Any | undefined;
 
   /**
+   * Lifecycle state; discriminates which optional fields below are set.
+   *
    * @generated from field: temporaless.v1.WorkflowStatus status = 7;
    */
   status: WorkflowStatus;
@@ -1115,6 +1226,8 @@ export type WorkflowRecord = Message<"temporaless.v1.WorkflowRecord"> & {
   failure?: ActivityFailure | undefined;
 
   /**
+   * Wall-clock time the record was first persisted.
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 10;
    */
   createdAt?: Timestamp | undefined;
@@ -1160,16 +1273,22 @@ export const WorkflowRecordSchema: GenMessage<WorkflowRecord> = /*@__PURE__*/
  */
 export type TimerRecord = Message<"temporaless.v1.TimerRecord"> & {
   /**
+   * Always RECORD_SCHEMA_VERSION_TIMER for this record family.
+   *
    * @generated from field: temporaless.v1.RecordSchemaVersion schema_version = 1;
    */
   schemaVersion: RecordSchemaVersion;
 
   /**
+   * Storage identity of this durable timer.
+   *
    * @generated from field: temporaless.v1.TimerKey key = 2;
    */
   key?: TimerKey | undefined;
 
   /**
+   * What the timer backs: durable sleep, activity retry, or durable poll.
+   *
    * @generated from field: temporaless.v1.TimerKind timer_kind = 3;
    */
   timerKind: TimerKind;
@@ -1182,6 +1301,9 @@ export type TimerRecord = Message<"temporaless.v1.TimerRecord"> & {
   duration?: Duration | undefined;
 
   /**
+   * Lifecycle state. A due timer stays SCHEDULED until a durable boundary
+   * confirms its wake was consumed.
+   *
    * @generated from field: temporaless.v1.TimerStatus status = 7;
    */
   status: TimerStatus;
@@ -1195,6 +1317,8 @@ export type TimerRecord = Message<"temporaless.v1.TimerRecord"> & {
   fireAt?: Timestamp | undefined;
 
   /**
+   * Wall-clock time the record was first persisted.
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 9;
    */
   createdAt?: Timestamp | undefined;
@@ -1236,11 +1360,15 @@ export const TimerRecordSchema: GenMessage<TimerRecord> = /*@__PURE__*/
  */
 export type EventRecord = Message<"temporaless.v1.EventRecord"> & {
   /**
+   * Always RECORD_SCHEMA_VERSION_EVENT for this record family.
+   *
    * @generated from field: temporaless.v1.RecordSchemaVersion schema_version = 1;
    */
   schemaVersion: RecordSchemaVersion;
 
   /**
+   * Storage identity of this event.
+   *
    * @generated from field: temporaless.v1.EventKey key = 2;
    */
   key?: EventKey | undefined;
@@ -1256,6 +1384,8 @@ export type EventRecord = Message<"temporaless.v1.EventRecord"> & {
   payload?: Any | undefined;
 
   /**
+   * Wall-clock time the first delivery established the payload.
+   *
    * @generated from field: google.protobuf.Timestamp received_at = 4;
    */
   receivedAt?: Timestamp | undefined;
@@ -1277,11 +1407,15 @@ export const EventRecordSchema: GenMessage<EventRecord> = /*@__PURE__*/
  */
 export type ClaimRecord = Message<"temporaless.v1.ClaimRecord"> & {
   /**
+   * Always RECORD_SCHEMA_VERSION_CLAIM for this record family.
+   *
    * @generated from field: temporaless.v1.RecordSchemaVersion schema_version = 1;
    */
   schemaVersion: RecordSchemaVersion;
 
   /**
+   * Storage identity of this claim.
+   *
    * @generated from field: temporaless.v1.ClaimKey key = 2;
    */
   key?: ClaimKey | undefined;
@@ -1296,6 +1430,8 @@ export type ClaimRecord = Message<"temporaless.v1.ClaimRecord"> & {
   ownerId: string;
 
   /**
+   * What kind of work this claim coordinates.
+   *
    * @generated from field: temporaless.v1.ClaimResourceType resource_type = 4;
    */
   resourceType: ClaimResourceType;
@@ -1308,11 +1444,16 @@ export type ClaimRecord = Message<"temporaless.v1.ClaimRecord"> & {
   resourceId: string;
 
   /**
+   * Diagnostic expiry only; the core never performs automatic takeover. See
+   * RuntimeDefaults.claim_lease_duration_seconds.
+   *
    * @generated from field: google.protobuf.Timestamp lease_expires_at = 8;
    */
   leaseExpiresAt?: Timestamp | undefined;
 
   /**
+   * Wall-clock time the claim was created.
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 9;
    */
   createdAt?: Timestamp | undefined;
@@ -1346,11 +1487,15 @@ export const ClaimRecordSchema: GenMessage<ClaimRecord> = /*@__PURE__*/
  */
 export type LatestWorkflowRunPointer = Message<"temporaless.v1.LatestWorkflowRunPointer"> & {
   /**
+   * Identity of the run the pointer currently references.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
 
   /**
+   * Lifecycle state of the referenced run at pointer-write time.
+   *
    * @generated from field: temporaless.v1.WorkflowStatus status = 2;
    */
   status: WorkflowStatus;
@@ -1396,16 +1541,23 @@ export const LatestWorkflowRunPointerSchema: GenMessage<LatestWorkflowRunPointer
  */
 export type DueTimerEntry = Message<"temporaless.v1.DueTimerEntry"> & {
   /**
+   * Identity of the timer this write-ahead entry shadows.
+   *
    * @generated from field: temporaless.v1.TimerKey key = 1;
    */
   key?: TimerKey | undefined;
 
   /**
+   * Run that owns the timer, letting scanners fetch the parent workflow with
+   * one point GET.
+   *
    * @generated from field: temporaless.v1.WorkflowKey workflow_key = 2;
    */
   workflowKey?: WorkflowKey | undefined;
 
   /**
+   * Wall-clock due instant, mirrored from the prepared record for scan filtering.
+   *
    * @generated from field: google.protobuf.Timestamp fire_at = 3;
    */
   fireAt?: Timestamp | undefined;
@@ -1429,10 +1581,14 @@ export const DueTimerEntrySchema: GenMessage<DueTimerEntry> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 25);
 
 /**
+ * GetWorkflowRequest reads one workflow record by key.
+ *
  * @generated from message temporaless.v1.GetWorkflowRequest
  */
 export type GetWorkflowRequest = Message<"temporaless.v1.GetWorkflowRequest"> & {
   /**
+   * Key of the workflow record to read.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -1446,6 +1602,8 @@ export const GetWorkflowRequestSchema: GenMessage<GetWorkflowRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 26);
 
 /**
+ * GetWorkflowResponse carries an optional workflow record.
+ *
  * @generated from message temporaless.v1.GetWorkflowResponse
  */
 export type GetWorkflowResponse = Message<"temporaless.v1.GetWorkflowResponse"> & {
@@ -1458,6 +1616,8 @@ export type GetWorkflowResponse = Message<"temporaless.v1.GetWorkflowResponse"> 
   found: boolean;
 
   /**
+   * The stored record; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.WorkflowRecord record = 2;
    */
   record?: WorkflowRecord | undefined;
@@ -1471,10 +1631,14 @@ export const GetWorkflowResponseSchema: GenMessage<GetWorkflowResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 27);
 
 /**
+ * PutWorkflowRequest writes or replaces one workflow record.
+ *
  * @generated from message temporaless.v1.PutWorkflowRequest
  */
 export type PutWorkflowRequest = Message<"temporaless.v1.PutWorkflowRequest"> & {
   /**
+   * Complete record to store at its embedded key.
+   *
    * @generated from field: temporaless.v1.WorkflowRecord record = 1;
    */
   record?: WorkflowRecord | undefined;
@@ -1488,6 +1652,8 @@ export const PutWorkflowRequestSchema: GenMessage<PutWorkflowRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 28);
 
 /**
+ * PutWorkflowResponse is empty; success is the acknowledgement.
+ *
  * @generated from message temporaless.v1.PutWorkflowResponse
  */
 export type PutWorkflowResponse = Message<"temporaless.v1.PutWorkflowResponse"> & {
@@ -1501,15 +1667,22 @@ export const PutWorkflowResponseSchema: GenMessage<PutWorkflowResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 29);
 
 /**
+ * GetLatestWorkflowRunRequest reads the derived latest-run pointer for one
+ * workflow definition.
+ *
  * @generated from message temporaless.v1.GetLatestWorkflowRunRequest
  */
 export type GetLatestWorkflowRunRequest = Message<"temporaless.v1.GetLatestWorkflowRunRequest"> & {
   /**
+   * Namespace of the workflow.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Workflow definition whose latest-run pointer is requested.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
@@ -1523,15 +1696,21 @@ export const GetLatestWorkflowRunRequestSchema: GenMessage<GetLatestWorkflowRunR
   messageDesc(file_temporaless_v1_temporaless, 30);
 
 /**
+ * GetLatestWorkflowRunResponse carries an optional latest-run pointer.
+ *
  * @generated from message temporaless.v1.GetLatestWorkflowRunResponse
  */
 export type GetLatestWorkflowRunResponse = Message<"temporaless.v1.GetLatestWorkflowRunResponse"> & {
   /**
+   * False when no pointer object exists yet.
+   *
    * @generated from field: bool found = 1;
    */
   found: boolean;
 
   /**
+   * The stored pointer; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.LatestWorkflowRunPointer pointer = 2;
    */
   pointer?: LatestWorkflowRunPointer | undefined;
@@ -1545,10 +1724,14 @@ export const GetLatestWorkflowRunResponseSchema: GenMessage<GetLatestWorkflowRun
   messageDesc(file_temporaless_v1_temporaless, 31);
 
 /**
+ * GetTimerRequest reads one timer record by key.
+ *
  * @generated from message temporaless.v1.GetTimerRequest
  */
 export type GetTimerRequest = Message<"temporaless.v1.GetTimerRequest"> & {
   /**
+   * Key of the timer record to read.
+   *
    * @generated from field: temporaless.v1.TimerKey key = 1;
    */
   key?: TimerKey | undefined;
@@ -1562,15 +1745,21 @@ export const GetTimerRequestSchema: GenMessage<GetTimerRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 32);
 
 /**
+ * GetTimerResponse carries an optional timer record.
+ *
  * @generated from message temporaless.v1.GetTimerResponse
  */
 export type GetTimerResponse = Message<"temporaless.v1.GetTimerResponse"> & {
   /**
+   * False when no record exists for the key.
+   *
    * @generated from field: bool found = 1;
    */
   found: boolean;
 
   /**
+   * The stored record; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.TimerRecord record = 2;
    */
   record?: TimerRecord | undefined;
@@ -1584,10 +1773,14 @@ export const GetTimerResponseSchema: GenMessage<GetTimerResponse> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 33);
 
 /**
+ * PutTimerRequest writes or replaces one timer record.
+ *
  * @generated from message temporaless.v1.PutTimerRequest
  */
 export type PutTimerRequest = Message<"temporaless.v1.PutTimerRequest"> & {
   /**
+   * Complete record to store at its embedded key.
+   *
    * @generated from field: temporaless.v1.TimerRecord record = 1;
    */
   record?: TimerRecord | undefined;
@@ -1601,6 +1794,8 @@ export const PutTimerRequestSchema: GenMessage<PutTimerRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 34);
 
 /**
+ * PutTimerResponse is empty; success is the acknowledgement.
+ *
  * @generated from message temporaless.v1.PutTimerResponse
  */
 export type PutTimerResponse = Message<"temporaless.v1.PutTimerResponse"> & {
@@ -1614,10 +1809,14 @@ export const PutTimerResponseSchema: GenMessage<PutTimerResponse> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 35);
 
 /**
+ * GetActivityRequest reads one activity record by key.
+ *
  * @generated from message temporaless.v1.GetActivityRequest
  */
 export type GetActivityRequest = Message<"temporaless.v1.GetActivityRequest"> & {
   /**
+   * Key of the activity record to read.
+   *
    * @generated from field: temporaless.v1.ActivityKey key = 1;
    */
   key?: ActivityKey | undefined;
@@ -1631,15 +1830,21 @@ export const GetActivityRequestSchema: GenMessage<GetActivityRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 36);
 
 /**
+ * GetActivityResponse carries an optional activity record.
+ *
  * @generated from message temporaless.v1.GetActivityResponse
  */
 export type GetActivityResponse = Message<"temporaless.v1.GetActivityResponse"> & {
   /**
+   * False when no record exists for the key.
+   *
    * @generated from field: bool found = 1;
    */
   found: boolean;
 
   /**
+   * The stored record; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.ActivityRecord record = 2;
    */
   record?: ActivityRecord | undefined;
@@ -1653,10 +1858,14 @@ export const GetActivityResponseSchema: GenMessage<GetActivityResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 37);
 
 /**
+ * PutActivityRequest writes or replaces one activity record.
+ *
  * @generated from message temporaless.v1.PutActivityRequest
  */
 export type PutActivityRequest = Message<"temporaless.v1.PutActivityRequest"> & {
   /**
+   * Complete record to store at its embedded key.
+   *
    * @generated from field: temporaless.v1.ActivityRecord record = 1;
    */
   record?: ActivityRecord | undefined;
@@ -1670,6 +1879,8 @@ export const PutActivityRequestSchema: GenMessage<PutActivityRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 38);
 
 /**
+ * PutActivityResponse is empty; success is the acknowledgement.
+ *
  * @generated from message temporaless.v1.PutActivityResponse
  */
 export type PutActivityResponse = Message<"temporaless.v1.PutActivityResponse"> & {
@@ -1683,10 +1894,14 @@ export const PutActivityResponseSchema: GenMessage<PutActivityResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 39);
 
 /**
+ * GetEventRequest reads one event record by key.
+ *
  * @generated from message temporaless.v1.GetEventRequest
  */
 export type GetEventRequest = Message<"temporaless.v1.GetEventRequest"> & {
   /**
+   * Key of the event record to read.
+   *
    * @generated from field: temporaless.v1.EventKey key = 1;
    */
   key?: EventKey | undefined;
@@ -1700,15 +1915,21 @@ export const GetEventRequestSchema: GenMessage<GetEventRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 40);
 
 /**
+ * GetEventResponse carries an optional event record.
+ *
  * @generated from message temporaless.v1.GetEventResponse
  */
 export type GetEventResponse = Message<"temporaless.v1.GetEventResponse"> & {
   /**
+   * False when no record exists for the key.
+   *
    * @generated from field: bool found = 1;
    */
   found: boolean;
 
   /**
+   * The stored record; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.EventRecord record = 2;
    */
   record?: EventRecord | undefined;
@@ -1722,10 +1943,15 @@ export const GetEventResponseSchema: GenMessage<GetEventResponse> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 41);
 
 /**
+ * PutEventRequest writes or replaces one event record. This is the
+ * operator/migration path; external delivery should use DeliverEvent.
+ *
  * @generated from message temporaless.v1.PutEventRequest
  */
 export type PutEventRequest = Message<"temporaless.v1.PutEventRequest"> & {
   /**
+   * Complete record to store at its embedded key.
+   *
    * @generated from field: temporaless.v1.EventRecord record = 1;
    */
   record?: EventRecord | undefined;
@@ -1739,6 +1965,8 @@ export const PutEventRequestSchema: GenMessage<PutEventRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 42);
 
 /**
+ * PutEventResponse is empty; success is the acknowledgement.
+ *
  * @generated from message temporaless.v1.PutEventResponse
  */
 export type PutEventResponse = Message<"temporaless.v1.PutEventResponse"> & {
@@ -1759,6 +1987,8 @@ export const PutEventResponseSchema: GenMessage<PutEventResponse> = /*@__PURE__*
  */
 export type DeliverEventRequest = Message<"temporaless.v1.DeliverEventRequest"> & {
   /**
+   * Record whose payload becomes the one immutable payload for the key.
+   *
    * @generated from field: temporaless.v1.EventRecord record = 1;
    */
   record?: EventRecord | undefined;
@@ -1772,10 +2002,14 @@ export const DeliverEventRequestSchema: GenMessage<DeliverEventRequest> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 44);
 
 /**
+ * DeliverEventResponse reports how the delivery resolved.
+ *
  * @generated from message temporaless.v1.DeliverEventResponse
  */
 export type DeliverEventResponse = Message<"temporaless.v1.DeliverEventResponse"> & {
   /**
+   * CREATED for the first delivery, IDEMPOTENT for a byte-identical duplicate.
+   *
    * @generated from field: temporaless.v1.EventDeliveryDisposition disposition = 1;
    */
   disposition: EventDeliveryDisposition;
@@ -1847,15 +2081,21 @@ export const ListWorkflowsRequestSchema: GenMessage<ListWorkflowsRequest> = /*@_
   messageDesc(file_temporaless_v1_temporaless, 46);
 
 /**
+ * ListWorkflowsResponse is one page of workflow records.
+ *
  * @generated from message temporaless.v1.ListWorkflowsResponse
  */
 export type ListWorkflowsResponse = Message<"temporaless.v1.ListWorkflowsResponse"> & {
   /**
+   * Matching workflow records in the requested order.
+   *
    * @generated from field: repeated temporaless.v1.WorkflowRecord records = 1;
    */
   records: WorkflowRecord[];
 
   /**
+   * Opaque token for the next page; empty when exhausted.
+   *
    * @generated from field: string next_page_token = 2;
    */
   nextPageToken: string;
@@ -1875,6 +2115,8 @@ export const ListWorkflowsResponseSchema: GenMessage<ListWorkflowsResponse> = /*
  */
 export type ListActivitiesRequest = Message<"temporaless.v1.ListActivitiesRequest"> & {
   /**
+   * Run whose activity records are listed.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -1888,10 +2130,14 @@ export const ListActivitiesRequestSchema: GenMessage<ListActivitiesRequest> = /*
   messageDesc(file_temporaless_v1_temporaless, 48);
 
 /**
+ * ListActivitiesResponse carries every activity record under the run.
+ *
  * @generated from message temporaless.v1.ListActivitiesResponse
  */
 export type ListActivitiesResponse = Message<"temporaless.v1.ListActivitiesResponse"> & {
   /**
+   * Activity records under the run.
+   *
    * @generated from field: repeated temporaless.v1.ActivityRecord records = 1;
    */
   records: ActivityRecord[];
@@ -1912,6 +2158,8 @@ export const ListActivitiesResponseSchema: GenMessage<ListActivitiesResponse> = 
  */
 export type ListTimersRequest = Message<"temporaless.v1.ListTimersRequest"> & {
   /**
+   * Run whose timer records are listed.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -1932,10 +2180,14 @@ export const ListTimersRequestSchema: GenMessage<ListTimersRequest> = /*@__PURE_
   messageDesc(file_temporaless_v1_temporaless, 50);
 
 /**
+ * ListTimersResponse carries the matching timer records.
+ *
  * @generated from message temporaless.v1.ListTimersResponse
  */
 export type ListTimersResponse = Message<"temporaless.v1.ListTimersResponse"> & {
   /**
+   * Timer records under the run, filtered by status when requested.
+   *
    * @generated from field: repeated temporaless.v1.TimerRecord records = 1;
    */
   records: TimerRecord[];
@@ -1955,6 +2207,8 @@ export const ListTimersResponseSchema: GenMessage<ListTimersResponse> = /*@__PUR
  */
 export type ListEventsRequest = Message<"temporaless.v1.ListEventsRequest"> & {
   /**
+   * Run whose event records are listed.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -1968,10 +2222,14 @@ export const ListEventsRequestSchema: GenMessage<ListEventsRequest> = /*@__PURE_
   messageDesc(file_temporaless_v1_temporaless, 52);
 
 /**
+ * ListEventsResponse carries every event record under the run.
+ *
  * @generated from message temporaless.v1.ListEventsResponse
  */
 export type ListEventsResponse = Message<"temporaless.v1.ListEventsResponse"> & {
   /**
+   * Event records under the run.
+   *
    * @generated from field: repeated temporaless.v1.EventRecord records = 1;
    */
   records: EventRecord[];
@@ -1993,6 +2251,8 @@ export const ListEventsResponseSchema: GenMessage<ListEventsResponse> = /*@__PUR
  */
 export type ListClaimsRequest = Message<"temporaless.v1.ListClaimsRequest"> & {
   /**
+   * Run whose claim records are listed.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -2006,10 +2266,14 @@ export const ListClaimsRequestSchema: GenMessage<ListClaimsRequest> = /*@__PURE_
   messageDesc(file_temporaless_v1_temporaless, 54);
 
 /**
+ * ListClaimsResponse carries every claim record under the run.
+ *
  * @generated from message temporaless.v1.ListClaimsResponse
  */
 export type ListClaimsResponse = Message<"temporaless.v1.ListClaimsResponse"> & {
   /**
+   * Claim records under the run.
+   *
    * @generated from field: repeated temporaless.v1.ClaimRecord records = 1;
    */
   records: ClaimRecord[];
@@ -2023,40 +2287,57 @@ export const ListClaimsResponseSchema: GenMessage<ListClaimsResponse> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 55);
 
 /**
+ * RecordQueryServiceListActivitiesRequest filters activity records across
+ * runs on the derived index.
+ *
  * @generated from message temporaless.v1.RecordQueryServiceListActivitiesRequest
  */
 export type RecordQueryServiceListActivitiesRequest = Message<"temporaless.v1.RecordQueryServiceListActivitiesRequest"> & {
   /**
+   * Empty namespace lists across all namespaces.
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Empty workflow_id lists across all workflow_ids.
+   *
    * @generated from field: string workflow_id = 2;
    */
   workflowId: string;
 
   /**
+   * Empty run_id lists across all runs.
+   *
    * @generated from field: string run_id = 3;
    */
   runId: string;
 
   /**
+   * UNSPECIFIED matches all statuses.
+   *
    * @generated from field: temporaless.v1.ActivityStatus status = 4;
    */
   status: ActivityStatus;
 
   /**
+   * AIP-132 order_by; unsupported fields are rejected.
+   *
    * @generated from field: string order_by = 5;
    */
   orderBy: string;
 
   /**
+   * Maximum records to return. Zero lets the adapter choose its default.
+   *
    * @generated from field: int32 page_size = 6;
    */
   pageSize: number;
 
   /**
+   * Opaque token returned by the previous response.
+   *
    * @generated from field: string page_token = 7;
    */
   pageToken: string;
@@ -2070,15 +2351,21 @@ export const RecordQueryServiceListActivitiesRequestSchema: GenMessage<RecordQue
   messageDesc(file_temporaless_v1_temporaless, 56);
 
 /**
+ * RecordQueryServiceListActivitiesResponse is one page of activity records.
+ *
  * @generated from message temporaless.v1.RecordQueryServiceListActivitiesResponse
  */
 export type RecordQueryServiceListActivitiesResponse = Message<"temporaless.v1.RecordQueryServiceListActivitiesResponse"> & {
   /**
+   * Matching activity records in the requested order.
+   *
    * @generated from field: repeated temporaless.v1.ActivityRecord records = 1;
    */
   records: ActivityRecord[];
 
   /**
+   * Opaque token for the next page; empty when exhausted.
+   *
    * @generated from field: string next_page_token = 2;
    */
   nextPageToken: string;
@@ -2101,6 +2388,8 @@ export const RecordQueryServiceListActivitiesResponseSchema: GenMessage<RecordQu
  */
 export type DeleteWorkflowRequest = Message<"temporaless.v1.DeleteWorkflowRequest"> & {
   /**
+   * Key of the workflow record to remove.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -2114,6 +2403,8 @@ export const DeleteWorkflowRequestSchema: GenMessage<DeleteWorkflowRequest> = /*
   messageDesc(file_temporaless_v1_temporaless, 58);
 
 /**
+ * DeleteWorkflowResponse reports whether a record was removed.
+ *
  * @generated from message temporaless.v1.DeleteWorkflowResponse
  */
 export type DeleteWorkflowResponse = Message<"temporaless.v1.DeleteWorkflowResponse"> & {
@@ -2146,6 +2437,8 @@ export const DeleteWorkflowResponseSchema: GenMessage<DeleteWorkflowResponse> = 
  */
 export type DeleteRunRequest = Message<"temporaless.v1.DeleteRunRequest"> & {
   /**
+   * Run prefix to delete recursively.
+   *
    * @generated from field: temporaless.v1.WorkflowKey key = 1;
    */
   key?: WorkflowKey | undefined;
@@ -2159,10 +2452,15 @@ export const DeleteRunRequestSchema: GenMessage<DeleteRunRequest> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 60);
 
 /**
+ * DeleteRunResponse reports how many records the recursive delete removed.
+ *
  * @generated from message temporaless.v1.DeleteRunResponse
  */
 export type DeleteRunResponse = Message<"temporaless.v1.DeleteRunResponse"> & {
   /**
+   * Total records removed across the workflow record, activities, timers,
+   * events, and claims.
+   *
    * @generated from field: uint32 deleted = 1;
    */
   deleted: number;
@@ -2176,10 +2474,14 @@ export const DeleteRunResponseSchema: GenMessage<DeleteRunResponse> = /*@__PURE_
   messageDesc(file_temporaless_v1_temporaless, 61);
 
 /**
+ * DeleteActivityRequest removes one activity record.
+ *
  * @generated from message temporaless.v1.DeleteActivityRequest
  */
 export type DeleteActivityRequest = Message<"temporaless.v1.DeleteActivityRequest"> & {
   /**
+   * Key of the activity record to remove.
+   *
    * @generated from field: temporaless.v1.ActivityKey key = 1;
    */
   key?: ActivityKey | undefined;
@@ -2193,10 +2495,15 @@ export const DeleteActivityRequestSchema: GenMessage<DeleteActivityRequest> = /*
   messageDesc(file_temporaless_v1_temporaless, 62);
 
 /**
+ * DeleteActivityResponse reports whether a record was removed.
+ *
  * @generated from message temporaless.v1.DeleteActivityResponse
  */
 export type DeleteActivityResponse = Message<"temporaless.v1.DeleteActivityResponse"> & {
   /**
+   * True if the record existed and was removed; false if it was already gone
+   * (idempotent).
+   *
    * @generated from field: bool deleted = 1;
    */
   deleted: boolean;
@@ -2210,10 +2517,14 @@ export const DeleteActivityResponseSchema: GenMessage<DeleteActivityResponse> = 
   messageDesc(file_temporaless_v1_temporaless, 63);
 
 /**
+ * DeleteTimerRequest removes one timer record.
+ *
  * @generated from message temporaless.v1.DeleteTimerRequest
  */
 export type DeleteTimerRequest = Message<"temporaless.v1.DeleteTimerRequest"> & {
   /**
+   * Key of the timer record to remove.
+   *
    * @generated from field: temporaless.v1.TimerKey key = 1;
    */
   key?: TimerKey | undefined;
@@ -2227,10 +2538,15 @@ export const DeleteTimerRequestSchema: GenMessage<DeleteTimerRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 64);
 
 /**
+ * DeleteTimerResponse reports whether a record was removed.
+ *
  * @generated from message temporaless.v1.DeleteTimerResponse
  */
 export type DeleteTimerResponse = Message<"temporaless.v1.DeleteTimerResponse"> & {
   /**
+   * True if the record existed and was removed; false if it was already gone
+   * (idempotent).
+   *
    * @generated from field: bool deleted = 1;
    */
   deleted: boolean;
@@ -2244,10 +2560,14 @@ export const DeleteTimerResponseSchema: GenMessage<DeleteTimerResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 65);
 
 /**
+ * DeleteEventRequest removes one event record.
+ *
  * @generated from message temporaless.v1.DeleteEventRequest
  */
 export type DeleteEventRequest = Message<"temporaless.v1.DeleteEventRequest"> & {
   /**
+   * Key of the event record to remove.
+   *
    * @generated from field: temporaless.v1.EventKey key = 1;
    */
   key?: EventKey | undefined;
@@ -2261,10 +2581,15 @@ export const DeleteEventRequestSchema: GenMessage<DeleteEventRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 66);
 
 /**
+ * DeleteEventResponse reports whether a record was removed.
+ *
  * @generated from message temporaless.v1.DeleteEventResponse
  */
 export type DeleteEventResponse = Message<"temporaless.v1.DeleteEventResponse"> & {
   /**
+   * True if the record existed and was removed; false if it was already gone
+   * (idempotent).
+   *
    * @generated from field: bool deleted = 1;
    */
   deleted: boolean;
@@ -2278,10 +2603,14 @@ export const DeleteEventResponseSchema: GenMessage<DeleteEventResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 67);
 
 /**
+ * GetClaimRequest reads one claim record by key.
+ *
  * @generated from message temporaless.v1.GetClaimRequest
  */
 export type GetClaimRequest = Message<"temporaless.v1.GetClaimRequest"> & {
   /**
+   * Key of the claim record to read.
+   *
    * @generated from field: temporaless.v1.ClaimKey key = 1;
    */
   key?: ClaimKey | undefined;
@@ -2295,15 +2624,21 @@ export const GetClaimRequestSchema: GenMessage<GetClaimRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 68);
 
 /**
+ * GetClaimResponse carries an optional claim record.
+ *
  * @generated from message temporaless.v1.GetClaimResponse
  */
 export type GetClaimResponse = Message<"temporaless.v1.GetClaimResponse"> & {
   /**
+   * False when no record exists for the key.
+   *
    * @generated from field: bool found = 1;
    */
   found: boolean;
 
   /**
+   * The stored record; only meaningful when `found` is true.
+   *
    * @generated from field: temporaless.v1.ClaimRecord record = 2;
    */
   record?: ClaimRecord | undefined;
@@ -2325,6 +2660,8 @@ export const GetClaimResponseSchema: GenMessage<GetClaimResponse> = /*@__PURE__*
  */
 export type TryCreateClaimRequest = Message<"temporaless.v1.TryCreateClaimRequest"> & {
   /**
+   * Claim to create at its embedded key when the key is free.
+   *
    * @generated from field: temporaless.v1.ClaimRecord record = 1;
    */
   record?: ClaimRecord | undefined;
@@ -2338,6 +2675,8 @@ export const TryCreateClaimRequestSchema: GenMessage<TryCreateClaimRequest> = /*
   messageDesc(file_temporaless_v1_temporaless, 70);
 
 /**
+ * TryCreateClaimResponse reports whether the conditional create won.
+ *
  * @generated from message temporaless.v1.TryCreateClaimResponse
  */
 export type TryCreateClaimResponse = Message<"temporaless.v1.TryCreateClaimResponse"> & {
@@ -2364,6 +2703,8 @@ export const TryCreateClaimResponseSchema: GenMessage<TryCreateClaimResponse> = 
  */
 export type DeleteClaimRequest = Message<"temporaless.v1.DeleteClaimRequest"> & {
   /**
+   * Key of the claim to release.
+   *
    * @generated from field: temporaless.v1.ClaimKey key = 1;
    */
   key?: ClaimKey | undefined;
@@ -2377,10 +2718,15 @@ export const DeleteClaimRequestSchema: GenMessage<DeleteClaimRequest> = /*@__PUR
   messageDesc(file_temporaless_v1_temporaless, 72);
 
 /**
+ * DeleteClaimResponse reports whether a claim was removed.
+ *
  * @generated from message temporaless.v1.DeleteClaimResponse
  */
 export type DeleteClaimResponse = Message<"temporaless.v1.DeleteClaimResponse"> & {
   /**
+   * True if the claim existed and was removed; false if it was already gone
+   * (idempotent).
+   *
    * @generated from field: bool deleted = 1;
    */
   deleted: boolean;
@@ -2394,6 +2740,9 @@ export const DeleteClaimResponseSchema: GenMessage<DeleteClaimResponse> = /*@__P
   messageDesc(file_temporaless_v1_temporaless, 73);
 
 /**
+ * GetStoreCapabilitiesRequest is empty; capabilities depend only on the
+ * store's configuration.
+ *
  * @generated from message temporaless.v1.GetStoreCapabilitiesRequest
  */
 export type GetStoreCapabilitiesRequest = Message<"temporaless.v1.GetStoreCapabilitiesRequest"> & {
@@ -2407,6 +2756,8 @@ export const GetStoreCapabilitiesRequestSchema: GenMessage<GetStoreCapabilitiesR
   messageDesc(file_temporaless_v1_temporaless, 74);
 
 /**
+ * GetStoreCapabilitiesResponse declares what the configured store can do.
+ *
  * @generated from message temporaless.v1.GetStoreCapabilitiesResponse
  */
 export type GetStoreCapabilitiesResponse = Message<"temporaless.v1.GetStoreCapabilitiesResponse"> & {
@@ -2479,6 +2830,8 @@ export const SweepRequestSchema: GenMessage<SweepRequest> = /*@__PURE__*/
   messageDesc(file_temporaless_v1_temporaless, 76);
 
 /**
+ * SweepResponse summarizes an executed retention sweep.
+ *
  * @generated from message temporaless.v1.SweepResponse
  */
 export type SweepResponse = Message<"temporaless.v1.SweepResponse"> & {
@@ -2507,16 +2860,22 @@ export const SweepResponseSchema: GenMessage<SweepResponse> = /*@__PURE__*/
  */
 export type DueTimer = Message<"temporaless.v1.DueTimer"> & {
   /**
+   * Identity of the due timer.
+   *
    * @generated from field: temporaless.v1.TimerKey key = 1;
    */
   key?: TimerKey | undefined;
 
   /**
+   * Verified prepared TimerRecord for the wake.
+   *
    * @generated from field: temporaless.v1.TimerRecord record = 2;
    */
   record?: TimerRecord | undefined;
 
   /**
+   * Parent workflow record, confirming the run is still IN_PROGRESS.
+   *
    * @generated from field: temporaless.v1.WorkflowRecord workflow = 3;
    */
   workflow?: WorkflowRecord | undefined;
@@ -2561,10 +2920,14 @@ export const DueTimersRequestSchema: GenMessage<DueTimersRequest> = /*@__PURE__*
   messageDesc(file_temporaless_v1_temporaless, 79);
 
 /**
+ * DueTimersResponse carries every dispatchable due wake found by the scan.
+ *
  * @generated from message temporaless.v1.DueTimersResponse
  */
 export type DueTimersResponse = Message<"temporaless.v1.DueTimersResponse"> & {
   /**
+   * Dispatchable due wakes, each paired with its owning workflow.
+   *
    * @generated from field: repeated temporaless.v1.DueTimer due = 1;
    */
   due: DueTimer[];
@@ -2578,15 +2941,22 @@ export const DueTimersResponseSchema: GenMessage<DueTimersResponse> = /*@__PURE_
   messageDesc(file_temporaless_v1_temporaless, 80);
 
 /**
+ * RecordQueryServiceDueTimersRequest scopes an indexed due-timer scan.
+ *
  * @generated from message temporaless.v1.RecordQueryServiceDueTimersRequest
  */
 export type RecordQueryServiceDueTimersRequest = Message<"temporaless.v1.RecordQueryServiceDueTimersRequest"> & {
   /**
+   * Namespace to scope the scan to. Empty means "all namespaces".
+   *
    * @generated from field: string namespace = 1;
    */
   namespace: string;
 
   /**
+   * Reference time. Timers with `fire_at <= now` and status=SCHEDULED are
+   * returned.
+   *
    * @generated from field: google.protobuf.Timestamp now = 2;
    */
   now?: Timestamp | undefined;
@@ -2600,10 +2970,14 @@ export const RecordQueryServiceDueTimersRequestSchema: GenMessage<RecordQuerySer
   messageDesc(file_temporaless_v1_temporaless, 81);
 
 /**
+ * RecordQueryServiceDueTimersResponse carries the indexed scan results.
+ *
  * @generated from message temporaless.v1.RecordQueryServiceDueTimersResponse
  */
 export type RecordQueryServiceDueTimersResponse = Message<"temporaless.v1.RecordQueryServiceDueTimersResponse"> & {
   /**
+   * Dispatchable due wakes, each paired with its owning workflow.
+   *
    * @generated from field: repeated temporaless.v1.DueTimer due = 1;
    */
   due: DueTimer[];
