@@ -1,27 +1,41 @@
 #!/bin/sh
 set -eu
 
-# Keep public OSS docs, examples, and README-style surfaces free of private
-# organization/product names. Public package coordinates such as
-# github.com/jim-technologies/temporaless are intentionally allowed.
+# Keep every public OSS surface — code, docs, examples, and the Makefile
+# itself — free of private organization/product names. Public package
+# coordinates such as github.com/jim-technologies/temporaless are
+# intentionally allowed. The deny-list comes from this repository's own
+# review; extend it here whenever a new private name must never appear.
 pattern='(^|[^[:alnum:]_])(medallion|jimtech)([^[:alnum:]_]|$)|Connect/Ontology'
 
+surfaces="README.md CHANGELOG.md CONVENTIONS.md AGENTS.md SECURITY.md PRD.md \
+decision.md MAKEFILE-CONTRACT.md Makefile docs examples api core adapters \
+cmd scripts"
+
 if command -v rg >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # surfaces is a deliberate word list
   matches="$(
     rg -n -i \
       --glob '!**/dist/**' \
       --glob '!**/node_modules/**' \
       --glob '!**/gen/**' \
+      --glob '!**/__pycache__/**' \
+      --glob '!**/.venv/**' \
+      --glob '!scripts/public-surface-check' \
       "$pattern" \
-      README.md docs core/ts/README.md examples \
+      $surfaces \
       || true
   )"
 else
+  # shellcheck disable=SC2086 # surfaces is a deliberate word list
   matches="$(
-    grep -RInEi "$pattern" README.md docs core/ts/README.md examples \
+    grep -RIInEi "$pattern" $surfaces \
       | grep -v '/dist/' \
       | grep -v '/node_modules/' \
       | grep -v '/gen/' \
+      | grep -v '__pycache__' \
+      | grep -v '/\.venv/' \
+      | grep -v '^scripts/public-surface-check:' \
       || true
   )"
 fi
