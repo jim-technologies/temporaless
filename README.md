@@ -156,7 +156,7 @@ credentials.
 
 ```sh
 flox activate
-flox activate -- scripts/check       # Buf + TypeScript + Go + Python; Rust too when installed
+flox activate -- make validate       # the gate: Buf + TypeScript + Go + Python; Rust too when installed
 flox activate -- make version-set VERSION=X.Y.Z  # prepare one future lockstep version
 npm run check                        # TypeScript client build + tests
 flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot paths)

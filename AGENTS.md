@@ -158,4 +158,4 @@ GoCDK may be used only for the narrow claims adapter, because its blob API expos
 - Copying a little code is acceptable when it keeps behavior obvious.
 - Avoid configuration knobs unless they are required by the framework convention.
 - Use generated protobuf types and deterministic protobuf serialization for digests.
-- Run `flox activate -- scripts/check` before handing work back.
+- Run `flox activate -- make validate` before handing work back.

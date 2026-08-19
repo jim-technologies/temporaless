@@ -86,8 +86,8 @@ jobs:
       # descriptor and compile/test every generated consumer. The main-branch
       # push additionally proves that a trusted regeneration is clean before a
       # release tag points at that commit.
-      - name: Run gate
-        run: flox activate -- scripts/check
+      - name: make validate
+        run: flox activate -- make validate
 
   go-build:
     # Quick parallel build so a Go-only typo surfaces while the full gate is
@@ -105,8 +105,9 @@ jobs:
       - run: flox activate -- go vet ./...
 
   go-check:
-    # Go-only gate (gofmt-check + vet + golangci-lint + race tests) via the
-    # top-level Makefile. Go comes from Flox; golangci-lint is a pinned Go tool.
+    # Go-only fast feedback (gofmt-check + vet + golangci-lint + race tests)
+    # via individual Makefile sub-targets — a subset of `make validate`, not a
+    # second gate verb. Go comes from Flox; golangci-lint is a pinned Go tool.
     # Release tags already run these exact checks inside the non-cancelable
     # full gate; avoid a redundant tag-only copy while retaining fast feedback
     # for branches and pull requests.
@@ -120,8 +121,8 @@ jobs:
           fetch-depth: 0
       - name: Install Flox
         uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
-      - name: make check
-        run: flox activate -- make check
+      - name: make Go sub-checks
+        run: flox activate -- make version-check public-surface-check fmt-check tidy-check vet lint test
 
   rust-check:
     # Rust is experimental and deliberately outside the first-class Flox
