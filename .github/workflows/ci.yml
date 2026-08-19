@@ -122,7 +122,7 @@ jobs:
       - name: Install Flox
         uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
       - name: make Go sub-checks
-        run: flox activate -- make version-check public-surface-check fmt-check tidy-check vet lint test
+        run: flox activate -- make version-check public-surface-check fmt-check tidy-check vet lint test-go
 
   rust-check:
     # Rust is experimental and deliberately outside the first-class Flox

@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test ts-check tidy-check
+.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs ts-check tidy-check
 
 ## help: show available make targets.
 help:
@@ -92,9 +92,38 @@ vet:
 lint:
 	$(GOLANGCI_LINT) run $(GO_PKGS)
 
-## test: go test with the race detector.
-test:
+## test: the full test suite — every language, offline and hermetic.
+test: test-go test-ts test-py test-rs
+
+## test-go: go test with the race detector.
+test-go:
 	$(GO) test -race $(GOFLAGS) $(GO_PKGS)
+
+## test-ts: run the TypeScript client tests (when npm is installed).
+test-ts:
+	@if command -v npm >/dev/null 2>&1; then \
+		npm test; \
+	else \
+		echo "Skipping TypeScript tests; npm is not on PATH." >&2; \
+	fi
+
+## test-py: run the Python core and every Python adapter test suite.
+test-py:
+	uv run --project core/py --locked pytest core/py/tests
+	uv run --project adapters/py/connectworkflow --locked pytest adapters/py/connectworkflow/tests
+	uv run --project adapters/py/dagstercompat --locked pytest adapters/py/dagstercompat/tests
+	uv run --project adapters/py/temporalcompat --locked pytest adapters/py/temporalcompat/tests
+	PREFECT_LOGGING_LEVEL=ERROR PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore \
+		uv run --project adapters/py/prefectcompat --locked pytest adapters/py/prefectcompat/tests
+	uv run --project adapters/py/indexstore --locked pytest adapters/py/indexstore/tests
+
+## test-rs: run the Rust workspace tests (when cargo is installed).
+test-rs:
+	@if command -v cargo >/dev/null 2>&1; then \
+		cargo test --workspace --locked; \
+	else \
+		echo "Skipping the experimental Rust SDK tests; CI validates them with the pinned rust-toolchain.toml." >&2; \
+	fi
 
 ## ts-check: run the TypeScript client build and tests.
 ts-check:
