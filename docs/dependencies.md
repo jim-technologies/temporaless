@@ -40,7 +40,7 @@ on all four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
 and `aarch64-darwin`): Go 1.26.4, Python 3.14.4, and uv 0.11.25. The Node,
 Rust, and audit toolchains live in their own package groups and are scoped to
 the three systems the catalog builds them for (`x86_64-darwin` is excluded).
-`go.mod` requires Go 1.26.5, so `GOTOOLCHAIN=go1.26.5+auto` selects that exact
+`go.mod` requires Go 1.26.6, so `GOTOOLCHAIN=go1.26.6+auto` selects that exact
 checksum-verified security patch while the catalog package acts only as the
 bootstrap command.
 The production image has no Flox catalog constraint and uses upstream Python

@@ -40,6 +40,13 @@ lockstep policy.
 - `make release` publishes the single root `vX.Y.Z` Git tag and refuses a
   dirty or unpushed tree; CI still never publishes.
 
+### Security
+
+- Go moves to the 1.26.6 security patch (`go.mod` and
+  `GOTOOLCHAIN=go1.26.6+auto` together): `make audit`'s govulncheck found four
+  reachable Go 1.26.5 standard-library vulnerabilities — including
+  GO-2026-6089, GO-2026-6090, and GO-2026-5972 — all fixed in 1.26.6.
+
 ### Removed
 
 - Workflows hold zero secrets: the main-branch `BUF_TOKEN` regeneration proof
