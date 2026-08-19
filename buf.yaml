@@ -6,6 +6,12 @@ deps:
 lint:
   use:
     - STANDARD
+    # Comments are part of the public contract: every service, RPC, message,
+    # and field published from this module must carry documentation.
+    - COMMENT_SERVICE
+    - COMMENT_RPC
+    - COMMENT_MESSAGE
+    - COMMENT_FIELD
 breaking:
   use:
     - FILE
