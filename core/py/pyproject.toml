@@ -51,7 +51,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["UP047"]
 
 [tool.ty.environment]
-# `python-version` only — paths/excludes live in `scripts/check` since the
+# `python-version` only — paths/excludes live in `scripts/validate` since the
 # script invokes `ty check` with explicit paths (including `../../examples/py`,
 # which lives outside this project root and can't be expressed via
 # `[tool.ty.src].include`).
