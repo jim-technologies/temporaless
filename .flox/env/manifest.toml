@@ -15,6 +15,41 @@ buf.pkg-path = "buf"
 buf.version = "1.71.0"
 gcc-unwrapped.pkg-path = "gcc-unwrapped"
 gcc-unwrapped.outputs = ["lib"]
+# The CI toolchains below are absent from the catalog on x86_64-darwin, so
+# they are scoped to the three systems that have them.
+# Own pkg-groups keep their pins resolvable alongside the bootstrap pins.
+# CI is Flox-only: every toolchain a workflow needs lives here, so the CI gate
+# and the local gate resolve identical tools. Node backs the TypeScript SDK;
+# the Rust toolchain is pinned to the same 1.97.1 the repository always gated
+# on; cargo-audit and gitleaks back the scheduled `make audit` verb.
+nodejs.pkg-path = "nodejs"
+nodejs.pkg-group = "node"
+nodejs.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+nodejs.version = "24.19.0"
+cargo.pkg-path = "cargo"
+cargo.pkg-group = "rust"
+cargo.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+cargo.version = "1.97.1"
+rustc.pkg-path = "rustc"
+rustc.pkg-group = "rust"
+rustc.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+rustc.version = "1.97.1"
+clippy.pkg-path = "clippy"
+clippy.pkg-group = "rust"
+clippy.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+clippy.version = "1.97.1"
+rustfmt.pkg-path = "rustfmt"
+rustfmt.pkg-group = "rust"
+rustfmt.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+rustfmt.version = "1.97.1"
+cargo-audit.pkg-path = "cargo-audit"
+cargo-audit.pkg-group = "audit"
+cargo-audit.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+cargo-audit.version = "0.22.2"
+gitleaks.pkg-path = "gitleaks"
+gitleaks.pkg-group = "audit"
+gitleaks.systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
+gitleaks.version = "8.30.1"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"
