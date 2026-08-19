@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs ts-check tidy-check
+.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
 
 ## help: show available make targets.
 help:
@@ -123,6 +123,20 @@ test-rs:
 		cargo test --workspace --locked; \
 	else \
 		echo "Skipping the experimental Rust SDK tests; CI validates them with the pinned rust-toolchain.toml." >&2; \
+	fi
+
+## build: produce the artifacts locally — Go packages, TypeScript dist, Rust workspace.
+build:
+	$(GO) build $(GO_PKGS)
+	@if command -v npm >/dev/null 2>&1; then \
+		npm run build; \
+	else \
+		echo "Skipping the TypeScript build; npm is not on PATH." >&2; \
+	fi
+	@if command -v cargo >/dev/null 2>&1; then \
+		cargo build --workspace --locked; \
+	else \
+		echo "Skipping the Rust build; CI builds it with the pinned rust-toolchain.toml." >&2; \
 	fi
 
 ## ts-check: run the TypeScript client build and tests.
