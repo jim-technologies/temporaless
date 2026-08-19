@@ -13,6 +13,14 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Added
+
+- Buf lint now also enforces comment documentation on the public API surface
+  (`COMMENT_SERVICE`, `COMMENT_RPC`, `COMMENT_MESSAGE`, `COMMENT_FIELD`), and
+  every public message and field in `temporaless.v1` carries a doc comment,
+  regenerated into the Go and TypeScript bindings. `CONVENTIONS.md` records
+  the buf/protobuf conventions audit. No wire-format change.
+
 ## [0.10.6] — 2026-08-18
 
 ### Changed
