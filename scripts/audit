@@ -1,0 +1,282 @@
+#!/bin/sh
+set -eu
+
+# Network-dependent supply-chain audits. These may not live in `make validate`
+# — the gate stays deterministic and lockfile-driven — so CI runs this weekly
+# via audit.yml and maintainers can run it locally at any time. Every tool
+# comes from the Flox environment; run as `flox activate -- make audit`.
+#
+# The Git-SHA installability checks exercise the commit at HEAD; uncommitted
+# working-tree changes are not part of what a stranger can install.
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+echo "==> npm audit (npm lockfile)"
+npm audit --audit-level=moderate
+
+echo "==> govulncheck (Go dependency reachability)"
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+echo "==> pip-audit (Python environments)"
+for project in \
+  core/py \
+  adapters/py/connectworkflow \
+  adapters/py/dagstercompat \
+  adapters/py/indexstore \
+  adapters/py/prefectcompat \
+  adapters/py/temporalcompat
+do
+  uv run --project "$project" \
+    --with "pip-audit==2.10.1" \
+    pip-audit --local --progress-spinner=off
+done
+
+echo "==> cargo audit (Rust lockfile)"
+cargo audit --file Cargo.lock
+
+echo "==> gitleaks (Git history secret scan)"
+gitleaks git . --no-banner --redact=100
+
+# Package every SDK from an immutable Git commit, exactly as a downstream
+# consumer would. A local bare origin keeps the source exact even when HEAD
+# is not fetchable by raw SHA from the public repository URL.
+echo "==> Git-SHA installability (every SDK from one immutable commit)"
+source_sha="$(git rev-parse HEAD)"
+source_repo="$tmp/temporaless.git"
+git clone --quiet --bare "$repo_root" "$source_repo"
+git --git-dir="$source_repo" fetch --quiet "$repo_root" \
+  "${source_sha}:refs/heads/audit-source"
+
+echo "==> Git-SHA install: Python"
+python_git_install() (
+  venv="$tmp/python-git-install"
+  source_url="git+file://${source_repo}@${source_sha}"
+  uv venv --seed "$venv"
+  "$venv/bin/python" -m pip install \
+    --disable-pip-version-check \
+    "$source_url#subdirectory=core/py" \
+    "$source_url#subdirectory=adapters/py/connectworkflow" \
+    "$source_url#subdirectory=adapters/py/indexstore" \
+    "$source_url#subdirectory=adapters/py/prefectcompat" \
+    "$source_url#subdirectory=adapters/py/temporalcompat"
+  "$venv/bin/python" -c \
+    'import temporaless, temporaless_connectworkflow, temporaless_indexstore, temporaless_prefectcompat, temporaless_temporalcompat'
+  TEMPORALESS_EXPECTED_VERSION="$(tr -d '\n' < VERSION)"
+  export TEMPORALESS_EXPECTED_VERSION
+  "$venv/bin/python" -c \
+    'import importlib.metadata, os; packages = ("temporaless", "temporaless-connectworkflow", "temporaless-indexstore", "temporaless-prefectcompat", "temporaless-temporalcompat"); expected = os.environ["TEMPORALESS_EXPECTED_VERSION"]; actual = {name: importlib.metadata.version(name) for name in packages}; assert set(actual.values()) == {expected}, (expected, actual)'
+)
+python_git_install
+
+echo "==> Git-SHA install: Go"
+go_git_install() (
+  consumer="$tmp/go-git-install"
+  export GIT_CONFIG_COUNT=3
+  export GIT_CONFIG_KEY_0="url.file://${source_repo}.insteadOf"
+  export GIT_CONFIG_VALUE_0="https://github.com/jim-technologies/temporaless.git"
+  export GIT_CONFIG_KEY_1="url.file://${source_repo}.insteadOf"
+  export GIT_CONFIG_VALUE_1="https://github.com/jim-technologies/temporaless"
+  export GIT_CONFIG_KEY_2=protocol.file.allow
+  export GIT_CONFIG_VALUE_2=always
+  export GOPRIVATE="github.com/jim-technologies/temporaless"
+  export GONOSUMDB="github.com/jim-technologies/temporaless"
+  # GOPRIVATE keeps Temporaless on the immutable Git source above.
+  # Third-party modules use the checksum-verified public proxy first;
+  # forcing every transitive dependency through its VCS host makes a
+  # Git-install check depend on unrelated vanity-domain availability.
+  export GOPROXY="https://proxy.golang.org,direct"
+  for attempt in 1 2 3; do
+    if (
+      rm -rf "$consumer" &&
+        mkdir -p "$consumer" &&
+        cd "$consumer" &&
+        go mod init example.com/temporaless-install-check &&
+        go get \
+          "github.com/jim-technologies/temporaless/core/go/workflow@$source_sha" &&
+        go list "github.com/jim-technologies/temporaless/core/go/workflow" &&
+        go build "github.com/jim-technologies/temporaless/core/go/workflow"
+    ); then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "Go Git install attempt $attempt failed; retrying cleanly." >&2
+      sleep $((attempt * 5))
+    fi
+  done
+  echo "Go Git install failed after 3 clean attempts." >&2
+  return 1
+)
+go_git_install
+
+echo "==> Git-SHA install: Rust"
+rust_git_install() (
+  export CARGO_NET_RETRY="10"
+  export CARGO_HTTP_TIMEOUT="120"
+  export CARGO_TARGET_DIR="$tmp/rust-git-target"
+
+  # Compile the immutable Git-delivered workspace against its committed
+  # lockfile. The consumer below separately exercises fresh downstream
+  # resolution and rejects any registry identity outside this lock.
+  checkout="$tmp/rust-git-checkout"
+  attempt_ok=0
+  for attempt in 1 2 3; do
+    if (
+      rm -rf "$checkout" &&
+        git clone --quiet --no-checkout "$source_repo" "$checkout" &&
+        git -C "$checkout" checkout --quiet --detach "$source_sha" &&
+        test "$(git -C "$checkout" rev-parse HEAD)" = "$source_sha" &&
+        cargo check --workspace --all-targets --locked \
+          --manifest-path "$checkout/Cargo.toml"
+    ); then
+      attempt_ok=1
+      break
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      echo "Rust Git check attempt $attempt failed; retrying cleanly." >&2
+      sleep $((attempt * 5))
+    fi
+  done
+  if [ "$attempt_ok" != 1 ]; then
+    echo "Rust Git check failed after 3 clean attempts." >&2
+    return 1
+  fi
+
+  consumer="$tmp/rust-git-consumer"
+  source_url="file://${source_repo}"
+  cargo new --quiet --lib --name temporaless-git-consumer "$consumer"
+
+  CONSUMER="$consumer" \
+  SOURCE_URL="$source_url" \
+  SOURCE_SHA="$source_sha" \
+  python3 <<'PY'
+import os
+from pathlib import Path
+
+consumer = Path(os.environ["CONSUMER"])
+source_url = os.environ["SOURCE_URL"]
+source_sha = os.environ["SOURCE_SHA"]
+manifest = consumer / "Cargo.toml"
+manifest.write_text(
+    manifest.read_text()
+    + (
+        'temporaless = { git = "'
+        + source_url
+        + '", rev = "'
+        + source_sha
+        + '" }\n'
+    )
+)
+(consumer / "src" / "lib.rs").write_text(
+    "pub fn workflow_key() -> temporaless::WorkflowKey {\n"
+    '    temporaless::WorkflowKey::new("consumer", "run")\n'
+    "}\n"
+)
+PY
+
+  # Resolve like a real downstream Git consumer. Cargo intentionally does not
+  # propagate a library workspace's Cargo.lock, so compatible registry updates
+  # are expected here. Third-party Git dependencies must still match the
+  # immutable revisions audited in the workspace lock, and the generated
+  # consumer lock is compiled below.
+  cargo generate-lockfile --manifest-path "$consumer/Cargo.toml"
+  WORKSPACE_LOCK="$repo_root/Cargo.lock" \
+  CONSUMER_LOCK="$consumer/Cargo.lock" \
+  python3 <<'PY'
+import os
+import tomllib
+from pathlib import Path
+
+def third_party_git_packages(path: str) -> set[tuple[str, str, str]]:
+    with Path(path).open("rb") as file:
+        lock = tomllib.load(file)
+    return {
+        (
+            package["name"],
+            package["version"],
+            package["source"],
+        )
+        for package in lock["package"]
+        if package["name"] != "temporaless"
+        and str(package.get("source", "")).startswith("git+")
+    }
+
+committed_git = third_party_git_packages(os.environ["WORKSPACE_LOCK"])
+downstream_git = third_party_git_packages(os.environ["CONSUMER_LOCK"])
+unexpected_git = sorted(downstream_git - committed_git)
+if unexpected_git:
+    lines = "\n".join(f"  {item!r}" for item in unexpected_git)
+    raise SystemExit(
+        "downstream Cargo resolution introduced an unaudited "
+        "Git package:\n" + lines
+    )
+PY
+
+  cargo check --all-targets --locked --manifest-path "$consumer/Cargo.toml"
+  cargo metadata --locked --format-version 1 \
+    --manifest-path "$consumer/Cargo.toml" > "$consumer/metadata.json"
+  SOURCE_URL="$source_url" \
+  SOURCE_SHA="$source_sha" \
+  EXPECTED_VERSION="$(tr -d '\n' < VERSION)" \
+  METADATA="$consumer/metadata.json" \
+  python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+metadata = json.loads(Path(os.environ["METADATA"]).read_text())
+packages = [
+    package for package in metadata["packages"]
+    if package["name"] == "temporaless"
+]
+if len(packages) != 1:
+    raise SystemExit(
+        f"expected one downstream temporaless package, found {len(packages)}"
+    )
+package = packages[0]
+expected_source = (
+    "git+"
+    + os.environ["SOURCE_URL"]
+    + "?rev="
+    + os.environ["SOURCE_SHA"]
+    + "#"
+    + os.environ["SOURCE_SHA"]
+)
+if package["version"] != os.environ["EXPECTED_VERSION"]:
+    raise SystemExit(
+        "downstream temporaless version is "
+        + package["version"]
+        + "; expected "
+        + os.environ["EXPECTED_VERSION"]
+    )
+if package["source"] != expected_source:
+    raise SystemExit(
+        "downstream temporaless source is "
+        + repr(package["source"])
+        + "; expected "
+        + repr(expected_source)
+    )
+PY
+)
+rust_git_install
+
+echo "==> Git-SHA install: npm"
+npm_git_install() (
+  consumer="$tmp/npm-git-install"
+  mkdir -p "$consumer"
+  cd "$consumer"
+  npm init --yes
+  # npm 12 defaults Git dependencies to disabled. Temporaless and its pinned
+  # Invariant Protocol dependency are both intentionally installed from
+  # immutable Git commits in this consumer test.
+  npm install --allow-git=all \
+    "git+file://${source_repo}#${source_sha}"
+  node --input-type=module --eval \
+    "await import('@jim-technologies/temporaless'); await import('@jim-technologies/temporaless/invariant')"
+)
+npm_git_install
+
+echo "All audits passed."
