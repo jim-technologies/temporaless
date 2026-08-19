@@ -8,9 +8,8 @@ set -eu
 # review; extend it here whenever a new private name must never appear.
 pattern='(^|[^[:alnum:]_])(medallion|jimtech)([^[:alnum:]_]|$)|Connect/Ontology'
 
-surfaces="README.md CHANGELOG.md CONVENTIONS.md AGENTS.md SECURITY.md PRD.md \
-decision.md MAKEFILE-CONTRACT.md Makefile docs examples api core adapters \
-cmd scripts"
+surfaces="README.md CHANGELOG.md CONVENTIONS.md AGENTS.md SECURITY.md \
+MAKEFILE-CONTRACT.md Makefile docs examples api core adapters cmd scripts"
 
 if command -v rg >/dev/null 2>&1; then
   # shellcheck disable=SC2086 # surfaces is a deliberate word list

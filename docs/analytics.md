@@ -134,6 +134,12 @@ runs by indexed metadata, deletes the run prefixes from the bucket, and removes
 the index rows. `_due` tombstone cleanup is a separate offline/quiescent
 maintenance operation; the generic ledger has no online compaction mode.
 
+`Store.Sweep` deletes COMPLETED runs older than the caller's `maxAge`; the
+caller owns cadence and threshold. Deliberately deferred until requested:
+per-namespace or per-workflow-id retention overrides, an archival hook that
+copies to cold storage before delete, and a separate longer-retention class
+for FAILED records (forensics).
+
 ## Why This Boundary Exists
 
 The runtime must run on only object/file storage. Recursive bucket walks for

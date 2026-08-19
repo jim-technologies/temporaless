@@ -1,7 +1,7 @@
 # Conventions Conformance
 
 Strict audit of this repo against the agreed conventions (source of truth:
-[`AGENTS.md`](AGENTS.md), [`PRD.md`](PRD.md), [`Makefile`](Makefile),
+[`AGENTS.md`](AGENTS.md), [`Makefile`](Makefile),
 [`MAKEFILE-CONTRACT.md`](MAKEFILE-CONTRACT.md),
 [`scripts/validate`](scripts/validate)). Each row is one convention →
 **Conforms** / **Fixed** / **Intentional deviation** (+ one-line rationale).
@@ -23,7 +23,7 @@ environment, so both paths are the same path.
 | 5 | Doc comments on exported symbols (Google Go style). | **Intentional deviation** | Non-obvious exported symbols (e.g. `storage.DueTimer`, `Store.Sweep`, `Store.DueTimers`, `ClaimStore.DeleteClaim`, `WorkflowStore.ListWorkflows`) carry doc comments; self-evident CRUD interface methods and plain data-holder structs (`WorkflowKey`, `ActivityKey`, …) are intentionally left bare to avoid restating the obvious — consistent with AGENTS.md "keep functions direct / behavior obvious". Not linter-enforced (no `revive`/`godot`), so the gate is unaffected. |
 | 6 | golangci-lint config is conservative + excludes generated proto. | **Conforms** | `.golangci.yml` v2: `standard` + `bodyclose`/`errorlint`/`misspell`/`unconvert`; `core/go/gen` excluded from linters and formatters; best-effort `Close`/`Fprint*` excluded from errcheck with rationale. |
 | 7 | CI runs `flox activate -- make validate`. | **Conforms** | `.github/workflows/ci.yml` has exactly one job whose only command is `flox activate -- make validate`; `audit.yml` runs `flox activate -- make audit` weekly. No other workflows, jobs, or setup actions exist. |
-| 8 | Point-in-time / leakage-guard semantics + documented caller responsibilities are stated clearly. | **Conforms** | Caller-provided workflow/run/activity/timer/claim-owner IDs and protobuf type identities are the replay contract; current handlers resume `IN_PROGRESS` runs while terminal records stay authoritative. Storage-safe-character validation is documented in `AGENTS.md` (Storage, Claims). Caller owns incompatible-ID rollover and retention cadence/threshold (`Store.Sweep`, `decision.md` D10). |
+| 8 | Point-in-time / leakage-guard semantics + documented caller responsibilities are stated clearly. | **Conforms** | Caller-provided workflow/run/activity/timer/claim-owner IDs and protobuf type identities are the replay contract; current handlers resume `IN_PROGRESS` runs while terminal records stay authoritative. Storage-safe-character validation is documented in `AGENTS.md` (Storage, Claims). Caller owns incompatible-ID rollover and retention cadence/threshold (`Store.Sweep`; deferred retention enhancements are recorded in `docs/analytics.md`). |
 | 9 | Two-tier tests where relevant (always-run unit + gated live integration). | **Conforms** | Go tests are hermetic (OpenDAL `fs` + `t.TempDir`, no external services), so no env gate is needed; the subprocess smoke test self-gates on `testing.Short()`. The live/integration tier lives in the Python adapters that talk to real Temporal/Prefect SDKs (run via `make validate`). |
 | 10 | Tests use OpenDAL `fs` + temp dir, not memory stores. | **Conforms** | Go `*_test.go` use OpenDAL `fs` over `t.TempDir()`; no in-memory framework stores. |
 | 11 | Official SDKs only (no community wrappers). | **Conforms** | `go.mod`: `connectrpc.com/connect`, `go.temporal.io/sdk`, `gocloud.dev`, `apache/opendal` bindings, `google.golang.org/protobuf`, protovalidate — all first-party. |
