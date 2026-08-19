@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-08-18
+
 ### Changed
 
 - The repository adopts the jim-technologies open-source Makefile contract
