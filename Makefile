@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-check vet lint test ts-check tidy-check
+.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test ts-check tidy-check
 
 ## help: show available make targets.
 help:
@@ -46,9 +46,34 @@ generate:
 public-surface-check:
 	scripts/public-surface-check
 
-## fmt: rewrite Go sources in place with gofmt.
-fmt:
+## fmt: rewrite formatting in place for every language in the repo.
+fmt: fmt-go fmt-proto fmt-py fmt-rs
+
+## fmt-go: rewrite Go sources in place with gofmt.
+fmt-go:
 	$(GOFMT) -w .
+
+## fmt-proto: rewrite protobuf sources in place with buf format.
+fmt-proto:
+	buf format -w api
+	buf format -w adapters/py/dagstercompat/tests/proto
+
+## fmt-py: rewrite Python sources in place with ruff format.
+fmt-py:
+	uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
+	uv run --project adapters/py/connectworkflow ruff format adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
+	uv run --project adapters/py/dagstercompat ruff format adapters/py/dagstercompat/tests
+	uv run --project adapters/py/temporalcompat ruff format adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
+	uv run --project adapters/py/prefectcompat ruff format adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
+	uv run --project adapters/py/indexstore ruff format adapters/py/indexstore/src adapters/py/indexstore/tests
+
+## fmt-rs: rewrite Rust sources in place with cargo fmt (when cargo is installed).
+fmt-rs:
+	@if command -v cargo >/dev/null 2>&1; then \
+		cargo fmt --all; \
+	else \
+		echo "Skipping Rust formatting; cargo is not on PATH." >&2; \
+	fi
 
 ## fmt-check: fail if any Go source is not gofmt-clean.
 fmt-check:
