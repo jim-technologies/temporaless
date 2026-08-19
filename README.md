@@ -157,7 +157,8 @@ credentials.
 ```sh
 flox activate
 flox activate -- make help           # list every make verb
-flox activate -- make validate       # the gate: Buf + TypeScript + Go + Python; Rust too when installed
+flox activate -- make validate       # the gate: Buf + TypeScript + Go + Python + Rust
+flox activate -- make audit          # supply-chain audits (weekly in CI, runnable any time)
 flox activate -- make version-set VERSION=X.Y.Z  # prepare one future lockstep version
 npm run check                        # TypeScript client build + tests
 flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot paths)

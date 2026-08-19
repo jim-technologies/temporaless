@@ -24,12 +24,33 @@ lockstep policy.
   `test-go`, `test-ts`, `test-py`, and `test-rs` sub-verbs.
 - The public-surface guard now scans code, top-level docs, and the Makefile
   itself, not just README/docs/examples.
+- CI is consolidated onto the Flox-only standard: `ci.yml` is a single job
+  whose only command is `flox activate -- make validate`, with every toolchain
+  — Node 24 and the Rust 1.97.1 toolchain included — coming from the Flox
+  manifest instead of setup actions. `rust-toolchain.toml` is removed in
+  favor of the manifest pin.
+- The dependency/vulnerability scans, the Git history secret scan, and the
+  per-SDK Git-SHA install checks moved from CI-only jobs into `make audit`
+  (`scripts/audit`), run weekly by the new secretless `audit.yml` and
+  runnable locally at any time.
 
 ### Added
 
 - `make build` produces the Go, TypeScript, and Rust artifacts locally.
 - `make release` publishes the single root `vX.Y.Z` Git tag and refuses a
   dirty or unpushed tree; CI still never publishes.
+
+### Removed
+
+- Workflows hold zero secrets: the main-branch `BUF_TOKEN` regeneration proof
+  left CI. Maintainers prove a trusted BSR regeneration locally with
+  `TEMPORALESS_REQUIRE_BUF_GENERATE=1` before releasing schema changes; every
+  gate still validates the checked-in descriptor and compiles and tests every
+  generated consumer.
+- The container image build/scan/smoke CI job was removed with the Flox-only
+  consolidation: it needs a Docker daemon, which the Flox manifest cannot
+  supply. `docker build` from the repository `Dockerfile` remains the
+  operator path.
 
 ## [0.10.5] — 2026-08-12
 

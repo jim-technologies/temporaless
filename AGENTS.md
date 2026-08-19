@@ -109,7 +109,8 @@ When adding point storage RPC code, keep one cohesive `RecordStoreService` inste
 
 ## Development Environment
 
-Flox owns the development environment. Keep it thin:
+Flox owns the development environment and is the only toolchain provider,
+locally and in CI:
 
 - `go`
 - `python314`
@@ -117,8 +118,14 @@ Flox owns the development environment. Keep it thin:
 - `buf`
 - `libffi`
 - `gcc-unwrapped` `lib` output
+- `nodejs` (TypeScript SDK runtime)
+- `cargo` / `rustc` / `clippy` / `rustfmt` (the one pinned Rust toolchain)
+- `cargo-audit` and `gitleaks` (the `make audit` tools)
 
-Do not add language-specific libraries, linters, or generators to Flox if they can live in `go.mod`, `uv.lock`, or `buf.gen.yaml`.
+Do not add language-specific libraries, linters, or generators to Flox if they
+can live in `go.mod`, `uv.lock`, or `buf.gen.yaml`. Toolchains a workflow
+needs must come from the Flox manifest, never from setup actions or ad-hoc
+installs in workflow steps.
 
 ## Testing
 

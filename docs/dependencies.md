@@ -133,11 +133,12 @@ generated-service registration and unified Connect interceptor API.
 ## Buf
 
 Buf remote plugins are version-pinned in `buf.gen.yaml`. That keeps protoc
-plugins out of Flox and avoids a second tool installation layer. Trusted CI
-regenerates them with `BUF_TOKEN`; anonymous/fork gates avoid the BSR rate-limit
-dependency while still validating the checked-in descriptor and compiling and
-testing every generated consumer. Set
-`TEMPORALESS_REQUIRE_BUF_GENERATE=1` for a forced local regeneration.
+plugins out of Flox and avoids a second tool installation layer. CI is
+secretless and skips remote-plugin regeneration (avoiding the anonymous BSR
+rate limit) while still validating the checked-in descriptor and compiling
+and testing every generated consumer. Maintainers set
+`TEMPORALESS_REQUIRE_BUF_GENERATE=1` for a forced local regeneration and run
+it before releasing schema changes.
 Run `scripts/generate` (or `make generate`) to regenerate all language outputs
 and the checked-in TypeScript descriptor together; raw `buf generate` does not
 build that descriptor set.
