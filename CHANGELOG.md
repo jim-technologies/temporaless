@@ -13,6 +13,24 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Changed
+
+- The repository adopts the jim-technologies open-source Makefile contract
+  (`MAKEFILE-CONTRACT.md`). `make validate` is now the one gate verb — it
+  replaces both `make check` and `make gate` and delegates to
+  `scripts/validate` (renamed from `scripts/check`), exactly what CI runs.
+- `make fmt` now rewrites every language in place (Go, protobuf, Python, and
+  Rust when installed), and `make test` runs every language suite via the new
+  `test-go`, `test-ts`, `test-py`, and `test-rs` sub-verbs.
+- The public-surface guard now scans code, top-level docs, and the Makefile
+  itself, not just README/docs/examples.
+
+### Added
+
+- `make build` produces the Go, TypeScript, and Rust artifacts locally.
+- `make release` publishes the single root `vX.Y.Z` Git tag and refuses a
+  dirty or unpushed tree; CI still never publishes.
+
 ## [0.10.5] — 2026-08-12
 
 ### Added

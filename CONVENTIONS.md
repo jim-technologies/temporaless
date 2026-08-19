@@ -29,6 +29,27 @@ runs the separately pinned Rust 1.97 job. Both paths stay green.
 | 12 | One options-driven wrapper per boundary; ConnectRPC at the boundary, not in replay logic; Temporal SDK kept out of core. | **Conforms** | Wrappers in `core/go/workflow`; ConnectRPC adapter in `adapters/go/connectstore`; Temporal SDK confined to `adapters/go/temporalcompat`. |
 | 13 | Claims: storage-native conditional writes; declared `ClaimCapability`; no check-then-write; no always-on lock server. | **Conforms** | `gocdkclaims` uses GoCDK `WriterOptions.IfNotExist` (narrow claims-only use, per AGENTS.md); capabilities are generated proto enums (`storage.ClaimStore.ClaimCapability`). |
 
+## Makefile contract conformance
+
+Audit against [`MAKEFILE-CONTRACT.md`](MAKEFILE-CONTRACT.md), the
+jim-technologies open-source Makefile contract.
+
+| Verb / rule | Status | Notes |
+|---|---|---|
+| `make fmt` rewrites every language | **Conforms** | `fmt` fans out to `fmt-go` (gofmt), `fmt-proto` (buf format), `fmt-py` (ruff across core + every adapter), and `fmt-rs` (cargo fmt when installed). TypeScript has no configured formatter; `ts-check` still compiles and tests it. |
+| `make test` is the full suite; `test-<lang>` sub-verbs | **Conforms** | `test` = `test-go` + `test-ts` + `test-py` + `test-rs`; hermetic (OpenDAL `fs` + temp dirs, locked uv environments, no external services). |
+| `make validate` is the one gate verb, exactly what CI runs | **Conforms** | Delegates to `scripts/validate`; the `full-gate` CI job runs exactly `flox activate -- make validate`. `make check` and `make gate` no longer exist. |
+| CI never checks more or less than `validate` | **Intentional deviation** | The required gate job runs exactly `make validate`. Extra CI jobs remain deliberately: `go-build`/`go-check` are fast-feedback subsets of `validate`; `rust-check` runs the pinned toolchain that local `validate` skips without cargo; `security-check`, `git-sha-install`, and `docker-build` are supply-chain audits that need CI-only infrastructure. Nothing in CI contradicts `validate`. |
+| `make build` produces the artifacts locally | **Conforms** | Go packages, TypeScript dist, and the Rust workspace; Python ships as source (Git-only distribution). |
+| `make generate`; stale committed output fails `validate` | **Conforms** | `generate` delegates to `scripts/generate`; `validate` rejects a stale checked-in descriptor, and CI rejects any regeneration diff on main. |
+| `make release` refuses a dirty or unpushed tree; CI never publishes | **Conforms** | `scripts/release` refuses a dirty tree, an unpushed HEAD, and an existing tag, then creates and pushes the one root `vVERSION` tag. Publishing is Git-tag-only for every SDK (AGENTS.md forbids registry publication; npm is `private: true`, Cargo `publish = false`), so the git tag *is* the public-ecosystem publish. |
+| Public-surface guard inside `validate` | **Conforms** | `scripts/public-surface-check` scans code, docs, examples, and the Makefile itself using this repository's own deny-list; both `validate` and the `go-check` CI job run it. |
+| No `make deploy` | **Conforms** | No deploy target or CI deploy step exists; the Docker image is built and scanned, never pushed. |
+| No privately resolving dependencies | **Conforms** | Every lock resolves from public registries or pinned public GitHub URLs (`apache/opendal`, `jim-technologies/invariantprotocol`); the `git-sha-install` CI matrix proves a stranger can install all four SDKs. |
+| No CI secrets | **Intentional deviation** | One read-scoped `BUF_TOKEN` remains: main-branch pushes use it to prove a trusted BSR regeneration is clean before a release tag can point at that commit. It is isolated to that single step, publishes nothing, and every other job — including the whole gate — runs secret-free. |
+| No encrypted-secret store | **Conforms** | None exists; `.gitleaks.toml` configures the history secret *scanner*, and the repository holds no secrets. |
+| Furniture: `LICENSE` · `CHANGELOG.md` · one `VERSION` · `make help` | **Conforms** | All present; `scripts/check_versions.py` keeps every SDK mirror equal to the root `VERSION`, and `make help` self-documents every verb via the `## comment` convention. |
+
 ## Audit outcome
 
 - **Fixes applied this pass:** exact timer write-ahead recovery, retry/claim

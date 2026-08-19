@@ -46,7 +46,7 @@ release:
 generate:
 	scripts/generate
 
-## public-surface-check: fail on private/internal wording in public docs/examples.
+## public-surface-check: fail on private/internal wording anywhere on the public surface.
 public-surface-check:
 	scripts/public-surface-check
 
