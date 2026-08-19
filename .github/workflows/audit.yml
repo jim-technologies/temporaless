@@ -1,0 +1,40 @@
+# Weekly network-dependent supply-chain audits: dependency/vulnerability
+# scans, the Git history secret scan, and Git-SHA installability of every SDK.
+# These are deliberately outside `make validate` — the gate stays
+# deterministic and lockfile-driven — and this workflow is exactly the same
+# secretless Flox skeleton as ci.yml, running one make verb.
+name: audit
+
+"on":
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # gitleaks scans the full Git history, and the Git-SHA install
+          # checks package HEAD from a local bare origin.
+          fetch-depth: 0
+      - uses: flox/install-flox-action@3b80351ae97bbe063f264dc88fbd505507054963 # v2.5.3
+        with:
+          disable-metrics: "true"
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/flox
+          key: flox-${{ runner.os }}-${{ hashFiles('.flox/env/manifest.lock') }}
+      - name: Run the audits
+        env:
+          FLOX_DISABLE_METRICS: "true"
+        run: flox activate -- make audit
