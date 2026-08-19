@@ -76,7 +76,7 @@ fmt-rs:
 	@if command -v cargo >/dev/null 2>&1; then \
 		cargo fmt --all; \
 	else \
-		echo "Skipping Rust formatting; cargo is not on PATH." >&2; \
+		echo "Skipping Rust formatting; cargo is not on PATH (enter the Flox env)." >&2; \
 	fi
 
 ## fmt-check: fail if any Go source is not gofmt-clean.
@@ -126,7 +126,7 @@ test-rs:
 	@if command -v cargo >/dev/null 2>&1; then \
 		cargo test --workspace --locked; \
 	else \
-		echo "Skipping the experimental Rust SDK tests; CI validates them with the pinned rust-toolchain.toml." >&2; \
+		echo "Skipping the Rust SDK tests; cargo is not on PATH (enter the Flox env)." >&2; \
 	fi
 
 ## build: produce the artifacts locally — Go packages, TypeScript dist, Rust workspace.
@@ -140,7 +140,7 @@ build:
 	@if command -v cargo >/dev/null 2>&1; then \
 		cargo build --workspace --locked; \
 	else \
-		echo "Skipping the Rust build; CI builds it with the pinned rust-toolchain.toml." >&2; \
+		echo "Skipping the Rust build; cargo is not on PATH (enter the Flox env)." >&2; \
 	fi
 
 ## ts-check: run the TypeScript client build and tests.

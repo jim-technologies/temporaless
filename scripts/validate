@@ -34,11 +34,12 @@ fi
 # The Python Connect generator is intentionally installed from the locked core
 # development environment because the BSR-hosted plugin lags the 0.11 runtime.
 uv sync --project core/py --locked
-# Remote BSR plugins are authenticated in trusted CI. Fork PRs and local
-# checkouts often have no BUF_TOKEN and share a strict anonymous rate limit;
-# those gates still validate the checked-in descriptor and compile/test every
-# generated consumer. Set TEMPORALESS_REQUIRE_BUF_GENERATE=1 to force a local
-# regeneration (and fail on any remote-plugin error).
+# Remote BSR plugins need authentication to avoid the strict anonymous rate
+# limit, and CI is secretless by policy: every gate — CI included — validates
+# the checked-in descriptor and compiles/tests every generated consumer
+# instead. Maintainers prove a trusted regeneration is clean locally by
+# setting TEMPORALESS_REQUIRE_BUF_GENERATE=1 (which also fails on any
+# remote-plugin error) before releasing schema changes.
 if [ -n "${BUF_TOKEN:-}" ] || [ "${TEMPORALESS_REQUIRE_BUF_GENERATE:-0}" = "1" ]; then
   scripts/generate
 else
@@ -79,9 +80,14 @@ if [ "${CI:-}" = "true" ]; then
   fi
 fi
 if command -v npm >/dev/null 2>&1; then
+  # A fresh checkout (CI included) has no node_modules; install the locked
+  # dependency tree exactly. An existing local install is left alone.
+  if [ ! -d node_modules ]; then
+    npm ci
+  fi
   npm run check
 else
-  echo "Skipping TypeScript client checks; npm is not on PATH." >&2
+  echo "Skipping TypeScript client checks; npm is not on PATH (enter the Flox env)." >&2
 fi
 # Go is first-class and always part of the release gate. Generated protobuf
 # packages under core/go/gen are Buf-owned and excluded from gofmt.
@@ -100,7 +106,7 @@ if command -v cargo >/dev/null 2>&1; then
   cargo clippy --workspace --all-targets --locked -- -D warnings
   cargo test --workspace --locked
 else
-  echo "Skipping the experimental Rust SDK locally; CI validates it with the pinned rust-toolchain.toml." >&2
+  echo "Skipping the Rust SDK checks; cargo is not on PATH (enter the Flox env)." >&2
 fi
 uv run --project core/py ruff format --check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
 uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py

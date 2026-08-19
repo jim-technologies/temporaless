@@ -16,7 +16,8 @@ accidentally.
 
 ## Flox
 
-Flox contains only tools or runtime libraries needed before language package managers can run:
+Flox is the only toolchain source, locally and in CI — every language runtime
+and every tool the gate or the audits need comes from the manifest:
 
 - `go`: required for the Go core and Go module tooling.
 - `python314`: required Python 3.14 runtime for development.
@@ -24,19 +25,24 @@ Flox contains only tools or runtime libraries needed before language package man
 - `buf`: required protobuf formatter, linter, and generator.
 - `libffi`: required by the Apache OpenDAL Go binding.
 - `gcc-unwrapped` `lib` output: provides `libstdc++.so.6` for Python Protovalidate's RE2 dependency.
+- `nodejs` 24: the TypeScript SDK's package and test runtime.
+- `cargo`/`rustc`/`clippy`/`rustfmt` 1.97.1: the one pinned Rust toolchain.
+- `cargo-audit` and `gitleaks`: back the scheduled `make audit` verb.
 
 The environment intentionally does not include language-specific linters,
-generators, `make`, `node`, `npm`, Rust, or `protoc`. Third-party Go, Python,
-Rust, and TypeScript libraries remain in `go.mod`, uv lockfiles, `Cargo.lock`,
-and `package-lock.json`. The Go gate runs the checksum-resolved module version of
-golangci-lint, while the experimental Rust SDK uses `rust-toolchain.toml` and a
-separate CI job so Flox remains the small first-class Go/Python environment.
+generators, or `protoc`. Third-party Go, Python, Rust, and TypeScript
+libraries remain in `go.mod`, uv lockfiles, `Cargo.lock`, and
+`package-lock.json`. The Go gate runs the checksum-resolved module version of
+golangci-lint.
 
-The Flox package pins remain the highest versions that resolve together on all
-four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
-`aarch64-darwin`): Go 1.26.4, Python 3.14.4, and uv 0.11.25. `go.mod` requires
-Go 1.26.5, so `GOTOOLCHAIN=go1.26.5+auto` selects that exact checksum-verified
-security patch while the catalog package acts only as the bootstrap command.
+The bootstrap package pins remain the highest versions that resolve together
+on all four default systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
+and `aarch64-darwin`): Go 1.26.4, Python 3.14.4, and uv 0.11.25. The Node,
+Rust, and audit toolchains live in their own package groups and are scoped to
+the three systems the catalog builds them for (`x86_64-darwin` is excluded).
+`go.mod` requires Go 1.26.5, so `GOTOOLCHAIN=go1.26.5+auto` selects that exact
+checksum-verified security patch while the catalog package acts only as the
+bootstrap command.
 The production image has no Flox catalog constraint and uses upstream Python
 3.14.6 and uv 0.11.31.
 
@@ -108,9 +114,8 @@ official `protobuf<7` bound makes that process isolation mandatory.
 
 Rust dependencies live in `core/rs/temporaless/Cargo.toml`. The repository
 root has a small `Cargo.toml` workspace so Cargo can install the crate directly
-from git without a registry. `rust-toolchain.toml` pins Rust 1.97.1 plus Clippy
-and rustfmt for the experimental SDK gate; Rust remains outside the first-class
-Flox environment.
+from git without a registry. The Flox manifest pins Rust 1.97.1 plus Clippy
+and rustfmt, so the same toolchain gates the Rust SDK locally and in CI.
 
 ## TypeScript
 

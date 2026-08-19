@@ -164,11 +164,11 @@ flox activate -- scripts/bench-go    # Go benchmarks (storage + workflow hot pat
 flox activate -- scripts/bench-py    # Python benchmarks (same suite, same output format)
 ```
 
-The Flox manifest intentionally stays thin: `go`, `python314`, `uv`, `buf`,
-and the C runtime libraries OpenDAL and Protovalidate need. The Go linter runs
-as a pinned Go module; experimental Rust is pinned separately in
-`rust-toolchain.toml` and has a mandatory CI job. Application libraries stay in
-`go.mod`, `Cargo.lock`, the uv locks, `package-lock.json`, or Buf configuration.
+The Flox manifest is the only toolchain source, locally and in CI: `go`,
+`python314`, `uv`, `buf`, Node, the pinned Rust 1.97.1 toolchain, the audit
+tools, and the C runtime libraries OpenDAL and Protovalidate need. The Go
+linter runs as a pinned Go module. Application libraries stay in `go.mod`,
+`Cargo.lock`, the uv locks, `package-lock.json`, or Buf configuration.
 
 ## Storage convention
 
