@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+# Publish one Temporaless release. Distribution is Git-only (AGENTS.md):
+# every SDK — the Go module, npm, Python, and Rust packages — installs from
+# the single root tag vVERSION, so publishing is creating and pushing that
+# tag. This runs from a maintainer's machine; CI never publishes, it only
+# verifies the pushed tag with the non-cancelable full gate.
+
+version="$(tr -d '\n' < VERSION)"
+tag="v${version}"
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "release refused: the working tree is dirty; commit or stash first." >&2
+  exit 1
+fi
+
+git fetch --quiet origin
+if ! git merge-base --is-ancestor "$(git rev-parse HEAD)" origin/main; then
+  echo "release refused: HEAD is not pushed to origin/main." >&2
+  exit 1
+fi
+
+if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
+  echo "release refused: tag $tag already exists." >&2
+  exit 1
+fi
+
+# Reuse the version gate in tag mode: one VERSION across every SDK mirror,
+# the CHANGELOG's first release heading matching, and an empty [Unreleased].
+GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$tag" python3 scripts/check_versions.py
+
+git tag --annotate --message "Temporaless $tag" "$tag"
+git push origin "refs/tags/$tag"
+echo "Published $tag. The Go, npm, Python, and Rust SDKs all install from this one Git tag."

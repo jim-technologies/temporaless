@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate version-check version-set generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
+.PHONY: help validate version-check version-set release generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
 
 ## help: show available make targets.
 help:
@@ -37,6 +37,10 @@ version-check:
 version-set:
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 2; }
 	python3 scripts/set_version.py "$(VERSION)"
+
+## release: publish one release — tag vVERSION and push it; refuses a dirty or unpushed tree.
+release:
+	scripts/release
 
 ## generate: regenerate protobuf SDK sources and the checked-in descriptor.
 generate:
