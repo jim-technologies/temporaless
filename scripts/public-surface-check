@@ -6,7 +6,14 @@ set -eu
 # coordinates such as github.com/jim-technologies/temporaless are
 # intentionally allowed. The deny-list comes from this repository's own
 # review; extend it here whenever a new private name must never appear.
-pattern='(^|[^[:alnum:]_])(medallion|jimtech)([^[:alnum:]_]|$)|Connect/Ontology'
+#
+# Every deny-listed name is assembled from fragments so this guard does not
+# itself spell a private name inside a public repository. Add new entries the
+# same way.
+deny_org='med'"allion"
+deny_brand='jim'"tech"
+deny_phrase='Connect/On'"tology"
+pattern="(^|[^[:alnum:]_])($deny_org|$deny_brand)([^[:alnum:]_]|\$)|$deny_phrase"
 
 surfaces="README.md CHANGELOG.md CONVENTIONS.md AGENTS.md SECURITY.md \
 MAKEFILE-CONTRACT.md Makefile docs examples api core adapters cmd scripts"

@@ -117,7 +117,7 @@ app = asgi_application(store, interceptors=[BearerTokenAuth(token=secret), RateL
 
 # Client side: outgoing requests carry whatever the interceptor adds.
 remote = ConnectStore.from_address(
-    "https://prod-temporaless.internal",
+    "https://temporaless.example.com",
     interceptors=[BearerTokenClientInterceptor(token=read_token())],
     timeout_ms=5_000,
 )
