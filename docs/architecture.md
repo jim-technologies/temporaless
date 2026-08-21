@@ -2,7 +2,7 @@
 
 ## Goal
 
-Temporaless provides a storage-backed workflow replay model for serverless jobs. The first target workloads are market-data workflows: pulling stocks, crypto, prediction market, price, and social data, normalizing it, and storing it into databases used for trading and analysis.
+Temporaless provides a storage-backed workflow replay model for serverless jobs. It is shaped for recurring ingestion and derivation pipelines: fetch from an external API on a schedule or on demand, normalize the response into a stable protobuf record, store it, and let later runs query and replay against what was stored. `examples/go/stocks-pipeline` and `examples/go/quant-service` work that shape end to end.
 
 The design optimizes for:
 
