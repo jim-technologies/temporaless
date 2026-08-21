@@ -59,18 +59,18 @@ Historical tags remain immutable and predate this unified release policy.
 
 ```sh
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
-pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
-pip install "temporaless-connectworkflow @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
-pip install "temporaless-temporalcompat @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/temporalcompat"
-pip install "temporaless-prefectcompat @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/prefectcompat"
-pip install "temporaless-indexstore @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/indexstore"
+pip install "temporaless @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
+pip install "temporaless-connectworkflow @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
+pip install "temporaless-temporalcompat @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/temporalcompat"
+pip install "temporaless-prefectcompat @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/prefectcompat"
+pip install "temporaless-indexstore @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/indexstore"
 npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 Rust consumers can depend on the workspace crate from git:
 
 ```toml
-temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
+temporaless = { git = "https://github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
 ```
 
 The TypeScript package entry lives at the repository root so npm git installs

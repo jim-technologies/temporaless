@@ -172,12 +172,12 @@ registry. Install every SDK directly from the same immutable Git revision:
 
 ```sh
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
-pip install "temporaless @ git+ssh://git@github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
+pip install "temporaless @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
 npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
 
 ```toml
-temporaless = { git = "ssh://git@github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
+temporaless = { git = "https://github.com/jim-technologies/temporaless.git", rev = "COMMIT_SHA", package = "temporaless" }
 ```
 
 Replace `COMMIT_SHA` with the exact revision you deploy so every language uses

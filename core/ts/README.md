@@ -21,11 +21,11 @@ npm install --allow-git=all \
   @connectrpc/connect-web
 ```
 
-For a private repository, use the SSH form:
+The fully qualified HTTPS form is equivalent and works with any Git client:
 
 ```sh
 npm install --allow-git=all \
-  "git+ssh://git@github.com/jim-technologies/temporaless.git#RELEASE_TAG" \
+  "git+https://github.com/jim-technologies/temporaless.git#RELEASE_TAG" \
   @connectrpc/connect-web
 ```
 
