@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help validate audit version-check version-set release generate public-surface-check fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
+.PHONY: help validate audit version-check version-set release generate public-surface fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
 
 ## help: show available make targets.
 help:
@@ -50,8 +50,8 @@ release:
 generate:
 	scripts/generate
 
-## public-surface-check: guard the public surface — tracked content, paths, and unpushed commit messages.
-public-surface-check:
+## public-surface: guard the public surface — tracked content, paths, and unpushed commit messages.
+public-surface:
 	scripts/public-surface-check
 	scripts/public-surface-check-test
 
