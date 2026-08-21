@@ -21,6 +21,22 @@ lockstep policy.
   regenerated into the Go and TypeScript bindings. `CONVENTIONS.md` records
   the buf/protobuf conventions audit. No wire-format change.
 
+### Changed
+
+- The public-surface guard is now the shared implementation used by every
+  public repository in the organisation: `scripts/public-surface-check` scans
+  the content of every tracked file, every tracked path, and the commit
+  messages a push would publish, and it self-validates before each scan so it
+  cannot pass by having stopped checking. `scripts/public-surface-check-test`
+  runs from the same `validate` step. Exceptions are justified one-liners in
+  `.public-surface-allow`; the brand-isolation terms this repository denies on
+  top of the fleet baseline are in `.public-surface-deny`.
+- Git install instructions use HTTPS rather than SSH remotes, which is the
+  form that works for every reader of a public repository.
+- `docs/architecture.md` describes the ingestion and derivation pipeline shape
+  the framework is built for, instead of naming a particular operator's
+  workloads. The `stocks-pipeline` and `quant-service` examples are unchanged.
+
 ## [0.10.6] — 2026-08-18
 
 ### Changed

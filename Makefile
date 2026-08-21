@@ -50,9 +50,10 @@ release:
 generate:
 	scripts/generate
 
-## public-surface-check: fail on private/internal wording anywhere on the public surface.
+## public-surface-check: guard the public surface — tracked content, paths, and unpushed commit messages.
 public-surface-check:
 	scripts/public-surface-check
+	scripts/public-surface-check-test
 
 ## fmt: rewrite formatting in place for every language in the repo.
 fmt: fmt-go fmt-proto fmt-py fmt-rs

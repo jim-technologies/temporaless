@@ -46,6 +46,7 @@ else
   echo "Skipping remote Buf plugin regeneration without BUF_TOKEN; set TEMPORALESS_REQUIRE_BUF_GENERATE=1 to force it." >&2
 fi
 scripts/public-surface-check
+scripts/public-surface-check-test
 descriptor_file="$(mktemp)"
 trap 'rm -f "$descriptor_file"' EXIT HUP INT TERM
 buf build api --as-file-descriptor-set -o "$descriptor_file"

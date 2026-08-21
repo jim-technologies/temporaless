@@ -1,0 +1,19 @@
+# .public-surface-deny - denials this repository adds on top of the fleet
+# baseline in scripts/public-surface-check. Same four fields as
+# .public-surface-allow:
+#
+#     category | path-glob | reason | pattern
+#
+# The reason is printed as the remediation text when the rule fires, so write
+# it as an instruction. Patterns use %HH hex escapes so this file does not
+# spell the names it denies; the guard scans this file too.
+#
+# These three rules carry over the whole deny list of the previous
+# repository-local guard. Temporaless is published as a standalone framework:
+# it must read as its own project, not as a component of another product, so
+# the sibling brand and the internal service phrase stay off this surface even
+# though some sibling repositories are themselves public.
+
+brand-isolation | * | Temporaless is published as a standalone framework. Name the capability, not the sibling product brand. | (^|[^a-z0-9_])%6dedallion($|[^a-z0-9_])
+brand-isolation | * | The organisation brand token belongs on product surfaces, not in this framework's docs or code. Public package coordinates are allowed already. | (^|[^a-z0-9_.-])%6aimtech($|[^a-z0-9_.-])
+brand-isolation | * | This names an internal service pairing. Describe the transport and the schema instead. | connect/%6fntology
