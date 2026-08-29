@@ -473,7 +473,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.10.6"
+version = "0.10.7"
 source = { editable = "../../../core/py" }
 dependencies = [
     { name = "connectrpc" },
@@ -509,7 +509,7 @@ dev = [
 
 [[package]]
 name = "temporaless-temporalcompat"
-version = "0.10.6"
+version = "0.10.7"
 source = { editable = "." }
 dependencies = [
     { name = "temporaless" },
