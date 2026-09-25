@@ -130,6 +130,7 @@ from being first-class.
 | Outbox idempotency-key helper | ✓ | ✓ | — |
 | ConnectRPC handler shape | ✓ | ✓ | — |
 | ConnectStore (RPC over storage) | ✓ | ✓ | — |
+| CloudEvents record observations (storage-server interceptor) | ✓ | ✓ | — |
 | Cron scheduler | ✓ | ✓ | — |
 | Timer scanner | ✓ | ✓ | — |
 | Janitor | ✓ | ✓ | — |
@@ -192,14 +193,21 @@ constraint, or tag that drifts from it.
 
 ## Adapter audit
 
-All adapters either ship for both Go and Python today or are tracked as
-runway. Nothing is on the kill list — every adapter has a clear, narrow
-reason to exist (storage RPC, claim coordination, scheduling primitive,
-compatibility target, operations helper).
+Most adapters ship for both Go and Python. The single-language ones are so by
+design: `prefectcompat` targets a Python-only framework, `scanquery` is a Go
+development scanner, and `indexstore` is a Python reference index. Rust ships
+`dispatch` only. Nothing is on the kill list — every adapter has a clear,
+narrow reason to exist (storage RPC, workflow transport, claim coordination,
+record observation, cross-run query, scheduling primitive, compatibility
+target, operations helper).
 
 | Adapter | Purpose | Go | Python | Rust |
 |---|---|:-:|:-:|:-:|
 | `connectstore` | `RecordStoreService` over ConnectRPC; client wraps service back as a `Store` | ✓ | ✓ | — |
+| `connectworkflow` | Serve a workflow as a ConnectRPC method — Go `Handle`, Python `@wrap_workflow_method` — with Connect error mapping | ✓ | ✓ | — |
+| `cloudevents` | Best-effort CNCF CloudEvents 1.0 observations after successful mutating `RecordStoreService` calls (storage-server interceptor; see [cloudevents.md](cloudevents.md)) | ✓ | ✓ | — |
+| `scanquery` | Offline/development cross-run `QueryStore` that walks an OpenDAL bucket; not a production index | ✓ | — | — |
+| `indexstore` | Optional local SQLite reference `QueryStore` that mirrors record keys; the bucket stays the source of truth and the index is rebuildable | — | ✓ | — |
 | `gocdkclaims` (Go) / `OpenDALStore.try_create_claim` (Py) | Create-only claims via blob `IfNotExist` (S3/GCS native atomicity) | ✓ | ✓ | — |
 | `temporalcompat` | Run Temporaless-shaped handlers on the real Temporal SDK | ✓ | ✓ | — |
 | `prefectcompat` | Run Temporaless-shaped handlers as Prefect 3 flows/tasks | — | ✓ | — |
@@ -217,9 +225,11 @@ compatibility target, operations helper).
 Python's operations adapters (`timerscanner`, `cronscheduler`, `inspector`,
 `visualization`, `janitor`, `backfill`, `dependencies`, `outbox`, `background`) live inside
 `core/py/src/temporaless/` rather than `adapters/py/` because they have
-no third-party deps; `prefectcompat` and `temporalcompat` need their own
-heavyweight deps so they ship as separate uv projects under
-`adapters/py/`. `adapters/py/dagstercompat` is not an adapter package: it is a
+no third-party deps. `prefectcompat` and `temporalcompat` need their own
+heavyweight deps, `cloudevents` needs the CloudEvents SDK, and `indexstore`
+owns a SQLite index, so each ships as a separate uv project under
+`adapters/py/` (for example `temporaless-cloudevents`).
+`adapters/py/dagstercompat` is not an adapter package: it is a
 development-only, non-installable uv project that gates the isolated Dagster
 job → generated application ConnectRPC path. It has no Temporaless dependency
 because Dagster requires protobuf below version 7.

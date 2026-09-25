@@ -27,6 +27,10 @@ lockstep policy.
   (exact rule, exact assignment, exact file), the same narrow exception
   Invariant Protocol carries, so the scheduled audit reaches the Git-SHA
   installability checks again.
+- The `docs/sdks.md` adapter audit lists the `cloudevents`,
+  `connectworkflow`, `scanquery`, and `indexstore` adapters, and the
+  capability matrix gains a CloudEvents row. The audit no longer claims every
+  adapter ships for both Go and Python.
 
 ## [0.11.1] — 2026-09-25
 
