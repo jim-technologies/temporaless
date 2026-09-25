@@ -82,6 +82,87 @@ func TestLastFireFromRunsReturnsFalseWhenNoRuns(t *testing.T) {
 	}
 }
 
+func TestOneShotSchedulerRestoresBootstrapThenStoredProgress(t *testing.T) {
+	tests := []struct {
+		name        string
+		existingRun bool
+	}{
+		{name: "first boot"},
+		{name: "stored progress overrides bootstrap", existingRun: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			anchor := time.Date(2026, 5, 4, 9, 30, 0, 0, time.UTC)
+			firstFire := anchor.Add(time.Minute)
+			secondFire := anchor.Add(2 * time.Minute)
+			var fired []time.Time
+			bootAndTick := func(now time.Time) int {
+				// Every invocation creates its own store and scheduler over fs.
+				operator, err := opendal.NewOperator(fs.Scheme, opendal.OperatorOptions{"root": root})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer operator.Close()
+				store := storage.NewOpenDALStore(operator)
+				scheduler, err := cronscheduler.New(
+					[]cronscheduler.Schedule{{ID: "prices:aapl", Expression: "* * * * *"}},
+					func(ctx context.Context, scheduleID string, fireTime time.Time) error {
+						fired = append(fired, fireTime)
+						_, err := workflow.Run(ctx, store, &workflow.Options{
+							WorkflowId:   scheduleID,
+							RunId:        fireTime.UTC().Format(time.RFC3339),
+							RunOrderTime: timestamppb.New(fireTime),
+						}, nil, wrapperspb.String("AAPL"),
+							func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} },
+							func(_ context.Context, input *wrapperspb.StringValue) (*wrapperspb.StringValue, error) {
+								return input, nil
+							},
+						)
+						return err
+					},
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler.Restore(map[string]time.Time{"prices:aapl": anchor})
+				snapshot, err := cronscheduler.LastFiresFromRuns(ctx, store, "", []string{"prices:aapl"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler.Restore(snapshot)
+				count, err := scheduler.Tick(ctx, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			if test.existingRun {
+				if got := bootAndTick(firstFire); got != 1 {
+					t.Fatalf("seed tick = %d, want 1", got)
+				}
+				fired = nil
+			}
+			want := []time.Time{firstFire, secondFire}
+			if test.existingRun {
+				want = []time.Time{secondFire}
+			}
+			if got := bootAndTick(secondFire); got != len(want) {
+				t.Fatalf("first tick after boot = %d, want %d", got, len(want))
+			}
+			for i, fireTime := range fired {
+				if !fireTime.Equal(want[i]) {
+					t.Fatalf("fire[%d] = %s, want %s", i, fireTime, want[i])
+				}
+			}
+			if got := bootAndTick(secondFire); got != 0 {
+				t.Fatalf("repeat boot tick = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestLastFiresFromRunsBuildsRestorableSnapshot(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

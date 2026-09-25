@@ -94,7 +94,7 @@ workflow replay.
 
 ## Python Prefect Adapter
 
-`adapters/py/prefectcompat` is separately locked to Prefect 3.8.2. It wraps
+`adapters/py/prefectcompat` is separately locked to Prefect 3.8.4. It wraps
 async unary protobuf handlers as real Prefect flows/tasks and keeps Prefect's
 deployment, scheduling, retry, and UI state out of Temporaless core.
 
@@ -102,7 +102,7 @@ deployment, scheduling, retry, and UI state out of Temporaless core.
 
 `adapters/py/dagstercompat` is a separately locked, development-only virtual uv
 project, not an installable SDK package or same-process runtime adapter. Its dev
-environment contains Dagster 1.13.17, ConnectRPC 0.11.1, and protobuf 6,
+environment contains Dagster 1.13.20, ConnectRPC 0.11.1, and protobuf 6,
 deliberately has no Temporaless dependency, and executes the supported
 generated-application-RPC integration in CI. The test launches its service in
 the separately locked core Python environment with protobuf 7, Temporaless,

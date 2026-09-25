@@ -46,6 +46,27 @@ domain idempotency for external side effects.
 
 The same operation is exposed as the `DueTimers` RPC on `RecordStoreService`. When the storage backend lives behind ConnectRPC (`ConnectStore`), the client makes one round-trip and the server reads the due ledger locally.
 
+## Bootstrapping One-Shot Cron Ticks
+
+Every fresh scheduler process needs a stable application-supplied initial
+anchor for each schedule. Restore those anchors first, then overlay the
+`LastFiresFromRuns` / `last_fires_from_runs` snapshot before the single tick.
+`Restore` preserves anchors for schedules omitted from that snapshot. The
+first eligible fire is strictly after its anchor. See the Go and Python
+deployment examples in [`deployment.md`](deployment.md#cron-scheduler).
+
+An unseeded schedule anchors itself to `now` and skips its first tick; that
+behavior serves a resident scheduler, whose later ticks retain the anchor.
+Fresh serverless invocations would each skip forever when no first run exists.
+Do not recompute the bootstrap anchor from the current invocation time.
+
+Latest-run pointers are derived recovery hints. Their read/compare/write is
+protected within one store instance only, so racing processes can regress a
+pointer and repeat historical dispatches. Stable run IDs let terminal runs
+replay. If a deployment requires a monotonic cursor, use an external scheduler
+or an adapter with native conditional updates and a serialized snapshot
+writer. Execution claims coordinate a run, not the schedule's different runs.
+
 ## External Scheduler And Queue Contract
 
 There is intentionally no generic Temporaless `StartWorkflow` or

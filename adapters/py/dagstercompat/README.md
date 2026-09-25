@@ -4,7 +4,7 @@ This development-only, non-installable uv project is an executable
 compatibility proof for the supported Dagster integration direction:
 
 ```text
-Dagster 1.13.17 process (protobuf 6)
+Dagster 1.13.20 process (protobuf 6)
         │ generated application ConnectRPC client
         │ protobuf binary over HTTP
         ▼
@@ -15,7 +15,7 @@ It is **not** a Temporaless SDK package or a same-process adapter. Its uv
 project sets `package = false`, has no distributable Python module, and does
 not participate in Temporaless release versioning. It deliberately has no
 `temporaless` dependency and must never import Temporaless framework modules
-or copy the Temporaless framework proto. Dagster 1.13.17 officially requires
+or copy the Temporaless framework proto. Dagster 1.13.20 officially requires
 `protobuf>=4,<7` on Python 3.11+, which cannot coexist with Temporaless's
 protobuf 7 runtime.
 

@@ -13,12 +13,16 @@ idempotent, while a different payload for the same event key is a conflict.
 `PutEvent` is the explicit low-level replace primitive for operators,
 migrations, and fixtures, not the application delivery path.
 
-> Not a Temporal replacement. A narrower framework for data workflows where activities are mostly fetch / normalize / persist and storage can be the durable coordination point.
+Durable boundaries release the invocation; the application supplies reliable
+triggers to resume it. This fits bounded ingestion, API orchestration, batch,
+and approval workflows. See the [readiness review](docs/readiness.md) for what
+ships and which production responsibilities remain application-owned.
 
 For logs and indexes, emit [CloudEvents](docs/cloudevents.md) at the optional
 record-store RPC boundary and project downstream. Iceberg is the preferred
 analytical table convention; the point records remain authoritative.
 
+- [`docs/architecture.md`](docs/architecture.md) — core design and boundaries
 - [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough: store, workflow, retries, sleep, events, schedule, inspect, sweep
 - [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — make a generated protobuf service method a durable workflow and project it through Invariant Protocol
 - [`docs/deployment.md`](docs/deployment.md) — production patterns (S3/GCS, ConnectRPC, multi-process, multi-region)
@@ -135,28 +139,14 @@ credentials.
 
 ## Docs
 
-- [`docs/philosophy.md`](docs/philosophy.md) — design tenets in one page (read first)
-- [`docs/comparisons.md`](docs/comparisons.md) — honest comparison vs Temporal / n8n / Prefect / Dagster
-- [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough
-- [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — canonical application protobuf service, workflow wrapping, Invariant projection, and migration boundaries
-- [`docs/visual-workflows.md`](docs/visual-workflows.md) — optional protobuf plan, user approval, common visual boxes, and plan-versus-actual UI projection
-- [`docs/deployment.md`](docs/deployment.md) — production deployment patterns
-- [`docs/production-checklist.md`](docs/production-checklist.md) — pre-launch checklist (storage, ConnectStore, workflow service, operators, observability, failure modes)
-- [`docs/runbook.md`](docs/runbook.md) — operator runbook for common incidents (stuck workflows, claim leaks, storage outages, DR)
-- [`docs/operator-cli.md`](docs/operator-cli.md) — local run inspection and the `describe-run` snapshot guarantees
-- [`docs/architecture.md`](docs/architecture.md) — goals and core model
-- [`docs/storage-rpc.md`](docs/storage-rpc.md) — `RecordStoreService` contract
-- [`docs/scheduling.md`](docs/scheduling.md) — durable timers, cron, scanner, distribution
-- [`docs/claims.md`](docs/claims.md) — claim coordination tiers
-- [`docs/hard-cases.md`](docs/hard-cases.md) — concurrency, retries, side effects, backend atomicity
-- [`docs/adapter-contract.md`](docs/adapter-contract.md) — what adapters must declare
-- [`docs/temporal-adapter.md`](docs/temporal-adapter.md) — strict compatibility position
-- [`docs/orchestrator-adapters.md`](docs/orchestrator-adapters.md) — Dagster / Prefect adapter notes
-- [`docs/dependencies.md`](docs/dependencies.md) — what lives where (Flox vs go.mod vs uv)
-- [`docs/benchmarks.md`](docs/benchmarks.md) — Go and Python benchmark suites with cross-language baseline numbers
-- [`docs/analytics.md`](docs/analytics.md) — bucket archive, optional query index, and offline protobuf analytics
-- [`docs/clickhouse-iceberg.md`](docs/clickhouse-iceberg.md) — production ClickHouse query projection and Iceberg analytics/archive pattern
-- [`docs/sdks.md`](docs/sdks.md) — cross-SDK surface comparison + capability matrix (Go / Python / Rust / TypeScript)
+Read [architecture](docs/architecture.md) and the [readiness review](docs/readiness.md)
+for the design, implemented capabilities, and outstanding operational limits.
+Then follow the guide for your task:
+
+- [Getting started](docs/getting-started.md) and [canonical workflows](docs/canonical-workflows.md): author and wrap protobuf handlers.
+- [Deployment](docs/deployment.md), [scheduling](docs/scheduling.md), and [runbook](docs/runbook.md): trigger, resume, and recover work.
+- [CloudEvents](docs/cloudevents.md), [analytics](docs/analytics.md), and [ClickHouse/Iceberg](docs/clickhouse-iceberg.md): emit observations and build downstream projections.
+- [Documentation map](docs/README.md): storage contracts, claims, compatibility adapters, SDK support, visualization, and validation.
 
 ## Development
 

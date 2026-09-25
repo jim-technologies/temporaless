@@ -7,9 +7,10 @@ Demonstrates the full end-to-end production pattern:
 3. The workflow body fetches a price (an activity) and computes a signal
    (another activity). Both records are persisted, so the workflow replays
    for free if the same (workflow_id, run_id) is re-invoked.
-4. Stateless seeding: on startup the scheduler reads each workflow's
-   latest-run pointer via ``last_fires_from_runs`` — so the scheduler has no
-   separate persistence.
+4. Stateless seeding: restore stable application-owned initial anchors, then
+   overlay each workflow's latest-run pointer via ``last_fires_from_runs``.
+   The initial anchor also bootstraps fresh one-shot invocations before a run
+   exists; persisted progress takes precedence after the first run.
 
 In production:
 
@@ -122,13 +123,18 @@ async def main() -> None:
     ]
     scheduler = Scheduler(schedules, _make_dispatcher(store))
 
-    # Stateless seeding — read existing fire times from the run records.
+    # Application-owned bootstrap configuration, stable across process boots.
+    # The first eligible cron fire is strictly after each anchor.
+    scheduler.restore(
+        {s.id: datetime(2026, 5, 4, 9, 29, tzinfo=UTC) for s in schedules}
+    )
+    # Stored progress overrides the initial anchor only where a run exists.
     snapshot = await last_fires_from_runs(store, "", [s.id for s in schedules])
     scheduler.restore(snapshot)
     if snapshot:
         print(f"resumed scheduler from storage: {snapshot}")
     else:
-        print("first run; anchoring scheduler to current time")
+        print("first run; using configured initial anchors")
 
     # Demo: simulate three minutes of clock advancement so the workflow fires.
     # In production, drive .tick() from a real clock (Kubernetes CronJob etc.).

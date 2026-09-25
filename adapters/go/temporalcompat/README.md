@@ -2,7 +2,7 @@
 
 This is a strict compatibility adapter for running Temporaless-shaped handlers on the real Temporal Go SDK.
 
-The root `go.mod` currently requires and tests `go.temporal.io/sdk v1.47.0`;
+The root `go.mod` currently requires and tests `go.temporal.io/sdk v1.48.0`;
 the adapter does not float independently from that module graph. A downstream
 Go module can still promote the selected SDK through minimal version selection,
 so consumers should run this compatibility suite when doing so.

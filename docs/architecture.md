@@ -1,5 +1,8 @@
 # Architecture
 
+Read this page for the design, then the [readiness review](readiness.md) for
+implemented features and remaining deployment responsibilities.
+
 ## Goal
 
 Temporaless provides a storage-backed workflow replay model for serverless jobs. It is shaped for recurring ingestion and derivation pipelines: fetch from an external API on a schedule or on demand, normalize the response into a stable protobuf record, store it, and let later runs query and replay against what was stored. `examples/go/stocks-pipeline` and `examples/go/quant-service` work that shape end to end.
@@ -23,7 +26,8 @@ The repository is organized by product boundary first, then language:
 - `adapters/py/`: Python adapters
 - `examples/go/` and `examples/py/`: language-specific examples
 
-This keeps the tree ready for TypeScript, Rust, and other language runtimes without mixing language implementations at the root.
+Go and Python are the first-class runtimes. `core/ts` provides protobuf clients
+and projections; `core/rs` is experimental. See [SDK support](sdks.md).
 
 ## Core Model
 

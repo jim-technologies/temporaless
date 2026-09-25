@@ -25,9 +25,17 @@ lockstep policy.
   reconciliation; the feed is not a durable audit journal.
   `docs/cloudevents.md` is the envelope and delivery contract. The Go module
   gains a direct dependency on `github.com/cloudevents/sdk-go/v2`.
+- `docs/readiness.md` consolidates what ships against the application-owned
+  responsibilities for serverless resumption, scheduling, side effects, and
+  projections, and `docs/README.md` maps the documentation by task.
 
 ### Changed
 
+- The single-tick cron deployment examples (`docs/deployment.md`,
+  `docs/scheduling.md`, `examples/py/stocks_cron.py`) restore stable
+  application-supplied initial anchors before overlaying `LastFiresFromRuns` /
+  `last_fires_from_runs`, so a fresh one-shot process bootstraps a schedule
+  that has no stored run. Cross-process Go and Python tests cover the recipe.
 - Go and TypeScript bindings are regenerated from Protovalidate schema commit
   `511051f7`, matching the refreshed `buf.lock`. No wire-format change.
 

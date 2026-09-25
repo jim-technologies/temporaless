@@ -354,9 +354,18 @@ scheduler, _ := cronscheduler.New(
     },
 )
 
-// Stateless seeding from latest-run pointer objects — no separate persistence.
-snapshot, _ := cronscheduler.LastFiresFromRuns(ctx, store, "",
+// Stable application configuration: fire strictly after these initial anchors.
+// Use the same anchors on every boot, including before any run exists.
+scheduler.Restore(map[string]time.Time{
+    "prices:aapl": time.Date(2026, 5, 4, 9, 29, 0, 0, time.UTC),
+    "prices:tsla": time.Date(2026, 5, 4, 9, 29, 0, 0, time.UTC),
+})
+// Persisted progress overrides bootstrap anchors for schedules with runs.
+snapshot, err := cronscheduler.LastFiresFromRuns(ctx, store, "",
     []string{"prices:aapl", "prices:tsla"})
+if err != nil {
+    return err
+}
 scheduler.Restore(snapshot)
 
 // Run a Tick on a 1-minute cron / Kubernetes CronJob / EventBridge schedule.
@@ -417,7 +426,13 @@ scheduler = Scheduler(
     dispatch,
 )
 
-# Stateless seeding from latest-run pointer objects — no separate persistence.
+# Stable application configuration: fire strictly after these initial anchors.
+# Use the same anchors on every boot, including before any run exists.
+scheduler.restore({
+    "prices:aapl": datetime(2026, 5, 4, 9, 29, tzinfo=UTC),
+    "prices:tsla": datetime(2026, 5, 4, 9, 29, tzinfo=UTC),
+})
+# Persisted progress overrides bootstrap anchors for schedules with runs.
 snapshot = await last_fires_from_runs(
     store, "", ["prices:aapl", "prices:tsla"]
 )
@@ -426,6 +441,21 @@ scheduler.restore(snapshot)
 # Run a tick on a 1-minute cron / Kubernetes CronJob / EventBridge schedule.
 await scheduler.tick(datetime.now(UTC))
 ```
+
+Choose each initial anchor in deployment configuration and keep it stable
+across invocations. The first eligible cron fire is strictly after that anchor;
+an old anchor deliberately catches up all subsequent fires. A new scheduler
+without an anchor only remembers `now` in process and dispatches nothing on its
+first tick. Recreating that scheduler for every serverless invocation would
+therefore never bootstrap a schedule with no stored runs.
+
+The bucket latest-run pointer is a recovery hint. Its read/compare/write uses
+only a local lock, so concurrent writers in different processes can overwrite
+a newer pointer with an older one. This can repeat completed cron fires on
+restart; stable run IDs make those replays safe. Deployments requiring a
+monotonic schedule cursor should persist the scheduler snapshot through an
+external scheduler or an adapter with native compare-and-swap, and serialize
+its updates. Per-run execution claims do not serialize different run IDs.
 
 Both examples treat only those expected, direct durable waits as a successful
 dispatch. Application failures, claim failures, and storage/infrastructure

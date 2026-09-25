@@ -258,6 +258,47 @@ async def test_last_fire_from_runs_derives_state_from_storage(tmp_path) -> None:
     assert last.replace(tzinfo=UTC) == datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("existing_run", [False, True])
+async def test_one_shot_scheduler_restores_bootstrap_then_stored_progress(
+    tmp_path, existing_run: bool
+) -> None:
+    initial_anchor = datetime(2026, 5, 4, 9, 30, tzinfo=UTC)
+    first_fire = datetime(2026, 5, 4, 9, 31, tzinfo=UTC)
+    second_fire = datetime(2026, 5, 4, 9, 32, tzinfo=UTC)
+    fired: list[datetime] = []
+
+    # Each invocation opens its own store and scheduler over durable fs state.
+    async def boot_and_tick(now: datetime) -> int:
+        store = OpenDALStore(opendal.AsyncOperator("fs", root=str(tmp_path)))
+
+        async def dispatch(schedule_id: str, fire_time: datetime) -> None:
+            fired.append(fire_time)
+            await run(
+                store,
+                Options(
+                    workflow_id=schedule_id,
+                    run_id=fire_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    run_order_time=_timestamp(fire_time),
+                ),
+                StringValue(value="AAPL"),
+                StringValue,
+                _ok_workflow,
+            )
+
+        scheduler = Scheduler([Schedule("prices:aapl", "* * * * *")], dispatch)
+        scheduler.restore({"prices:aapl": initial_anchor})
+        scheduler.restore(await last_fires_from_runs(store, "", ["prices:aapl"]))
+        return await scheduler.tick(now)
+
+    if existing_run:
+        assert await boot_and_tick(first_fire) == 1
+        fired.clear()
+
+    assert await boot_and_tick(second_fire) == (1 if existing_run else 2)
+    assert fired == ([second_fire] if existing_run else [first_fire, second_fire])
+    assert await boot_and_tick(second_fire) == 0
+
+
 async def test_last_fire_from_runs_reads_latest_pointer_once(tmp_path) -> None:
     class CountingStore(OpenDALStore):
         def __init__(self, operator: opendal.AsyncOperator) -> None:

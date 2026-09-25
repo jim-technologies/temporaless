@@ -20,7 +20,7 @@ func(ctx context.Context, req *marketdatav1.FetchRequest) (*marketdatav1.FetchRe
 Python functions should follow the same convention:
 
 ```python
-def fetch(req: FetchRequest) -> FetchResponse:
+async def fetch(req: FetchRequest) -> FetchResponse:
     ...
 ```
 
