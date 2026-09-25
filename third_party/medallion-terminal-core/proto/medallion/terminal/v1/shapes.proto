@@ -1,0 +1,1491 @@
+syntax = "proto3";
+
+package medallion.terminal.v1;
+
+import "google/protobuf/struct.proto";
+
+// =============================================================
+// Canonical Payload Shapes
+//
+// These are the typed payloads returned by TerminalService. Each
+// case in DataResponse.payload (see terminal.proto) maps 1:1 to a
+// message defined here.
+//
+// Backends do not invent shapes — they pick one of these and fill
+// it in. That is the contract: implement the proto, the dashboard
+// renders.
+//
+// Examples in comments use mixed domains (finance, prediction
+// markets, ops, sentiment) intentionally — these payloads are
+// domain-agnostic.
+// =============================================================
+
+// --- Timeseries ---
+// Use for: line charts of any timestamped numeric data.
+// Examples: price history, sentiment over time, metric over time,
+// a bot's PnL curve, request latency, election polling spread.
+//
+// JSON examples:
+//
+// Single series:
+//   { "points": [
+//       { "timestamp": "2026-04-01T00:00:00Z", "value": 67400 },
+//       { "timestamp": "2026-04-02T00:00:00Z", "value": 68200 }
+//   ]}
+//
+// Multi-series (overlay):
+//   { "series": [
+//       { "name": "Yes", "points": [...] },
+//       { "name": "No",  "points": [...] }
+//   ]}
+message TimeseriesPayload {
+  // Single-series shorthand. Mutually exclusive with `series`.
+  repeated TimeseriesPoint points = 1;
+
+  // Multi-series form. Each series renders as one line.
+  repeated TimeseriesSeries series = 2;
+
+  // Optional markers overlaid on the chart. Use for buy/sell signals,
+  // events, alerts, AI-flagged regions, etc.
+  repeated Annotation annotations = 3;
+}
+
+// One timestamped value in a timeseries.
+message TimeseriesPoint {
+  // ISO 8601 timestamp or Unix epoch (seconds or ms).
+  string timestamp = 1;
+
+  // The numeric value at this timestamp.
+  double value = 2;
+}
+
+// One named line in a multi-series chart.
+message TimeseriesSeries {
+  // Display name (used in legend/tooltip).
+  string name = 1;
+
+  // The ordered points of this series.
+  repeated TimeseriesPoint points = 2;
+}
+
+// --- Candles (OHLCV) ---
+// Use for: any open/high/low/close timeseries, with optional volume.
+// Examples: equity/crypto price bars, prediction market bid/ask bars.
+//
+// JSON example:
+//   { "bars": [
+//       { "timestamp": "2026-04-01", "open": 67100, "high": 68400,
+//         "low": 66800, "close": 68200, "volume": 28500 }
+//   ]}
+message CandlePayload {
+  // Ordered OHLCV bars.
+  repeated Candle bars = 1;
+
+  // Markers overlaid on the chart (trades, signals, events). Same
+  // shape as TimeseriesPayload.annotations — the renderer maps the
+  // `kind` to a built-in marker style (arrowUp for buy, arrowDown
+  // for sell, etc.).
+  repeated Annotation annotations = 2;
+}
+
+// One OHLCV bar.
+message Candle {
+  // ISO 8601 timestamp or Unix epoch (seconds or ms).
+  string timestamp = 1;
+  // Opening price of the bar.
+  double open = 2;
+  // Highest price of the bar.
+  double high = 3;
+  // Lowest price of the bar.
+  double low = 4;
+  // Closing price of the bar.
+  double close = 5;
+  // If set, rendered as a volume histogram beneath the chart.
+  optional double volume = 6;
+}
+
+// Annotation — a single marker overlay on a chart (timeseries or
+// candles). Used for buy/sell signals, alerts, news markers, etc.
+//
+// JSON example (on a candlestick):
+//   { "timestamp": "2026-04-08", "label": "BUY", "kind": "buy" }
+//   { "timestamp": "2026-04-12", "label": "SELL 0.5",
+//     "kind": "sell", "value": 71200 }
+//
+// Recognized `kind` values map to default colors and shapes:
+//   buy   → up-arrow / green
+//   sell  → down-arrow / red
+//   info  → circle / sky-blue
+//   warn  → circle / amber
+// Other values render as a neutral gray dot.
+message Annotation {
+  // Where on the x-axis the marker sits (ISO 8601 or Unix epoch).
+  string timestamp = 1;
+
+  // Y-axis position. Optional for candlestick (the renderer pins
+  // above/below the bar based on `kind`); recommended for timeseries.
+  optional double value = 2;
+
+  // Short text shown next to the marker (and as hover tooltip).
+  string label = 3;
+
+  // Marker semantic. Free-form — unrecognized values render as
+  // neutral. Recognized: "buy", "sell", "info", "warn".
+  string kind = 4;
+
+  // Optional color override (CSS hex). Use only when the default
+  // kind color is wrong for the dashboard's palette.
+  optional string color = 5;
+
+  // If present, the annotation is a band spanning [timestamp,
+  // end_timestamp] — the renderer fills the region instead of
+  // drawing a point marker. Use for in-sample / out-of-sample
+  // backtest splits, stress periods (COVID, FTX), FOMC windows,
+  // blackout zones, regime detector outputs, etc.
+  optional string end_timestamp = 6;
+}
+
+// --- Table ---
+// Use for: any tabular data.
+// Examples: holdings, leaderboards, peer comparison, order book,
+// list of open positions, cron job registry.
+//
+// JSON examples:
+//
+// Implicit (columns auto-detected from row keys):
+//   { "rows": [
+//       { "asset": "BTC", "qty": 1.5, "price": 67500 },
+//       { "asset": "ETH", "qty": 12,  "price": 3450 }
+//   ]}
+//
+// Explicit (column types and formatting hints):
+//   { "columns": [
+//       { "key": "asset", "label": "Asset", "type": "COLUMN_TYPE_STRING" },
+//       { "key": "price", "label": "Price", "type": "COLUMN_TYPE_NUMBER",
+//         "format": "currency:USD" }
+//     ],
+//     "rows": [...] }
+message TablePayload {
+  // Optional schema. If omitted, columns auto-detect from the first row.
+  repeated TableColumn columns = 1;
+
+  // Row data as objects (keys must match column.key when columns are set).
+  repeated google.protobuf.Struct rows = 2;
+}
+
+// TableColumn declares one column's key, label, type, and format.
+message TableColumn {
+  // Field key matching row object keys.
+  string key = 1;
+
+  // Display label. Defaults to `key` if omitted.
+  string label = 2;
+
+  // Type hint for sorting and default formatting.
+  ColumnType type = 3;
+
+  // Optional formatting directive. Examples:
+  //   "currency:USD", "currency:EUR", "percent", "percent:2",
+  //   "datetime", "date", "compact" (1.2M, 3.4B), "delta"
+  optional string format = 4;
+}
+
+// ColumnType is the type hint for a table column.
+enum ColumnType {
+  // No type declared; rendered as text.
+  COLUMN_TYPE_UNSPECIFIED = 0;
+  // Free-form text.
+  COLUMN_TYPE_STRING = 1;
+  // Numeric; right-aligned and number-formatted.
+  COLUMN_TYPE_NUMBER = 2;
+  // True/false.
+  COLUMN_TYPE_BOOLEAN = 3;
+  // ISO 8601 timestamp or Unix epoch.
+  COLUMN_TYPE_TIMESTAMP = 4;
+}
+
+// --- Metric ---
+// Use for: a single headline number with optional context.
+// Examples: spot price, total PnL, today's volume, model accuracy,
+// open positions count, win rate.
+//
+// JSON examples:
+//
+// Full:
+//   { "value": 67842.50, "delta": 2.18, "unit": "USD",
+//     "label": "Spot", "trend": [67100, 67300, 67500, 67800, 67842] }
+//
+// Minimal:
+//   { "value": 67842.50 }
+message MetricPayload {
+  // The headline number.
+  double value = 1;
+
+  // Change since some baseline; shown as a colored delta indicator.
+  // Convention: a fraction (0.0218 = +2.18%). Sign drives color.
+  optional double delta = 2;
+
+  // Unit displayed after the value ("USD", "%", "req/s").
+  optional string unit = 3;
+
+  // Subtitle below the value.
+  optional string label = 4;
+
+  // Optional sparkline — tiny inline trend chart. Just the values,
+  // evenly spaced. For a full chart, use TimeseriesPayload instead.
+  repeated double trend = 5;
+}
+
+// --- Gauge ---
+// Use for: bounded scalars where position within a range is meaningful.
+// Examples: prediction market probability (0..1), sentiment (-1..1),
+// model confidence, cron-fleet health (% green), workflow progress.
+//
+// JSON examples:
+//
+// Probability:
+//   { "value": 0.67, "min": 0, "max": 1, "label": "Yes" }
+//
+// Sentiment with color bands:
+//   { "value": 0.32, "min": -1, "max": 1, "label": "Net sentiment",
+//     "bands": [
+//       { "from": -1,  "to": -0.3, "color": "danger", "label": "Bearish" },
+//       { "from": -0.3,"to":  0.3, "color": "warn",   "label": "Neutral" },
+//       { "from":  0.3,"to":  1,   "color": "ok",     "label": "Bullish" }
+//   ]}
+message GaugePayload {
+  // Current position within [min, max].
+  double value = 1;
+
+  // Range bounds. Default min=0, max=1.
+  optional double min = 2;
+  // Upper bound of the range. Default 1.
+  optional double max = 3;
+
+  // Caption below the gauge.
+  optional string label = 4;
+
+  // Optional colored zones along the range.
+  repeated GaugeBand bands = 5;
+}
+
+// One colored zone along the gauge range.
+message GaugeBand {
+  // Band start (inclusive).
+  double from = 1;
+  // Band end (inclusive).
+  double to = 2;
+
+  // Semantic color name. The frontend maps this to a theme color.
+  // Recognized: "ok", "warn", "danger", "info", "muted".
+  string color = 3;
+
+  // Optional band caption.
+  optional string label = 4;
+}
+
+// --- Heatmap ---
+// Use for: 2D matrices colored by value.
+// Examples: sector returns matrix, correlation matrix, cron fleet
+// health (job × hour), sentiment grid (entity × source), calendar
+// heatmap (day × hour activity).
+//
+// JSON example:
+//   { "rows": ["Tech", "Energy", "Finance"],
+//     "columns": ["Mon", "Tue", "Wed"],
+//     "cells": [
+//       { "row": 0, "col": 0, "value": 1.2 },
+//       { "row": 0, "col": 1, "value": -0.8 }
+//     ],
+//     "scale": "diverging" }
+message HeatmapPayload {
+  // Row labels (ordered). Cell.row indexes into this list.
+  repeated string rows = 1;
+
+  // Column labels (ordered). Cell.col indexes into this list.
+  repeated string columns = 2;
+
+  // The matrix cells. Sparse — missing cells render empty.
+  repeated HeatmapCell cells = 3;
+
+  // Color scale bounds. Auto-detected from data if unset.
+  optional double min = 4;
+  // Upper color scale bound. Auto-detected if unset.
+  optional double max = 5;
+
+  // Color scale type: "diverging" (centered at 0) or "sequential".
+  // Default: sequential.
+  optional string scale = 6;
+}
+
+// One cell in the heatmap matrix.
+message HeatmapCell {
+  // Index into HeatmapPayload.rows.
+  int32 row = 1;
+  // Index into HeatmapPayload.columns.
+  int32 col = 2;
+  // The cell's numeric value; drives the color.
+  double value = 3;
+  // Optional text override (otherwise the formatted value is shown).
+  optional string label = 4;
+}
+
+// --- Events (timeline) ---
+// Use for: chronological streams where status is first-class.
+// Examples: cron run history, workflow stage progress, trade fills,
+// alerts, deployment timeline, bet settlement log.
+//
+// JSON example:
+//   { "events": [
+//       { "timestamp": "2026-04-01T09:00:00Z",
+//         "label": "Daily ingest",
+//         "status": "EVENT_STATUS_OK",
+//         "body": "Processed 1.2M rows in 38s" },
+//       { "timestamp": "2026-04-01T09:15:00Z",
+//         "label": "Sentiment refresh",
+//         "status": "EVENT_STATUS_WARN",
+//         "body": "3 sources timed out, used cached values" }
+//   ]}
+message EventPayload {
+  // The events to render, in display order.
+  repeated Event events = 1;
+}
+
+// One entry in an event timeline.
+message Event {
+  // ISO 8601 timestamp or Unix epoch (seconds or ms).
+  string timestamp = 1;
+
+  // Primary one-line description.
+  string label = 2;
+
+  // Coarse status; drives the color of the entry.
+  EventStatus status = 3;
+
+  // Detail or longer description.
+  optional string body = 4;
+
+  // Attribution (e.g. "scheduler", "user@x", "ingest-worker-3").
+  optional string source = 5;
+
+  // Free-form tags for filtering and grouping.
+  repeated string tags = 6;
+}
+
+// EventStatus is the coarse severity/state of an event.
+enum EventStatus {
+  // No status declared; rendered neutral.
+  EVENT_STATUS_UNSPECIFIED = 0;
+  // Success / healthy.
+  EVENT_STATUS_OK = 1;
+  // Degraded or partial success.
+  EVENT_STATUS_WARN = 2;
+  // Failure.
+  EVENT_STATUS_ERROR = 3;
+  // Informational, no health signal.
+  EVENT_STATUS_INFO = 4;
+  // Started but not finished.
+  EVENT_STATUS_PENDING = 5;
+}
+
+// --- Distribution ---
+// Use for: labeled categorical proportions (pie/donut/stacked bar).
+// Examples: bull/bear sentiment split, asset allocation, win/loss
+// breakdown, vote share, topic distribution.
+//
+// JSON example:
+//   { "slices": [
+//       { "label": "Bull", "value": 0.62, "color": "ok" },
+//       { "label": "Bear", "value": 0.38, "color": "danger" }
+//   ]}
+//
+// Values are normalized for rendering — pass raw counts or
+// fractions, the widget computes percentages.
+message DistributionPayload {
+  // The labeled slices. Values may be raw counts or fractions.
+  repeated DistributionSlice slices = 1;
+
+  // Optional total to normalize against. Default: sum of slice values.
+  // Use this when slices represent a subset (e.g. "top 5 of N").
+  optional double total = 2;
+}
+
+// One labeled slice of a distribution.
+message DistributionSlice {
+  // Slice name shown in the legend.
+  string label = 1;
+  // Raw count or fraction; normalized by the widget.
+  double value = 2;
+
+  // Semantic color hint. Recognized: "ok", "warn", "danger", "info",
+  // "muted". Free-form names map to the dashboard's palette.
+  optional string color = 3;
+}
+
+// --- Order Book ---
+// Use for: bid/ask depth at multiple price levels.
+// Examples: crypto exchange order books, prediction market yes/no
+// books, options bid/ask ladders, NBBO views.
+//
+// JSON example:
+//   { "bids": [
+//       { "price": 67840, "size": 0.42 },
+//       { "price": 67830, "size": 1.10 },
+//       { "price": 67820, "size": 2.85 }
+//     ],
+//     "asks": [
+//       { "price": 67850, "size": 0.30 },
+//       { "price": 67860, "size": 0.95 },
+//       { "price": 67870, "size": 2.40 }
+//     ],
+//     "mid": 67845, "spread": 10 }
+//
+// Convention: bids sorted high→low, asks sorted low→high.
+message OrderBookPayload {
+  // Buy side, sorted high to low.
+  repeated OrderLevel bids = 1;
+  // Sell side, sorted low to high.
+  repeated OrderLevel asks = 2;
+  // Mid price (auto-computed if absent).
+  optional double mid = 3;
+  // Bid/ask spread (auto-computed if absent).
+  optional double spread = 4;
+  // Optional venue name when comparing across exchanges.
+  optional string venue = 5;
+}
+
+// One price level on either side of the book.
+message OrderLevel {
+  // Price of this level.
+  double price = 1;
+  // Total quantity resting at this price.
+  double size = 2;
+  // Optional total at this level (sum of orders).
+  optional int32 orders = 3;
+}
+
+// --- Paired Grid ---
+// Use for: side-by-side comparison of two columns at every numeric
+// row key. Pure "left vs right at key" lattice — the payload
+// declares which numeric measures it carries; the widget renders
+// whatever the backend declared.
+//
+// Examples:
+//   * Options chain: rows keyed by strike, measures bid/ask/iv/delta,
+//     left=calls, right=puts.
+//   * Sportsbook ladder: rows keyed by line, measures odds/hold,
+//     left=home, right=away.
+//   * Prediction market: rows keyed by threshold, measures yes/no_price,
+//     left=YES, right=NO.
+//   * A/B test by percentile: rows keyed by percentile, measures
+//     mean/p_value, left=A, right=B.
+//
+// JSON example (options chain):
+//   { "subject": "BTC", "dimension": "2026-06-27", "subject_value": 67842,
+//     "left_label": "Calls", "right_label": "Puts", "key_label": "Strike",
+//     "measures": [
+//       { "key": "iv",    "label": "IV",  "format": "percent" },
+//       { "key": "delta", "label": "Δ" },
+//       { "key": "bid",   "label": "Bid", "format": "compact" },
+//       { "key": "ask",   "label": "Ask", "format": "compact" }
+//     ],
+//     "rows": [
+//       { "key": 65000,
+//         "left":  { "values": { "iv": 0.62, "delta":  0.74, "bid": 4200, "ask": 4250 } },
+//         "right": { "values": { "iv": 0.58, "delta": -0.26, "bid":  280, "ask":  310 } } }
+//   ]}
+//
+// JSON example (sportsbook spread ladder):
+//   { "subject": "Lakers vs Celtics", "dimension": "Spread",
+//     "left_label": "Lakers", "right_label": "Celtics", "key_label": "Line",
+//     "measures": [{ "key": "odds", "label": "Odds" }],
+//     "rows": [
+//       { "key": -3.5, "left": { "values": { "odds": 1.91 } }, "right": { "values": { "odds": 1.95 } } },
+//       { "key":  3.5, "left": { "values": { "odds": 2.05 } }, "right": { "values": { "odds": 1.81 } } }
+//   ]}
+//
+// Cross-venue comparison: emit one PairedGridPayload per venue and
+// arrange them side-by-side via the dashboard grid; or use a Table
+// widget with explicit venue columns for direct best-quote comparison.
+message PairedGridPayload {
+  // What this grid is about. Free-form (ticker, match name, A/B test
+  // label). Surfaced in the header.
+  string subject = 1;
+  // Free-form qualifier (option expiry "2026-06-27", market line type
+  // "spread", test variant axis "p50/p95/p99"). Surfaced as a subtitle.
+  string dimension = 2;
+  // Headline number for the subject (option underlying spot price,
+  // current score, baseline metric). Used to highlight the closest
+  // row in the grid (ATM, current line, etc.).
+  optional double subject_value = 3;
+  // Optional venue name (e.g. "deribit", "draftkings"). Useful when
+  // the dashboard shows multiple grids side-by-side.
+  optional string venue = 4;
+
+  // The lattice rows, one per key.
+  repeated PairedRow rows = 5;
+
+  // Header labels for the two columns. Default: "Left" / "Right".
+  // Use to surface domain meaning (e.g. "Calls" / "Puts", "Home" /
+  // "Away", "YES" / "NO") without forcing the proto to know the domain.
+  optional string left_label = 6;
+  // Header label for the right column. Default: "Right".
+  optional string right_label = 7;
+  // Header label for the row key column. Default: "Key".
+  // Use to label the lattice (e.g. "Strike", "Line", "Percentile").
+  optional string key_label = 8;
+
+  // Declared measures — the numeric columns the backend carries on
+  // each side. Order is render order. If empty, the widget unions the
+  // keys it sees on row sides (best-effort, formats default to number).
+  repeated PairedMeasure measures = 9;
+}
+
+// One row of the paired grid, keyed by a numeric lattice value.
+message PairedRow {
+  // Row identifier — strike, line, percentile, threshold. Numeric so
+  // the renderer can sort and compute proximity to subject_value.
+  double key = 1;
+  // Left-side values. Absent = no data on this side at this key.
+  optional PairedSide left = 2;
+  // Right-side values. Absent = no data on this side at this key.
+  optional PairedSide right = 3;
+}
+
+// PairedSide — one side of a paired row. Pure value bag, keyed by
+// PairedMeasure.key. No typed fields — everything domain-specific
+// (bid/ask/iv/odds/p_value) is declared via `measures`.
+message PairedSide {
+  // Measure values keyed by PairedMeasure.key.
+  map<string, double> values = 1;
+}
+
+// PairedMeasure — declares one numeric column that appears on both
+// sides of the grid. The widget renders measures in declared order.
+message PairedMeasure {
+  // Field key — matches PairedSide.values map keys.
+  string key = 1;
+  // Display label (header text). Defaults to `key` if omitted.
+  string label = 2;
+  // Optional format hint. Recognized: "number" (default), "percent",
+  // "compact" (1.2K, 3.4M), "currency", "currency:USD", "delta".
+  optional string format = 3;
+}
+
+// --- Geospatial ---
+// Use for: operational sites, vehicles, routes, service territories,
+// facilities, incidents, and any other point/line/polygon projection.
+//
+// `geometry` follows the GeoJSON Geometry object contract:
+//   { "type": "Point", "coordinates": [-122.4, 37.8] }
+//   { "type": "LineString", "coordinates": [[...], [...]] }
+//   { "type": "Polygon", "coordinates": [[[...], ...]] }
+//
+// Keeping geometry as Struct preserves the standard GeoJSON vocabulary
+// without rebuilding every geometry union in protobuf. The frontend also
+// accepts a raw GeoJSON FeatureCollection as an inline/url convenience.
+message GeoPayload {
+  // The features to render on the map.
+  repeated GeoFeature features = 1;
+}
+
+// One point/line/polygon feature on the map.
+message GeoFeature {
+  // Stable feature identifier.
+  string id = 1;
+  // Display name shown on hover/selection.
+  optional string label = 2;
+  // GeoJSON Geometry object (Point, LineString, Polygon, ...).
+  google.protobuf.Struct geometry = 3;
+
+  // Optional scalar used to scale point markers.
+  optional double value = 4;
+
+  // Free-form lifecycle/health value mapped to semantic theme colors.
+  optional string status = 5;
+
+  // Additional structured metadata shown in the detail panel.
+  optional google.protobuf.Struct metadata = 6;
+
+  // Applied when the feature is selected.
+  map<string, string> context = 7;
+}
+
+// --- Media Library ---
+// Use for: authorized photo/video timelines, albums, campaign assets,
+// inspection footage, creative libraries, and other visual archives.
+//
+// The payload carries presentation metadata and durable URLs only. Binary
+// storage, upload, transcoding, search/indexing, sharing, retention, and
+// authorization remain backend responsibilities. Video URLs should support
+// HTTP Range requests so native players can seek efficiently.
+//
+// JSON example:
+//   {
+//     "items": [
+//       {
+//         "id": "media-104",
+//         "title": "Warehouse walkthrough",
+//         "kind": "MEDIA_KIND_VIDEO",
+//         "url": "/media/warehouse-walkthrough.mp4",
+//         "thumbnail_url": "/media/warehouse-walkthrough.jpg",
+//         "captured_at": "2026-07-12T18:42:00Z",
+//         "duration_seconds": 82,
+//         "collection_ids": ["operations"],
+//         "context": { "media_id": "media-104" }
+//       }
+//     ],
+//     "collections": [
+//       { "id": "operations", "name": "Operations" }
+//     ]
+//   }
+message MediaPayload {
+  // The media items in display order.
+  repeated MediaItem items = 1;
+  // Collection catalog referenced by MediaItem.collection_ids.
+  repeated MediaCollection collections = 2;
+
+  // Total matches before pagination/filtering, when known.
+  optional int64 total = 3;
+
+  // Opaque cursor for a subsequent page.
+  optional string next_page_token = 4;
+}
+
+// One image or video in the library.
+message MediaItem {
+  // Stable item identifier.
+  string id = 1;
+  // Display title.
+  string title = 2;
+  // Image or video.
+  MediaKind kind = 3;
+
+  // Authorized original/playback URL.
+  string url = 4;
+
+  // Small preview/poster URL. Recommended for videos and large originals.
+  optional string thumbnail_url = 5;
+  // Optional longer description.
+  optional string description = 6;
+
+  // ISO 8601 capture and ingest timestamps.
+  optional string captured_at = 7;
+  // ISO 8601 ingest timestamp.
+  optional string created_at = 8;
+  // MIME type (e.g. "image/jpeg", "video/mp4").
+  optional string content_type = 9;
+
+  // Pixel width of the original, when known.
+  optional uint32 width = 10;
+  // Pixel height of the original, when known.
+  optional uint32 height = 11;
+  // Video duration in seconds.
+  optional double duration_seconds = 12;
+  // True if the viewer favorited this item.
+  bool favorite = 13;
+
+  // Free-form tags for filtering and search.
+  repeated string tags = 14;
+  // Collections this item belongs to (MediaCollection.id).
+  repeated string collection_ids = 15;
+  // Additional structured metadata (camera, location, etc.).
+  optional google.protobuf.Struct metadata = 16;
+
+  // Applied when the item is selected.
+  map<string, string> context = 17;
+}
+
+// A named collection/album of media items.
+message MediaCollection {
+  // Stable collection identifier.
+  string id = 1;
+  // Display name.
+  string name = 2;
+  // Optional cover image URL.
+  optional string cover_url = 3;
+  // Number of items, when known.
+  optional int64 item_count = 4;
+  // Applied when the collection is selected.
+  map<string, string> context = 5;
+}
+
+// MediaKind distinguishes images from videos.
+enum MediaKind {
+  // No kind declared; treated as image.
+  MEDIA_KIND_UNSPECIFIED = 0;
+  // Still image.
+  MEDIA_KIND_IMAGE = 1;
+  // Video with a playable URL.
+  MEDIA_KIND_VIDEO = 2;
+}
+
+// --- Embed ---
+// Use for: pointing the `image` or `iframe` widget at a URL that
+// changes with context. Lets a Connect backend swap an AI-generated
+// chart, a per-symbol screenshot, or an embedded third-party widget
+// without forcing the dashboard to use the `url` escape hatch.
+//
+// JSON example (image):
+//   { "url": "https://charts.example.com/btc.png", "label": "BTC, 1h" }
+//
+// JSON example (iframe with sandbox override):
+//   { "url": "https://charts.example.com/embed",
+//     "label": "Candlestick BTC",
+//     "sandbox": "allow-scripts" }
+message EmbedPayload {
+  // The URL the widget renders. For `image`, src; for `iframe`, src.
+  string url = 1;
+
+  // Display label. Image: alt text. Iframe: title.
+  optional string label = 2;
+
+  // Iframe-only override of the sandbox attribute. Ignored by image.
+  optional string sandbox = 3;
+}
+
+// --- Text ---
+// Use for: news feeds, AI summaries, articles, alerts.
+//
+// JSON example:
+//   { "items": [
+//       { "title": "Bitcoin breaks $73K", "body": "...",
+//         "source": "Market Wire", "date": "2026-04-14",
+//         "tags": ["BTC", "ETF"], "sentiment": 0.6 },
+//       { "title": "Daily summary", "body": "Markets rallied..." }
+//   ]}
+message TextPayload {
+  // The text items in display order.
+  repeated TextItem items = 1;
+}
+
+// One article, headline, summary, or alert.
+message TextItem {
+  // Headline.
+  optional string title = 1;
+  // Body text.
+  optional string body = 2;
+
+  // Attribution (publication, author handle, model name, etc.).
+  optional string source = 3;
+
+  // Display date string. Free-form (e.g. "Mar 14", "2 hours ago").
+  optional string date = 4;
+
+  // Author name or handle.
+  optional string author = 5;
+
+  // Free-form tags shown as chips.
+  repeated string tags = 6;
+
+  // Optional link the item references.
+  optional string url = 7;
+
+  // Optional sentiment score in [-1, 1]. Used to color the item.
+  optional double sentiment = 8;
+}
+
+// --- Conversation ---
+// Use for: channel history, direct messaging, customer support threads,
+// human/AI conversations, and other chronological message transcripts.
+//
+// Messages stay product-neutral. `kind` and `status` are intentionally
+// free-form strings so a backend can represent ordinary messages, assistant
+// responses, system notices, tool calls, delivery receipts, or domain-specific
+// states without extending the wire contract.
+//
+// JSON example:
+//   {
+//     "id": "channel-operations",
+//     "title": "operations",
+//     "viewer_id": "user-jun",
+//     "participants": [
+//       { "id": "user-jun", "name": "Jun", "status": "online" },
+//       { "id": "user-maya", "name": "Maya Chen", "status": "away" }
+//     ],
+//     "messages": [
+//       {
+//         "id": "message-104",
+//         "timestamp": "2026-07-18T16:42:00Z",
+//         "sender_id": "user-maya",
+//         "body": "The launch checklist is ready for review.",
+//         "reactions": [{ "key": "check", "label": "✓", "count": 3 }],
+//         "context": { "message_id": "message-104" }
+//       }
+//     ]
+//   }
+message ConversationPayload {
+  // Stable conversation identifier.
+  string id = 1;
+  // Conversation title (channel name, counterparty, subject).
+  optional string title = 2;
+  // Secondary line under the title.
+  optional string subtitle = 3;
+
+  // Participant representing the current viewer. Renderers can use this to
+  // align the viewer's messages without product-specific "me" conventions.
+  optional string viewer_id = 4;
+
+  // Participant catalog referenced by ConversationMessage.sender_id.
+  repeated ConversationParticipant participants = 5;
+
+  // Ordered oldest to newest. Backends should return the visible window in
+  // presentation order and use next_page_token for older history.
+  repeated ConversationMessage messages = 6;
+
+  // Unread messages for the viewer, when known.
+  optional uint32 unread_count = 7;
+  // Opaque cursor for older history.
+  optional string next_page_token = 8;
+
+  // Applied when the conversation header is selected.
+  map<string, string> context = 9;
+}
+
+// One member of a conversation.
+message ConversationParticipant {
+  // Stable participant identifier.
+  string id = 1;
+  // Display name.
+  string name = 2;
+  // Optional avatar image URL.
+  optional string avatar_url = 3;
+
+  // Free-form membership or business role: "owner", "member", "customer",
+  // "agent", "assistant", etc.
+  optional string role = 4;
+
+  // Free-form presence/availability value.
+  optional string status = 5;
+
+  // Applied when the participant is selected.
+  map<string, string> context = 6;
+}
+
+// One message in a conversation transcript.
+message ConversationMessage {
+  // Stable message identifier.
+  string id = 1;
+  // ISO 8601 send time.
+  optional string timestamp = 2;
+  // Sender (ConversationParticipant.id).
+  optional string sender_id = 3;
+
+  // Denormalized fallbacks for transcripts where a participant catalog is
+  // unavailable or historical sender records were removed.
+  optional string sender_name = 4;
+  // Fallback avatar URL when the sender is not in participants.
+  optional string sender_avatar_url = 5;
+
+  // Recognized renderer hints include "message", "assistant", "system",
+  // "tool", and "event"; unknown values render as ordinary messages.
+  optional string kind = 6;
+  // Message text.
+  optional string body = 7;
+  // Message this one replies to (ConversationMessage.id).
+  optional string reply_to_id = 8;
+  // True if the message was edited after sending.
+  bool edited = 9;
+
+  // Free-form delivery/lifecycle state such as "sending", "sent",
+  // "delivered", "read", or "failed".
+  optional string status = 10;
+
+  // Files/media attached to the message.
+  repeated ConversationAttachment attachments = 11;
+  // Aggregated reactions.
+  repeated ConversationReaction reactions = 12;
+  // Number of thread replies, when threading is supported.
+  optional uint32 thread_reply_count = 13;
+  // Additional structured metadata.
+  optional google.protobuf.Struct metadata = 14;
+
+  // Applied when the message is selected.
+  map<string, string> context = 15;
+}
+
+// One file/media attachment on a message.
+message ConversationAttachment {
+  // Stable attachment identifier.
+  string id = 1;
+  // Display file name.
+  string name = 2;
+
+  // Free-form renderer hint: "file", "image", "video", "audio", "link",
+  // "code", etc.
+  optional string kind = 3;
+  // Authorized download/view URL.
+  optional string url = 4;
+  // Small preview URL.
+  optional string thumbnail_url = 5;
+  // MIME type.
+  optional string content_type = 6;
+  // File size in bytes, when known.
+  optional uint64 size_bytes = 7;
+}
+
+// Aggregated reaction counts for one reaction key.
+message ConversationReaction {
+  // Stable backend key, independent of display glyph/localization.
+  string key = 1;
+  // Display glyph or short label.
+  string label = 2;
+  // How many participants reacted.
+  uint32 count = 3;
+  // True if the viewer is among the reactors.
+  bool viewer_reacted = 4;
+}
+
+// --- Asset Catalog ---
+// Use for: governed discovery surfaces that list datasets, object
+// types, pipelines, models, repositories, dashboards, documents, and
+// other platform resources.
+//
+// JSON example:
+//   { "items": [
+//       { "id": "dataset.orders",
+//         "name": "Orders",
+//         "kind": "dataset",
+//         "owner": "commerce-data",
+//         "status": "healthy",
+//         "tags": ["gold", "pii"],
+//         "context": {
+//           "asset_id": "dataset.orders",
+//           "asset_kind": "dataset"
+//         } }
+//     ],
+//     "total": "1" }
+message AssetCatalogPayload {
+  // The catalog entries in display order.
+  repeated AssetCatalogItem items = 1;
+
+  // Total matches before pagination/filtering, when known.
+  optional int64 total = 2;
+
+  // Opaque cursor for a subsequent page. Empty/absent means no cursor
+  // was supplied. Pagination remains backend-defined via source params.
+  optional string next_page_token = 3;
+}
+
+// One discoverable platform asset.
+message AssetCatalogItem {
+  // Stable identifier used by detail/lineage sources.
+  string id = 1;
+
+  // Display name.
+  string name = 2;
+
+  // Free-form platform kind: "dataset", "object_type", "pipeline",
+  // "model", "repository", "dashboard", "document", etc.
+  string kind = 3;
+
+  // What the asset is, in plain language.
+  optional string description = 4;
+  // Owning team or user.
+  optional string owner = 5;
+
+  // Free-form health/lifecycle state. Common values: "healthy",
+  // "warning", "error", "draft", "deprecated", "archived".
+  optional string status = 6;
+
+  // ISO 8601 when available; widgets render other display strings too.
+  optional string updated_at = 7;
+
+  // Free-form tags for filtering and search.
+  repeated string tags = 8;
+
+  // Optional deep link to a host-owned detail page.
+  optional string url = 9;
+
+  // Additional structured metadata (row count, classification,
+  // retention policy, branch, language, quality score, etc.).
+  optional google.protobuf.Struct metadata = 10;
+
+  // Context values applied when the item is selected. This is the
+  // generic cross-widget bridge: selecting a repository can set
+  // {repository, ref}, while selecting a dataset can set
+  // {asset_id, asset_kind}.
+  map<string, string> context = 11;
+}
+
+// --- Record Set / Work Management ---
+// Use for: mutable business records with a declared field schema and
+// multiple saved views over the same underlying table. This is the
+// domain-neutral foundation for CRM lists, project trackers, inventory,
+// approvals, content calendars, hiring pipelines, and similar workflows.
+//
+// Get/Stream returns the records and schema. All writes still flow through
+// TerminalService.SubmitAction; capabilities declare the backend action ids.
+// Formula, lookup, and rollup values are computed by the backend and exposed
+// as read-only fields. The frontend never evaluates formulas.
+//
+// Linked values convention:
+//   single link: { "id": "customer-42", "label": "Acme" }
+//   multi link:  [{ "id": "customer-42", "label": "Acme" }]
+//
+// JSON example:
+//   {
+//     "workspace_id": "operations",
+//     "table_id": "projects",
+//     "table_name": "Projects",
+//     "primary_field": "name",
+//     "fields": [
+//       { "key": "name", "label": "Project",
+//         "type": "RECORD_FIELD_TYPE_TEXT", "required": true },
+//       { "key": "stage", "label": "Stage",
+//         "type": "RECORD_FIELD_TYPE_SINGLE_SELECT",
+//         "choices": [
+//           { "value": "planned", "label": "Planned" },
+//           { "value": "active", "label": "Active", "color": "info" }
+//         ] }
+//     ],
+//     "records": [
+//       { "id": "project-1", "values": {
+//           "name": "Warehouse launch", "stage": "active"
+//         }, "revision": "7" }
+//     ],
+//     "capabilities": {
+//       "create": true, "update": true, "delete": true,
+//       "create_action_id": "record_create",
+//       "update_action_id": "record_update",
+//       "delete_action_id": "record_delete"
+//     }
+//   }
+message RecordSetPayload {
+  // Workspace the table lives in.
+  string workspace_id = 1;
+  // Stable table identifier. Echoed in record mutations.
+  string table_id = 2;
+  // Display name of the table.
+  string table_name = 3;
+
+  // Field used as the human-readable record title.
+  string primary_field = 4;
+
+  // Declared field schema.
+  repeated RecordField fields = 5;
+  // The records in the current page/view.
+  repeated WorkRecord records = 6;
+  // Saved views over the same records.
+  repeated RecordView views = 7;
+
+  // View selected by the backend, when applicable.
+  optional string active_view_id = 8;
+
+  // Total records before pagination, when known.
+  optional int64 total = 9;
+  // Opaque cursor for a subsequent page.
+  optional string next_page_token = 10;
+
+  // Which mutations the backend supports, and their action ids.
+  RecordCapabilities capabilities = 11;
+}
+
+// One mutable record in a record set.
+message WorkRecord {
+  // Stable record identifier.
+  string id = 1;
+  // Field values keyed by RecordField.key.
+  google.protobuf.Struct values = 2;
+  // ISO 8601 creation time.
+  optional string created_at = 3;
+  // ISO 8601 last-update time.
+  optional string updated_at = 4;
+
+  // Opaque optimistic-concurrency token. Mutation handlers SHOULD reject
+  // a stale revision rather than silently overwriting a newer record.
+  optional string revision = 5;
+
+  // Context applied when the record is selected. The widget also emits
+  // table_id and record_id defaults when no explicit context is supplied.
+  map<string, string> context = 6;
+}
+
+// One column in a record set's declared schema.
+message RecordField {
+  // Field key matching WorkRecord.values keys.
+  string key = 1;
+  // Display label.
+  string label = 2;
+  // Value type; drives the input control and formatting.
+  RecordFieldType type = 3;
+  // Help text shown in editors.
+  optional string description = 4;
+  // True if records must carry a value.
+  bool required = 5;
+  // True if the frontend must not edit the field.
+  bool read_only = 6;
+  // Options for single/multi select fields.
+  repeated RecordChoice choices = 7;
+
+  // Set for linked-record fields. Hosts resolve the linked table and enforce
+  // visibility; record payloads should include only labels the caller may see.
+  optional string linked_table_id = 8;
+  // Linked fields: true if multiple links are allowed.
+  bool allow_multiple = 9;
+
+  // Display directive compatible with TableColumn.format where possible.
+  optional string format = 10;
+  // Default applied to new records.
+  optional google.protobuf.Value default_value = 11;
+}
+
+// One selectable option for a select field.
+message RecordChoice {
+  // Stored value.
+  string value = 1;
+  // Display label.
+  string label = 2;
+
+  // Semantic tone only: "info", "ok", "warn", "danger", or "neutral".
+  optional string color = 3;
+}
+
+// RecordFieldType is the value type of a record field.
+enum RecordFieldType {
+  // No type declared; treated as text.
+  RECORD_FIELD_TYPE_UNSPECIFIED = 0;
+  // Single-line text.
+  RECORD_FIELD_TYPE_TEXT = 1;
+  // Multi-line text.
+  RECORD_FIELD_TYPE_LONG_TEXT = 2;
+  // Floating-point number.
+  RECORD_FIELD_TYPE_NUMBER = 3;
+  // Monetary amount.
+  RECORD_FIELD_TYPE_CURRENCY = 4;
+  // Fraction rendered as a percentage.
+  RECORD_FIELD_TYPE_PERCENT = 5;
+  // Checkbox.
+  RECORD_FIELD_TYPE_BOOLEAN = 6;
+  // Date without time.
+  RECORD_FIELD_TYPE_DATE = 7;
+  // Date and time.
+  RECORD_FIELD_TYPE_DATETIME = 8;
+  // One choice from `choices`.
+  RECORD_FIELD_TYPE_SINGLE_SELECT = 9;
+  // Multiple choices from `choices`.
+  RECORD_FIELD_TYPE_MULTI_SELECT = 10;
+  // A user reference.
+  RECORD_FIELD_TYPE_USER = 11;
+  // Link to records in another table (linked_table_id).
+  RECORD_FIELD_TYPE_LINK = 12;
+  // File attachment(s).
+  RECORD_FIELD_TYPE_ATTACHMENT = 13;
+  // Web URL.
+  RECORD_FIELD_TYPE_URL = 14;
+  // Email address.
+  RECORD_FIELD_TYPE_EMAIL = 15;
+  // Phone number.
+  RECORD_FIELD_TYPE_PHONE = 16;
+  // Backend-computed formula. Read-only.
+  RECORD_FIELD_TYPE_FORMULA = 17;
+  // Backend-resolved lookup through a link. Read-only.
+  RECORD_FIELD_TYPE_LOOKUP = 18;
+  // Backend-computed aggregate over linked records. Read-only.
+  RECORD_FIELD_TYPE_ROLLUP = 19;
+  // System creation timestamp. Read-only.
+  RECORD_FIELD_TYPE_CREATED_AT = 20;
+  // System last-update timestamp. Read-only.
+  RECORD_FIELD_TYPE_UPDATED_AT = 21;
+}
+
+// One saved view over a record set.
+message RecordView {
+  // Stable view identifier.
+  string id = 1;
+  // Display name.
+  string name = 2;
+  // How the view renders (grid, board, calendar, ...).
+  RecordViewType type = 3;
+  // Field keys shown, in order. Empty = all fields.
+  repeated string visible_fields = 4;
+
+  // BOARD: lane field. CALENDAR/TIMELINE: temporal field.
+  optional string group_by = 5;
+  // CALENDAR/TIMELINE: the field records are placed by.
+  optional string date_field = 6;
+  // GALLERY/BOARD: the field used as the card title.
+  optional string title_field = 7;
+
+  // Sort order applied to the records.
+  repeated RecordSort sorts = 8;
+  // Filters applied to the records.
+  repeated RecordFilter filters = 9;
+}
+
+// RecordViewType is how a saved view renders.
+enum RecordViewType {
+  // No type declared; rendered as a grid.
+  RECORD_VIEW_TYPE_UNSPECIFIED = 0;
+  // Spreadsheet-style rows and columns.
+  RECORD_VIEW_TYPE_GRID = 1;
+  // Kanban lanes grouped by group_by.
+  RECORD_VIEW_TYPE_BOARD = 2;
+  // Records placed on a calendar by date_field.
+  RECORD_VIEW_TYPE_CALENDAR = 3;
+  // Card gallery.
+  RECORD_VIEW_TYPE_GALLERY = 4;
+  // Compact single-column list.
+  RECORD_VIEW_TYPE_LIST = 5;
+  // Horizontal timeline by date_field.
+  RECORD_VIEW_TYPE_TIMELINE = 6;
+  // Data-entry form for creating records.
+  RECORD_VIEW_TYPE_FORM = 7;
+}
+
+// One sort key in a view.
+message RecordSort {
+  // Field key to sort by.
+  string field = 1;
+  // True for descending order.
+  bool descending = 2;
+}
+
+// One filter predicate in a view.
+message RecordFilter {
+  // Field key to filter on.
+  string field = 1;
+
+  // Backend-defined operator. Recommended portable values:
+  // eq, neq, contains, in, gt, gte, lt, lte, empty, not_empty.
+  string operator = 2;
+  // Comparison operand.
+  google.protobuf.Value value = 3;
+}
+
+// Which record mutations the backend supports, and the
+// SubmitAction action ids that perform them.
+message RecordCapabilities {
+  // True if records can be created.
+  bool create = 1;
+  // True if records can be updated.
+  bool update = 2;
+  // True if records can be deleted.
+  bool delete = 3;
+  // ActionRequest.action_id for creating a record.
+  string create_action_id = 4;
+  // ActionRequest.action_id for updating a record.
+  string update_action_id = 5;
+  // ActionRequest.action_id for deleting a record.
+  string delete_action_id = 6;
+}
+
+// --- Semantic Object ---
+// Use for: ontology-backed object instances or type definitions. The
+// payload exposes typed identity, human-readable properties, links to
+// related objects, and optional no-input actions.
+//
+// JSON example:
+//   { "object_type": "Customer",
+//     "object_id": "cust-1042",
+//     "title": "Acme Corp",
+//     "properties": [
+//       { "key": "tier", "label": "Tier", "value": "Enterprise" },
+//       { "key": "arr", "label": "ARR", "value": 1250000,
+//         "format": "currency:USD", "group": "Commercial" }
+//     ],
+//     "links": [
+//       { "relation": "owns", "target_type": "Account",
+//         "target_id": "acct-9", "label": "Primary account" }
+//     ] }
+message ObjectPayload {
+  // Ontology type name (e.g. "Customer").
+  string object_type = 1;
+  // Stable instance identifier.
+  string object_id = 2;
+  // Display title of the object.
+  string title = 3;
+
+  // Longer description.
+  optional string description = 4;
+  // Free-form health/lifecycle state mapped to semantic colors.
+  optional string status = 5;
+  // ISO 8601 last-update time, when known.
+  optional string updated_at = 6;
+  // Free-form tags shown as chips.
+  repeated string tags = 7;
+
+  // Typed display properties, grouped by ObjectProperty.group.
+  repeated ObjectProperty properties = 8;
+  // Related objects.
+  repeated ObjectLink links = 9;
+  // No-input actions offered on the object.
+  repeated ObjectAction actions = 10;
+}
+
+// One displayed property of an object.
+message ObjectProperty {
+  // Stable property key.
+  string key = 1;
+  // Display label.
+  string label = 2;
+
+  // Arbitrary JSON-compatible scalar/array/object.
+  google.protobuf.Value value = 3;
+
+  // Same display vocabulary as table columns where applicable:
+  // currency:USD, percent, datetime, date, compact, link, json.
+  optional string format = 4;
+  // Help text shown on hover.
+  optional string description = 5;
+
+  // Properties with the same group render together. Empty = General.
+  optional string group = 6;
+}
+
+// One relation from this object to another.
+message ObjectLink {
+  // Relation name (e.g. "owns", "depends_on").
+  string relation = 1;
+  // Ontology type of the target object.
+  string target_type = 2;
+  // Stable identifier of the target object.
+  string target_id = 3;
+  // Display label for the link.
+  string label = 4;
+
+  // Free-form state of the target, mapped to semantic colors.
+  optional string status = 5;
+
+  // Context applied when the related object is selected. If omitted,
+  // the widget falls back to object_type/object_id.
+  map<string, string> context = 6;
+}
+
+// One no-input action offered on an object.
+message ObjectAction {
+  // Sent as ActionRequest.action_id through TerminalService.SubmitAction.
+  string id = 1;
+  // Button label.
+  string label = 2;
+  // Help text shown on hover.
+  optional string description = 3;
+
+  // Visual semantic: "primary", "danger", or "neutral".
+  optional string style = 4;
+
+  // Require a second click before dispatch.
+  bool confirm = 5;
+
+  // Static action params. The widget also includes object_type/object_id.
+  optional google.protobuf.Struct params = 6;
+
+  // True renders the action greyed out and unclickable.
+  bool disabled = 7;
+}
+
+// --- Directed Graph ---
+// Use for: dataset lineage, pipeline dependencies, build graphs, and
+// ontology type relationships that can be represented as a directed
+// graph. The built-in `dag` renderer expects an acyclic graph for the
+// cleanest layering, but tolerates cycles by placing cyclic nodes in a
+// final layer.
+message GraphPayload {
+  // The graph nodes.
+  repeated GraphNode nodes = 1;
+  // Directed edges between nodes.
+  repeated GraphEdge edges = 2;
+}
+
+// One node in a directed graph.
+message GraphNode {
+  // Stable node identifier referenced by edges.
+  string id = 1;
+  // Display label.
+  string label = 2;
+  // Free-form node kind (e.g. "dataset", "job") shown as a badge.
+  optional string kind = 3;
+  // Free-form health state mapped to semantic colors.
+  optional string status = 4;
+  // Secondary line under the label.
+  optional string subtitle = 5;
+  // Free-form tags.
+  repeated string tags = 6;
+  // Additional structured metadata shown on selection.
+  optional google.protobuf.Struct metadata = 7;
+  // Applied when the node is selected.
+  map<string, string> context = 8;
+}
+
+// One directed edge between two graph nodes.
+message GraphEdge {
+  // Source node id.
+  string from = 1;
+  // Target node id.
+  string to = 2;
+  // Optional edge label.
+  optional string label = 3;
+  // Free-form edge kind.
+  optional string kind = 4;
+  // Free-form state mapped to semantic colors.
+  optional string status = 5;
+}
+
+// --- Code Repository ---
+// Use for: branch/ref-aware source browsing. A response contains the
+// entries at `path` and, when `path` points at a file, its text content.
+// Backends should omit `file.content` for binary files and may mark
+// large text files as truncated.
+message RepositoryPayload {
+  // Repository name/slug being browsed.
+  string repository = 1;
+  // The branch, tag, or commit this response reflects.
+  string ref = 2;
+  // Path this response describes ("" = repository root).
+  string path = 3;
+
+  // Branches/tags available for switching.
+  repeated string refs = 4;
+  // Directory listing at `path`.
+  repeated RepositoryEntry entries = 5;
+  // File content when `path` points at a file.
+  optional RepositoryFile file = 6;
+
+  // Optional host-owned repository URL.
+  optional string url = 7;
+}
+
+// One file/directory in a repository listing.
+message RepositoryEntry {
+  // Full path from the repository root.
+  string path = 1;
+  // Base name of the entry.
+  string name = 2;
+  // File, directory, or symlink.
+  RepositoryEntryKind kind = 3;
+  // Detected language for files, when known.
+  optional string language = 4;
+  // File size in bytes, when known.
+  optional int64 size_bytes = 5;
+  // ISO 8601 last-modified time, when known.
+  optional string updated_at = 6;
+}
+
+// RepositoryEntryKind is the file-system type of an entry.
+enum RepositoryEntryKind {
+  // No kind declared.
+  REPOSITORY_ENTRY_KIND_UNSPECIFIED = 0;
+  // Regular file.
+  REPOSITORY_ENTRY_KIND_FILE = 1;
+  // Directory.
+  REPOSITORY_ENTRY_KIND_DIRECTORY = 2;
+  // Symbolic link.
+  REPOSITORY_ENTRY_KIND_SYMLINK = 3;
+}
+
+// Text content of one file in the repository.
+message RepositoryFile {
+  // Full path from the repository root.
+  string path = 1;
+  // UTF-8 text content. Omitted for binary files.
+  string content = 2;
+  // Detected language for syntax highlighting, when known.
+  optional string language = 3;
+  // Full file size in bytes, when known.
+  optional int64 size_bytes = 4;
+  // True if `content` was cut short for size.
+  bool truncated = 5;
+
+  // Optional raw/download URL owned by the host.
+  optional string url = 6;
+}

@@ -1,0 +1,449 @@
+syntax = "proto3";
+
+package medallion.terminal.v1;
+
+import "google/protobuf/struct.proto";
+import "medallion/terminal/v1/shapes.proto";
+import "medallion/terminal/v1/template.proto";
+
+// =============================================================
+// TerminalService — the single contract a backend implements to
+// power a Medallion Terminal dashboard.
+//
+// To plug a new backend in:
+//   1. `buf generate` from this proto in your language of choice.
+//   2. Implement TerminalService.
+//   3. Point the dashboard at your server URL.
+//
+// That's it. The frontend will discover sources via ListSources,
+// render any of the canonical payload shapes returned by Get/
+// Stream, and (if wired) call Generate to convert prompts into
+// dashboards.
+// =============================================================
+
+// TerminalService is the single RPC surface a backend implements
+// to power a dashboard: read (Get / Stream), catalog (ListSources),
+// AI (Generate), and write (SubmitAction / WatchAction).
+service TerminalService {
+  // One-shot fetch for a registered source.
+  rpc Get(DataRequest) returns (DataResponse);
+
+  // Server-streaming fetch — backend pushes updated payloads.
+  // Use for live data (prices, sentiment, status feeds).
+  rpc Stream(DataRequest) returns (stream DataResponse);
+
+  // Discover every source the backend can serve. The result feeds
+  // both the AI prompt (so it knows what to wire up) and any
+  // dashboard-authoring UI.
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
+
+  // Convert a natural-language prompt into widget mutations or a
+  // full dashboard. The frontend applies the returned actions.
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+
+  // Submit a write-side action. Generic dispatch for form-like widgets
+  // (Trade, future swap/vote/message widgets). Backend dispatches on
+  // `action_id` to a domain-specific handler. Keeps the framework
+  // generic — only the dispatch envelope is in this proto; the
+  // per-action parameter shape is by convention between widget and
+  // backend.
+  rpc SubmitAction(ActionRequest) returns (ActionResponse);
+
+  // Subscribe to lifecycle updates for a previously submitted action.
+  // Required when SubmitAction returned a non-terminal status
+  // (ACCEPTED or PENDING) and the caller needs the eventual outcome.
+  // The backend MUST send updates monotonically by `sequence` and MUST
+  // close the stream after a terminal status (OK, REJECTED, FAILED,
+  // CANCELLED). Identify the action by ANY of action_id/id/
+  // client_request_id — at least one must be set.
+  rpc WatchAction(ActionWatchRequest) returns (stream ActionUpdate);
+}
+
+// ----- Get / Stream -----
+
+// Request envelope shared by Get and Stream. Selects a source and
+// supplies its params.
+message DataRequest {
+  // Catalog id (matches Source.id from ListSources).
+  string source_id = 1;
+
+  // Source-specific params (e.g. "symbol", "range", "window").
+  // The frontend substitutes "${ctx.<key>}" tokens before sending.
+  map<string, string> params = 2;
+}
+
+// DataResponse always carries exactly one payload. Which case is
+// set is determined by the source's declared Shape (see Source).
+message DataResponse {
+  // Exactly one case is set, matching the source's declared Shape.
+  oneof payload {
+    // Line-chart data. See TimeseriesPayload.
+    TimeseriesPayload timeseries = 1;
+    // OHLCV bars. See CandlePayload.
+    CandlePayload candles = 2;
+    // Tabular rows. See TablePayload.
+    TablePayload table = 3;
+    // Single headline number. See MetricPayload.
+    MetricPayload metric = 4;
+    // Bounded scalar. See GaugePayload.
+    GaugePayload gauge = 5;
+    // 2D matrix. See HeatmapPayload.
+    HeatmapPayload heatmap = 6;
+    // Status timeline. See EventPayload.
+    EventPayload events = 7;
+    // Categorical proportions. See DistributionPayload.
+    DistributionPayload distribution = 8;
+    // News/summary items. See TextPayload.
+    TextPayload text = 9;
+    // Bid/ask depth. See OrderBookPayload.
+    OrderBookPayload orderbook = 10;
+    // Left/right lattice. See PairedGridPayload.
+    PairedGridPayload paired_grid = 11;
+    // Context-driven image/iframe URL. See EmbedPayload.
+    EmbedPayload embed = 12;
+    // Catalog of platform assets. See AssetCatalogPayload.
+    AssetCatalogPayload assets = 13;
+    // Ontology object detail. See ObjectPayload.
+    ObjectPayload object = 14;
+    // Directed graph. See GraphPayload.
+    GraphPayload graph = 15;
+    // Source browsing. See RepositoryPayload.
+    RepositoryPayload repository = 16;
+    // Mutable record set. See RecordSetPayload.
+    RecordSetPayload records = 17;
+    // Geospatial features. See GeoPayload.
+    GeoPayload geo = 18;
+    // Media library. See MediaPayload.
+    MediaPayload media = 19;
+    // Message transcript. See ConversationPayload.
+    ConversationPayload conversation = 20;
+  }
+}
+
+// ----- ListSources -----
+
+// ListSourcesRequest carries no fields today; filtering may be
+// added later.
+message ListSourcesRequest {
+  // Reserved for future filtering (by tag, by shape, by query).
+}
+
+// The backend's full source catalog.
+message ListSourcesResponse {
+  // Every source the backend can serve.
+  repeated Source sources = 1;
+}
+
+// Source describes one registered data provider on the backend.
+//
+// A backend's source catalog is its public surface: every entry
+// here is something a dashboard widget (or the AI) can ask for.
+message Source {
+  // Stable id used by DataRequest.source_id and DataSource.source_id.
+  string id = 1;
+
+  // Human-readable display name.
+  string name = 2;
+
+  // What this source returns, in plain language. Read by the AI
+  // when deciding which sources to wire into a generated dashboard.
+  string description = 3;
+
+  // Which payload variant Get/Stream returns for this source.
+  Shape shape = 4;
+
+  // Declared parameters this source accepts.
+  repeated SourceParam params = 5;
+
+  // True if the source supports the Stream RPC. Get is always
+  // assumed available.
+  bool streamable = 6;
+
+  // Free-form tags for grouping in catalog UIs and search
+  // (e.g. "crypto", "sentiment", "ops", "prediction").
+  repeated string tags = 7;
+}
+
+// SourceParam declares one parameter a Source accepts.
+message SourceParam {
+  // Param key (matches DataRequest.params keys).
+  string key = 1;
+
+  // Human description, read by AI and shown in catalog UIs.
+  string description = 2;
+
+  // True if the source rejects requests missing this param.
+  bool required = 3;
+
+  // Default value if omitted by the caller. Always serialized as
+  // a string regardless of `type`; the backend parses per `type`.
+  string default_value = 4;
+
+  // If non-empty, the param is constrained to these values. Only
+  // meaningful when type is unspecified or PARAM_TYPE_ENUM.
+  repeated string enum_values = 5;
+
+  // Value type. Drives input rendering in catalog/authoring UIs and
+  // tells the AI how to format substitutions. Values still travel
+  // over the wire as strings (params is map<string,string>); the
+  // backend parses based on this type.
+  ParamType type = 6;
+
+  // Multi-value param. When true, the wire value is comma-separated
+  // (e.g. params["symbols"] = "BTC,ETH,SOL") and the backend splits
+  // before parsing. Combine with type to constrain element types and
+  // with enum_values to constrain element membership.
+  bool repeated = 7;
+}
+
+// ParamType — the data type a SourceParam expects. Used by catalog
+// UIs to render the right input control and by the AI to format
+// substitutions correctly. Wire format is always a string in
+// DataRequest.params; the backend converts based on this type.
+enum ParamType {
+  // No type declared; treated as string.
+  PARAM_TYPE_UNSPECIFIED = 0;
+  // Free-form string.
+  PARAM_TYPE_STRING = 1;
+  // Floating-point number.
+  PARAM_TYPE_NUMBER = 2;
+  // "true" or "false".
+  PARAM_TYPE_BOOLEAN = 3;
+  // ISO 8601 timestamp with time component (e.g. "2026-04-01T00:00:00Z").
+  PARAM_TYPE_TIMESTAMP = 4;
+  // Duration (e.g. "1h", "7d", "30m"). Used for ranges/windows.
+  PARAM_TYPE_DURATION = 5;
+  // Constrained to one of `enum_values`.
+  PARAM_TYPE_ENUM = 6;
+  // Whole number (e.g. limit, page, depth).
+  PARAM_TYPE_INTEGER = 7;
+  // Date without time (e.g. "2026-04-01"). Use TIMESTAMP if the
+  // time component matters.
+  PARAM_TYPE_DATE = 8;
+}
+
+// Shape names the payload variant a Source returns. The values
+// mirror the cases in DataResponse.payload — a backend should set
+// Source.shape to match what it actually emits.
+enum Shape {
+  // No shape declared.
+  SHAPE_UNSPECIFIED = 0;
+  // TimeseriesPayload.
+  SHAPE_TIMESERIES = 1;
+  // CandlePayload.
+  SHAPE_CANDLES = 2;
+  // TablePayload.
+  SHAPE_TABLE = 3;
+  // MetricPayload.
+  SHAPE_METRIC = 4;
+  // GaugePayload.
+  SHAPE_GAUGE = 5;
+  // HeatmapPayload.
+  SHAPE_HEATMAP = 6;
+  // EventPayload.
+  SHAPE_EVENTS = 7;
+  // DistributionPayload.
+  SHAPE_DISTRIBUTION = 8;
+  // TextPayload.
+  SHAPE_TEXT = 9;
+  // OrderBookPayload.
+  SHAPE_ORDERBOOK = 10;
+  // PairedGridPayload.
+  SHAPE_PAIRED_GRID = 11;
+  // EmbedPayload.
+  SHAPE_EMBED = 12;
+  // AssetCatalogPayload.
+  SHAPE_ASSET_CATALOG = 13;
+  // ObjectPayload.
+  SHAPE_OBJECT = 14;
+  // GraphPayload.
+  SHAPE_GRAPH = 15;
+  // RepositoryPayload.
+  SHAPE_REPOSITORY = 16;
+  // RecordSetPayload.
+  SHAPE_RECORD_SET = 17;
+  // GeoPayload.
+  SHAPE_GEO = 18;
+  // MediaPayload.
+  SHAPE_MEDIA = 19;
+  // ConversationPayload.
+  SHAPE_CONVERSATION = 20;
+}
+
+// ----- Generate (AI) -----
+
+// Input to the AI Generate RPC.
+message GenerateRequest {
+  // The user's natural-language prompt
+  // (e.g. "how's bitcoin today?", "show me bot pnl this week").
+  string prompt = 1;
+
+  // The dashboard's current context. The model can reference these
+  // values when emitting widgets (e.g. keep the existing symbol).
+  Context context = 2;
+
+  // The widgets currently on screen, so the model can choose
+  // between surgical edits and a full rebuild. Optional.
+  repeated Widget current_widgets = 3;
+}
+
+// Output of the AI Generate RPC: a reply plus dashboard mutations.
+message GenerateResponse {
+  // Assistant reply shown to the user (a one-sentence summary or
+  // explanation of what was wired up).
+  string text = 1;
+
+  // Mutations to apply to the dashboard. Each action targets a
+  // widget by id; absent ids cause creation
+  // (see template.proto WidgetAction semantics).
+  repeated WidgetAction actions = 2;
+
+  // If true, drop all existing widgets before applying actions —
+  // signals a full dashboard rebuild rather than a surgical edit.
+  // The AI decides this based on the prompt.
+  bool replace_all = 3;
+
+  // Optional context updates emitted by the AI (e.g. user said
+  // "switch to ETH" — model returns context update {symbol:"ETH"}
+  // alongside any widget tweaks).
+  Context context = 4;
+}
+
+// ----- SubmitAction (write surface) -----
+
+// Generic write-side dispatch. The framework's read RPCs (Get / Stream
+// / ListSources / Generate) cover query and AI flows; SubmitAction
+// covers everything that mutates state on the backend — placing an
+// order, executing a swap, casting a vote, sending a message.
+//
+// The `action_id` selects the handler. Common ids by convention:
+//   "place_order"   — params: {symbol, side, amount, price?, type}
+//   "swap"          — params: {from_token, to_token, amount, ...}
+//   "send_message"  — params: {to, body}
+//
+// `params` is intentionally a generic Struct to keep the dispatch
+// surface domain-agnostic. Each action defines its own param schema
+// in the backend's documentation; widgets that submit actions know
+// the shape by convention.
+message ActionRequest {
+  // Selects the backend handler (e.g. "place_order").
+  string action_id = 1;
+  // Action parameters. Schema is per-action by convention.
+  google.protobuf.Struct params = 2;
+
+  // Client-generated idempotency key. The backend MUST treat repeated
+  // requests with the same client_request_id as the same action and
+  // return the original response — critical for retry loops, network
+  // hiccups, and double-clicks on submit buttons. Recommended: a
+  // UUIDv4 generated when the user clicks submit. Empty string =
+  // no idempotency, treat each call as new.
+  string client_request_id = 3;
+}
+
+// Backend acknowledgement of a submitted action.
+//
+// `status` is the coarse lifecycle state. Action-specific finer
+// states (an order's "filled" vs "partial", a workflow's "stage 2 of 4")
+// go in `status_detail` so dashboards can render them without
+// inventing per-action enums.
+message ActionResponse {
+  // Backend-assigned id (order id, message id, etc.). Useful for
+  // client-side reconciliation against later Stream / Events updates.
+  string id = 1;
+
+  // Coarse lifecycle state. See ActionStatus for semantics.
+  ActionStatus status = 2;
+
+  // Human-readable message — shown to the user as a toast on the
+  // submitting widget.
+  optional string message = 3;
+
+  // Optional structured payload (e.g. filled price, gas cost, tx hash).
+  optional google.protobuf.Struct data = 4;
+
+  // Action-specific sub-state when ActionStatus alone is too coarse
+  // (e.g. "partial", "filled", "stage_2_of_4"). Free-form by
+  // convention — widgets that care interpret it; others ignore.
+  optional string status_detail = 5;
+}
+
+// ActionStatus — coarse lifecycle state of a submitted action.
+// Maps cleanly onto common write semantics across domains:
+//
+//   place_order:  ACCEPTED → PENDING → OK | FAILED | CANCELLED
+//   send_message: OK | FAILED
+//   swap (web3):  ACCEPTED → PENDING → OK | FAILED
+//   vote:         OK | REJECTED
+//
+// Terminal status: OK, REJECTED, FAILED, CANCELLED — the action will
+// not change state again, no need to watch it.
+//
+// Non-terminal status: ACCEPTED, PENDING — the action will reach a
+// terminal state later. Subscribe via WatchAction for updates.
+enum ActionStatus {
+  // No status declared. Treat as unknown.
+  ACTION_STATUS_UNSPECIFIED = 0;
+  // Terminal: synchronous success. Action took effect.
+  ACTION_STATUS_OK = 1;
+  // Non-terminal: acknowledged but not yet acted on (queued,
+  // awaiting validation). Watch for a terminal update.
+  ACTION_STATUS_ACCEPTED = 2;
+  // Non-terminal: in-flight (RPC dispatched, on-chain pending,
+  // exchange working). Watch for a terminal update.
+  ACTION_STATUS_PENDING = 3;
+  // Terminal: refused before execution (validation, auth, business rule).
+  ACTION_STATUS_REJECTED = 4;
+  // Terminal: attempted and failed (downstream error, exception, revert).
+  ACTION_STATUS_FAILED = 5;
+  // Terminal: cancelled before completion (by user, timeout, or backend).
+  ACTION_STATUS_CANCELLED = 6;
+}
+
+// ActionWatchRequest — subscribe to lifecycle updates for one action.
+// Identify the action by any of the three keys; at least one must be
+// set. client_request_id is the most useful for client-side retry
+// reconciliation, since the client knows it before the backend
+// responds.
+message ActionWatchRequest {
+  // The action_id originally passed to SubmitAction (e.g. "place_order").
+  string action_id = 1;
+  // The backend-assigned id from ActionResponse.id.
+  string id = 2;
+  // The client-generated idempotency key from ActionRequest.client_request_id.
+  string client_request_id = 3;
+}
+
+// ActionUpdate — one lifecycle event for a watched action. The
+// stream emits one of these every time the action's state advances
+// (queued → working → filled, etc.). The stream closes after the
+// first ActionUpdate with a terminal ActionStatus.
+message ActionUpdate {
+  // Backend-assigned id (mirrors ActionResponse.id).
+  string id = 1;
+  // The action handler this update belongs to (mirrors ActionRequest.action_id).
+  string action_id = 2;
+  // Mirrors ActionRequest.client_request_id, so clients can
+  // reconcile updates with their in-flight submit calls.
+  string client_request_id = 3;
+
+  // Current lifecycle state. The stream closes after the first
+  // update with a terminal status.
+  ActionStatus status = 4;
+
+  // Action-specific sub-state ("partial", "filled", "stage_2_of_4").
+  optional string status_detail = 5;
+
+  // Human-readable message — surfaced to the user as a toast.
+  optional string message = 6;
+
+  // Optional structured payload (filled price, gas cost, tx hash,
+  // confirmations).
+  optional google.protobuf.Struct data = 7;
+
+  // ISO 8601 timestamp the backend emitted this update.
+  string timestamp = 8;
+
+  // Monotonic per-action counter starting at 0. Lets clients
+  // detect dropped messages and reorder if a transport reorders.
+  uint64 sequence = 9;
+}

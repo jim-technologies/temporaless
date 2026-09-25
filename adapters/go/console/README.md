@@ -1,0 +1,37 @@
+# Go console adapter
+
+The optional, read-only operator console. Core Temporaless ships no UI; this
+adapter and [`cmd/temporaless-console`](../../../cmd/temporaless-console) are
+opt-in.
+
+- **`TerminalService`** projects [`RunInspectionService`](../../../docs/inspection.md)
+  onto the public terminal-core dashboard contract (vendored under
+  `third_party/`), so the bundled `templates/executions.json` renders
+  workflows, runs, a run's summary, pending state, derived history, payloads,
+  and scheduled wakes with generic widgets. Only `Get` and `ListSources` are
+  implemented; streams, AI, and actions answer Unimplemented. Sources that
+  depend on a selection the operator has not made yet return an empty payload
+  that says what to pick.
+- **`NewInvariantServer`** registers both services on one Invariant Protocol
+  server. The HTTP, MCP, and CLI projections include only the read methods
+  (`ProjectedMethods`); request validation runs on every call.
+- **`Handler`** serves the authenticated API (every `POST`), the UI and
+  `/ui/config` (no secrets), and `/healthz` / `/readyz`, with a strict CSP.
+
+## Authentication and authorization
+
+One control per boundary, all optional pieces behind small interfaces:
+
+| Mode | Authenticator | Access |
+|---|---|---|
+| Loopback development | none (`LoopbackPrincipal`) | every store; bind to a loopback address only |
+| Private-network operator | `StaticToken` from a mounted file | every store |
+| Hosted, multi-tenant | `JWTVerifier` (ES256/RS256 against a JWKS URL or file; issuer, audience, expiry; configurable subject and tenant claims) | `ScopedAccess`: a store is visible only to its own tenant and only when the `Authorizer` (e.g. `OpenFGA`) allows its read relation; payloads need the payload relation (`can_read` by default, `can_write` to limit them to editors) |
+
+Scope is forced server-side from the verified token; a request can never name
+another tenant. OpenFGA outages fail closed. `MACPageTokens` seal listing
+cursors with HMAC-SHA256 over the method, store, namespace, filters, the
+caller's tenant, and an expiry, so a page token cannot be replayed under
+another scope.
+
+Run the console with read-only bucket credentials: nothing in it writes.

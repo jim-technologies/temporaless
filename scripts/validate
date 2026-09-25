@@ -54,6 +54,15 @@ if ! cmp -s "$descriptor_file" core/ts/src/gen/temporaless/v1/temporaless_descri
   echo "core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb is stale; run scripts/generate." >&2
   exit 1
 fi
+if ! cmp -s "$descriptor_file" adapters/go/console/descriptors/temporaless.binpb; then
+  echo "adapters/go/console/descriptors/temporaless.binpb is stale; run scripts/generate." >&2
+  exit 1
+fi
+buf build third_party/medallion-terminal-core/proto --as-file-descriptor-set -o "$descriptor_file"
+if ! cmp -s "$descriptor_file" adapters/go/console/descriptors/terminal.binpb; then
+  echo "adapters/go/console/descriptors/terminal.binpb is stale; run scripts/generate." >&2
+  exit 1
+fi
 if [ "${CI:-}" = "true" ]; then
   # A clean CI checkout must remain clean after formatting/code generation.
   # Local feature branches may intentionally be validating uncommitted schema
@@ -61,6 +70,8 @@ if [ "${CI:-}" = "true" ]; then
   git diff --exit-code -- \
     api \
     core/go/gen \
+    adapters/go/console/internal/terminalv1 \
+    adapters/go/console/descriptors \
     core/py/src/buf \
     core/py/src/temporaless/v1 \
     core/ts/src/gen \
@@ -69,6 +80,8 @@ if [ "${CI:-}" = "true" ]; then
   generated_untracked="$(git ls-files --others --exclude-standard -- \
     api \
     core/go/gen \
+    adapters/go/console/internal/terminalv1 \
+    adapters/go/console/descriptors \
     core/py/src/buf \
     core/py/src/temporaless/v1 \
     core/ts/src/gen \

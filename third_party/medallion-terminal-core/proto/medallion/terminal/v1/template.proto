@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package medallion.terminal.v1;
+
+import "google/protobuf/struct.proto";
+
+// =============================================================
+// Template — the dashboard configuration document.
+//
+// A Template describes a complete dashboard: its title, grid,
+// global context, and the widgets to render. Templates can be
+// authored by hand, served from a backend, or emitted by the
+// AI Generate RPC.
+// =============================================================
+
+// Top-level dashboard.
+//
+// Example:
+//   {
+//     "title": "Crypto Watch",
+//     "context": { "values": { "symbol": "BTC", "range": "1d" } },
+//     "widgets": [
+//       { "id": "px",  "component": "candlestick", "span": 8,
+//         "source": { "source_id": "ohlcv",
+//                     "params": { "symbol": "${ctx.symbol}",
+//                                 "range":  "${ctx.range}" },
+//                     "stream": true } },
+//       { "id": "spot", "component": "metric", "span": 4,
+//         "source": { "source_id": "spot_price",
+//                     "params": { "symbol": "${ctx.symbol}" },
+//                     "stream": true } }
+//     ]
+//   }
+message Template {
+  // Dashboard title shown in the header.
+  string title = 1;
+
+  // Grid column count. Default: 12.
+  int32 columns = 2;
+
+  // Global context — propagated to every widget. Widget params
+  // can reference values via "${ctx.<key>}" substitution.
+  Context context = 3;
+
+  // Ordered list of widgets in the grid.
+  repeated Widget widgets = 4;
+}
+
+// Context is a generic key-value bag describing what the dashboard
+// is "about" right now. Changing context (user picks a different
+// entity, switches time range) re-fetches every widget that
+// references it.
+//
+// Keys are user-defined. Common conventions: "symbol", "entity",
+// "event", "range", "from", "to". The framework does not interpret
+// them — they are pure substitution tokens.
+message Context {
+  // The context values, keyed by user-defined names.
+  map<string, string> values = 1;
+}
+
+// Widget is one cell in the dashboard grid: a component, its size,
+// and where its data comes from.
+message Widget {
+  // Stable identifier; required if the widget is mutable via
+  // WidgetAction. Auto-assigned if omitted.
+  string id = 1;
+
+  // Registered component name (e.g. "timeseries", "candlestick",
+  // "table", "metric", "gauge", "heatmap", "geo_map", "events",
+  // "text", "action_form", "prompt"). Maps to a renderer in the
+  // frontend widget registry.
+  string component = 2;
+
+  // Column span (1..columns). Default: 6.
+  // Tablet clamps to columns/2; mobile collapses to full-width.
+  int32 span = 3;
+
+  // Content height in pixels. Each component has a sensible default.
+  int32 height = 4;
+
+  // Header label.
+  string title = 5;
+
+  // Where this widget gets its data.
+  DataSource source = 6;
+
+  // Component-specific overrides (e.g. axis hints, formatting).
+  // Convention is to need none of this — the payload shape drives
+  // rendering. Use sparingly.
+  google.protobuf.Struct options = 7;
+}
+
+// DataSource has three mutually-exclusive modes. Set exactly one
+// of source_id / url / inline. Resolution order if multiple are
+// set: inline > source_id > url.
+//
+// MODE 1 — source_id (preferred, typed):
+//   Resolved via the dashboard's configured ConnectRPC backend.
+//   This is the "implement TerminalService and it works" path —
+//   the backend returns one of the canonical payload shapes.
+//
+// MODE 2 — url (federation / escape hatch, untyped):
+//   Arbitrary HTTP or SSE URL. Use when a widget pulls from a
+//   source that does not speak TerminalService — a public REST
+//   API, a third-party stream, a Connect backend at a different
+//   host. The frontend trusts the response shape and renders.
+//
+// MODE 3 — inline (static):
+//   Pre-baked payload embedded in the template. No fetch. Used by
+//   AI-generated dashboards that already have the data, by demos,
+//   and by tests.
+message DataSource {
+  // Mode 1: catalog id on the dashboard's Connect backend.
+  string source_id = 1;
+
+  // Mode 2: arbitrary URL.
+  string url = 2;
+
+  // Mode 3: inline payload matching the widget's expected shape.
+  google.protobuf.Value inline = 3;
+
+  // Params. For source_id mode, passed to TerminalService.params.
+  // For url mode, appended as the query string. Values may contain
+  // "${ctx.<key>}" tokens which the framework substitutes from
+  // Template.context at fetch time.
+  map<string, string> params = 4;
+
+  // Live updates. For source_id mode, calls TerminalService.Stream
+  // and re-renders on each server-pushed message. For url mode,
+  // opens an SSE connection.
+  bool stream = 5;
+
+  // Polling interval in milliseconds for non-streaming sources.
+  // 0 = fetch once, no polling.
+  int32 refresh_interval_ms = 6;
+
+  // url-mode only: HTTP method. Default "GET".
+  string method = 7;
+
+  // url-mode only: request headers (e.g. {"Authorization": "..."}).
+  map<string, string> headers = 8;
+
+  // url-mode only: dot-path to extract from the response. Useful
+  // when wrapping a third-party JSON API that nests the payload
+  // (e.g. "data.items" extracts response.data.items).
+  string transform = 9;
+}
+
+// WidgetAction mutates one widget. Returned by Generate (and any
+// other dispatch surface) to update an existing dashboard in place.
+//
+// Semantics:
+//   * If a widget with target_id exists, fields present in the
+//     action are merged in. Fields absent are preserved.
+//   * If no such widget exists, a new widget is created from the
+//     action.
+//   * If `remove` is true, the widget is deleted (other fields
+//     ignored).
+message WidgetAction {
+  // The widget id to mutate or create.
+  string target_id = 1;
+
+  // If true, remove the widget. Other fields are ignored.
+  bool remove = 2;
+
+  // New component name, when changing the renderer.
+  optional string component = 3;
+  // New header label.
+  optional string title = 4;
+  // New column span.
+  optional int32 span = 5;
+  // New content height in pixels.
+  optional int32 height = 6;
+  // New data source.
+  optional DataSource source = 7;
+  // New component-specific overrides.
+  optional google.protobuf.Struct options = 8;
+}

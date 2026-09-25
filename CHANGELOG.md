@@ -37,6 +37,22 @@ lockstep policy.
   namespace through `Options.Access`; page tokens are bound to method, store,
   namespace, and filters. Table-driven tests on `fs` temp dirs cover every
   pending reason and fingerprint the store to prove no call writes.
+- `adapters/go/console`, the optional read-only console backend. A
+  `TerminalService` facade projects `RunInspectionService` onto the public
+  terminal-core dashboard contract (vendored at v0.5.2 under `third_party/`,
+  Go bindings in `internal/terminalv1`) with sources for stores, namespaces,
+  the workflow directory, runs, scheduled wakes, and a run's summary,
+  pending state, derived history, per-boundary table, payloads, and
+  DescribeRun JSON, plus the `executions.json` template that renders them.
+  Only `Get` and `ListSources` are implemented and projected. Authentication
+  is loopback-only, a static bearer from a mounted file, or ES256/RS256 JWTs
+  against a JWKS (configurable claims); `ScopedAccess` forces store scope
+  from the verified tenant and checks read and payload relations through an
+  `Authorizer` such as the bundled OpenFGA HTTP client (cached, fail-closed);
+  `MACPageTokens` bind page tokens to method, store, namespace, filters,
+  tenant, and expiry. Tests cover the JWT matrix, JWKS rotation, OpenFGA,
+  scoping, token replay, the projected method set, and an end-to-end HTTP
+  run that proves the store is unchanged.
 
 ### Changed
 

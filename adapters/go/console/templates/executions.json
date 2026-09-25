@@ -1,0 +1,228 @@
+{
+  "title": "Executions",
+  "columns": 12,
+  "context": {
+    "values": {
+      "store": "",
+      "namespace": "",
+      "status": "all",
+      "prefix": "",
+      "directory_page_token": "",
+      "workflow_id": "",
+      "runs_page_token": "",
+      "run_id": "",
+      "overdue_only": "false",
+      "wakes_page_token": ""
+    }
+  },
+  "widgets": [
+    {
+      "id": "store",
+      "component": "select",
+      "span": 3,
+      "height": 72,
+      "title": "Store",
+      "source": { "source_id": "temporaless.stores" },
+      "options": { "key": "store", "label": "Store" }
+    },
+    {
+      "id": "namespace",
+      "component": "select",
+      "span": 3,
+      "height": 72,
+      "title": "Namespace",
+      "source": { "source_id": "temporaless.namespaces", "params": { "store": "${ctx.store}" } },
+      "options": { "key": "namespace", "label": "Namespace" }
+    },
+    {
+      "id": "status",
+      "component": "select",
+      "span": 3,
+      "height": 72,
+      "title": "Latest run",
+      "options": {
+        "key": "status",
+        "label": "Latest run",
+        "choices": [
+          { "value": "all", "label": "All statuses" },
+          { "value": "running", "label": "Running" },
+          { "value": "failed", "label": "Failed" },
+          { "value": "completed", "label": "Completed" }
+        ]
+      }
+    },
+    {
+      "id": "wake_filter",
+      "component": "select",
+      "span": 3,
+      "height": 72,
+      "title": "Wakes",
+      "options": {
+        "key": "overdue_only",
+        "label": "Wakes",
+        "choices": [
+          { "value": "false", "label": "All scheduled wakes" },
+          { "value": "true", "label": "Overdue only" }
+        ]
+      }
+    },
+    {
+      "id": "workflows",
+      "component": "record_grid",
+      "span": 12,
+      "height": 400,
+      "title": "Workflows · latest run per workflow ID",
+      "source": {
+        "source_id": "temporaless.directory",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "status": "${ctx.status}",
+          "prefix": "${ctx.prefix}",
+          "page_token": "${ctx.directory_page_token}"
+        },
+        "refreshIntervalMs": 15000
+      },
+      "options": { "page_token_key": "directory_page_token", "record_id_key": "selected_workflow", "search": true }
+    },
+    {
+      "id": "runs",
+      "component": "record_grid",
+      "span": 5,
+      "height": 420,
+      "title": "Runs of ${ctx.workflow_id}",
+      "source": {
+        "source_id": "temporaless.runs",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "page_token": "${ctx.runs_page_token}"
+        },
+        "refreshIntervalMs": 15000
+      },
+      "options": { "page_token_key": "runs_page_token", "record_id_key": "selected_run", "search": false }
+    },
+    {
+      "id": "run",
+      "component": "object_view",
+      "span": 7,
+      "height": 420,
+      "title": "Run ${ctx.run_id}",
+      "source": {
+        "source_id": "temporaless.run.summary",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        },
+        "refreshIntervalMs": 10000
+      }
+    },
+    {
+      "id": "pending",
+      "component": "table",
+      "span": 5,
+      "height": 300,
+      "title": "Pending",
+      "source": {
+        "source_id": "temporaless.run.pending",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        },
+        "refreshIntervalMs": 10000
+      }
+    },
+    {
+      "id": "history",
+      "component": "events",
+      "span": 7,
+      "height": 300,
+      "title": "History · derived from durable records",
+      "refresh_policy": "self",
+      "source": {
+        "source_id": "temporaless.run.history",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        },
+        "refreshIntervalMs": 10000
+      },
+      "options": { "filter": true }
+    },
+    {
+      "id": "compact",
+      "component": "table",
+      "span": 12,
+      "height": 280,
+      "title": "History by boundary",
+      "source": {
+        "source_id": "temporaless.run.compact",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        }
+      }
+    },
+    {
+      "id": "payloads",
+      "component": "object_view",
+      "span": 6,
+      "height": 360,
+      "title": "Inputs and results",
+      "source": {
+        "source_id": "temporaless.run.payloads",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        }
+      }
+    },
+    {
+      "id": "run_json",
+      "component": "json",
+      "span": 6,
+      "height": 360,
+      "title": "DescribeRun JSON",
+      "refresh_policy": "manual",
+      "source": {
+        "source_id": "temporaless.run.json",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "workflow_id": "${ctx.workflow_id}",
+          "run_id": "${ctx.run_id}"
+        },
+        "transform": "properties.0.value"
+      }
+    },
+    {
+      "id": "wakes",
+      "component": "record_grid",
+      "span": 12,
+      "height": 340,
+      "title": "Scheduled wakes · due ledger, read-only",
+      "source": {
+        "source_id": "temporaless.wakes",
+        "params": {
+          "store": "${ctx.store}",
+          "namespace": "${ctx.namespace}",
+          "overdue_only": "${ctx.overdue_only}",
+          "page_token": "${ctx.wakes_page_token}"
+        },
+        "refreshIntervalMs": 30000
+      },
+      "options": { "page_token_key": "wakes_page_token", "record_id_key": "selected_wake", "search": true }
+    }
+  ]
+}

@@ -42,6 +42,19 @@ private-remote | package-lock.json | npm writes this canonical source for the pi
 private-remote | scripts/check_versions.py | the version check spells the exact lockfile source npm writes for the pinned public dependency | git\+%73sh://git@[{]invariant_repository[}]#
 
 # ---------------------------------------------------------------------------
+# The optional console adapter serves the public terminal-core TerminalService
+# contract (Apache-2.0), vendored byte for byte at its v0.5.2 tag. Its protobuf
+# package and file paths are wire identity, so they cannot be renamed. These
+# rules cover only the vendored tree, the Go bindings generated from it, and
+# the template that maps its files; hand-written code never names the brand.
+# ---------------------------------------------------------------------------
+* | third_party/medallion-terminal-core/* | vendored upstream public contract kept byte for byte; its package name is wire identity | %6dedallion
+* | adapters/go/console/internal/terminalv1/* | Go bindings generated from the vendored public contract repeat its package name and comments | %6dedallion
+* | adapters/go/console/buf.gen.yaml | the generation template maps the vendored files by their upstream paths | %6dedallion/terminal/v1/
+codename | third_party/medallion-terminal-core/* | upstream comments use the common noun for semantic object types, not a codename | %4fntology (object detail|type name|type of the target)
+codename | adapters/go/console/internal/terminalv1/* | generated comments repeat the upstream common-noun wording | %4fntology (object detail|type name|type of the target)
+
+# ---------------------------------------------------------------------------
 # The shared guard's own text. Its fleet baseline has to name the public brand
 # hostnames it excuses, and it writes them as a regular expression, so the
 # escaped form is not covered by the baseline rule that masks the plain form.

@@ -3,6 +3,7 @@ set -eu
 
 buf generate
 buf generate --template adapters/py/dagstercompat/buf.gen.yaml
+buf generate --template adapters/go/console/buf.gen.yaml
 
 # protoc-gen-connectrpc-py 0.12.1 currently emits trailing spaces on generated
 # optional-header parameters. Use Python instead of GNU-only `sed -i` so the
@@ -26,3 +27,11 @@ PY
 # explicitly as part of the same generation command.
 buf build api --as-file-descriptor-set \
   -o core/ts/src/gen/temporaless/v1/temporaless_descriptor.binpb
+
+# The optional console's Invariant Protocol server reads both contracts' source
+# comments at runtime, so it embeds the two descriptor sets it registers.
+mkdir -p adapters/go/console/descriptors
+buf build api --as-file-descriptor-set \
+  -o adapters/go/console/descriptors/temporaless.binpb
+buf build third_party/medallion-terminal-core/proto --as-file-descriptor-set \
+  -o adapters/go/console/descriptors/terminal.binpb
