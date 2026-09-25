@@ -24,9 +24,6 @@ Issues = "https://github.com/jim-technologies/temporaless/issues"
 # bundled production image opts into this locked Uvicorn extra explicitly.
 server = ["uvicorn>=0.51.0"]
 
-[project.scripts]
-temporaless-migrate-v1-to-v2 = "temporaless.migrate_v1_to_v2:main"
-
 [build-system]
 requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"

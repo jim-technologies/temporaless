@@ -10,7 +10,6 @@ import asyncio
 import os
 import shutil
 import tempfile
-from collections.abc import AsyncIterable
 from datetime import UTC, datetime, timedelta
 
 import opendal
@@ -129,22 +128,6 @@ async def bench_index_list_workflows_filtered(b: Bench) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-async def bench_legacy_bucket_walk_list_workflows_filtered(b: Bench) -> None:
-    _store, operator, tmp = await _populated_scoped_store(_TOTAL_SCHEDULES, _RUNS_PER_SCHEDULE)
-    try:
-        b.reset_timer()
-        for _ in range(b.n):
-            records = await _legacy_workflow_scan(
-                operator,
-                workflow_id="schedule-005",
-                status=temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
-            )
-            if len(records) != _RUNS_PER_SCHEDULE:
-                raise AssertionError("legacy scan returned an unexpected count")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 async def bench_last_fire_pointer_get(b: Bench) -> None:
     store, _operator, tmp = _new_store()
     try:
@@ -152,19 +135,6 @@ async def bench_last_fire_pointer_get(b: Bench) -> None:
         b.reset_timer()
         for _ in range(b.n):
             last = await last_fire_from_runs(store, "", "bench:schedule")
-            if last != _fire_time(_LAST_FIRE_RUNS - 1):
-                raise AssertionError(f"got {last!r}, want {_fire_time(_LAST_FIRE_RUNS - 1)!r}")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-async def bench_legacy_bucket_walk_last_fire(b: Bench) -> None:
-    store, operator, tmp = _new_store()
-    try:
-        await _seed_schedule_runs(store, "bench:schedule", _LAST_FIRE_RUNS)
-        b.reset_timer()
-        for _ in range(b.n):
-            last = await _legacy_last_fire_scan(operator, "bench:schedule", "%Y-%m-%dT%H:%M:%SZ")
             if last != _fire_time(_LAST_FIRE_RUNS - 1):
                 raise AssertionError(f"got {last!r}, want {_fire_time(_LAST_FIRE_RUNS - 1)!r}")
     finally:
@@ -270,69 +240,6 @@ async def _seed_schedule_runs(store: OpenDALStore, workflow_id: str, count: int)
         await store.put_workflow(record)
 
 
-async def _legacy_workflow_scan(
-    operator: opendal.AsyncOperator,
-    *,
-    workflow_id: str,
-    status: temporaless_pb2.WorkflowStatus,
-) -> list[temporaless_pb2.WorkflowRecord]:
-    records: list[temporaless_pb2.WorkflowRecord] = []
-    async for path in _walk_binpb(operator, "temporaless/v2/"):
-        if not path.endswith("/workflow.binpb"):
-            continue
-        record = await _read_workflow(operator, path)
-        if record.key.workflow_id != workflow_id:
-            continue
-        if status != temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED and record.status != status:
-            continue
-        records.append(record)
-    return records
-
-
-async def _legacy_last_fire_scan(
-    operator: opendal.AsyncOperator, workflow_id: str, run_id_layout: str
-) -> datetime | None:
-    last: datetime | None = None
-    for record in await _legacy_workflow_scan(
-        operator,
-        workflow_id=workflow_id,
-        status=temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED,
-    ):
-        parsed = datetime.strptime(record.key.run_id, run_id_layout).replace(tzinfo=UTC)
-        if last is None or parsed > last:
-            last = parsed
-    return last
-
-
-async def _read_workflow(
-    operator: opendal.AsyncOperator, path: str
-) -> temporaless_pb2.WorkflowRecord:
-    data = bytes(await operator.read(path))
-    record = temporaless_pb2.WorkflowRecord()
-    record.ParseFromString(data)
-    return record
-
-
-async def _walk_binpb(operator: opendal.AsyncOperator, root: str) -> AsyncIterable[str]:
-    queue = [root]
-    while queue:
-        current = queue.pop(0)
-        try:
-            entries = sorted(
-                [entry async for entry in await operator.list(current)], key=lambda e: e.path
-            )
-        except opendal.exceptions.NotFound:
-            continue
-        for entry in entries:
-            path = entry.path
-            if path == current:
-                continue
-            if path.endswith("/"):
-                queue.append(path)
-            elif path.endswith(".binpb"):
-                yield path
-
-
 if __name__ == "__main__":
     main(
         ("BenchmarkPutGetWorkflow", bench_put_get_workflow),
@@ -341,18 +248,10 @@ if __name__ == "__main__":
             "BenchmarkLastFireSeeding/pointer_get",
             bench_last_fire_pointer_get,
         ),
-        (
-            "BenchmarkLastFireSeeding/legacy_full_bucket_walk",
-            bench_legacy_bucket_walk_last_fire,
-        ),
         ("BenchmarkRunScopedPrefetchActivities50", bench_run_scoped_prefetch_activities),
         (
             "BenchmarkListWorkflowsFiltered/index",
             bench_index_list_workflows_filtered,
-        ),
-        (
-            "BenchmarkListWorkflowsFiltered/legacy_full_bucket_walk",
-            bench_legacy_bucket_walk_list_workflows_filtered,
         ),
         ("BenchmarkPutWorkflowSerial50", bench_put_workflow_serial_50),
         ("BenchmarkPutWorkflowParallel50", bench_put_workflow_parallel_50),

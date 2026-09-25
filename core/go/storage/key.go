@@ -214,7 +214,7 @@ func (key EventKey) Proto() *temporalessv1.EventKey {
 //
 // Runtime code constructs these paths but never parses identity back out of
 // them. Listing code reads each protobuf payload and validates its embedded
-// key. The one-shot v1 migration tool is the only supported path parser.
+// key.
 const StorageRootPrefix = "temporaless/v2"
 
 func runPrefix(namespace, workflowID, runID string) string {

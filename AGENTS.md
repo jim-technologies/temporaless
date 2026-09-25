@@ -89,7 +89,7 @@ temporaless/v2/{namespace}/{workflow_id}/{run_id}/event/{event_id}.binpb
 temporaless/v2/{namespace}/{workflow_id}/{run_id}/claim/{claim_id}.binpb
 ```
 
-Keys are constructed from protobuf key fields and must not be parsed back into identity in runtime code. If code needs an id, read the protobuf payload. The only v1 path parser lives in the one-shot migration tool.
+Keys are constructed from protobuf key fields and must not be parsed back into identity. If code needs an id, read the protobuf payload.
 
 IDs may contain only ASCII letters, numbers, `.`, `_`, `-`, `:`, and `=`. Slashes are rejected because object keys are path-like. Namespace and workflow_id values beginning with `_` are reserved for Temporaless system prefixes such as `_latest` and `_due`; do not use them for application records. Do not add charset rules solely to support path parsing.
 

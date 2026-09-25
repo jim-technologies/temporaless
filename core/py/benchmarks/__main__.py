@@ -11,8 +11,6 @@ from benchmarks._harness import run_benchmark
 from benchmarks.bench_storage import (
     bench_index_list_workflows_filtered,
     bench_last_fire_pointer_get,
-    bench_legacy_bucket_walk_last_fire,
-    bench_legacy_bucket_walk_list_workflows_filtered,
     bench_put_get_activity,
     bench_put_get_workflow,
     bench_put_workflow_parallel_50,
@@ -34,18 +32,10 @@ async def _run_all() -> None:
             "BenchmarkLastFireSeeding/pointer_get",
             bench_last_fire_pointer_get,
         ),
-        (
-            "BenchmarkLastFireSeeding/legacy_full_bucket_walk",
-            bench_legacy_bucket_walk_last_fire,
-        ),
         ("BenchmarkRunScopedPrefetchActivities50", bench_run_scoped_prefetch_activities),
         (
             "BenchmarkListWorkflowsFiltered/index",
             bench_index_list_workflows_filtered,
-        ),
-        (
-            "BenchmarkListWorkflowsFiltered/legacy_full_bucket_walk",
-            bench_legacy_bucket_walk_list_workflows_filtered,
         ),
         ("BenchmarkWorkflowRunFreshExecution", bench_workflow_run_fresh_execution),
         ("BenchmarkWorkflowRunReplay", bench_workflow_run_replay),

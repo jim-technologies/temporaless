@@ -39,6 +39,13 @@ lockstep policy.
   operator recovery. Python already behaved this way; regression coverage
   added for both cases.
 
+### Removed
+
+- The one-shot `temporaless-migrate-v1-to-v2` console script and the
+  `temporaless.migrate_v1_to_v2` module, together with the legacy full-bucket
+  walk benchmark cases. Buckets still on the v1 layout must migrate with a
+  0.10.x release before upgrading.
+
 ## [0.10.7] — 2026-08-29
 
 ### Added
