@@ -61,6 +61,9 @@ lockstep policy.
   same uv release the manifest locks. buf 1.72.0 reformats nested option
   literals in `temporaless.proto`, and the checked-in descriptor set is
   rebuilt for the moved source locations; no schema change.
+- The CI and audit workflows pin the fleet-standard action releases:
+  `actions/checkout` v7.0.1, `flox/install-flox-action` v2.6.0, and
+  `actions/cache` v6.1.0, each by commit SHA.
 
 ### Fixed
 
