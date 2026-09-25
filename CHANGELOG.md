@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-09-25
+
 ### Fixed
 
 - The Python core declares `protobuf>=7.36.2`, the gencode version stamped
