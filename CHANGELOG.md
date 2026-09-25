@@ -22,6 +22,13 @@ lockstep policy.
 
 ### Fixed
 
+- `package-lock.json` is again exactly what `npm install` writes. npm records
+  the GitHub-hosted Invariant Protocol dependency under its canonical
+  `git+ssh` source (it still clones the public repository over HTTPS), and
+  the version check now requires that form, pinned to the SHA `package.json`
+  declares, instead of a hand-edited `git+https` source that the next
+  `npm install` rewrote. Two narrow `.public-surface-allow` rules name the
+  lockfile field and the check's template.
 - `make audit` no longer fails at gitleaks. `.gitleaks.toml` allowlists the
   synthetic high-entropy fixture in `scripts/public-surface-check-test`
   (exact rule, exact assignment, exact file), the same narrow exception

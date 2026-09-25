@@ -20,6 +20,11 @@ INVARIANT_SPEC = re.compile(
     rf"git\+https://{re.escape(INVARIANT_REPOSITORY)}#([0-9a-f]{{40}})"
 )
 INVARIANT_ALLOW_SCRIPT_PREFIX = "github:jim-technologies/invariantprotocol#"
+# npm records a GitHub-hosted Git dependency in package-lock.json under its
+# canonical git+ssh URL whatever form package.json declares, and still clones
+# a public host over HTTPS first. The lock must hold exactly what `npm install`
+# writes so regenerating it is a no-op; the pinned SHA must match package.json.
+INVARIANT_LOCKED_SOURCE = f"git+ssh://git@{INVARIANT_REPOSITORY}#{{sha}}"
 OPENDAL_REPOSITORY = "https://github.com/apache/opendal.git"
 FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 LICENSE = "Apache-2.0"
@@ -221,10 +226,16 @@ def main() -> int:
     if not isinstance(locked_invariant, dict):
         errors.append(f"package-lock.json is missing node_modules/{INVARIANT_PACKAGE}")
     else:
-        if locked_invariant.get("resolved") != invariant_dependency:
+        expected_locked_source = (
+            INVARIANT_LOCKED_SOURCE.format(sha=invariant_sha)
+            if invariant_sha is not None
+            else None
+        )
+        if locked_invariant.get("resolved") != expected_locked_source:
             errors.append(
                 f"package-lock.json locked {INVARIANT_PACKAGE} source is "
-                f"{locked_invariant.get('resolved')!r}; expected {invariant_dependency!r}"
+                f"{locked_invariant.get('resolved')!r}; expected "
+                f"{expected_locked_source!r} (the form npm install writes)"
             )
         locked_version = locked_invariant.get("version")
         if (
