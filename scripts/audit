@@ -24,6 +24,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 echo "==> pip-audit (Python environments)"
 for project in \
   core/py \
+  adapters/py/cloudevents \
   adapters/py/connectworkflow \
   adapters/py/dagstercompat \
   adapters/py/indexstore \
@@ -59,16 +60,17 @@ python_git_install() (
   "$venv/bin/python" -m pip install \
     --disable-pip-version-check \
     "$source_url#subdirectory=core/py" \
+    "$source_url#subdirectory=adapters/py/cloudevents" \
     "$source_url#subdirectory=adapters/py/connectworkflow" \
     "$source_url#subdirectory=adapters/py/indexstore" \
     "$source_url#subdirectory=adapters/py/prefectcompat" \
     "$source_url#subdirectory=adapters/py/temporalcompat"
   "$venv/bin/python" -c \
-    'import temporaless, temporaless_connectworkflow, temporaless_indexstore, temporaless_prefectcompat, temporaless_temporalcompat'
+    'import temporaless, temporaless_cloudevents, temporaless_connectworkflow, temporaless_indexstore, temporaless_prefectcompat, temporaless_temporalcompat'
   TEMPORALESS_EXPECTED_VERSION="$(tr -d '\n' < VERSION)"
   export TEMPORALESS_EXPECTED_VERSION
   "$venv/bin/python" -c \
-    'import importlib.metadata, os; packages = ("temporaless", "temporaless-connectworkflow", "temporaless-indexstore", "temporaless-prefectcompat", "temporaless-temporalcompat"); expected = os.environ["TEMPORALESS_EXPECTED_VERSION"]; actual = {name: importlib.metadata.version(name) for name in packages}; assert set(actual.values()) == {expected}, (expected, actual)'
+    'import importlib.metadata, os; packages = ("temporaless", "temporaless-cloudevents", "temporaless-connectworkflow", "temporaless-indexstore", "temporaless-prefectcompat", "temporaless-temporalcompat"); expected = os.environ["TEMPORALESS_EXPECTED_VERSION"]; actual = {name: importlib.metadata.version(name) for name in packages}; assert set(actual.values()) == {expected}, (expected, actual)'
 )
 python_git_install
 

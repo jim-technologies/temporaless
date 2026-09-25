@@ -110,6 +110,14 @@ OpenDAL, and the Connect workflow adapter. Buf descriptor comparisons ensure
 both generated sides still match the single application proto. Dagster's
 official `protobuf<7` bound makes that process isolation mandatory.
 
+## CloudEvents adapters
+
+`adapters/go/cloudevents` uses the official CloudEvents Go SDK.
+`adapters/py/cloudevents` is a separate Git-distributed uv package with the
+CloudEvents Python SDK. Both adapt the existing storage RPC boundary and use
+generated protobuf keys; neither adds an SDK dependency to core replay.
+Their tests and package/version checks run in the common validation gate.
+
 ## Rust
 
 Rust dependencies live in `core/rs/temporaless/Cargo.toml`. The repository

@@ -148,6 +148,14 @@ it registers only OpenDAL `fs`. For cloud stores, use authenticated
 ConnectStore/RecordQueryService clients or generated remote operator tooling
 instead of placing cloud credentials in that local CLI.
 
+## Observation boundary
+
+Mount an optional [CloudEvents server interceptor](cloudevents.md) to emit typed
+key invalidations after successful mutations. Downstream consumers own logs,
+query indexes, and Iceberg projections. Direct store calls and internal repairs
+are outside this boundary, so consumers reconcile periodically. Event
+publication failure does not undo an authoritative point commit.
+
 ## Rules
 
 - Use ConnectRPC stubs generated from protobuf.

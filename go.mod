@@ -8,6 +8,7 @@ require (
 	connectrpc.com/connect v1.20.0
 	github.com/apache/opendal-go-services/fs v0.1.16
 	github.com/apache/opendal/bindings/go v0.1.16
+	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/google/uuid v1.6.0
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/robfig/cron/v3 v3.0.1
@@ -41,8 +42,11 @@ require (
 	github.com/googleapis/gax-go/v2 v2.24.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/jupiterrider/ffi v0.7.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/nexus-rpc/nexus-proto-annotations v0.1.0 // indirect
 	github.com/nexus-rpc/sdk-go v0.7.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect

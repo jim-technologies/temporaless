@@ -617,7 +617,17 @@ annotations, logs, or traces when build provenance is useful.
 
 ## 6. Observability
 
-Two surfaces, each at the right layer:
+Record observations, durable annotations, and request telemetry serve different needs:
+
+### CloudEvents for downstream logs and indexes
+
+Install the optional [CloudEvents adapter](cloudevents.md) on the authenticated
+record-store server. Its publisher hands typed-key invalidations to your
+existing event transport; downstream consumers own logs, query indexes, and
+Iceberg analytical tables. Keep publisher I/O bounded and reconcile missed
+observations. Post-write publication is best-effort and cannot supply complete
+historical audit evidence. Incoming workflow signals remain separate durable
+`EventRecord` inputs.
 
 ### Durable annotations (persisted on the record)
 
@@ -651,7 +661,8 @@ class TracingInterceptor:
 app = asgi_application(store, interceptors=[TracingInterceptor()])
 ```
 
-For activity-level spans inside a workflow body, use your tracer directly inline (`with tracer.start_as_current_span(...)`) — the same way you would in any other Python async function. The framework intentionally does not provide a parallel observer surface; gRPC interceptors and inline tracer calls cover every case.
+For activity-level spans inside a workflow body, use your tracer directly inline (`with tracer.start_as_current_span(...)`) — the same way you would in any other Python async function. The framework keeps these hooks at the standard RPC boundary and in
+application code; replay has no dependency on a telemetry sink.
 
 ## 7. Failure modes
 

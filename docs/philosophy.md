@@ -37,7 +37,12 @@ Consequences:
 
 ## 3. Cross-cutting concerns ride on standard ConnectRPC interceptors
 
-Auth, rate limiting, tracing, structured logging, tenant routing — all live in `Interceptor`s on the same `asgi_application(...)` and `ConnectStore.from_address(...)` surfaces. There is no Temporaless-specific middleware.
+Auth, rate limiting, tracing, request logging, and tenant routing use standard
+ConnectRPC interceptors. For durable-record observability, optional
+`RecordStoreService` server interceptors emit [CloudEvents](cloudevents.md).
+Downstream consumers log and index them; Iceberg is the preferred optional
+analytical table convention. Publication is best-effort, with reconciliation
+for missing observations. Observability sinks stay outside replay.
 
 ## 4. Async-only Python, sync Go
 
@@ -64,7 +69,8 @@ and opted-in polling waits.
 
 Everything cross-run is search: workflow listing, status filters, inspector
 screens, exact retention selection, and broad analytics. Those live in optional
-query adapters such as the SQLite index, and the index is always rebuildable
+query adapters fed by downstream CloudEvents projectors. SQLite remains an
+optional local reference, and the index is always rebuildable
 from the bucket. Bucket-only deployments still keep workflow execution,
 scheduling, and durable timers; coarse archive retention may use conservative
 bucket lifecycle rules that outlive all active timer horizons, while exact

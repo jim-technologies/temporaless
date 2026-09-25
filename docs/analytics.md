@@ -18,6 +18,19 @@ That layout keeps durability cheap: point reads, point writes, run-scoped
 prefetch, run-prefix deletion, and bucket lifecycle rules. It deliberately does
 not optimize cross-run search.
 
+## Emission and projection convention
+
+Emit [CloudEvents](cloudevents.md) through the optional Go/Python storage-server
+interceptors. Downstream consumers own log storage, query indexes, and batched
+analytical tables. Iceberg is the preferred analytical convention; applications
+may choose another sink. The point store stays authoritative.
+
+The shipped events contain typed protobuf keys and invalidate current state.
+They are best-effort observations, so consumers must reconcile against an
+authoritative inventory. Neither the event feed nor periodic scans can recover
+every overwritten record transition. Complete audit capture requires a durable
+mutation source beyond the shipped adapter.
+
 ## Online Search
 
 Use a query index when you need interactive operations:
@@ -35,7 +48,9 @@ protobuf request/response semantics; it does not require SQL or prescribe a
 physical schema.
 
 Python also ships `temporaless-indexstore`, an optional write-through SQLite
-reference adapter for small deployments and local operation. It stores only
+reference adapter for small deployments and local operation. It does not
+consume CloudEvents; use downstream
+projectors for production event-driven indexing. It stores only
 keys, statuses, and timestamps; protobuf payloads stay in the bucket and remain
 the source of truth. The index can be rebuilt by scanning the bucket:
 
@@ -79,11 +94,13 @@ rebuild coordinator may use a SQLite database at a time. Corrupt bucket records
 are skipped and logged with a skipped count; records that disappear between
 LIST and GET are treated as ordinary delete races.
 
-## Bucket-Only Analytics
+## Reconciliation and offline analytics
 
 For offline analytics, scan `temporaless/v2/`, read `.binpb` files, decode the
 protobuf payloads, and materialize the fields you need into a warehouse table.
-This is a batch job, not the runtime path.
+This is a downstream reconciliation or batch projection job, outside replay.
+It repairs current-state gaps left by missed CloudEvents and supports
+bucket-only deployments without an event transport.
 
 Iceberg is a natural target for these batched tables. Keep the lossless
 `record_binpb` and its deterministic digest alongside typed scalar columns,
@@ -134,7 +151,7 @@ runs by indexed metadata, deletes the run prefixes from the bucket, and removes
 the index rows. `_due` tombstone cleanup is a separate offline/quiescent
 maintenance operation; the generic ledger has no online compaction mode.
 
-`Store.Sweep` deletes COMPLETED runs older than the caller's `maxAge`; the
+`QueryStore.Sweep` / `RecordQueryService.Sweep` deletes COMPLETED runs older than the caller's `maxAge`; the
 caller owns cadence and threshold. Deliberately deferred until requested:
 per-namespace or per-workflow-id retention overrides, an archival hook that
 copies to cold storage before delete, and a separate longer-retention class
@@ -148,5 +165,6 @@ the key layout to serve query parsing. Temporaless v2 keeps those concerns
 separate:
 
 - **Core:** point operations on your bucket.
-- **Search:** optional derived index.
-- **Analytics:** offline scans over the protobuf archive.
+- **Emission:** optional CloudEvents observations, reconciled against point records.
+- **Search:** a downstream derived index.
+- **Analytics:** downstream Iceberg tables by convention, with offline reconciliation.

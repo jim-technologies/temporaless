@@ -101,6 +101,22 @@ statuses, capabilities, and RPC messages are generated from protobuf.
 
 `RecordStoreService` is the cross-language core durability contract. Treat the generated protobuf request/response service shape as canonical, not the network hop. Go and Python keep small local store interfaces for workflow replay, but both can wrap a local store as an in-process service client or use generated ConnectRPC clients for remote storage. Cross-run listing, inspector search, and indexed retention live on optional `RecordQueryService` implementations. Any database, search engine, warehouse, or application-owned index may implement that generated service contract without changing replay semantics. Local bucket-backed query fallbacks are for development and small deployments only; production query/search/retention should use an indexed `RecordQueryService`.
 
+## Events, logs, and query projections
+
+Optional storage-server interceptors publish CNCF CloudEvents after successful
+mutating `RecordStoreService` calls. Events carry generated protobuf keys;
+downstream consumers own logs, query indexes, and analytical projections.
+Iceberg is the preferred analytical convention, with the sink and catalog
+chosen by the application. The optional SQLite query adapter remains a local
+reference; production projections follow the [CloudEvents contract](cloudevents.md).
+
+The feed is best-effort invalidation, not a transition journal. Publication
+errors must not reverse a successful storage response, and reconciliation
+repairs missed current-state observations. Complete audit history requires
+additional durable change capture. Incoming `EventRecord` signals are a
+different boundary: they are authoritative workflow inputs, not CloudEvents
+observations. No sink or broker is required for replay or timer correctness.
+
 ## RPC-Shaped Wrappers
 
 Temporaless treats unary protobuf handlers as the native application shape.

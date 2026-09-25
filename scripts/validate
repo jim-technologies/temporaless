@@ -144,3 +144,8 @@ uv run --project adapters/py/indexstore ruff format --check adapters/py/indexsto
 uv run --project adapters/py/indexstore ruff check adapters/py/indexstore/src adapters/py/indexstore/tests
 uv run --project adapters/py/indexstore ty check adapters/py/indexstore/src adapters/py/indexstore/tests
 uv run --project adapters/py/indexstore pytest adapters/py/indexstore/tests
+uv sync --project adapters/py/cloudevents --locked
+uv run --project adapters/py/cloudevents ruff format --check adapters/py/cloudevents/src adapters/py/cloudevents/tests
+uv run --project adapters/py/cloudevents ruff check adapters/py/cloudevents/src adapters/py/cloudevents/tests
+uv run --project adapters/py/cloudevents ty check adapters/py/cloudevents/src adapters/py/cloudevents/tests
+uv run --project adapters/py/cloudevents pytest adapters/py/cloudevents/tests

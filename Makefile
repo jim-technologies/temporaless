@@ -67,6 +67,7 @@ fmt-proto: ## rewrite protobuf sources in place with buf format
 	buf format -w adapters/py/dagstercompat/tests/proto
 
 fmt-py: ## rewrite Python sources in place with ruff format
+	uv run --project adapters/py/cloudevents ruff format adapters/py/cloudevents/src adapters/py/cloudevents/tests
 	uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
 	uv run --project adapters/py/connectworkflow ruff format adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
 	uv run --project adapters/py/dagstercompat ruff format adapters/py/dagstercompat/tests
@@ -108,6 +109,7 @@ test-ts: ## run the TypeScript client tests (when npm is installed)
 	fi
 
 test-py: ## run the Python core and every Python adapter test suite
+	uv run --project adapters/py/cloudevents --locked pytest adapters/py/cloudevents/tests
 	uv run --project core/py --locked pytest core/py/tests
 	uv run --project adapters/py/connectworkflow --locked pytest adapters/py/connectworkflow/tests
 	uv run --project adapters/py/dagstercompat --locked pytest adapters/py/dagstercompat/tests

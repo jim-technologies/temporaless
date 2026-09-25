@@ -169,6 +169,17 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
 
 ## Optional query and lake projections
 
+- [ ] **CloudEvents publication is wired deliberately.** Mount the Go/Python
+  interceptor on the authenticated record-store server; consumers own logs,
+  indexes, and Iceberg tables. Publisher calls must have bounded I/O. The feed
+  is best-effort, so monitor publication failures and reconcile direct writes,
+  partial RPC commits, internal repairs, and retention paths. Do not promise a
+  complete audit history from post-write callbacks.
+- [ ] **Consumers accept the actual event contract.** Events carry typed
+  protobuf keys with `application/protobuf`, including delete keys; JSON-only
+  receivers need a schema-aware downstream translator. Successful duplicate
+  RPCs emit invalidations too. IDs and observation times do not order mutations.
+
 - [ ] **The point store remains authoritative.** ClickHouse is a rebuildable
   `RecordQueryService` projection and Iceberg is a batched analytics/archive
   projection. Neither is used for workflow replay, claims, create-once event
@@ -178,7 +189,7 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   for the same full record identity, plus versioned tombstones. A content
   digest, opaque version ID, unrelated queue-partition sequence, or wall-clock
   timestamp alone does not order update, delete, and recreate races.
-- [ ] **Notifications are repaired by reconciliation.** Treat object events as
+- [ ] **Notifications are repaired by reconciliation.** Treat CloudEvents and supplemental object events as
   invalidations, re-read canonical `.binpb`, acknowledge only after the sink
   commit, and periodically compare the projection with an authoritative object
   inventory or bounded scan. A delete event has no payload to re-read: use a

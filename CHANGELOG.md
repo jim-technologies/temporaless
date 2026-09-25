@@ -15,6 +15,26 @@ lockstep policy.
 
 ### Added
 
+- Optional CloudEvents storage-server interceptors: `adapters/go/cloudevents`
+  (`NewInterceptor`) and the Git-distributed `temporaless-cloudevents` Python
+  package (`adapters/py/cloudevents`, `RecordStoreInterceptor`) emit CNCF
+  CloudEvents 1.0 carrying deterministic protobuf record keys after successful
+  mutating `RecordStoreService` calls. Downstream consumers own logs, query
+  indexes, and analytical tables, with Iceberg as the preferred optional
+  analytical convention. Publication is best-effort and requires
+  reconciliation; the feed is not a durable audit journal.
+  `docs/cloudevents.md` is the envelope and delivery contract. The Go module
+  gains a direct dependency on `github.com/cloudevents/sdk-go/v2`.
+
+### Changed
+
+- Go and TypeScript bindings are regenerated from Protovalidate schema commit
+  `511051f7`, matching the refreshed `buf.lock`. No wire-format change.
+
+## [0.10.7] — 2026-08-29
+
+### Added
+
 - Buf lint now also enforces comment documentation on the public API surface
   (`COMMENT_SERVICE`, `COMMENT_RPC`, `COMMENT_MESSAGE`, `COMMENT_FIELD`), and
   every public message and field in `temporaless.v1` carries a doc comment,
@@ -36,6 +56,11 @@ lockstep policy.
 - `docs/architecture.md` describes the ingestion and derivation pipeline shape
   the framework is built for, instead of naming a particular operator's
   workloads. The `stocks-pipeline` and `quant-service` examples are unchanged.
+- Dependency currency: the Temporal compatibility adapters test Go's direct
+  SDK requirement `go.temporal.io/sdk` 1.48.0 and exact-pin `temporalio`
+  1.32.0, the Prefect adapter targets exactly Prefect 3.8.4, the Dagster
+  process-boundary proof runs Dagster 1.13.20, and Go moves to
+  `buf.build/go/protovalidate` 1.3.0 and `google.golang.org/protobuf` 1.36.12.
 
 ## [0.10.6] — 2026-08-18
 

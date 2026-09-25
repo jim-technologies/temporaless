@@ -1,0 +1,55 @@
+[project]
+name = "temporaless-cloudevents"
+version = "0.10.7"
+description = "CloudEvents observations for Temporaless ConnectRPC record mutations."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.14"
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "cloudevents>=2.2.0,<3",
+    "connectrpc>=0.11.1",
+    "temporaless==0.10.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/jim-technologies/temporaless"
+Repository = "https://github.com/jim-technologies/temporaless"
+Issues = "https://github.com/jim-technologies/temporaless/issues"
+
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/temporaless_cloudevents"]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+temporaless = { path = "../../../core/py", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["UP047"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.0",
+    "ty>=0.0.64",
+    "types-protobuf>=7.34.1.20260518",
+]

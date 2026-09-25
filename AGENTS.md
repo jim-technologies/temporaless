@@ -49,6 +49,8 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
 - Adapters must either prove compatibility with the source system or document each semantic decision and rejection in the adapter package.
 - Storage is durable and distributed by default. Prefer OpenDAL-backed stores. Avoid in-memory storage in framework APIs, examples, and tests.
 - Core storage is point-operation only: deterministic GET/PUT/DELETE by protobuf key, run-scoped listing for replay prefetch and run deletion, create-if-absent claims, latest-run pointers, and the due-timer ledger. Cross-run search, inspector listing, status filtering, and indexed retention belong in optional query adapters, never in the core bucket store.
+- Logs, query indexes, and analytical projections consume CNCF CloudEvents downstream. Keep emission in optional boundary adapters; do not couple replay to a log sink, database, broker, or lake catalog. The current storage-RPC adapter emits best-effort typed-key invalidations and requires reconciliation; never describe it as a durable audit journal.
+- Iceberg is the preferred downstream analytical table convention, not a core storage format or required backend. Applications own the catalog, table layout, batching, and retention/archive policy.
 - ConnectRPC is the transport layer whenever a protobuf RPC boundary is needed.
 - Go and Python are the only first-class languages.
 

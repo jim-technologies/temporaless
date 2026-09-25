@@ -15,6 +15,10 @@ migrations, and fixtures, not the application delivery path.
 
 > Not a Temporal replacement. A narrower framework for data workflows where activities are mostly fetch / normalize / persist and storage can be the durable coordination point.
 
+For logs and indexes, emit [CloudEvents](docs/cloudevents.md) at the optional
+record-store RPC boundary and project downstream. Iceberg is the preferred
+analytical table convention; the point records remain authoritative.
+
 - [`docs/getting-started.md`](docs/getting-started.md) — single-page walkthrough: store, workflow, retries, sleep, events, schedule, inspect, sweep
 - [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — make a generated protobuf service method a durable workflow and project it through Invariant Protocol
 - [`docs/deployment.md`](docs/deployment.md) — production patterns (S3/GCS, ConnectRPC, multi-process, multi-region)
@@ -63,6 +67,7 @@ pip install "temporaless @ git+https://github.com/jim-technologies/temporaless.g
 pip install "temporaless-connectworkflow @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/connectworkflow"
 pip install "temporaless-temporalcompat @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/temporalcompat"
 pip install "temporaless-prefectcompat @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/prefectcompat"
+pip install "temporaless-cloudevents @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/cloudevents"
 pip install "temporaless-indexstore @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=adapters/py/indexstore"
 npm install --allow-git=all "github:jim-technologies/temporaless#COMMIT_SHA"
 ```
@@ -80,6 +85,7 @@ work without a package registry; its source stays under `core/ts`.
 
 | Adapter | Purpose |
 |---|---|
+| [`adapters/go/cloudevents`](adapters/go/cloudevents) / [`adapters/py/cloudevents`](adapters/py/cloudevents) | Optional CloudEvents record observations; downstream consumers own logs and indexes |
 | [`adapters/go/connectstore`](adapters/go/connectstore) | ConnectRPC point-store and optional query-store transport adapter |
 | [`adapters/go/connectworkflow`](adapters/go/connectworkflow) | ConnectRPC workflow-trigger transport adapter |
 | [`adapters/py/connectworkflow`](adapters/py/connectworkflow) | Async ConnectRPC workflow-method decorator and error mapping |
@@ -89,7 +95,7 @@ work without a package registry; its source stays under `core/ts`.
 | [`adapters/py/temporalcompat`](adapters/py/temporalcompat) | Same for Python via `temporalio` |
 | [`adapters/py/prefectcompat`](adapters/py/prefectcompat) | Run Temporaless-shaped unary protobuf handlers as Prefect 3 flows / tasks; Temporaless replay applies only when the handler invokes the Temporaless runtime |
 | [`adapters/py/dagstercompat`](adapters/py/dagstercompat) | Non-installable compatibility gate proving a protobuf-6 Dagster job can invoke and replay on a separate protobuf-7 Temporaless/OpenDAL ConnectRPC workflow server |
-| [`adapters/py/indexstore`](adapters/py/indexstore) | Optional SQLite reference implementation of the backend-neutral `RecordQueryService` contract |
+| [`adapters/py/indexstore`](adapters/py/indexstore) | Optional local SQLite reference implementation of the backend-neutral `RecordQueryService` contract |
 | [`adapters/go/timerscanner`](adapters/go/timerscanner) | Find due durable timers belonging to in-flight workflows |
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
 | [`adapters/go/inspector`](adapters/go/inspector) | List in-flight / failed workflows, reset records for re-execution |
@@ -194,6 +200,8 @@ The core storage contract is generated from `temporaless.v1.RecordStoreService`:
 **Generic core (in scope):** workflow + activity replay, all-settled parallel activity fan-out (`gather_activities` / `AllActivities`), retry policy with `RETRYING`-record persistence, durable sleeps and optional timer-backed polling, create-once external events, claim-based coordination tiers, durable structured annotations, in-process scheduler with O(1) latest-run pointer seeding, run-scoped prefetch/deletion, and comprehensive proto-typed errors.
 
 **Temporal-flavored knobs (adapter-only or out of scope):** the Temporal adapters delegate activity timeouts and heartbeats to the real SDK. Sticky task queues, signal-channel select, workflow-level retry policy, child workflows, and payload converters are not emulated; use native Temporal code when those semantics are required.
+
+**Observability (optional):** Go and Python storage-server interceptors emit CloudEvents containing typed record keys. Downstream consumers own logs, indexes, and Iceberg tables. Publication is best-effort and requires reconciliation; a durable audit feed is not included.
 
 **Search and retention (optional index):** bucket-only deployments run workflows, scheduling, durable timers, and lifecycle-based retention without a database. Listing workflows, inspector views, and indexed sweeps require a derived query index or an offline scan.
 

@@ -1,5 +1,10 @@
 # temporaless-indexstore
 
+This is an optional local SQLite reference adapter. The production convention
+is [CloudEvents emission](../../../docs/cloudevents.md) with downstream logging
+and query/lake projectors; this adapter's direct write-through path does not
+consume that feed and is not required for workflow execution.
+
 Optional SQLite reference query index for Temporaless Python stores.
 
 `IndexedStore` wraps a bucket/file `Store` and mirrors record keys plus query

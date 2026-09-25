@@ -35,6 +35,7 @@ NPM_REPOSITORY = {
 }
 NPM_BUGS = {"url": PROJECT_URLS["Issues"]}
 OWNED_PACKAGES = {
+    "temporaless-cloudevents",
     "temporaless",
     "temporaless-connectworkflow",
     "temporaless-indexstore",
@@ -42,6 +43,7 @@ OWNED_PACKAGES = {
     "temporaless-temporalcompat",
 }
 PYPROJECTS = {
+    "adapters/py/cloudevents/pyproject.toml": "temporaless-cloudevents",
     "core/py/pyproject.toml": "temporaless",
     "adapters/py/connectworkflow/pyproject.toml": "temporaless-connectworkflow",
     "adapters/py/indexstore/pyproject.toml": "temporaless-indexstore",
@@ -57,6 +59,7 @@ VIRTUAL_PYPROJECTS = {
     ),
 }
 LOCK_PACKAGES = {
+    "adapters/py/cloudevents/uv.lock": {"temporaless", "temporaless-cloudevents"},
     "core/py/uv.lock": {
         "temporaless",
         "temporaless-connectworkflow",
@@ -81,6 +84,7 @@ LOCK_PACKAGES = {
     },
 }
 PYTHON_REQUIREMENTS = {
+    "adapters/py/cloudevents/pyproject.toml": {"temporaless"},
     "core/py/pyproject.toml": {
         "temporaless-connectworkflow",
         "temporaless-indexstore",
@@ -94,6 +98,9 @@ PYTHON_REQUIREMENTS = {
     "adapters/py/temporalcompat/pyproject.toml": {"temporaless"},
 }
 PY_TYPED_MARKERS = {
+    "adapters/py/cloudevents/pyproject.toml": (
+        "adapters/py/cloudevents/src/temporaless_cloudevents/py.typed"
+    ),
     "core/py/pyproject.toml": "core/py/src/temporaless/py.typed",
     "adapters/py/connectworkflow/pyproject.toml": (
         "adapters/py/connectworkflow/src/temporaless_connectworkflow/py.typed"

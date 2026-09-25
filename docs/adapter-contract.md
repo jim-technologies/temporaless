@@ -81,6 +81,16 @@ conflict outcomes.
 and fixtures. Adapters must not silently route application `DeliverEvent`
 through it.
 
+## CloudEvents observations
+
+The optional storage-server adapters emit CNCF CloudEvents containing generated
+protobuf keys after successful mutating RPC calls. This is the conventional
+boundary for downstream logs and projections. Declare which writes are observed,
+callback failure behavior, and reconciliation coverage; a successful mutation
+observation is not an ordered transition or a guaranteed audit entry. Keep
+transport and downstream storage outside core replay. The exact envelope and
+delivery contract is in [cloudevents.md](cloudevents.md).
+
 ## Query And Projection Adapters
 
 `RecordQueryService` implementations are derived indexes. They may store keys

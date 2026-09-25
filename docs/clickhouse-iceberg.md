@@ -12,6 +12,10 @@ serve different roles:
 Neither backend belongs in the core runtime, and neither requires a new core
 RPC. A deployment can use ClickHouse, Iceberg, both, or neither.
 
+The preferred ingestion boundary is [CloudEvents](cloudevents.md): Temporaless
+emits record invalidations, and downstream consumers log and project them.
+Iceberg is a convention for analytical tables, not a required backend.
+
 This document is the integration and conformance contract. The repository does
 not currently ship a ClickHouse client, Iceberg projector, catalog setup, or
 live-backend integration tests; do not claim first-party backend support until
@@ -23,7 +27,7 @@ workflow runtime
       v
 RecordStoreService ------> protobuf .binpb objects (authoritative)
                                 |
-                 notifications / inventory / reconciliation
+                 CloudEvents / inventory / reconciliation
                                 |
                                 v
                          projection worker
@@ -88,8 +92,10 @@ generic CDC log. A production projector therefore needs an adapter-owned
 ordering source:
 
 1. Commit the canonical `.binpb` record first.
-2. Treat an object notification as an invalidation and re-read the canonical
-   object instead of trusting notification payload ordering.
+2. Consume CloudEvents invalidations and re-read the canonical record. The
+   bundled adapters carry typed protobuf keys and generated RPC method names.
+   Native object notifications may supplement them, but require a boundary
+   translator or authoritative inventory; never assume notification order.
 3. Attach a source revision that is comparable and monotonic for the same full
    record identity. An object generation or partitioned queue sequence can
    qualify; an opaque S3 VersionId or a sequence from an unrelated partition
@@ -99,8 +105,9 @@ ordering source:
 5. Periodically reconcile against object inventory or a bounded authoritative
    scan to repair missed notifications.
 
-A projector derives typed identity from the protobuf payload, never by parsing
-the v2 object path. A delete notification has no remaining payload, so retain a
+The CloudEvents adapter supplies typed keys even for deletes. For supplemental
+native object notifications, a projector derives identity from the protobuf
+payload, never by parsing the v2 object path. A delete notification has no remaining payload, so retain a
 `source_object_key -> typed identity` mapping from the last upsert, carry a
 typed mutation envelope from the storage gateway, or let full reconciliation
 discover the deletion. Keep `source_object_key` in projection metadata when
@@ -114,8 +121,9 @@ ordered per identity. If the source cannot provide that order, use scheduled
 snapshot reconciliation rather than claiming real-time CDC correctness.
 
 The bundled SQLite `IndexedStore` is a small-deployment write-through
-reference. Its best-effort update followed by `rebuild()` is not a durable
-cloud change feed.
+reference, separate from the production CloudEvents projection convention.
+Its best-effort update followed by `rebuild()` is not a durable cloud change
+feed.
 
 ## ClickHouse Query Adapter
 
