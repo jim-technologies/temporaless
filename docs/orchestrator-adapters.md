@@ -58,7 +58,7 @@ claim that the two run-state machines are one lifecycle.
 
 There is no supported same-process Dagster adapter today. Dagster
 [`1.13.24`](https://github.com/dagster-io/dagster/releases/tag/1.13.24) requires
-`protobuf>=4,<7` on Python 3.11+, while Temporaless requires protobuf 7.35.1 or
+`protobuf>=4,<7` on Python 3.11+, while Temporaless requires protobuf 7.36.2 or
 newer. The official
 [`1.13.24` package metadata](https://github.com/dagster-io/dagster/blob/1.13.24/python_modules/dagster/pyproject.toml)
 declares both that upper bound and `requires-python = ">=3.10,<3.15"`. The
@@ -72,7 +72,7 @@ Dagster process/environment (protobuf <7)
         │ generated application ConnectRPC client
         │ protobuf wire bytes
         ▼
-Temporaless workflow service (protobuf >=7.35.1)
+Temporaless workflow service (protobuf >=7.36.2)
 ```
 
 - Generate client and server bindings independently from the same application

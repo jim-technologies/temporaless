@@ -10,7 +10,7 @@ dependencies = [
     "connectrpc>=0.12.1",
     "croniter>=6.2.4",
     "opendal>=0.47.3",
-    "protobuf>=7.35.1",
+    "protobuf>=7.36.2",
     "protovalidate>=1.2.0",
 ]
 

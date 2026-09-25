@@ -1854,7 +1854,7 @@ requires-dist = [
     { name = "connectrpc", specifier = ">=0.12.1" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "opendal", specifier = ">=0.47.3" },
-    { name = "protobuf", specifier = ">=7.35.1" },
+    { name = "protobuf", specifier = ">=7.36.2" },
     { name = "protovalidate", specifier = ">=1.2.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.51.0" },
 ]

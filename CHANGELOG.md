@@ -13,6 +13,15 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Python core declares `protobuf>=7.36.2`, the gencode version stamped
+  into the `temporaless.v1` and `buf.validate` modules it ships. v0.11.0
+  regenerated them with the `protocolbuffers/python` 36.2 plugin but kept the
+  7.35.1 floor, so importing `temporaless.v1` on protobuf 7.35.1 through
+  7.36.1 raised `VersionError`. A core test now fails whenever the declared
+  floor is older than any shipped generated module's gencode stamp.
+
 ## [0.11.0] — 2026-09-25
 
 ### Added

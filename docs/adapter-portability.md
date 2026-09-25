@@ -123,7 +123,7 @@ async def fetch_price_op(context) -> str:
     return response.price
 ```
 
-Dagster 1.13.24 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
+Dagster 1.13.24 requires `protobuf<7`; Temporaless requires protobuf 7.36.2
 or newer. Generate the Dagster client and Temporaless server independently
 from the same application `.proto`, run them in separate environments, and
 exchange only protobuf wire bytes. Dagster remains responsible for asset/job
