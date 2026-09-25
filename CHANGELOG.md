@@ -13,6 +13,14 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Fixed
+
+- `make audit` no longer fails at gitleaks. `.gitleaks.toml` allowlists the
+  synthetic high-entropy fixture in `scripts/public-surface-check-test`
+  (exact rule, exact assignment, exact file), the same narrow exception
+  Invariant Protocol carries, so the scheduled audit reaches the Git-SHA
+  installability checks again.
+
 ## [0.11.1] — 2026-09-25
 
 ### Fixed
