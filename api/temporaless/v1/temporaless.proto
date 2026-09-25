@@ -280,7 +280,9 @@ message WorkflowPlan {
         not_in: ["__proto__"]
       }
     }
-    values: {string: {max_bytes: 1024}}
+    values: {
+      string: {max_bytes: 1024}
+    }
   }];
 }
 
@@ -367,7 +369,9 @@ message WorkflowPlanNode {
         not_in: ["__proto__"]
       }
     }
-    values: {string: {max_bytes: 1024}}
+    values: {
+      string: {max_bytes: 1024}
+    }
   }];
 }
 
