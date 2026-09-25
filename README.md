@@ -42,10 +42,11 @@ the direct service path.
 
 ```text
 api/                  protobuf API definitions only
-core/{go,py}/         Runtime + generated protobuf + OpenDAL store + ConnectRPC service
+core/{go,py}/         Runtime + generated protobuf + OpenDAL store (+ ConnectRPC store/service in Python; Go's is adapters/go/connectstore)
 core/rs/              Experimental Rust SDK — storage + minimal workflow runtime
 core/ts/              TypeScript SDK — generated protobuf, ConnectRPC wrappers, visual/run projection, invariantprotocol projection
 adapters/{go,py}/     Adapters: claims, schedulers, inspectors, retention, Temporal compat
+cmd/temporaless/      Local-filesystem operator CLI (Go) over the inspector/janitor adapters
 examples/{go,py}/     Runnable demos: fetch-prices, llm-completion, production-server, quant-service, stocks-pipeline, twitter-webhook
 docs/                 Architecture and design notes
 ```
