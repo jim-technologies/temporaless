@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-25
+
 ### Added
 
 - Optional CloudEvents storage-server interceptors: `adapters/go/cloudevents`
