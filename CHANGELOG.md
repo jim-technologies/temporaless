@@ -13,6 +13,13 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Changed
+
+- The TypeScript projection pins `@jim-technologies/invariant-protocol`
+  0.16.4 (commit `f5922050`), which moves the lock to
+  `@bufbuild/protovalidate` 1.3.0 and `@grpc/grpc-js` 1.14.5, and
+  `engines.node` states the `>=24.18.0` floor Invariant Protocol declares.
+
 ### Fixed
 
 - `make audit` no longer fails at gitleaks. `.gitleaks.toml` allowlists the

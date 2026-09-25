@@ -39,7 +39,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=24"
+    "node": ">=24.18.0"
   },
   "scripts": {
     "build": "tsc -p core/ts/tsconfig.json && node core/ts/scripts/copy-assets.mjs",
@@ -50,7 +50,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.15.0",
     "@connectrpc/connect": "^2.2.0",
-    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#535d6ca5cf41f6e1029da0946a754e6724a5cf69"
+    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#f5922050342ce883f8e3f66435e266948e341ba0"
   },
   "peerDependencies": {
     "@connectrpc/connect-node": ">=2.1.2",
@@ -71,7 +71,7 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "github:jim-technologies/invariantprotocol#535d6ca5cf41f6e1029da0946a754e6724a5cf69": true,
+    "github:jim-technologies/invariantprotocol#f5922050342ce883f8e3f66435e266948e341ba0": true,
     "protobufjs": false
   }
 }

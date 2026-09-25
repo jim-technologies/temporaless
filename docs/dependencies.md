@@ -130,12 +130,13 @@ and rustfmt, so the same toolchain gates the Rust SDK locally and in CI.
 ## TypeScript
 
 TypeScript dependencies live in root `package.json` and `package-lock.json`.
-Node 24 LTS is the package and CI runtime baseline.
+Node 24 LTS is the package and CI runtime baseline; `engines.node` states
+the `>=24.18.0` floor that Invariant Protocol declares.
 The npm package entry is at the repository root because npm git dependencies
 install from the repository package root; TypeScript source remains under
 `core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
 `core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
-backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.16.3
+backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.16.4
 rather than a mutable branch. The root TypeScript export stays a lightweight
 generated-types + Connect-client surface. The facade uses Invariant's
 generated-service registration and unified Connect interceptor API.
