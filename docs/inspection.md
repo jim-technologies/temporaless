@@ -99,6 +99,15 @@ payloads, the response reports `PAYLOAD_VISIBILITY_REDACTED`: each Any keeps
 its type URL with an empty value and the rendered payload carries only the
 type and original size.
 
+## Implementations
+
+[`adapters/go/inspection`](../adapters/go/inspection) serves the contract
+directly over OpenDAL bucket stores, with per-caller store, namespace, and
+payload scoping and bounded listings. It is the backend of the optional
+read-only console. Index-backed global search (filter every run by status,
+type, or time) is a later `RecordQueryService` extension; bucket-native
+inspection reports `indexed_search=false`.
+
 ## Generated code
 
 | Language | Location |

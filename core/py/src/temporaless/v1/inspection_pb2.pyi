@@ -250,16 +250,18 @@ class ListScheduledWakesRequest(_message.Message):
     def __init__(self, store: _Optional[str] = ..., namespace: _Optional[str] = ..., page_size: _Optional[int] = ..., page_token: _Optional[str] = ..., overdue_only: _Optional[bool] = ...) -> None: ...
 
 class ListScheduledWakesResponse(_message.Message):
-    __slots__ = ("wakes", "next_page_token", "scanned", "quarantined_entries")
+    __slots__ = ("wakes", "next_page_token", "scanned", "quarantined_entries", "invalid_entries")
     WAKES_FIELD_NUMBER: _ClassVar[int]
     NEXT_PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     SCANNED_FIELD_NUMBER: _ClassVar[int]
     QUARANTINED_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    INVALID_ENTRIES_FIELD_NUMBER: _ClassVar[int]
     wakes: _containers.RepeatedCompositeFieldContainer[ScheduledWake]
     next_page_token: str
     scanned: int
     quarantined_entries: int
-    def __init__(self, wakes: _Optional[_Iterable[_Union[ScheduledWake, _Mapping]]] = ..., next_page_token: _Optional[str] = ..., scanned: _Optional[int] = ..., quarantined_entries: _Optional[int] = ...) -> None: ...
+    invalid_entries: int
+    def __init__(self, wakes: _Optional[_Iterable[_Union[ScheduledWake, _Mapping]]] = ..., next_page_token: _Optional[str] = ..., scanned: _Optional[int] = ..., quarantined_entries: _Optional[int] = ..., invalid_entries: _Optional[int] = ...) -> None: ...
 
 class ScheduledWake(_message.Message):
     __slots__ = ("timer", "workflow_key", "overdue", "ledger_state", "workflow_status")

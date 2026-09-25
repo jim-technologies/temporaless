@@ -25,6 +25,18 @@ lockstep policy.
   gRPC stubs (so `temporalessv1` never links a transport), Python into
   `temporaless.v1.inspection_pb2`/`inspection_connect`, TypeScript into the
   new `./gen/temporaless/v1/inspection` export. See `docs/inspection.md`.
+- `adapters/go/inspection` serves `RunInspectionService` directly over
+  OpenDAL bucket stores. The workflow directory reads latest-run pointers,
+  `ListWorkflowRuns` lists one workflow's run directories (refusing past
+  `MaxListedRuns`), `ListScheduledWakes` reads the due ledger and reports
+  canonical-timer disagreement, torn entries, and quarantined entries without
+  repairing anything, and `DescribeRun` returns bounded, parallel point reads
+  with `DeriveHistory`/`DerivePending` and descriptor-set payload rendering
+  (well-known and linked types always; opaque bytes otherwise; redaction when
+  the caller may not see payloads). Callers are scoped per store and
+  namespace through `Options.Access`; page tokens are bound to method, store,
+  namespace, and filters. Table-driven tests on `fs` temp dirs cover every
+  pending reason and fingerprint the store to prove no call writes.
 
 ### Changed
 

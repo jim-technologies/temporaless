@@ -195,7 +195,8 @@ constraint, or tag that drifts from it.
 
 Most adapters ship for both Go and Python. The single-language ones are so by
 design: `prefectcompat` targets a Python-only framework, `scanquery` is a Go
-development scanner, and `indexstore` is a Python reference index. Rust ships
+development scanner, `inspection` backs the Go read-only console, and
+`indexstore` is a Python reference index. Rust ships
 `dispatch` only. Nothing is on the kill list — every adapter has a clear,
 narrow reason to exist (storage RPC, workflow transport, claim coordination,
 record observation, cross-run query, scheduling primitive, compatibility
@@ -214,6 +215,7 @@ target, operations helper).
 | `timerscanner` | Find due sleep, activity-retry, and poll timers belonging to in-flight workflows | ✓ | ✓ | — |
 | `cronscheduler` | In-process cron with stateless seeding from existing runs | ✓ | ✓ | — |
 | `inspector` | List in-flight/failed workflows, reset records for re-execution | ✓ | ✓ | — |
+| `inspection` | Read-only `RunInspectionService` over bucket stores with derived history and pending state; never writes or repairs | ✓ | — | — |
 | `visualization` | Structurally validate/digest optional `WorkflowPlan`, strictly verify callable RPC descriptors + approval, inspect a run, and project node IDs onto durable record evidence | ✓ | ✓ | — |
 | `janitor` | Sweep COMPLETED runs older than max-age | ✓ | ✓ | — |
 | `backfill` | Run a workflow over many run_ids with bounded concurrency + report | ✓ | ✓ | — |

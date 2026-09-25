@@ -879,14 +879,15 @@ type WorkflowDirectoryEntry struct {
 	// The derived latest-run pointer as stored. It is best-effort monotonic and
 	// may lag the authoritative run records.
 	Pointer *v1.LatestWorkflowRunPointer `protobuf:"bytes,1,opt,name=pointer" json:"pointer,omitempty"`
-	// Summary of the referenced run's workflow record. Absent when the pointer
-	// is stale (its run was removed or has moved on).
+	// Summary of the referenced run's authoritative workflow record. Absent
+	// when that record is missing, for example after retention removed the run.
 	Run *WorkflowRunSummary `protobuf:"bytes,2,opt,name=run" json:"run,omitempty"`
 	// Derived pending state of the referenced run. Computed only for runs that
 	// are still in progress; terminal runs report RUN_PENDING_REASON_TERMINAL.
 	Pending *RunPendingState `protobuf:"bytes,3,opt,name=pending" json:"pending,omitempty"`
 	// True when the pointer references a run whose workflow record is missing
-	// or disagrees with the pointer.
+	// or disagrees with the pointer. The pointer is derived state written after
+	// the record, so a reader can land between the two writes.
 	StalePointer  bool `protobuf:"varint,4,opt,name=stale_pointer,json=stalePointer" json:"stale_pointer,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1163,8 +1164,9 @@ type ListWorkflowRunsResponse struct {
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken" json:"next_page_token,omitempty"`
 	// Run directories listed for the workflow_id.
 	TotalListed uint32 `protobuf:"varint,3,opt,name=total_listed,json=totalListed" json:"total_listed,omitempty"`
-	// Listed run directories on this page that hold no workflow record. Their
-	// identity cannot be read from a payload, so they are counted, not shown.
+	// Listed run directories on this page without a readable workflow record
+	// (missing, undecodable, or stored at the wrong key). Their identity cannot
+	// be read from a payload, so they are counted, not shown.
 	RunsWithoutWorkflowRecord uint32 `protobuf:"varint,4,opt,name=runs_without_workflow_record,json=runsWithoutWorkflowRecord" json:"runs_without_workflow_record,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
@@ -1323,8 +1325,11 @@ type ListScheduledWakesResponse struct {
 	// Entries a timer scanner quarantined under the namespace's invalid-ledger
 	// prefix. Their bytes are unreadable, so only the count is reported.
 	QuarantinedEntries uint32 `protobuf:"varint,4,opt,name=quarantined_entries,json=quarantinedEntries" json:"quarantined_entries,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Ledger entries on this page that failed validation. A timer scanner
+	// quarantines such entries; inspection only counts them.
+	InvalidEntries uint32 `protobuf:"varint,5,opt,name=invalid_entries,json=invalidEntries" json:"invalid_entries,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListScheduledWakesResponse) Reset() {
@@ -1381,6 +1386,13 @@ func (x *ListScheduledWakesResponse) GetScanned() uint32 {
 func (x *ListScheduledWakesResponse) GetQuarantinedEntries() uint32 {
 	if x != nil {
 		return x.QuarantinedEntries
+	}
+	return 0
+}
+
+func (x *ListScheduledWakesResponse) GetInvalidEntries() uint32 {
+	if x != nil {
+		return x.InvalidEntries
 	}
 	return 0
 }
@@ -1885,7 +1897,8 @@ type RenderedPayload struct {
 	TypeUrl string `protobuf:"bytes,2,opt,name=type_url,json=typeUrl" json:"type_url,omitempty"`
 	// Size of the packed protobuf bytes.
 	SizeBytes uint64 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes" json:"size_bytes,omitempty"`
-	// The rendered value. Unset when the payload is redacted.
+	// The rendered value. Unset when the payload is redacted or larger than
+	// the server's render limit; size_bytes still reports its size.
 	//
 	// Types that are valid to be assigned to Value:
 	//
@@ -2081,12 +2094,13 @@ const file_temporaless_v1_inspection_proto_rawDesc = "" +
 	"\tpage_size\x18\x03 \x01(\rB\b\xbaH\x05*\x03\x18\xe8\aR\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x04 \x01(\tR\tpageToken\x12!\n" +
-	"\foverdue_only\x18\x05 \x01(\bR\voverdueOnly\"\xc4\x01\n" +
+	"\foverdue_only\x18\x05 \x01(\bR\voverdueOnly\"\xed\x01\n" +
 	"\x1aListScheduledWakesResponse\x123\n" +
 	"\x05wakes\x18\x01 \x03(\v2\x1d.temporaless.v1.ScheduledWakeR\x05wakes\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x18\n" +
 	"\ascanned\x18\x03 \x01(\rR\ascanned\x12/\n" +
-	"\x13quarantined_entries\x18\x04 \x01(\rR\x12quarantinedEntries\"\xa9\x02\n" +
+	"\x13quarantined_entries\x18\x04 \x01(\rR\x12quarantinedEntries\x12'\n" +
+	"\x0finvalid_entries\x18\x05 \x01(\rR\x0einvalidEntries\"\xa9\x02\n" +
 	"\rScheduledWake\x121\n" +
 	"\x05timer\x18\x01 \x01(\v2\x1b.temporaless.v1.TimerRecordR\x05timer\x12>\n" +
 	"\fworkflow_key\x18\x02 \x01(\v2\x1b.temporaless.v1.WorkflowKeyR\vworkflowKey\x12\x18\n" +
