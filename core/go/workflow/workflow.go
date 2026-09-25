@@ -1669,8 +1669,13 @@ func runActivity[T proto.Message](
 		// Refresh through the cache's underlying store before executing anything.
 		fresh, freshFound, freshErr := getActivityAuthoritative(ctx, workflow.store, key)
 		if freshErr != nil {
-			// Storage outcome is ambiguous; retain the claim for operator recovery.
-			return zero, workflowInfrastructureError("refresh activity after claim acquisition", freshErr)
+			// No activity body has started under this claim. A failed read or
+			// cancellation cannot make an application side effect ambiguous, so
+			// release the claim and let another invocation retry the refresh.
+			return releaseActivityClaim(
+				zero,
+				workflowInfrastructureError("refresh activity after claim acquisition", freshErr),
+			)
 		}
 		record, found = fresh, freshFound
 		attempts = nil

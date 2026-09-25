@@ -31,6 +31,14 @@ lockstep policy.
 - Go and TypeScript bindings are regenerated from Protovalidate schema commit
   `511051f7`, matching the refreshed `buf.lock`. No wire-format change.
 
+### Fixed
+
+- Go releases the activity claim when the authoritative refresh after claim
+  acquisition fails — a transient read error or cancellation — before the
+  activity body starts, so another invocation can retry instead of waiting for
+  operator recovery. Python already behaved this way; regression coverage
+  added for both cases.
+
 ## [0.10.7] — 2026-08-29
 
 ### Added

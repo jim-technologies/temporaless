@@ -332,6 +332,81 @@ func TestActivityClaimReleasedAtDurableBoundaries(t *testing.T) {
 	}
 }
 
+func TestActivityClaimReleasedWhenPreBodyRefreshFails(t *testing.T) {
+	readErr := errors.New("activity refresh unavailable")
+	tests := []struct {
+		name     string
+		canceled bool
+	}{
+		{name: "transient read failure"},
+		{name: "cancellation after claim acquisition", canceled: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store := &preBodyActivityRefreshFailureStore{Store: newTestStore(t), err: readErr}
+			if test.canceled {
+				store.cancel = cancel
+			}
+			claimStore := newTestClaimStore(t)
+			workflow := &Workflow{
+				store:      store,
+				claimStore: claimStore,
+				workflowID: "pre-body-refresh",
+				runID:      "run",
+				claimOwner: "worker",
+			}
+			bodyCalls := 0
+			execute := func(context.Context) (*wrapperspb.StringValue, error) {
+				bodyCalls++
+				return wrapperspb.String("ok"), nil
+			}
+			_, err := runActivity(ctx, workflow, "call", activityClaimTestType, nil, "",
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, execute)
+			wantErr := readErr
+			if test.canceled {
+				wantErr = context.Canceled
+			}
+			if !errors.Is(err, wantErr) || !errors.Is(err, ErrWorkflowInfrastructure) {
+				t.Fatalf("run error = %v, want infrastructure error wrapping %v", err, wantErr)
+			}
+			if bodyCalls != 0 {
+				t.Fatalf("body calls = %d, want 0 before successful refresh", bodyCalls)
+			}
+			if _, found, err := claimStore.GetClaim(context.Background(), activityClaimKeyForTest(workflow, "call")); err != nil || found {
+				t.Fatalf("claim after failed refresh: found=%v err=%v, want released", found, err)
+			}
+			_, err = runActivity(context.Background(), workflow, "call", activityClaimTestType, nil, "",
+				wrapperspb.String("request"),
+				func() *wrapperspb.StringValue { return &wrapperspb.StringValue{} }, execute)
+			if err != nil || bodyCalls != 1 {
+				t.Fatalf("resume: err=%v body calls=%d, want success and one call", err, bodyCalls)
+			}
+		})
+	}
+}
+
+type preBodyActivityRefreshFailureStore struct {
+	storage.Store
+	err    error
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (store *preBodyActivityRefreshFailureStore) GetActivity(ctx context.Context, key storage.ActivityKey) (*temporalessv1.ActivityRecord, bool, error) {
+	store.reads++
+	if store.reads == 2 {
+		if store.cancel != nil {
+			store.cancel()
+			return nil, false, ctx.Err()
+		}
+		return nil, false, store.err
+	}
+	return store.Store.GetActivity(ctx, key)
+}
+
 func TestActivityClaimRetainedWhenOutcomeIsAmbiguous(t *testing.T) {
 	writeErr := errors.New("activity record write failed")
 	tests := []struct {
