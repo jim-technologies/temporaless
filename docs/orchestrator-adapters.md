@@ -34,7 +34,7 @@ activity dispatch, durable waits, and caller-owned IDs.
 ## Prefect
 
 `adapters/py/prefectcompat` wraps async unary protobuf handlers with the real,
-exactly pinned Prefect 3.8.4 flow/task APIs. It supports explicit name/retry
+exactly pinned Prefect 3.8.6 flow/task APIs. It supports explicit name/retry
 options and encodes
 workflow requests as deterministic protobuf binary inside a typed,
 JSON-safe deployment parameter. A scheduled worker therefore reconstructs the
@@ -57,10 +57,10 @@ claim that the two run-state machines are one lifecycle.
 ## Dagster
 
 There is no supported same-process Dagster adapter today. Dagster
-[`1.13.20`](https://github.com/dagster-io/dagster/releases/tag/1.13.20) requires
+[`1.13.24`](https://github.com/dagster-io/dagster/releases/tag/1.13.24) requires
 `protobuf>=4,<7` on Python 3.11+, while Temporaless requires protobuf 7.35.1 or
 newer. The official
-[`1.13.20` package metadata](https://github.com/dagster-io/dagster/blob/1.13.20/python_modules/dagster/pyproject.toml)
+[`1.13.24` package metadata](https://github.com/dagster-io/dagster/blob/1.13.24/python_modules/dagster/pyproject.toml)
 declares both that upper bound and `requires-python = ">=3.10,<3.15"`. The
 latest stable Dagster therefore cannot share Temporaless's protobuf 7 runtime,
 even though both support Python 3.14.
@@ -91,7 +91,7 @@ Temporaless workflow service (protobuf >=7.35.1)
 
 `adapters/py/dagstercompat` is the executable gate for this boundary, not an
 installable package or same-process adapter. Its separately locked virtual uv
-environment contains Dagster 1.13.20, protobuf 6, and a tiny test-only
+environment contains Dagster 1.13.24, protobuf 6, and a tiny test-only
 generated application ConnectRPC client, but no Temporaless dependency or
 framework proto. A real Dagster job invokes a separate protobuf-7 process that
 uses the real Temporaless OpenDAL `fs` store and `connectworkflow` wrapper.

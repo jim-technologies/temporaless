@@ -9,9 +9,9 @@ plugins:
   # The Temporaless server deliberately runs in the repository's protobuf-7
   # environment. Both sides are generated from the exact same application
   # schema below.
-  - remote: buf.build/protocolbuffers/python:v36.0
+  - remote: buf.build/protocolbuffers/python:v36.2
     out: adapters/py/dagstercompat/tests/server_gen
-  - remote: buf.build/protocolbuffers/pyi:v36.0
+  - remote: buf.build/protocolbuffers/pyi:v36.2
     out: adapters/py/dagstercompat/tests/server_gen
   - local:
       - env

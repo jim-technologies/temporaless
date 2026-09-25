@@ -24,7 +24,7 @@ and every tool the gate or the audits need comes from the manifest:
 - `uv`: required Python dependency manager.
 - `buf`: required protobuf formatter, linter, and generator.
 - `libffi`: required by the Apache OpenDAL Go binding.
-- `gcc-unwrapped` `lib` output: provides `libstdc++.so.6` for Python Protovalidate's RE2 dependency.
+- `gcc-unwrapped` `lib` output: provides `libstdc++.so.6` for the native protobuf and Protovalidate Python extensions.
 - `nodejs` 24: the TypeScript SDK's package and test runtime.
 - `cargo`/`rustc`/`clippy`/`rustfmt` 1.97.1: the one pinned Rust toolchain.
 - `cargo-audit` and `gitleaks`: back the scheduled `make audit` verb.
@@ -94,7 +94,7 @@ workflow replay.
 
 ## Python Prefect Adapter
 
-`adapters/py/prefectcompat` is separately locked to Prefect 3.8.4. It wraps
+`adapters/py/prefectcompat` is separately locked to Prefect 3.8.6. It wraps
 async unary protobuf handlers as real Prefect flows/tasks and keeps Prefect's
 deployment, scheduling, retry, and UI state out of Temporaless core.
 
@@ -102,7 +102,7 @@ deployment, scheduling, retry, and UI state out of Temporaless core.
 
 `adapters/py/dagstercompat` is a separately locked, development-only virtual uv
 project, not an installable SDK package or same-process runtime adapter. Its dev
-environment contains Dagster 1.13.20, ConnectRPC 0.11.1, and protobuf 6,
+environment contains Dagster 1.13.24, ConnectRPC 0.12.1, and protobuf 6,
 deliberately has no Temporaless dependency, and executes the supported
 generated-application-RPC integration in CI. The test launches its service in
 the separately locked core Python environment with protobuf 7, Temporaless,
@@ -133,7 +133,7 @@ The npm package entry is at the repository root because npm git dependencies
 install from the repository package root; TypeScript source remains under
 `core/ts`. Generated protobuf and ConnectRPC code is produced by Buf into
 `core/ts/src/gen`. The invariantprotocol projection is an explicit subpath
-backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.14.0
+backed by a full-SHA Git pin of `@jim-technologies/invariant-protocol` 0.16.3
 rather than a mutable branch. The root TypeScript export stays a lightweight
 generated-types + Connect-client surface. The facade uses Invariant's
 generated-service registration and unified Connect interceptor API.

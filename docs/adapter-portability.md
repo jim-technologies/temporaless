@@ -123,7 +123,7 @@ async def fetch_price_op(context) -> str:
     return response.price
 ```
 
-Dagster 1.13.20 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
+Dagster 1.13.24 requires `protobuf<7`; Temporaless requires protobuf 7.35.1
 or newer. Generate the Dagster client and Temporaless server independently
 from the same application `.proto`, run them in separate environments, and
 exchange only protobuf wire bytes. Dagster remains responsible for asset/job
@@ -229,7 +229,7 @@ Going from Temporaless to another framework:
 - `adapters/py/prefectcompat/tests` exercises direct flows/tasks, retries,
   Temporaless replay composition, and protobuf deployment-parameter
   serialization.
-- `adapters/py/dagstercompat/tests` executes a real Dagster 1.13.20 job in a
+- `adapters/py/dagstercompat/tests` executes a real Dagster 1.13.24 job in a
   protobuf-6 environment with no Temporaless import. Its generated test-only
   application client crosses a real ConnectRPC HTTP boundary twice into a
   separate protobuf-7 process using Temporaless `OpenDALStore` and

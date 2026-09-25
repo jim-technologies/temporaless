@@ -3,9 +3,9 @@ module github.com/jim-technologies/temporaless
 go 1.26.6
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1
-	buf.build/go/protovalidate v1.3.0
-	connectrpc.com/connect v1.20.0
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
+	buf.build/go/protovalidate v1.4.0
+	connectrpc.com/connect v1.21.0
 	github.com/apache/opendal-go-services/fs v0.1.16
 	github.com/apache/opendal/bindings/go v0.1.16
 	github.com/cloudevents/sdk-go/v2 v2.16.2
@@ -13,13 +13,14 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.12.1
-	go.temporal.io/api v1.63.5
-	go.temporal.io/sdk v1.48.0
+	go.temporal.io/api v1.63.6
+	go.temporal.io/sdk v1.49.0
 	gocloud.dev v0.46.0
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
+	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go/iam v1.12.0 // indirect
 	cloud.google.com/go/monitoring v1.30.0 // indirect
@@ -38,7 +39,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
-	github.com/google/cel-go v0.31.0 // indirect
 	github.com/googleapis/gax-go/v2 v2.24.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect

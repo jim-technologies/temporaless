@@ -49,12 +49,16 @@ ActivityFunc = Callable[[Req], Awaitable[Resp]]
 WorkflowFunc = Callable[[Req], Awaitable[Resp]]
 
 
-class PrefectActivity(Protocol[Req, Resp]):
-    """Typed public surface of a Temporaless-shaped Prefect task."""
+class PrefectActivity[ActivityReq: Message, ActivityResp: Message](Protocol):
+    """Typed public surface of a Temporaless-shaped Prefect task.
 
-    def __call__(self, input_message: Req) -> Awaitable[Resp]: ...
+    The request parameter is input-only and the response is output-only, so
+    the type parameters are declared inline and their variance is inferred.
+    """
 
-    def submit(self, input_message: Req) -> PrefectFuture[Resp]: ...
+    def __call__(self, input_message: ActivityReq) -> Awaitable[ActivityResp]: ...
+
+    def submit(self, input_message: ActivityReq) -> PrefectFuture[ActivityResp]: ...
 
 
 _PROTOBUF_ENVELOPE_VERSION_KEY = "__temporaless_protobuf_binary__"

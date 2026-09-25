@@ -12,14 +12,14 @@ The Go adapter in `adapters/go/temporalcompat` takes this position. It runs Temp
 
 The Python adapter in `adapters/py/temporalcompat` follows the same boundary. It runs Temporaless-shaped unary protobuf handlers on the real Temporal Python SDK and tests against Temporal's time-skipping test environment.
 
-The Go module's tested direct requirement resolves SDK `v1.48.0`; Go's minimal
+The Go module's tested direct requirement resolves SDK `v1.49.0`; Go's minimal
 version selection may promote it when a downstream module requires a newer
 release. Python exact-pins its tested SDK in the adapter's own `pyproject.toml`
 (as well as its development lock). The Python declaration must not be a lower
 bound because a Git-subdirectory install does not consume `uv.lock` and would
 otherwise admit an SDK version that this compatibility suite never tested.
 
-The currently tested pair is Go SDK `v1.48.0` and Python SDK `1.32.0`.
+The currently tested pair is Go SDK `v1.49.0` and Python SDK `1.33.0`.
 
 The Python `wrap_workflow` helper generates a workflow class around an existing unary protobuf function, so it disables Temporal's Python workflow sandbox for that generated class. Native sandboxed workflows should be written directly with Temporal's `@workflow.defn` and can still call this adapter's `execute_activity`, `sleep`, and wrapped activities.
 

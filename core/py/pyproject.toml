@@ -7,7 +7,7 @@ license = "Apache-2.0"
 requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "connectrpc>=0.11.1",
+    "connectrpc>=0.12.1",
     "croniter>=6.2.4",
     "opendal>=0.47.3",
     "protobuf>=7.35.1",
@@ -65,7 +65,7 @@ markers = [
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-    "protoc-gen-connectrpc @ git+https://github.com/connectrpc/connect-py.git@ea19bf7530468e8aa1cdcca8bea0795a034d0f41#subdirectory=protoc-gen-connectrpc",
+    "protoc-gen-connectrpc @ git+https://github.com/connectrpc/connect-py.git@7155f2f4142ee0c6e4aed5ad98542567fbc4c93c#subdirectory=protoc-gen-connectrpc",
     "ruff>=0.16.0",
     "temporaless-connectworkflow==0.10.7",
     "temporaless-indexstore==0.10.7",

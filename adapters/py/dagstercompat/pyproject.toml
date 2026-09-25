@@ -27,8 +27,8 @@ pythonpath = ["tests/gen"]
 
 [dependency-groups]
 dev = [
-    "connectrpc==0.11.1",
-    "dagster==1.13.20",
+    "connectrpc==0.12.1",
+    "dagster==1.13.24",
     "protobuf==6.33.6",
     "pytest>=9.1.1",
     "ruff>=0.16.0",

@@ -4,7 +4,7 @@ set -eu
 buf generate
 buf generate --template adapters/py/dagstercompat/buf.gen.yaml
 
-# protoc-gen-connectrpc-py 0.11.1 currently emits trailing spaces on generated
+# protoc-gen-connectrpc-py 0.12.1 currently emits trailing spaces on generated
 # optional-header parameters. Use Python instead of GNU-only `sed -i` so the
 # one-command generator is identical on Linux and macOS Flox environments.
 python3 - \
