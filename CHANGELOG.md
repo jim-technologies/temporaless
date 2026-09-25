@@ -13,8 +13,25 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Added
+
+- `temporaless.v1.RunInspectionService`, a read-only inspection contract in
+  `api/temporaless/v1/inspection.proto`: store capabilities, configured
+  namespaces, the latest-run workflow directory, runs of one workflow, the
+  due-ledger wake view, and `DescribeRun` with history and pending state
+  derived from record timestamps (`RunHistoryEvent`, `RunPendingState`) and
+  descriptor-rendered payloads. No method writes, repairs, claims, or
+  deletes. Go generates into `core/go/gen/temporaless/v1/inspectionv1` with
+  gRPC stubs (so `temporalessv1` never links a transport), Python into
+  `temporaless.v1.inspection_pb2`/`inspection_connect`, TypeScript into the
+  new `./gen/temporaless/v1/inspection` export. See `docs/inspection.md`.
+
 ### Changed
 
+- Go protobuf generation follows each file's `go_package` under the module
+  root (`module=` instead of `paths=source_relative`); the generated record
+  packages are unchanged. `google.golang.org/grpc` is now a direct module
+  requirement.
 - The TypeScript projection pins `@jim-technologies/invariant-protocol`
   0.16.4 (commit `f5922050`), which moves the lock to
   `@bufbuild/protovalidate` 1.3.0 and `@grpc/grpc-js` 1.14.5, and

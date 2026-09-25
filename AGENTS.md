@@ -109,7 +109,7 @@ Use Protovalidate for protobuf-defined validation. Cross-language runtime option
 
 Framework constants that affect records, RPCs, or cross-language behavior must be protobuf enums or protobuf messages. Examples: record schema versions, timer kinds, claim resource types, and claim capabilities. Avoid parallel handwritten string constants in Go and Python.
 
-Point storage RPC contracts belong in `temporaless.v1.RecordStoreService`. Cross-run query RPC contracts belong in `temporaless.v1.RecordQueryService`, implemented only by optional derived indexes. Language storage interfaces may remain as small infrastructure seams, but they should mirror generated protobuf request/response semantics and use generated record, key, enum, and option types.
+Point storage RPC contracts belong in `temporaless.v1.RecordStoreService`. Cross-run query RPC contracts belong in `temporaless.v1.RecordQueryService`, implemented only by optional derived indexes. Read-only console and agent views belong in `temporaless.v1.RunInspectionService` (`inspection.proto`): every method must be side-effect free and answerable from bounded bucket listings and point reads, never repairing or claiming. Language storage interfaces may remain as small infrastructure seams, but they should mirror generated protobuf request/response semantics and use generated record, key, enum, and option types.
 
 When adding point storage RPC code, keep one cohesive `RecordStoreService` instead of separate workflow/activity/timer RPC services. Provide a thin service wrapper for local stores and a thin client-backed store for generated clients. Do not add SQL imports or database requirements to core packages.
 

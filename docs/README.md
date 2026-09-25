@@ -13,7 +13,7 @@ responsibilities required for a serverless deployment.
 | Emit logs and index records | [CloudEvents](cloudevents.md), [analytics](analytics.md), [ClickHouse and Iceberg](clickhouse-iceberg.md) |
 | Implement storage/query boundaries | [Storage RPC](storage-rpc.md), [adapter contract](adapter-contract.md) |
 | Adapt another orchestrator | [Portability](adapter-portability.md), [Temporal](temporal-adapter.md), [Dagster/Prefect](orchestrator-adapters.md) |
-| Build a visual application | [Visual workflows](visual-workflows.md) |
+| Build a visual application | [Visual workflows](visual-workflows.md), [run inspection](inspection.md) |
 | Choose SDKs and contribute | [SDK matrix](sdks.md), [dependencies](dependencies.md), [benchmarks](benchmarks.md), [developer gate](../MAKEFILE-CONTRACT.md) |
 
 Backend-specific projection details are contracts for application-owned

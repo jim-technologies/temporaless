@@ -24,6 +24,10 @@
       "types": "./core/ts/dist/gen/temporaless/v1/temporaless_pb.d.ts",
       "import": "./core/ts/dist/gen/temporaless/v1/temporaless_pb.js"
     },
+    "./gen/temporaless/v1/inspection": {
+      "types": "./core/ts/dist/gen/temporaless/v1/inspection_pb.d.ts",
+      "import": "./core/ts/dist/gen/temporaless/v1/inspection_pb.js"
+    },
     "./invariant": {
       "types": "./core/ts/dist/invariant.d.ts",
       "import": "./core/ts/dist/invariant.js"

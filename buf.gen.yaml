@@ -1,11 +1,20 @@
 version: v2
 plugins:
+  # Go output follows each file's go_package under the module root, so
+  # inspection.proto can generate into its own package beside the records.
   - remote: buf.build/protocolbuffers/go:v1.36.12
-    out: core/go/gen
-    opt: paths=source_relative
+    out: .
+    opt: module=github.com/jim-technologies/temporaless
   - remote: buf.build/connectrpc/go:v1.21.0
-    out: core/go/gen
-    opt: paths=source_relative
+    out: .
+    opt: module=github.com/jim-technologies/temporaless
+  # Invariant Protocol registers gRPC service descriptors. Only the read-only
+  # inspection service gets gRPC stubs; the record store keeps Connect only.
+  - remote: buf.build/grpc/go:v1.6.2
+    out: .
+    opt: module=github.com/jim-technologies/temporaless
+    types:
+      - temporaless.v1.RunInspectionService
   - remote: buf.build/protocolbuffers/python:v36.2
     out: core/py/src
     include_imports: true

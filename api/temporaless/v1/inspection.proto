@@ -1,0 +1,454 @@
+// Temporaless v1 read-only inspection contract.
+//
+// `RunInspectionService` answers the questions an operator console asks of a
+// record store without writing, repairing, claiming, or deleting anything.
+// Every method is implementable directly over a bucket store with bounded
+// listings and point reads; none needs a cross-run index.
+//
+// Temporaless keeps point records, not an event journal. The history and
+// pending state in `DescribeRunResponse` are derived at read time from record
+// timestamps and statuses. They are evidence, not a replayable log:
+// overwritten intermediate states and released claims are not visible, and a
+// status the records cannot evidence (cancel, terminate, timeout) never
+// appears.
+edition = "2023";
+
+package temporaless.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "temporaless/v1/temporaless.proto";
+
+option features.field_presence = IMPLICIT;
+// The inspection messages and their gRPC service stubs live in their own Go
+// package so the core record package never links a transport. Python and
+// TypeScript keep one module per file, as usual.
+option go_package = "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/inspectionv1;inspectionv1";
+
+// RunInspectionService is the read-only projection of one or more registered
+// record stores. No method writes, repairs, claims, or deletes, so a server
+// can run with read-only bucket credentials. Listings are bounded per request
+// and continue through opaque page tokens; implementations must refuse work
+// past their advertised bounds instead of silently truncating.
+service RunInspectionService {
+  // Report the stores the caller may inspect and what each can answer.
+  rpc GetInspectionCapabilities(GetInspectionCapabilitiesRequest) returns (GetInspectionCapabilitiesResponse);
+  // Report the store's configured namespaces and whether each holds records.
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  // List one row per workflow_id in a namespace from the latest-run pointers,
+  // with derived pending state for runs that are still in progress.
+  rpc ListWorkflowDirectory(ListWorkflowDirectoryRequest) returns (ListWorkflowDirectoryResponse);
+  // List the runs of one workflow_id, ordered by run_id. Run IDs are opaque
+  // to Temporaless; the order is lexical, never interpreted.
+  rpc ListWorkflowRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);
+  // List scheduled wakes from the due-timer ledger. Reports disagreement
+  // between the ledger and canonical timer records; never repairs it.
+  rpc ListScheduledWakes(ListScheduledWakesRequest) returns (ListScheduledWakesResponse);
+  // Describe one run: its durable records plus derived history and pending
+  // state.
+  rpc DescribeRun(DescribeRunRequest) returns (DescribeRunResponse);
+}
+
+// GetInspectionCapabilitiesRequest carries no fields; the answer depends on
+// the server's configuration and the caller's authorization.
+message GetInspectionCapabilitiesRequest {}
+
+// GetInspectionCapabilitiesResponse lists the stores visible to the caller.
+message GetInspectionCapabilitiesResponse {
+  // Stores the caller may inspect, ordered by store ID.
+  repeated InspectionStore stores = 1;
+}
+
+// InspectionStore describes one registered record store and the bounds its
+// inspection answers within.
+message InspectionStore {
+  // Stable store identifier used by every request's `store` field.
+  string store = 1;
+  // Human-readable name for pickers.
+  string display_name = 2;
+  // Namespaces the caller may inspect in this store. A request naming any
+  // other namespace is rejected; an empty namespace is never accepted.
+  repeated string namespaces = 3;
+  // True when DescribeRun lists run-scoped claims. False means claims were
+  // not inspected, which is different from "no claims exist".
+  bool claims_listed = 4;
+  // True when the caller may see workflow, activity, and event payloads. When
+  // false, payload values are redacted and only their type URLs and sizes are
+  // returned.
+  bool payloads_visible = 5;
+  // A SCHEDULED timer whose fire_at is older than now minus this grace is
+  // reported as an overdue wake.
+  google.protobuf.Duration overdue_grace = 6;
+  // True when a cross-run index backs global run search. Bucket-native
+  // inspection reports false and serves the directory, per-workflow runs,
+  // and the due ledger only.
+  bool indexed_search = 7;
+  // Largest accepted page_size for list methods.
+  uint32 max_page_size = 8;
+  // Most run directories ListWorkflowRuns lists for one workflow_id before it
+  // refuses and asks for an index.
+  uint32 max_listed_runs = 9;
+  // Most records DescribeRun returns per record kind before it marks the
+  // response truncated.
+  uint32 max_run_records = 10;
+}
+
+// ListNamespacesRequest selects one store.
+message ListNamespacesRequest {
+  // Store identifier from GetInspectionCapabilities.
+  string store = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+// ListNamespacesResponse reports the store's configured namespaces. Namespace
+// identity comes from configuration; the bucket is probed for presence and is
+// never parsed back into identity.
+message ListNamespacesResponse {
+  // One entry per namespace the caller may inspect, ordered by name.
+  repeated InspectionNamespace namespaces = 1;
+}
+
+// InspectionNamespace is one namespace and whether the store holds records
+// for it.
+message InspectionNamespace {
+  // Namespace segment of the storage key.
+  string namespace = 1;
+  // True when at least one latest-run pointer exists in the namespace.
+  bool present = 2;
+}
+
+// ListWorkflowDirectoryRequest pages through a namespace's latest-run
+// pointers. Filters are applied to the decoded pointers; each request reads
+// at most a bounded number of pointers and returns a continuation token when
+// its budget runs out, so a filtered page may hold fewer than page_size rows.
+message ListWorkflowDirectoryRequest {
+  // Store identifier from GetInspectionCapabilities.
+  string store = 1 [(buf.validate.field).string.min_len = 1];
+  // Namespace to list. Required; there is no all-namespaces listing.
+  string namespace = 2 [(buf.validate.field).string.min_len = 1];
+  // Maximum rows to return. Zero selects the server default.
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 1000];
+  // Opaque token from a previous response with the same filters.
+  string page_token = 4;
+  // Keep only workflow IDs starting with this prefix, compared against the
+  // decoded pointer key.
+  string workflow_id_prefix = 5;
+  // Keep only pointers whose latest run has this status. UNSPECIFIED keeps
+  // every status.
+  WorkflowStatus status = 6;
+}
+
+// ListWorkflowDirectoryResponse is one page of the workflow directory.
+message ListWorkflowDirectoryResponse {
+  // Directory rows ordered by workflow_id.
+  repeated WorkflowDirectoryEntry entries = 1;
+  // Opaque token for the next page; empty when the directory is exhausted.
+  string next_page_token = 2;
+  // Pointers read to produce this page, including those filtered out.
+  uint32 scanned = 3;
+}
+
+// WorkflowDirectoryEntry is one workflow_id and the run its latest-run
+// pointer references.
+message WorkflowDirectoryEntry {
+  // The derived latest-run pointer as stored. It is best-effort monotonic and
+  // may lag the authoritative run records.
+  LatestWorkflowRunPointer pointer = 1;
+  // Summary of the referenced run's workflow record. Absent when the pointer
+  // is stale (its run was removed or has moved on).
+  WorkflowRunSummary run = 2;
+  // Derived pending state of the referenced run. Computed only for runs that
+  // are still in progress; terminal runs report RUN_PENDING_REASON_TERMINAL.
+  RunPendingState pending = 3;
+  // True when the pointer references a run whose workflow record is missing
+  // or disagrees with the pointer.
+  bool stale_pointer = 4;
+}
+
+// WorkflowRunSummary is the payload-free view of one WorkflowRecord that list
+// methods return. Use DescribeRun for inputs, results, and child records.
+message WorkflowRunSummary {
+  // Storage identity of the run, read from the record payload.
+  WorkflowKey key = 1;
+  // Workflow type, e.g. "workflow:pkg.Request->pkg.Response".
+  string workflow_type = 2;
+  // Lifecycle status recorded for the run.
+  WorkflowStatus status = 3;
+  // Terminal failure, set when status is FAILED.
+  ActivityFailure failure = 4;
+  // Wall-clock time the workflow record was first persisted.
+  google.protobuf.Timestamp created_at = 5;
+  // Wall-clock time the run reached a terminal status.
+  google.protobuf.Timestamp completed_at = 6;
+  // Caller-supplied logical ordering time, when the run carries one.
+  google.protobuf.Timestamp run_order_time = 7;
+  // Workflow-scope annotations, the display and filter metadata applications
+  // attach with workflow.Annotate.
+  map<string, string> annotations = 8;
+}
+
+// ListWorkflowRunsRequest lists the runs of one workflow_id with a bounded,
+// non-recursive listing of its run directories.
+message ListWorkflowRunsRequest {
+  // Store identifier from GetInspectionCapabilities.
+  string store = 1 [(buf.validate.field).string.min_len = 1];
+  // Namespace of the workflow. Required.
+  string namespace = 2 [(buf.validate.field).string.min_len = 1];
+  // Workflow ID whose runs to list. Required.
+  string workflow_id = 3 [(buf.validate.field).string.min_len = 1];
+  // Maximum runs to return. Zero selects the server default.
+  uint32 page_size = 4 [(buf.validate.field).uint32.lte = 1000];
+  // Opaque token from a previous response with the same workflow and order.
+  string page_token = 5;
+  // False (the default) lists run IDs in descending lexical order, which is
+  // newest first for timestamp-shaped run IDs. True lists ascending.
+  bool ascending = 6;
+}
+
+// ListWorkflowRunsResponse is one page of runs of one workflow_id.
+message ListWorkflowRunsResponse {
+  // Runs in the requested run_id order.
+  repeated WorkflowRunSummary runs = 1;
+  // Opaque token for the next page; empty when exhausted.
+  string next_page_token = 2;
+  // Run directories listed for the workflow_id.
+  uint32 total_listed = 3;
+  // Listed run directories on this page that hold no workflow record. Their
+  // identity cannot be read from a payload, so they are counted, not shown.
+  uint32 runs_without_workflow_record = 4;
+}
+
+// ListScheduledWakesRequest pages through a namespace's due-timer ledger.
+message ListScheduledWakesRequest {
+  // Store identifier from GetInspectionCapabilities.
+  string store = 1 [(buf.validate.field).string.min_len = 1];
+  // Namespace whose ledger to read. Required.
+  string namespace = 2 [(buf.validate.field).string.min_len = 1];
+  // Maximum wakes to return. Zero selects the server default.
+  uint32 page_size = 3 [(buf.validate.field).uint32.lte = 1000];
+  // Opaque token from a previous response.
+  string page_token = 4;
+  // Keep only overdue wakes.
+  bool overdue_only = 5;
+}
+
+// ListScheduledWakesResponse is one page of scheduled wakes.
+message ListScheduledWakesResponse {
+  // SCHEDULED ledger entries in ledger order. Fired and canceled entries are
+  // skipped.
+  repeated ScheduledWake wakes = 1;
+  // Opaque token for the next page; empty when the ledger is exhausted.
+  string next_page_token = 2;
+  // Ledger entries read to produce this page, including skipped ones.
+  uint32 scanned = 3;
+  // Entries a timer scanner quarantined under the namespace's invalid-ledger
+  // prefix. Their bytes are unreadable, so only the count is reported.
+  uint32 quarantined_entries = 4;
+}
+
+// WakeLedgerState compares a due-ledger entry with its canonical timer record.
+enum WakeLedgerState {
+  // Not compared.
+  WAKE_LEDGER_STATE_UNSPECIFIED = 0;
+  // The ledger entry and the canonical timer record are identical.
+  WAKE_LEDGER_STATE_AGREES = 1;
+  // The ledger entry exists but the canonical record does not. A writer was
+  // interrupted; the next timer-scanner pass repairs it before dispatch.
+  WAKE_LEDGER_STATE_CANONICAL_MISSING = 2;
+  // The canonical record differs from the ledger entry. The scanner repairs
+  // it from the ledger before dispatch.
+  WAKE_LEDGER_STATE_CANONICAL_DIFFERS = 3;
+  // The canonical record could not be decoded or validated.
+  WAKE_LEDGER_STATE_CANONICAL_UNREADABLE = 4;
+}
+
+// ScheduledWake is one SCHEDULED timer from the due ledger.
+message ScheduledWake {
+  // The prepared timer record carried by the ledger entry.
+  TimerRecord timer = 1;
+  // Run that owns the timer.
+  WorkflowKey workflow_key = 2;
+  // True when fire_at is older than now minus the store's overdue grace.
+  bool overdue = 3;
+  // How the ledger entry compares with the canonical timer record.
+  WakeLedgerState ledger_state = 4;
+  // Status of the owning run's workflow record. UNSPECIFIED when the record
+  // is missing; a wake whose run is terminal will not be dispatched.
+  WorkflowStatus workflow_status = 5;
+}
+
+// DescribeRunRequest names one workflow run.
+message DescribeRunRequest {
+  // Store identifier from GetInspectionCapabilities.
+  string store = 1 [(buf.validate.field).string.min_len = 1];
+  // Identity of the run to describe.
+  WorkflowKey key = 2 [(buf.validate.field).required = true];
+}
+
+// PayloadVisibility states whether payload values were returned.
+enum PayloadVisibility {
+  // Not reported.
+  PAYLOAD_VISIBILITY_UNSPECIFIED = 0;
+  // Payload values are returned as stored.
+  PAYLOAD_VISIBILITY_VISIBLE = 1;
+  // Payload values were removed; each Any keeps its type URL with an empty
+  // value, and RenderedPayload reports the original size.
+  PAYLOAD_VISIBILITY_REDACTED = 2;
+}
+
+// DescribeRunResponse is one run's durable evidence plus derived views. It is
+// composed from several point reads and listings, not a transactional
+// snapshot.
+message DescribeRunResponse {
+  // The run's workflow record. Absent when only child records exist.
+  WorkflowRecord workflow = 1;
+  // Activity records, ordered by activity ID.
+  repeated ActivityRecord activities = 2;
+  // Timer records, ordered by timer ID. Canceled timers are not visible.
+  repeated TimerRecord timers = 3;
+  // Event records, ordered by event ID.
+  repeated EventRecord events = 4;
+  // Current run-scoped claims, ordered by claim ID. Released claims are gone.
+  repeated ClaimRecord claims = 5;
+  // False when the store could not list claims; `claims` is then empty
+  // without meaning that no claim exists.
+  bool claims_inspected = 6;
+  // History derived from record timestamps, ordered by time then event ID.
+  repeated RunHistoryEvent history = 7;
+  // Derived pending state with the record that evidences it.
+  RunPendingState pending = 8;
+  // Payloads rendered for display, one per Any in the records above.
+  repeated RenderedPayload payloads = 9;
+  // Server time at which the reads completed.
+  google.protobuf.Timestamp observed_at = 10;
+  // Whether payload values in the records above were returned or redacted.
+  PayloadVisibility payload_visibility = 11;
+  // True when a record kind exceeded the store's max_run_records bound and
+  // was cut to it.
+  bool truncated = 12;
+}
+
+// RunHistoryEventKind names one derived history fact.
+enum RunHistoryEventKind {
+  // Not set.
+  RUN_HISTORY_EVENT_KIND_UNSPECIFIED = 0;
+  // The workflow record was first persisted (created_at).
+  RUN_HISTORY_EVENT_KIND_WORKFLOW_STARTED = 1;
+  // The workflow record reached COMPLETED (completed_at).
+  RUN_HISTORY_EVENT_KIND_WORKFLOW_COMPLETED = 2;
+  // The workflow record reached FAILED (completed_at).
+  RUN_HISTORY_EVENT_KIND_WORKFLOW_FAILED = 3;
+  // One activity attempt that succeeded: a span from started_at to
+  // completed_at.
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_ATTEMPT_SUCCEEDED = 4;
+  // One activity attempt that failed: a span from started_at to completed_at
+  // carrying the attempt failure.
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_ATTEMPT_FAILED = 5;
+  // One activity attempt with a start and no recorded completion. The
+  // attempt may still run or its process may have died.
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_ATTEMPT_OPEN = 6;
+  // A durable retry backoff: a span from the last attempt's completion to
+  // next_attempt_at.
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_RETRY_BACKOFF = 7;
+  // The activity record reached COMPLETED (completed_at).
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_COMPLETED = 8;
+  // The activity record reached FAILED (completed_at).
+  RUN_HISTORY_EVENT_KIND_ACTIVITY_FAILED = 9;
+  // A durable timer: a span from created_at to fire_at.
+  RUN_HISTORY_EVENT_KIND_TIMER_SCHEDULED = 10;
+  // A timer whose wake a later durable boundary consumed (fired_at).
+  RUN_HISTORY_EVENT_KIND_TIMER_FIRED = 11;
+  // An external event payload was established (received_at).
+  RUN_HISTORY_EVENT_KIND_EVENT_RECEIVED = 12;
+  // A current claim: a span from created_at to its diagnostic
+  // lease_expires_at.
+  RUN_HISTORY_EVENT_KIND_CLAIM_HELD = 13;
+}
+
+// RunHistoryEvent is one fact derived from a durable record's timestamps.
+message RunHistoryEvent {
+  // Deterministic identifier, e.g. "activity/fetch:page-3/attempt/2".
+  string event_id = 1;
+  // What the event records.
+  RunHistoryEventKind kind = 2;
+  // Instant of the fact, or the start of a span.
+  google.protobuf.Timestamp time = 3;
+  // End of a span. Absent for instants and for spans still open.
+  google.protobuf.Timestamp until = 4;
+  // Activity, timer, event, or claim ID the event derives from. Empty for
+  // workflow events.
+  string resource_id = 5;
+  // 1-indexed attempt number for activity attempt events.
+  uint32 attempt = 6;
+  // Failure carried by a failed attempt, activity, or workflow.
+  ActivityFailure failure = 7;
+  // Timer kind for timer events.
+  TimerKind timer_kind = 8;
+}
+
+// RunPendingReason explains what an in-progress run is waiting for. The first
+// matching reason, in the order listed, wins.
+enum RunPendingReason {
+  // No workflow record to reason about.
+  RUN_PENDING_REASON_UNSPECIFIED = 0;
+  // The run is COMPLETED or FAILED.
+  RUN_PENDING_REASON_TERMINAL = 1;
+  // A SCHEDULED timer is past fire_at plus the store's overdue grace: the
+  // scanner or dispatch may be stalled.
+  RUN_PENDING_REASON_OVERDUE_WAKE = 2;
+  // An activity is RETRYING.
+  RUN_PENDING_REASON_RETRYING = 3;
+  // A claim is past its diagnostic lease expiry and needs verified manual
+  // cleanup; the core never takes over claims.
+  RUN_PENDING_REASON_STALE_CLAIM = 4;
+  // An unexpired workflow claim exists. A claim is evidence of an invocation,
+  // not proof of a healthy worker.
+  RUN_PENDING_REASON_EXECUTING = 5;
+  // A SCHEDULED sleep timer will fire in the future.
+  RUN_PENDING_REASON_SLEEPING = 6;
+  // A SCHEDULED poll timer re-invokes the run to re-check a condition.
+  RUN_PENDING_REASON_POLLING = 7;
+  // In progress with no scheduled wake, retry, or claim: something external
+  // must re-invoke the run.
+  RUN_PENDING_REASON_WAITING_NO_WAKE = 8;
+}
+
+// RunPendingState is the derived pending reason and the record evidencing it.
+message RunPendingState {
+  // The first matching reason.
+  RunPendingReason reason = 1;
+  // Activity, timer, or claim ID that evidences the reason. Empty for
+  // TERMINAL and WAITING_NO_WAKE.
+  string resource_id = 2;
+  // The evidencing instant: fire_at, next_attempt_at, or lease_expires_at.
+  google.protobuf.Timestamp at = 3;
+  // Attempts made so far, for RETRYING.
+  uint32 attempt = 4;
+  // Attempt limit from the recorded retry policy, for RETRYING. Zero when no
+  // policy was recorded.
+  uint32 maximum_attempts = 5;
+  // The last attempt failure, for RETRYING.
+  ActivityFailure last_failure = 6;
+}
+
+// RenderedPayload is one Any from a run's records prepared for display.
+message RenderedPayload {
+  // Location of the Any, e.g. "workflow.input", "activity/fetch:page-3.result",
+  // "event/approval.payload".
+  string path = 1;
+  // Type URL of the packed message.
+  string type_url = 2;
+  // Size of the packed protobuf bytes.
+  uint64 size_bytes = 3;
+  // The rendered value. Unset when the payload is redacted.
+  oneof value {
+    // ProtoJSON of the packed message, decoded with well-known types or the
+    // store's configured descriptor set.
+    google.protobuf.Value json = 4;
+    // The packed bytes when no descriptor for type_url is configured.
+    bytes opaque = 5;
+  }
+  // True when the caller may not see payload values.
+  bool redacted = 6;
+}

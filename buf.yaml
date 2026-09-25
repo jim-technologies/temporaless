@@ -12,6 +12,11 @@ lint:
     - COMMENT_RPC
     - COMMENT_MESSAGE
     - COMMENT_FIELD
+  except:
+    # inspection.proto shares the temporaless.v1 package but generates its Go
+    # messages and gRPC stubs into a sibling package, so the record package
+    # never links a transport (see the go_package comment in that file).
+    - PACKAGE_SAME_GO_PACKAGE
 breaking:
   use:
     - FILE

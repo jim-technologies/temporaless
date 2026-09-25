@@ -9,6 +9,7 @@ buf generate --template adapters/py/dagstercompat/buf.gen.yaml
 # one-command generator is identical on Linux and macOS Flox environments.
 python3 - \
   core/py/src/temporaless/v1/temporaless_connect.py \
+  core/py/src/temporaless/v1/inspection_connect.py \
   adapters/py/dagstercompat/tests/gen/compat/v1/workflow_connect.py \
   adapters/py/dagstercompat/tests/server_gen/compat/v1/workflow_connect.py <<'PY'
 from pathlib import Path
