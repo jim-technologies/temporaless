@@ -136,7 +136,9 @@ lockstep policy.
   the type scale, because terminal-core v0.6.0's record grid, table, and
   select widgets use their own padding and fixed sizes there;
   `docs/console.md` lists them. The raw DescribeRun JSON panel is the wider
-  one of its row so its title and long type URLs fit.
+  one of its row so its long type URLs fit, and its title reads "raw, keys
+  A–Z · OpaquePayload where unresolved or redacted", short enough not to be
+  clipped at 1280 px.
 - The console's lists (Workflows, Runs, Scheduled wakes) keep one line per
   row at the 16 px rem, as the executions list is designed: times and ids no
   longer wrap or break mid-token ("2026-09-26" over "05:45:34",

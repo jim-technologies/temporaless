@@ -205,7 +205,7 @@
       "component": "json",
       "span": 7,
       "height": 360,
-      "title": "DescribeRun JSON · raw, keys A–Z · unresolved or redacted payloads are OpaquePayload",
+      "title": "DescribeRun JSON · raw, keys A–Z · OpaquePayload where unresolved or redacted",
       "refresh_policy": "manual",
       "source": {
         "source_id": "temporaless.run.json",
