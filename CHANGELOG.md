@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-26
+
 ### Added
 
 - `temporaless.v1.RunInspectionService`, a read-only inspection contract in

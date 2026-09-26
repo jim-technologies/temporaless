@@ -1,13 +1,13 @@
 [project]
 name = "temporaless-indexstore"
-version = "0.11.1"
+version = "0.12.0"
 description = "Optional SQLite query index adapter for Temporaless records."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "temporaless==0.11.1",
+    "temporaless==0.12.0",
 ]
 
 [project.urls]
