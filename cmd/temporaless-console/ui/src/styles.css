@@ -54,11 +54,9 @@ body {
 }
 
 .console-mark {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--mtc-accent);
-  border-radius: 3px;
-  transform: rotate(45deg);
+  width: 16px;
+  height: 16px;
+  color: var(--mtc-accent);
   flex: none;
 }
 
@@ -114,19 +112,6 @@ body {
   border: 1px solid var(--mtc-border);
   border-radius: 6px;
   background: var(--mtc-surface);
-}
-
-.console-gate-card h1 {
-  margin: 0 0 8px;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.console-muted {
-  margin: 0 0 16px;
-  color: var(--mtc-muted);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .console-gate-form {

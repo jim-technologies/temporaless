@@ -98,6 +98,25 @@ lockstep policy.
   redacted payloads are `OpaquePayload`. A facade test pins every source to
   the payload case its declared shape names, and every template widget to a
   source of its shape.
+- The console UI host adopts terminal-core v0.6.0's transport and states.
+  Every call goes through the product transport (`createProductFetch`): it
+  carries an `X-Request-Id`, which the console's access log records, and a
+  `traceparent`, and a call with no response after 30 s fails as
+  unavailable instead of stalling its panel's polling. Failed panels render
+  the typed states (a denied namespace reads "You don't have access", a
+  missing run "Not found", each with the server's reason, code, and request
+  ID under Details) instead of "Unable to load · HTTP 403". Bearer sign-in
+  uses the signed-out state and checks the token with one
+  `GetInspectionCapabilities` call before the dashboard opens, so a wrong
+  token is refused once instead of with a 401 in every panel; a token the
+  console refuses mid-session shows the session-expired state and reopens
+  the same selection once a new token is given, and a late 401 for a
+  replaced token is ignored. The configuration load shows a typed error with
+  Retry, and polled panels are marked stale after three missed intervals
+  (`staleAfterMs`). The page uses the standard density, tokens v2, and the
+  vendored Inter and JetBrains Mono fonts, which the build emits as files,
+  so the console's CSP allows fonts from its own origin only
+  (`font-src 'self'`).
 - The documentation says what ships: core has no UI and depends on none, and
   the optional read-only console projects records (`docs/console.md`,
   `docs/comparisons.md`, the inspector README, the README layout and adapter
@@ -122,6 +141,10 @@ lockstep policy.
   into one JSON property per response field because the terminal contract
   had no JSON payload, and the `docs/console.md` paragraph that described it
   and planned the switch. The json widget renders the whole response.
+- The console UI's hand-drawn header mark and the gate's own heading and
+  muted-text styles, replaced by the terminal-core `workflow` icon and the
+  signed-out and session-expired states, and the console's `compact`
+  density override (terminal-core's `standard` density is the default).
 - The "A UI / dashboard: the S3 / GCS console is the dashboard" entry under
   what Temporaless deliberately does not ship, and the inspector README's
   "does not ship a UI" wording. Core still ships no UI; the optional

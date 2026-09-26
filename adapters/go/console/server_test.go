@@ -368,6 +368,9 @@ func TestConsoleHTTPSurface(t *testing.T) {
 		if !strings.Contains(header.Get("Content-Security-Policy"), "frame-ancestors 'none'") || header.Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatalf("%s is missing security headers: %v", path, header)
 		}
+		if !strings.Contains(header.Get("Content-Security-Policy"), "font-src 'self';") {
+			t.Fatalf("%s allows fonts beyond its own files: %q", path, header.Get("Content-Security-Policy"))
+		}
 	}
 	if _, header, _ := get("/assets/app-1.js"); !strings.Contains(header.Get("Cache-Control"), "immutable") {
 		t.Fatalf("hashed asset cache = %q", header.Get("Cache-Control"))

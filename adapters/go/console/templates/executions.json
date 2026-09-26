@@ -83,7 +83,8 @@
           "page_token": "${ctx.directory_page_token}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 15000
+        "refreshIntervalMs": 15000,
+        "staleAfterMs": 45000
       },
       "options": { "page_token_key": "directory_page_token", "record_id_key": "selected_workflow", "search": true }
     },
@@ -102,7 +103,8 @@
           "page_token": "${ctx.runs_page_token}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 15000
+        "refreshIntervalMs": 15000,
+        "staleAfterMs": 45000
       },
       "options": { "page_token_key": "runs_page_token", "record_id_key": "selected_run", "search": false }
     },
@@ -121,7 +123,8 @@
           "run_id": "${ctx.run_id}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 10000
+        "refreshIntervalMs": 10000,
+        "staleAfterMs": 30000
       }
     },
     {
@@ -139,7 +142,8 @@
           "run_id": "${ctx.run_id}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 10000
+        "refreshIntervalMs": 10000,
+        "staleAfterMs": 30000
       }
     },
     {
@@ -158,7 +162,8 @@
           "run_id": "${ctx.run_id}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 10000
+        "refreshIntervalMs": 10000,
+        "staleAfterMs": 30000
       },
       "options": { "filter": true }
     },
@@ -227,7 +232,8 @@
           "page_token": "${ctx.wakes_page_token}",
           "tz": "${ctx.tz}"
         },
-        "refreshIntervalMs": 30000
+        "refreshIntervalMs": 30000,
+        "staleAfterMs": 90000
       },
       "options": { "page_token_key": "wakes_page_token", "record_id_key": "selected_wake", "search": true }
     }

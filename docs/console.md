@@ -31,6 +31,16 @@ store, workflow, or run is picked, each panel says what to pick next, and a
 failed run's summary shows its failure where an unfinished run shows what it
 waits on.
 
+A panel whose call fails says why rather than printing an HTTP status: a
+namespace the caller may not read shows "You don't have access", a run with no
+records shows "Not found", and an unreachable console shows "Service
+unavailable" with Retry. Each keeps the server's reason, the error code, and
+the request ID under Details; the request ID is the `X-Request-Id` the UI sends
+and the console logs for that call. A call that gets no response within 30
+seconds fails instead of holding up its panel's polling, and a list or run
+panel that has not refreshed for three of its poll intervals is marked stale in
+its header.
+
 It shows only what records evidence. An unfinished run is labelled
 retrying, sleeping, polling, executing (a live claim), overdue wake, stale
 claim, or waiting without a durable wake; see
@@ -148,8 +158,15 @@ limits: {defaultPageSize: 50, maxPageSize: 100}
 | Mode | For | Behaviour |
 |---|---|---|
 | `loopback` | Development | No authentication. The listen address must be loopback. |
-| `staticToken` | A private network | One bearer token from a mounted file (at least 16 bytes); sees every store. The UI asks for the token and keeps it in the tab's memory only. |
+| `staticToken` | A private network | One bearer token from a mounted file (at least 16 bytes); sees every store. |
 | `jwt` + `openfga` | Hosted, multi-tenant | ES256/RS256 JWTs verified against a JWKS URL or file (issuer, audience, expiry, 30 s leeway; subject and tenant claims configurable). A store is visible only when its `workspace` equals the token's tenant and OpenFGA allows `user:<sub> <readRelation> workspace:<workspace>`; payload values also need `payloadRelation`. Decisions are cached for 30 s, and an OpenFGA outage fails closed. |
+
+In either bearer mode the UI asks for a token, keeps it in the tab's memory
+only, and checks it with one `GetInspectionCapabilities` call (which reads
+no records) before it opens the dashboard, so a mistyped or expired token is refused once
+at the sign-in form rather than by every panel. When the console refuses the
+token later (an expired JWT, a rotated static token), the page asks for a new
+one and reopens the same store, workflow, and run, which the page URL keeps.
 
 Tenancy is one store per tenant root: point each tenant's store at its own
 bucket prefix and name the tenant in `workspace`. Scope is always taken from

@@ -1,18 +1,41 @@
 import { StrictMode, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createProductFetch, ensureOk, toSourceError, type ProductFetch, type SourceError } from 'medallion-terminal-core/app'
 import { Dashboard, type Template } from 'medallion-terminal-core/dashboard'
-import { Badge, Button, ButtonGroup, Callout, DesignSystemProvider, FormField, Input, LoadingState } from 'medallion-terminal-core/toolkit'
+import {
+  Badge,
+  Button,
+  ButtonGroup,
+  DesignSystemProvider,
+  FormField,
+  Icon,
+  Input,
+  LoadingState,
+  SessionExpiredState,
+  SignedOutState,
+  SourceErrorState,
+} from 'medallion-terminal-core/toolkit'
 import 'medallion-terminal-core/styles'
 import './styles.css'
 
 // The console host is deliberately thin: the server owns every source and the
 // template; this page supplies chrome, the theme, the time zone times are
-// shown in, and (in bearer mode) an in-memory token.
+// shown in, the transport, and (in bearer mode) an in-memory token.
 
 interface UIConfig {
   title: string
   auth: 'loopback' | 'bearer'
   template: Template
+}
+
+// Every call to the console goes through the terminal-core product
+// transport: it adds x-request-id (the server logs it) and a traceparent,
+// types failures as SourceError, and gives up on a backend that has not
+// started answering within the timeout instead of freezing a panel's polls.
+const REQUEST_TIMEOUT_MS = 30_000
+
+function consoleFetch(onUnauthenticated?: (error: SourceError) => void): ProductFetch {
+  return createProductFetch({ timeoutMs: REQUEST_TIMEOUT_MS, onUnauthenticated })
 }
 
 type Theme = 'dark' | 'light'
@@ -110,24 +133,67 @@ function dropLinkedZone() {
   window.history.replaceState(window.history.state, '', url)
 }
 
-function TokenForm({ onSubmit }: { onSubmit: (token: string) => void }) {
+// verifyToken asks the console which stores a token may inspect, a call that
+// reads no records, so a wrong or expired token is refused once at the gate
+// rather than by every panel of the dashboard.
+const TOKEN_CHECK_PATH = '/temporaless.v1.RunInspectionService/GetInspectionCapabilities'
+
+async function verifyToken(token: string): Promise<void> {
+  await consoleFetch()(TOKEN_CHECK_PATH, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(ensureOk)
+}
+
+// SignInGate asks for a bearer token: first as the signed-out state, and
+// again after the server refused a token (expired, revoked, or mistyped),
+// whether at this gate or mid-session. The dashboard's selection lives in the
+// page URL, so signing in again returns to the same store, workflow, and run.
+function SignInGate({ refused, onSignedIn }: { refused?: SourceError, onSignedIn: (token: string) => void }) {
   const [token, setToken] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [failure, setFailure] = useState(refused)
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (token.trim()) onSubmit(token.trim())
+    const value = token.trim()
+    if (!value || checking) return
+    setChecking(true)
+    verifyToken(value).then(() => onSignedIn(value), (cause: unknown) => {
+      setFailure(toSourceError(cause))
+      setChecking(false)
+    })
+  }
+  let state
+  if (failure?.kind === 'unauthenticated') {
+    state = (
+      <SessionExpiredState
+        error={failure}
+        title="The console did not accept your token"
+        description="It may have expired or been revoked. Paste a new bearer token to continue where you were."
+      />
+    )
+  } else if (failure) {
+    state = <SourceErrorState error={failure} />
+  } else {
+    state = (
+      <SignedOutState
+        title="Sign in to inspect executions"
+        description="This console is read-only. Paste a bearer token issued for it; the token stays in this tab's memory and is gone on reload."
+      />
+    )
   }
   return (
     <main className="console-gate">
-      <section className="console-gate-card" aria-labelledby="gate-heading">
-        <h1 id="gate-heading">Sign in to inspect executions</h1>
-        <p className="console-muted">
-          This console is read-only. Paste a bearer token issued for it; the token stays in this tab's memory and is gone on reload.
-        </p>
+      <section className="console-gate-card" aria-label="Sign in">
+        {state}
         <form onSubmit={submit} className="console-gate-form">
           <FormField label="Bearer token" required>
-            <Input type="password" value={token} onChange={event => setToken(event.target.value)} autoComplete="off" spellCheck={false} placeholder="eyJhbGciOi…" />
+            <Input type="password" value={token} onChange={event => setToken(event.target.value)} autoComplete="off" spellCheck={false} placeholder="eyJhbGciOi…" autoFocus />
           </FormField>
-          <Button type="submit" intent="primary" variant="solid">Open console</Button>
+          <Button type="submit" intent="primary" variant="solid" loading={checking} loadingLabel="Checking the token">
+            {failure ? 'Continue' : 'Open console'}
+          </Button>
         </form>
       </section>
     </main>
@@ -141,9 +207,17 @@ function accessLabel(auth: UIConfig['auth'], signedIn: boolean): string {
   return signedIn ? 'Signed in with a bearer token' : 'Bearer token required'
 }
 
+// Session is the bearer token this tab holds and, once the server refused
+// it mid-session, the typed failure that says so.
+interface Session {
+  token?: string
+  refused?: SourceError
+}
+
 function App({ config }: { config: UIConfig }) {
   const [theme, setTheme] = useState<Theme>(initialTheme)
-  const [token, setToken] = useState<string>()
+  const [session, setSession] = useState<Session>({})
+  const token = session.token
   const localZone = useMemo(browserZone, [])
   const [timeMode, setTimeMode] = useState<TimeMode>(() => {
     dropLinkedZone()
@@ -152,6 +226,11 @@ function App({ config }: { config: UIConfig }) {
   const zone = zoneFor(timeMode, localZone)
   const template = useMemo(() => withZone(config.template, zone), [config.template, zone])
   const headers = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token])
+  // One transport per token. A 401 answers the token that request carried,
+  // so a late refusal of a replaced token never signs the new one out.
+  const transport = useMemo(() => consoleFetch(config.auth === 'bearer'
+    ? error => setSession(current => (current.token === token ? { refused: error } : current))
+    : undefined), [config.auth, token])
   useEffect(() => applyTheme(theme), [theme])
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -164,12 +243,13 @@ function App({ config }: { config: UIConfig }) {
     saveTimeMode(mode)
   }
   const needsToken = config.auth === 'bearer' && !token
+  const signIn = (value: string) => setSession({ token: value })
 
   return (
-    <DesignSystemProvider theme={theme} density="compact" className="console-app">
+    <DesignSystemProvider theme={theme} className="console-app">
       <header className="console-header">
         <div className="console-brand">
-          <span className="console-mark" aria-hidden="true" />
+          <Icon name="workflow" className="console-mark" />
           <span className="console-product">Temporaless</span>
           <span className="console-divider" aria-hidden="true">/</span>
           <span className="console-surface">Console</span>
@@ -201,17 +281,17 @@ function App({ config }: { config: UIConfig }) {
           <Button size="small" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
             {theme === 'dark' ? 'Light theme' : 'Dark theme'}
           </Button>
-          {config.auth === 'bearer' && token && <Button size="small" onClick={() => setToken(undefined)}>Sign out</Button>}
+          {config.auth === 'bearer' && token && <Button size="small" onClick={() => setSession({})}>Sign out</Button>}
         </div>
       </header>
-      {needsToken ? <TokenForm onSubmit={setToken} /> : (
+      {needsToken ? <SignInGate refused={session.refused} onSignedIn={signIn} /> : (
         <main className="console-main">
           <Dashboard
             key={zone}
             template={template}
             backendUrl=""
             backendHeaders={headers}
-            theme={theme}
+            fetch={transport}
             chrome="minimal"
             templateTrust="trusted"
           />
@@ -226,25 +306,28 @@ function App({ config }: { config: UIConfig }) {
 
 function Bootstrap() {
   const [config, setConfig] = useState<UIConfig>()
-  const [error, setError] = useState('')
+  const [error, setError] = useState<SourceError>()
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     const controller = new AbortController()
-    fetch('/ui/config', { cache: 'no-store', signal: controller.signal })
-      .then(async response => {
-        if (!response.ok) throw new Error(`The console configuration did not load (HTTP ${response.status}).`)
-        return (await response.json()) as UIConfig
-      })
+    consoleFetch()('/ui/config', { cache: 'no-store', signal: controller.signal })
+      .then(ensureOk)
+      .then(async response => (await response.json()) as UIConfig)
       .then(setConfig)
       .catch((cause: unknown) => {
-        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause))
+        if (!controller.signal.aborted) setError(toSourceError(cause))
       })
     return () => controller.abort()
-  }, [])
+  }, [attempt])
+  const retry = () => {
+    setError(undefined)
+    setAttempt(value => value + 1)
+  }
   if (config) return <App config={config} />
   return (
     <DesignSystemProvider theme={initialTheme()} className="console-bootstrap">
       {error
-        ? <Callout intent="danger" title="The console could not open" actions={<Button onClick={() => window.location.reload()}>Try again</Button>}>{error}</Callout>
+        ? <SourceErrorState error={error} onRetry={retry} />
         : <LoadingState label="Opening the console" />}
     </DesignSystemProvider>
   )
