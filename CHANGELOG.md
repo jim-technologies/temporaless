@@ -144,7 +144,8 @@ lockstep policy.
   table, the SDK adapter matrix, `AGENTS.md`, and a console section in
   `docs/production-checklist.md`).
 - `make build` also builds the console; `make validate` lints and
-  format-checks the console configuration schema, type-checks the console UI,
+  format-checks the console configuration schema, type-checks the console UI
+  and runs its tests (so does `make test`),
   and `scripts/check_versions.py` requires the UI's terminal-core dependency
   and the vendored contract to come from one commit, locked in the form
   `npm install` writes. `make audit` also audits the console UI lockfile.
@@ -155,6 +156,19 @@ lockstep policy.
   an activity, event, or claim record, a latest-run pointer, or a workflow
   record stored under another record's key is rejected (DescribeRun reports
   DataLoss) or skipped and counted by the listings.
+- The console UI host has tests (`npm test` in `cmd/temporaless-console/ui`:
+  Vitest 4.1.11 with jsdom 30.1.1, both exact dev dependencies). They render
+  the app in jsdom with the real dashboard against a fake console passed in
+  as the app's `fetch`, and pin that a bearer console stays signed out until
+  one `GetInspectionCapabilities` check accepts a token and then sends that
+  token on every panel call; that a refused check shows the session-expired
+  state after exactly one call; that a mid-session 401 returns to the gate,
+  keeps the selection in the URL, and reopens it with a new token; that a
+  late 401 for a replaced token is ignored while the same 401 for the current
+  token ends the session; that loopback access sends no token; and that the
+  configuration load retries through the same transport. The UI host moves
+  from `main.tsx` into `app.tsx` so the tests can render it; `main.tsx` only
+  mounts it.
 
 ### Removed
 

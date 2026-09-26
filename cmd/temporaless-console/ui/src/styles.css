@@ -3,7 +3,7 @@
    DesignSystemProvider renders as .console-app (or .console-bootstrap).
    Nothing here gives <html> or <body> a terminal-core class or font size:
    the rem stays the browser's 16 px, so the type scale and the standard
-   density render as designed. The app root fills the viewport; main.tsx
+   density render as designed. The app root fills the viewport; app.tsx
    paints the document canvas behind it with the same --mtc-bg. */
 
 html,

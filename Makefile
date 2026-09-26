@@ -102,9 +102,11 @@ test: test-go test-ts test-py test-rs ## the full test suite — every language,
 test-go: ## go test with the race detector
 	$(GO) test -race $(GOFLAGS) $(GO_PKGS)
 
-test-ts: ## run the TypeScript client tests (when npm is installed)
+test-ts: ## run the TypeScript client tests and the console UI host tests (when npm is installed)
 	@if command -v npm >/dev/null 2>&1; then \
 		npm test; \
+		if [ ! -d cmd/temporaless-console/ui/node_modules ]; then (cd cmd/temporaless-console/ui && npm ci); fi; \
+		(cd cmd/temporaless-console/ui && npm test); \
 	else \
 		echo "Skipping TypeScript tests; npm is not on PATH." >&2; \
 	fi

@@ -123,7 +123,10 @@ build/temporaless-console -config console.yaml
 Open <http://127.0.0.1:8080>. `-check` validates the configuration, opens
 every store, and exits. For UI work, `npm run dev` in
 `cmd/temporaless-console/ui` proxies the API to a running console
-(`CONSOLE_URL`, default `http://127.0.0.1:8080`).
+(`CONSOLE_URL`, default `http://127.0.0.1:8080`), and `npm test` runs the UI
+host's tests: they render the app in jsdom against a fake console passed in
+as its `fetch` and cover the sign-in gate, the session-expired state, and
+which token a 401 ends.
 
 ## Configuration
 
