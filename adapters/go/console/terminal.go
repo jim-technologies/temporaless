@@ -530,7 +530,7 @@ func runState(workflowStatus temporalessv1.WorkflowStatus, pending *inspectionv1
 			hint += fmt.Sprintf("/%d", pending.GetMaximumAttempts())
 		}
 		if at != nil {
-			hint += " · next " + relative(at.AsTime(), now)
+			hint += " · next attempt " + relative(at.AsTime(), now)
 		}
 		if code := pending.GetLastFailure().GetCode(); code != "" {
 			hint += " · " + code

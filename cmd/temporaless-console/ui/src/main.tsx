@@ -60,6 +60,13 @@ function TokenForm({ onSubmit }: { onSubmit: (token: string) => void }) {
   )
 }
 
+// accessLabel names how this tab reaches the API; it never claims a sign-in
+// that has not happened.
+function accessLabel(auth: UIConfig['auth'], signedIn: boolean): string {
+  if (auth === 'loopback') return 'Loopback access'
+  return signedIn ? 'Signed in with a bearer token' : 'Bearer token required'
+}
+
 function App({ config }: { config: UIConfig }) {
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [token, setToken] = useState<string>()
@@ -86,7 +93,7 @@ function App({ config }: { config: UIConfig }) {
         </div>
         <div className="console-header-end">
           <Badge intent="success" dot>Read-only</Badge>
-          <Badge intent="neutral">{config.auth === 'bearer' ? 'Signed in with a bearer token' : 'Loopback access'}</Badge>
+          <Badge intent="neutral">{accessLabel(config.auth, Boolean(token))}</Badge>
           <Button size="small" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
             {theme === 'dark' ? 'Light theme' : 'Dark theme'}
           </Button>

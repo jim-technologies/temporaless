@@ -82,8 +82,8 @@ lockstep policy.
   `engines.node` states the `>=24.18.0` floor Invariant Protocol declares.
 - The console's DescribeRun panel shows the whole response as one JSON
   property per response field (the vendored terminal contract has no generic
-  JSON payload yet), and pending hints read relative times ("next in 24s",
-  "44m late") instead of clock times.
+  JSON payload yet), and pending hints read relative times ("next attempt
+  in 24s", "44m late") instead of clock times.
 - The documentation says what ships: core has no UI and depends on none, and
   the optional read-only console projects records (`docs/console.md`,
   `docs/comparisons.md`, the inspector README, the README layout and adapter

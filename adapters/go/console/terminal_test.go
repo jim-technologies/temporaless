@@ -54,7 +54,7 @@ func TestTerminalSources(t *testing.T) {
 		{console.SourceNamespaces, map[string]string{"store": "engine"}, []string{`"value":"default"`}},
 		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": "default"}, []string{
 			`"records"`, `"status":"retrying"`, `"status":"failed"`, `"status":"completed"`,
-			`"pending":"fetch:page-3 · attempt 2/6 · next in 30s · rate_limited"`,
+			`"pending":"fetch:page-3 · attempt 2/6 · next attempt in 30s · rate_limited"`,
 			`"type":"Struct → Struct"`, `"workflow_id":"pull:weather"`, `"runs_page_token":""`,
 		}},
 		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": "default", "status": "failed"}, []string{`"pending":"upstream_5xx: bad gateway"`}},
