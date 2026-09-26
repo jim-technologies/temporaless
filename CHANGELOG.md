@@ -194,9 +194,12 @@ lockstep policy.
   state after exactly one call; that a mid-session 401 returns to the gate,
   keeps the selection in the URL, and reopens it with a new token; that a
   late 401 for a replaced token is ignored while the same 401 for the current
-  token ends the session; that loopback access sends no token; and that the
-  configuration load retries through the same transport. The UI host moves
-  from `main.tsx` into `app.tsx` so the tests can render it; `main.tsx` only
+  token ends the session, which the test checks by the sign-in gate
+  replacing the dashboard (terminal-core draws a session-expired state in any
+  panel that gets a 401, so that state alone does not show the session
+  ended); that loopback access sends no token; and that the configuration
+  load retries through the same transport. The UI host moves from
+  `main.tsx` into `app.tsx` so the tests can render it; `main.tsx` only
   mounts it.
 
 ### Removed

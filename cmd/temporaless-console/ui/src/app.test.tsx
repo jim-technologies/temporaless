@@ -238,8 +238,17 @@ describe('bearer sign-in', () => {
 
     await signIn('first')
     await until(() => held.length > 0, 'a panel call carrying the first token')
+    expect(button('Sign out')).toBeDefined()
     await act(async () => held.splice(0).forEach(release => release()))
-    await until(() => state('session-expired'), 'the session-expired state')
+
+    // The session ends: the sign-in gate replaces the dashboard. A panel's own
+    // session-expired state is not enough, since terminal-core draws one in
+    // any panel whose call gets a 401, whether or not the session ended.
+    await until(() => container.querySelector('input[type=password]'), 'the sign-in gate')
+    expect(container.textContent).toContain('The console did not accept your token')
+    expect(container.textContent).toContain('Bearer token required')
+    expect(button('Sign out')).toBeUndefined()
+    expect(container.querySelector('.console-main')).toBeNull()
   })
 })
 
