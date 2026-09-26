@@ -100,6 +100,13 @@ lockstep policy.
   and `scripts/check_versions.py` requires the UI's terminal-core dependency
   and the vendored contract to come from one commit, locked in the form
   `npm install` writes. `make audit` also audits the console UI lockfile.
+- Tests pin guards that had no test failing without them: `ScopedAccess`
+  keeping a store from a principal of another workspace even when the
+  authorizer allows that principal everything in its own workspace (unit and
+  end-to-end over HTTP), and inspection's identity-from-payload checks, where
+  an activity, event, or claim record, a latest-run pointer, or a workflow
+  record stored under another record's key is rejected (DescribeRun reports
+  DataLoss) or skipped and counted by the listings.
 
 ### Removed
 

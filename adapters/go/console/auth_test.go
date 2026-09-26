@@ -295,7 +295,12 @@ func (f authorizerFunc) Check(ctx context.Context, user, relation, object string
 }
 
 func TestScopedAccess(t *testing.T) {
-	relations := map[string]bool{"user:viewer|can_read|workspace:ws-a": true, "user:editor|can_read|workspace:ws-a": true, "user:editor|can_write|workspace:ws-a": true}
+	// The editor also holds every relation on ws-b, so for a ws-b principal
+	// only the scope's workspace check can keep ws-a's store hidden.
+	relations := map[string]bool{
+		"user:viewer|can_read|workspace:ws-a": true, "user:editor|can_read|workspace:ws-a": true, "user:editor|can_write|workspace:ws-a": true,
+		"user:editor|can_read|workspace:ws-b": true, "user:editor|can_write|workspace:ws-b": true,
+	}
 	authorizer := authorizerFunc(func(_ context.Context, user, relation, object string) (bool, error) {
 		if user == "user:broken" {
 			return false, errors.New("openfga down")
@@ -307,6 +312,7 @@ func TestScopedAccess(t *testing.T) {
 		"compute": {Workspace: "ws-b"},
 	}}, authorizer)
 	engine := &inspection.Store{ID: "engine"}
+	compute := &inspection.Store{ID: "compute"}
 	unscoped := &inspection.Store{ID: "unregistered"}
 	tests := []struct {
 		name         string
@@ -319,7 +325,8 @@ func TestScopedAccess(t *testing.T) {
 		{"no principal sees nothing", nil, engine, false, false, false},
 		{"viewer sees the store without payloads", &console.Principal{Subject: "viewer", Workspace: "ws-a"}, engine, true, false, false},
 		{"editor sees payloads", &console.Principal{Subject: "editor", Workspace: "ws-a"}, engine, true, true, false},
-		{"another workspace never sees it", &console.Principal{Subject: "editor", Workspace: "ws-b"}, engine, false, false, false},
+		{"another workspace never sees it, whatever it holds there", &console.Principal{Subject: "editor", Workspace: "ws-b"}, engine, false, false, false},
+		{"that workspace sees its own store", &console.Principal{Subject: "editor", Workspace: "ws-b"}, compute, true, true, false},
 		{"a member without the relation", &console.Principal{Subject: "stranger", Workspace: "ws-a"}, engine, false, false, false},
 		{"a store with no scope is hidden from tenants", &console.Principal{Subject: "editor", Workspace: "ws-a"}, unscoped, false, false, false},
 		{"authorization outage fails closed", &console.Principal{Subject: "broken", Workspace: "ws-a"}, engine, false, false, true},

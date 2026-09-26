@@ -152,9 +152,11 @@ func newHarness(t *testing.T, authenticated bool) *harness {
 			t.Fatal(err)
 		}
 		authenticator = verifier
+		// user-7 may read both workspaces, so the outsider token (user-7 in
+		// ws-b) is kept out of ws-a's store by the scope check alone.
 		access = console.ScopedAccess(console.ScopedAccessConfig{Scopes: map[string]console.StoreScope{"engine": {Workspace: "ws-a"}}},
 			authorizerFunc(func(_ context.Context, user, relation, object string) (bool, error) {
-				return user == "user:user-7" && relation == "can_read" && object == "workspace:ws-a", nil
+				return user == "user:user-7" && relation == "can_read" && (object == "workspace:ws-a" || object == "workspace:ws-b"), nil
 			}))
 		if tokens, err = console.NewMACPageTokens([]byte(strings.Repeat("s", 32)), time.Hour, fixedNow); err != nil {
 			t.Fatal(err)
