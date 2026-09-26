@@ -15,7 +15,8 @@ One page, top to bottom:
 - **Runs** of the selected workflow ID, newest run ID first.
 - **Run**: the selected run's summary, its pending state, its history, a
   per-boundary table (one row per activity, timer, event, and claim), its
-  rendered inputs and results, and the whole `DescribeRun` response.
+  rendered inputs and results, and the whole `DescribeRun` response as one
+  ProtoJSON document (keys in alphabetical order).
 - **Scheduled wakes**: the due ledger, with overdue wakes flagged and any
   disagreement with the canonical timer reported (never repaired).
 
@@ -216,14 +217,12 @@ about 58 MiB.
 
 ## Dashboard framework versions
 
-The template renders with terminal-core v0.5.2. The contract under
+The template renders with terminal-core v0.6.0. The contract under
 `third_party/medallion-terminal-core` and the UI's
 `medallion-terminal-core` dependency must come from the same commit, and
-`scripts/check_versions.py` enforces it. That contract has no generic JSON
-payload, so the full `DescribeRun` response is shown as an object view with
-one JSON property per response field. When a newer terminal-core release adds
-a JSON payload case, move the vendored contract and the UI pin together, run
-`make generate`, and switch that panel to the JSON widget.
+`scripts/check_versions.py` enforces it. To move to a newer release, replace
+the vendored protos from its tag, move the UI pin to the same commit, run
+`make generate`, and relock the UI with `npm install`.
 
 ## Not in this version
 

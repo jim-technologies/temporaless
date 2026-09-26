@@ -14,7 +14,7 @@
   "dependencies": {
     "lightweight-charts": "5.2.1",
     "maplibre-gl": "6.6.0",
-    "medallion-terminal-core": "github:jim-technologies/medallion-terminal-core#25ea628acf12f93a9cc06ac14f417215ef357ec8",
+    "medallion-terminal-core": "github:jim-technologies/medallion-terminal-core#5b86bb0ee5f2365a979310d5e00204fcfb3ef357",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "recharts": "3.10.1"

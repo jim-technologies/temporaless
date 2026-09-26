@@ -2,6 +2,7 @@ package console_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestTerminalSources(t *testing.T) {
 		}},
 		{console.SourceRunCompact, run, []string{`"kind":"activity"`, `"status":"retrying"`, `"attempts":2`}},
 		{console.SourceRunPayload, run, []string{`"key":"workflow.input"`, `"pages":6`}},
-		{console.SourceRunJSON, run, []string{`"key":"workflow"`, `"key":"pending"`, `"RUN_PENDING_REASON_RETRYING"`, `"key":"history"`}},
+		{console.SourceRunJSON, run, []string{`{"json":{`, `"workflow":{`, `"RUN_PENDING_REASON_RETRYING"`, `"history":[`, `"workflowId":"pull:weather"`}},
 	}
 	for _, test := range tests {
 		t.Run(test.source, func(t *testing.T) {
@@ -86,6 +87,79 @@ func TestTerminalSources(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTerminalAnswersInDeclaredShapes pins each source to the payload case
+// its ListSources shape declares, for a selected run and before a selection,
+// and the executions template to render each source with a widget of that
+// shape. The DescribeRun JSON source must answer in the json case the json
+// widget renders, never an object view of the response.
+func TestTerminalAnswersInDeclaredShapes(t *testing.T) {
+	terminal := newTerminal(t, inspection.AllowAll)
+	sources, err := terminal.ListSources(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[terminalv1.Shape]string{
+		terminalv1.Shape_SHAPE_TABLE:      "table",
+		terminalv1.Shape_SHAPE_RECORD_SET: "records",
+		terminalv1.Shape_SHAPE_OBJECT:     "object",
+		terminalv1.Shape_SHAPE_EVENTS:     "events",
+		terminalv1.Shape_SHAPE_JSON:       "json",
+	}
+	selected := map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "run_id": "20260925T080000"}
+	shapes := map[string]terminalv1.Shape{}
+	for _, source := range sources.GetSources() {
+		shapes[source.GetId()] = source.GetShape()
+		want, ok := cases[source.GetShape()]
+		if !ok {
+			t.Fatalf("source %s declares shape %s, which no widget in the template renders", source.GetId(), source.GetShape())
+		}
+		for name, params := range map[string]map[string]string{"selected": selected, "waiting": {"store": "engine"}} {
+			response, err := terminal.Get(context.Background(), dataRequest(source.GetId(), params))
+			if err != nil {
+				t.Fatalf("%s (%s): %v", source.GetId(), name, err)
+			}
+			payload := response.ProtoReflect()
+			field := payload.WhichOneof(payload.Descriptor().Oneofs().ByName("payload"))
+			if field == nil || string(field.Name()) != want {
+				t.Fatalf("%s (%s) answered %v, want the %s case of %s", source.GetId(), name, field, want, source.GetShape())
+			}
+		}
+	}
+
+	var template struct {
+		Widgets []struct {
+			ID        string `json:"id"`
+			Component string `json:"component"`
+			Source    *struct {
+				SourceID string `json:"source_id"`
+			} `json:"source"`
+		} `json:"widgets"`
+	}
+	if err := json.Unmarshal(console.ExecutionsTemplate(), &template); err != nil {
+		t.Fatal(err)
+	}
+	components := map[string]terminalv1.Shape{
+		"select":      terminalv1.Shape_SHAPE_TABLE,
+		"table":       terminalv1.Shape_SHAPE_TABLE,
+		"record_grid": terminalv1.Shape_SHAPE_RECORD_SET,
+		"object_view": terminalv1.Shape_SHAPE_OBJECT,
+		"events":      terminalv1.Shape_SHAPE_EVENTS,
+		"json":        terminalv1.Shape_SHAPE_JSON,
+	}
+	for _, widget := range template.Widgets {
+		if widget.Source == nil {
+			continue
+		}
+		shape, ok := shapes[widget.Source.SourceID]
+		if !ok {
+			t.Fatalf("widget %s reads %s, which ListSources does not serve", widget.ID, widget.Source.SourceID)
+		}
+		if components[widget.Component] != shape {
+			t.Fatalf("widget %s renders %s (%s) with a %s widget", widget.ID, widget.Source.SourceID, shape, widget.Component)
+		}
 	}
 }
 
@@ -104,6 +178,7 @@ func TestTerminalWaitsForSelections(t *testing.T) {
 		{console.SourceRunPending, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather"}, `"next_step":"Pick a workflow, then one of its runs."`},
 		{console.SourceRunCompact, map[string]string{"store": "engine"}, `"next_step":"Pick a workflow, then one of its runs."`},
 		{console.SourceRunHistory, map[string]string{"store": "engine"}, `{"events":{"events":[{"label":"Pick a workflow, then one of its runs."`},
+		{console.SourceRunJSON, map[string]string{"store": "engine"}, `{"json":{"next_step":"Pick a workflow, then one of its runs."}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.source, func(t *testing.T) {

@@ -197,10 +197,10 @@
     },
     {
       "id": "run_json",
-      "component": "object_view",
+      "component": "json",
       "span": 6,
       "height": 360,
-      "title": "DescribeRun JSON",
+      "title": "DescribeRun JSON · unresolved or redacted payloads are OpaquePayload",
       "refresh_policy": "manual",
       "source": {
         "source_id": "temporaless.run.json",

@@ -101,7 +101,7 @@ func (service *TerminalService) ListSources(context.Context, *terminalv1.ListSou
 		{Id: SourceRunHistory, Name: "History", Description: "History derived from one run's record timestamps; evidence, not a journal.", Shape: terminalv1.Shape_SHAPE_EVENTS, Params: timedRun, Tags: tags},
 		{Id: SourceRunCompact, Name: "History by boundary", Description: "One row per activity, timer, event, and claim of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: timedRun, Tags: tags},
 		{Id: SourceRunPayload, Name: "Inputs and results", Description: "Rendered workflow, activity, and event payloads of one run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
-		{Id: SourceRunJSON, Name: "Run JSON", Description: "The complete DescribeRun response as ProtoJSON, one property per response field.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
+		{Id: SourceRunJSON, Name: "Run JSON", Description: runJSONDescription, Shape: terminalv1.Shape_SHAPE_JSON, Params: run, Tags: tags},
 	}}, nil
 }
 
@@ -181,6 +181,8 @@ func emptyRun(sourceID string) *terminalv1.DataResponse {
 		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Events{Events: &terminalv1.EventPayload{
 			Events: []*terminalv1.Event{{Label: promptRunShort, Status: terminalv1.EventStatus_EVENT_STATUS_UNSPECIFIED}},
 		}}}
+	case SourceRunJSON:
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Json{Json: structpb.NewStructValue(structOf(map[string]any{"next_step": promptRunShort}))}}
 	default:
 		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: &terminalv1.ObjectPayload{
 			ObjectType:  "Workflow run",
@@ -476,43 +478,26 @@ func (service *TerminalService) run(ctx context.Context, sourceID string, params
 	}
 }
 
-// runJSONFields orders the DescribeRun response for reading: the run, what it
-// waits on, and its history before the raw records.
-var runJSONFields = []string{"workflow", "pending", "history", "activities", "timers", "events", "claims", "payloads",
-	"claimsInspected", "payloadVisibility", "truncated", "observedAt"}
-
-// runJSONDescription says what the DescribeRun JSON panel holds: records as
+// runJSONDescription says what the DescribeRun JSON source holds: records as
 // stored except for OpaquePayload stand-ins, plus derived views.
 const runJSONDescription = "temporaless.v1.RunInspectionService/DescribeRun as ProtoJSON. Records are as stored, except that " +
 	"a payload whose type this server cannot resolve, and every payload when yours are redacted, is a " +
 	"temporaless.v1.OpaquePayload naming the stored type. The history and pending state are derived."
 
-// runJSON renders the complete DescribeRun response as ProtoJSON, one object
-// property per response field. The terminal contract this facade serves has
-// no generic JSON payload case yet, so an object view carries it.
+// runJSON returns the complete DescribeRun response as one ProtoJSON document
+// in the terminal contract's json case, which the json widget renders
+// verbatim. ProtoJSON keeps 64-bit integers as strings, so nothing loses
+// precision on the way through google.protobuf.Value.
 func runJSON(description *inspectionv1.DescribeRunResponse) (*terminalv1.DataResponse, error) {
 	data, err := protojson.Marshal(description)
 	if err != nil {
 		return nil, err
 	}
-	fields := &structpb.Struct{}
-	if err := protojson.Unmarshal(data, fields); err != nil {
+	document := &structpb.Value{}
+	if err := protojson.Unmarshal(data, document); err != nil {
 		return nil, err
 	}
-	object := &terminalv1.ObjectPayload{
-		ObjectType:  "DescribeRunResponse",
-		ObjectId:    runID(description),
-		Title:       "DescribeRun response",
-		Description: proto.String(runJSONDescription),
-	}
-	for _, field := range runJSONFields {
-		value, ok := fields.GetFields()[field]
-		if !ok {
-			continue
-		}
-		object.Properties = append(object.Properties, &terminalv1.ObjectProperty{Key: field, Label: field, Value: value, Format: proto.String("json"), Group: proto.String("DescribeRunResponse")})
-	}
-	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: object}}, nil
+	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Json{Json: document}}, nil
 }
 
 func runID(description *inspectionv1.DescribeRunResponse) string {

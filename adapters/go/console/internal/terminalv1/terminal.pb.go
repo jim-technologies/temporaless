@@ -151,6 +151,8 @@ const (
 	Shape_SHAPE_MEDIA Shape = 19
 	// ConversationPayload.
 	Shape_SHAPE_CONVERSATION Shape = 20
+	// google.protobuf.Value (DataResponse.json).
+	Shape_SHAPE_JSON Shape = 21
 )
 
 // Enum value maps for Shape.
@@ -177,6 +179,7 @@ var (
 		18: "SHAPE_GEO",
 		19: "SHAPE_MEDIA",
 		20: "SHAPE_CONVERSATION",
+		21: "SHAPE_JSON",
 	}
 	Shape_value = map[string]int32{
 		"SHAPE_UNSPECIFIED":   0,
@@ -200,6 +203,7 @@ var (
 		"SHAPE_GEO":           18,
 		"SHAPE_MEDIA":         19,
 		"SHAPE_CONVERSATION":  20,
+		"SHAPE_JSON":          21,
 	}
 )
 
@@ -398,6 +402,7 @@ type DataResponse struct {
 	//	*DataResponse_Geo
 	//	*DataResponse_Media
 	//	*DataResponse_Conversation
+	//	*DataResponse_Json
 	Payload       isDataResponse_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -620,6 +625,15 @@ func (x *DataResponse) GetConversation() *ConversationPayload {
 	return nil
 }
 
+func (x *DataResponse) GetJson() *structpb.Value {
+	if x != nil {
+		if x, ok := x.Payload.(*DataResponse_Json); ok {
+			return x.Json
+		}
+	}
+	return nil
+}
+
 type isDataResponse_Payload interface {
 	isDataResponse_Payload()
 }
@@ -724,6 +738,13 @@ type DataResponse_Conversation struct {
 	Conversation *ConversationPayload `protobuf:"bytes,20,opt,name=conversation,proto3,oneof"`
 }
 
+type DataResponse_Json struct {
+	// Any JSON document for the `json` widget: the ProtoJSON of a message the
+	// backend decoded with its own descriptors, or a plain document. The
+	// frontend renders it verbatim and never interprets it.
+	Json *structpb.Value `protobuf:"bytes,21,opt,name=json,proto3,oneof"`
+}
+
 func (*DataResponse_Timeseries) isDataResponse_Payload() {}
 
 func (*DataResponse_Candles) isDataResponse_Payload() {}
@@ -763,6 +784,8 @@ func (*DataResponse_Geo) isDataResponse_Payload() {}
 func (*DataResponse_Media) isDataResponse_Payload() {}
 
 func (*DataResponse_Conversation) isDataResponse_Payload() {}
+
+func (*DataResponse_Json) isDataResponse_Payload() {}
 
 // ListSourcesRequest carries no fields today; filtering may be
 // added later.
@@ -1586,8 +1609,7 @@ const file_medallion_terminal_v1_terminal_proto_rawDesc = "" +
 	"\x06params\x18\x02 \x03(\v2..medallion.terminal.v1.DataRequest.ParamsEntryR\x06params\x1a9\n" +
 	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdc\n" +
-	"\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8a\v\n" +
 	"\fDataResponse\x12J\n" +
 	"\n" +
 	"timeseries\x18\x01 \x01(\v2(.medallion.terminal.v1.TimeseriesPayloadH\x00R\n" +
@@ -1614,7 +1636,8 @@ const file_medallion_terminal_v1_terminal_proto_rawDesc = "" +
 	"\arecords\x18\x11 \x01(\v2'.medallion.terminal.v1.RecordSetPayloadH\x00R\arecords\x125\n" +
 	"\x03geo\x18\x12 \x01(\v2!.medallion.terminal.v1.GeoPayloadH\x00R\x03geo\x12;\n" +
 	"\x05media\x18\x13 \x01(\v2#.medallion.terminal.v1.MediaPayloadH\x00R\x05media\x12P\n" +
-	"\fconversation\x18\x14 \x01(\v2*.medallion.terminal.v1.ConversationPayloadH\x00R\fconversationB\t\n" +
+	"\fconversation\x18\x14 \x01(\v2*.medallion.terminal.v1.ConversationPayloadH\x00R\fconversation\x12,\n" +
+	"\x04json\x18\x15 \x01(\v2\x16.google.protobuf.ValueH\x00R\x04jsonB\t\n" +
 	"\apayload\"\x14\n" +
 	"\x12ListSourcesRequest\"N\n" +
 	"\x13ListSourcesResponse\x127\n" +
@@ -1689,7 +1712,7 @@ const file_medallion_terminal_v1_terminal_proto_rawDesc = "" +
 	"\x13PARAM_TYPE_DURATION\x10\x05\x12\x13\n" +
 	"\x0fPARAM_TYPE_ENUM\x10\x06\x12\x16\n" +
 	"\x12PARAM_TYPE_INTEGER\x10\a\x12\x13\n" +
-	"\x0fPARAM_TYPE_DATE\x10\b*\xa5\x03\n" +
+	"\x0fPARAM_TYPE_DATE\x10\b*\xb5\x03\n" +
 	"\x05Shape\x12\x15\n" +
 	"\x11SHAPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10SHAPE_TIMESERIES\x10\x01\x12\x11\n" +
@@ -1713,7 +1736,9 @@ const file_medallion_terminal_v1_terminal_proto_rawDesc = "" +
 	"\x10SHAPE_RECORD_SET\x10\x11\x12\r\n" +
 	"\tSHAPE_GEO\x10\x12\x12\x0f\n" +
 	"\vSHAPE_MEDIA\x10\x13\x12\x16\n" +
-	"\x12SHAPE_CONVERSATION\x10\x14*\xcd\x01\n" +
+	"\x12SHAPE_CONVERSATION\x10\x14\x12\x0e\n" +
+	"\n" +
+	"SHAPE_JSON\x10\x15*\xcd\x01\n" +
 	"\fActionStatus\x12\x1d\n" +
 	"\x19ACTION_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ACTION_STATUS_OK\x10\x01\x12\x1a\n" +
@@ -1781,10 +1806,11 @@ var file_medallion_terminal_v1_terminal_proto_goTypes = []any{
 	(*GeoPayload)(nil),          // 33: medallion.terminal.v1.GeoPayload
 	(*MediaPayload)(nil),        // 34: medallion.terminal.v1.MediaPayload
 	(*ConversationPayload)(nil), // 35: medallion.terminal.v1.ConversationPayload
-	(*Context)(nil),             // 36: medallion.terminal.v1.Context
-	(*Widget)(nil),              // 37: medallion.terminal.v1.Widget
-	(*WidgetAction)(nil),        // 38: medallion.terminal.v1.WidgetAction
-	(*structpb.Struct)(nil),     // 39: google.protobuf.Struct
+	(*structpb.Value)(nil),      // 36: google.protobuf.Value
+	(*Context)(nil),             // 37: medallion.terminal.v1.Context
+	(*Widget)(nil),              // 38: medallion.terminal.v1.Widget
+	(*WidgetAction)(nil),        // 39: medallion.terminal.v1.WidgetAction
+	(*structpb.Struct)(nil),     // 40: google.protobuf.Struct
 }
 var file_medallion_terminal_v1_terminal_proto_depIdxs = []int32{
 	15, // 0: medallion.terminal.v1.DataRequest.params:type_name -> medallion.terminal.v1.DataRequest.ParamsEntry
@@ -1808,36 +1834,37 @@ var file_medallion_terminal_v1_terminal_proto_depIdxs = []int32{
 	33, // 18: medallion.terminal.v1.DataResponse.geo:type_name -> medallion.terminal.v1.GeoPayload
 	34, // 19: medallion.terminal.v1.DataResponse.media:type_name -> medallion.terminal.v1.MediaPayload
 	35, // 20: medallion.terminal.v1.DataResponse.conversation:type_name -> medallion.terminal.v1.ConversationPayload
-	7,  // 21: medallion.terminal.v1.ListSourcesResponse.sources:type_name -> medallion.terminal.v1.Source
-	1,  // 22: medallion.terminal.v1.Source.shape:type_name -> medallion.terminal.v1.Shape
-	8,  // 23: medallion.terminal.v1.Source.params:type_name -> medallion.terminal.v1.SourceParam
-	0,  // 24: medallion.terminal.v1.SourceParam.type:type_name -> medallion.terminal.v1.ParamType
-	36, // 25: medallion.terminal.v1.GenerateRequest.context:type_name -> medallion.terminal.v1.Context
-	37, // 26: medallion.terminal.v1.GenerateRequest.current_widgets:type_name -> medallion.terminal.v1.Widget
-	38, // 27: medallion.terminal.v1.GenerateResponse.actions:type_name -> medallion.terminal.v1.WidgetAction
-	36, // 28: medallion.terminal.v1.GenerateResponse.context:type_name -> medallion.terminal.v1.Context
-	39, // 29: medallion.terminal.v1.ActionRequest.params:type_name -> google.protobuf.Struct
-	2,  // 30: medallion.terminal.v1.ActionResponse.status:type_name -> medallion.terminal.v1.ActionStatus
-	39, // 31: medallion.terminal.v1.ActionResponse.data:type_name -> google.protobuf.Struct
-	2,  // 32: medallion.terminal.v1.ActionUpdate.status:type_name -> medallion.terminal.v1.ActionStatus
-	39, // 33: medallion.terminal.v1.ActionUpdate.data:type_name -> google.protobuf.Struct
-	3,  // 34: medallion.terminal.v1.TerminalService.Get:input_type -> medallion.terminal.v1.DataRequest
-	3,  // 35: medallion.terminal.v1.TerminalService.Stream:input_type -> medallion.terminal.v1.DataRequest
-	5,  // 36: medallion.terminal.v1.TerminalService.ListSources:input_type -> medallion.terminal.v1.ListSourcesRequest
-	9,  // 37: medallion.terminal.v1.TerminalService.Generate:input_type -> medallion.terminal.v1.GenerateRequest
-	11, // 38: medallion.terminal.v1.TerminalService.SubmitAction:input_type -> medallion.terminal.v1.ActionRequest
-	13, // 39: medallion.terminal.v1.TerminalService.WatchAction:input_type -> medallion.terminal.v1.ActionWatchRequest
-	4,  // 40: medallion.terminal.v1.TerminalService.Get:output_type -> medallion.terminal.v1.DataResponse
-	4,  // 41: medallion.terminal.v1.TerminalService.Stream:output_type -> medallion.terminal.v1.DataResponse
-	6,  // 42: medallion.terminal.v1.TerminalService.ListSources:output_type -> medallion.terminal.v1.ListSourcesResponse
-	10, // 43: medallion.terminal.v1.TerminalService.Generate:output_type -> medallion.terminal.v1.GenerateResponse
-	12, // 44: medallion.terminal.v1.TerminalService.SubmitAction:output_type -> medallion.terminal.v1.ActionResponse
-	14, // 45: medallion.terminal.v1.TerminalService.WatchAction:output_type -> medallion.terminal.v1.ActionUpdate
-	40, // [40:46] is the sub-list for method output_type
-	34, // [34:40] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	36, // 21: medallion.terminal.v1.DataResponse.json:type_name -> google.protobuf.Value
+	7,  // 22: medallion.terminal.v1.ListSourcesResponse.sources:type_name -> medallion.terminal.v1.Source
+	1,  // 23: medallion.terminal.v1.Source.shape:type_name -> medallion.terminal.v1.Shape
+	8,  // 24: medallion.terminal.v1.Source.params:type_name -> medallion.terminal.v1.SourceParam
+	0,  // 25: medallion.terminal.v1.SourceParam.type:type_name -> medallion.terminal.v1.ParamType
+	37, // 26: medallion.terminal.v1.GenerateRequest.context:type_name -> medallion.terminal.v1.Context
+	38, // 27: medallion.terminal.v1.GenerateRequest.current_widgets:type_name -> medallion.terminal.v1.Widget
+	39, // 28: medallion.terminal.v1.GenerateResponse.actions:type_name -> medallion.terminal.v1.WidgetAction
+	37, // 29: medallion.terminal.v1.GenerateResponse.context:type_name -> medallion.terminal.v1.Context
+	40, // 30: medallion.terminal.v1.ActionRequest.params:type_name -> google.protobuf.Struct
+	2,  // 31: medallion.terminal.v1.ActionResponse.status:type_name -> medallion.terminal.v1.ActionStatus
+	40, // 32: medallion.terminal.v1.ActionResponse.data:type_name -> google.protobuf.Struct
+	2,  // 33: medallion.terminal.v1.ActionUpdate.status:type_name -> medallion.terminal.v1.ActionStatus
+	40, // 34: medallion.terminal.v1.ActionUpdate.data:type_name -> google.protobuf.Struct
+	3,  // 35: medallion.terminal.v1.TerminalService.Get:input_type -> medallion.terminal.v1.DataRequest
+	3,  // 36: medallion.terminal.v1.TerminalService.Stream:input_type -> medallion.terminal.v1.DataRequest
+	5,  // 37: medallion.terminal.v1.TerminalService.ListSources:input_type -> medallion.terminal.v1.ListSourcesRequest
+	9,  // 38: medallion.terminal.v1.TerminalService.Generate:input_type -> medallion.terminal.v1.GenerateRequest
+	11, // 39: medallion.terminal.v1.TerminalService.SubmitAction:input_type -> medallion.terminal.v1.ActionRequest
+	13, // 40: medallion.terminal.v1.TerminalService.WatchAction:input_type -> medallion.terminal.v1.ActionWatchRequest
+	4,  // 41: medallion.terminal.v1.TerminalService.Get:output_type -> medallion.terminal.v1.DataResponse
+	4,  // 42: medallion.terminal.v1.TerminalService.Stream:output_type -> medallion.terminal.v1.DataResponse
+	6,  // 43: medallion.terminal.v1.TerminalService.ListSources:output_type -> medallion.terminal.v1.ListSourcesResponse
+	10, // 44: medallion.terminal.v1.TerminalService.Generate:output_type -> medallion.terminal.v1.GenerateResponse
+	12, // 45: medallion.terminal.v1.TerminalService.SubmitAction:output_type -> medallion.terminal.v1.ActionResponse
+	14, // 46: medallion.terminal.v1.TerminalService.WatchAction:output_type -> medallion.terminal.v1.ActionUpdate
+	41, // [41:47] is the sub-list for method output_type
+	35, // [35:41] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_medallion_terminal_v1_terminal_proto_init() }
@@ -1868,6 +1895,7 @@ func file_medallion_terminal_v1_terminal_proto_init() {
 		(*DataResponse_Geo)(nil),
 		(*DataResponse_Media)(nil),
 		(*DataResponse_Conversation)(nil),
+		(*DataResponse_Json)(nil),
 	}
 	file_medallion_terminal_v1_terminal_proto_msgTypes[9].OneofWrappers = []any{}
 	file_medallion_terminal_v1_terminal_proto_msgTypes[11].OneofWrappers = []any{}

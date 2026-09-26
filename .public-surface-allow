@@ -46,7 +46,7 @@ private-remote | scripts/check_versions.py | the version check spells the exact 
 
 # ---------------------------------------------------------------------------
 # The optional console adapter serves the public terminal-core TerminalService
-# contract (Apache-2.0), vendored byte for byte at its v0.5.2 tag. Its protobuf
+# contract (Apache-2.0), vendored byte for byte at its v0.6.0 tag. Its protobuf
 # package and file paths are wire identity, so they cannot be renamed. These
 # rules cover only the vendored tree, the Go bindings generated from it, and
 # the template that maps its files; hand-written code never names the brand.

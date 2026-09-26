@@ -39,7 +39,7 @@ lockstep policy.
   pending reason and fingerprint the store to prove no call writes.
 - `adapters/go/console`, the optional read-only console backend. A
   `TerminalService` facade projects `RunInspectionService` onto the public
-  terminal-core dashboard contract (vendored at v0.5.2 under `third_party/`,
+  terminal-core dashboard contract (vendored at v0.6.0 under `third_party/`,
   Go bindings in `internal/terminalv1`) with sources for stores, namespaces,
   the workflow directory, runs, scheduled wakes, and a run's summary,
   pending state, derived history, per-boundary table, payloads, and
@@ -61,7 +61,7 @@ lockstep policy.
   dashboard facade over Connect/HTTP and MCP (plus optional native gRPC),
   `/healthz` and `/readyz`, `/ui/config`, and an embedded UI. The UI host in
   `cmd/temporaless-console/ui` renders the executions template with
-  terminal-core v0.5.2 (pinned to the vendored contract's commit), keeps a
+  terminal-core v0.6.0 (pinned to the vendored contract's commit), keeps a
   bearer token in tab memory only, and follows the light or dark theme.
   `-check` validates the configuration and opens every store. OpenDAL's
   unpacked native libraries are deleted from `TMPDIR` (which must allow
@@ -86,10 +86,18 @@ lockstep policy.
   0.16.4 (commit `f5922050`), which moves the lock to
   `@bufbuild/protovalidate` 1.3.0 and `@grpc/grpc-js` 1.14.5, and
   `engines.node` states the `>=24.18.0` floor Invariant Protocol declares.
-- The console's DescribeRun panel shows the whole response as one JSON
-  property per response field (the vendored terminal contract has no generic
-  JSON payload yet), and pending hints read relative times ("next attempt
-  in 24s", "44m late") instead of clock times.
+- The console's pending hints read relative times ("next attempt in 24s",
+  "44m late") instead of clock times.
+- The console moves to terminal-core v0.6.0 (tag `v0.6.0`, commit
+  `5b86bb0e`): the vendored contract, its Go bindings and descriptor set, and
+  the UI pin move together, and the UI lock records the new tarball's
+  integrity. The DescribeRun JSON panel is the `json` widget over the
+  contract's new `DataResponse.json` case (`google.protobuf.Value`), so
+  `temporaless.run.json` answers with the whole `DescribeRunResponse` as one
+  ProtoJSON document (`SHAPE_JSON`), and its title says that unresolved or
+  redacted payloads are `OpaquePayload`. A facade test pins every source to
+  the payload case its declared shape names, and every template widget to a
+  source of its shape.
 - The documentation says what ships: core has no UI and depends on none, and
   the optional read-only console projects records (`docs/console.md`,
   `docs/comparisons.md`, the inspector README, the README layout and adapter
@@ -110,6 +118,10 @@ lockstep policy.
 
 ### Removed
 
+- The console's DescribeRun object-view fallback, which split the response
+  into one JSON property per response field because the terminal contract
+  had no JSON payload, and the `docs/console.md` paragraph that described it
+  and planned the switch. The json widget renders the whole response.
 - The "A UI / dashboard: the S3 / GCS console is the dashboard" entry under
   what Temporaless deliberately does not ship, and the inspector README's
   "does not ship a UI" wording. Core still ships no UI; the optional
@@ -188,12 +200,14 @@ lockstep policy.
 ### Known limitations
 
 - The console serves its waiting prompts as data rows, because the
-  terminal-core v0.5.2 widgets it renders with have no empty state. Before a
-  workflow is picked, the runs grid shows the prompt in a sortable "Next step"
-  column and counts it ("1 shown"), the history panel shows its event filter
-  above a single prompt event, and the prompt's type size differs between the
-  record grid and the table widget. The prompts move to the terminal-core
-  v0.7.0 empty-state components.
+  terminal-core widgets it renders with have no server-driven empty state
+  (v0.6.0 still has none). Before a workflow is picked, the runs grid shows
+  the prompt in a sortable "Next step" column and counts it ("1 shown"), the
+  history panel shows its event filter above a single prompt event, the
+  DescribeRun JSON panel shows a one-key `next_step` document, and the
+  prompt's type size still differs between the record grid and the table
+  widget. The prompts move to the terminal-core v0.7.0 empty-state
+  components.
 
 ## [0.11.1] — 2026-09-25
 

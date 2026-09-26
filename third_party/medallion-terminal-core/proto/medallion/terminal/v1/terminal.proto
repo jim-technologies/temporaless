@@ -117,6 +117,10 @@ message DataResponse {
     MediaPayload media = 19;
     // Message transcript. See ConversationPayload.
     ConversationPayload conversation = 20;
+    // Any JSON document for the `json` widget: the ProtoJSON of a message the
+    // backend decoded with its own descriptors, or a plain document. The
+    // frontend renders it verbatim and never interprets it.
+    google.protobuf.Value json = 21;
   }
 }
 
@@ -268,6 +272,8 @@ enum Shape {
   SHAPE_MEDIA = 19;
   // ConversationPayload.
   SHAPE_CONVERSATION = 20;
+  // google.protobuf.Value (DataResponse.json).
+  SHAPE_JSON = 21;
 }
 
 // ----- Generate (AI) -----
