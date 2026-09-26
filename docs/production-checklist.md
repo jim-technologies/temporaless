@@ -230,7 +230,34 @@ The detailed deployment contract and method support matrix are in
 - [ ] **Disaster recovery runbook.** "Bucket gone" → restore from versioning / cross-region replica. "Process crash mid-timer-write" → the deterministic prepared record overlays and repairs the canonical timer before a later scan dispatches it (object-storage point writes are atomic).
 - [ ] **`ClaimBusy` budget watched.** A spike in `Code.ALREADY_EXISTS` indicates a live holder, a thundering herd, or a leaked create-only claim. Lease expiry does not free create-only claims; verify the owner is gone and delete the stale claim manually. CAS takeover is future-only.
 
+## Read-only console (optional)
+
+Core ships no UI. If you run [`cmd/temporaless-console`](console.md):
+
+- [ ] **Bucket credentials are read-only.** The console never writes, repairs,
+  or claims; read-only credentials keep that true if it ever had a bug.
+- [ ] **Authentication matches the network.** `loopback` only on a loopback
+  listener; `staticToken` only on a private network; `jwt` with `openfga` for
+  anything shared. Each store names its tenant in `workspace`, and payload
+  values follow `payloadRelation` (`can_write` limits them to editors).
+- [ ] **Every secret is a mounted file**: the static token or JWKS, the
+  OpenFGA token, both S3 credentials, and the page-token MAC key (at least 32
+  bytes). The configuration rejects unknown fields and inline credentials
+  have no field.
+- [ ] **`/tmp` is writable** (a small in-memory `emptyDir` or `tmpfs` with a
+  read-only root filesystem): OpenDAL unpacks its native libraries there at
+  start and the console deletes them once its stores are open.
+- [ ] **Probes use `/healthz` and `/readyz`**; neither touches the bucket, so
+  a scale-from-zero wake is not gated on storage latency.
+- [ ] **The history is read as evidence.** The console derives it from record
+  timestamps and says so; it cannot show overwritten intermediate states or
+  released claims.
+
 ## Container image (optional)
+
+`docker build --target console .` builds the read-only console image
+(distroless, uid 65532); see [console.md](console.md). A target-less build
+produces the ConnectStore image below.
 
 The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. The image keeps `/app` root-owned while running as the unprivileged `app` user, so application code and the virtual environment cannot be modified by a compromised process. It's a starting point; for your own service:
 

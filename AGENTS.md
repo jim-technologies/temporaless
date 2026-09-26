@@ -39,6 +39,7 @@ Existing unary protobuf RPC handlers may be wrapped as workflows or activities. 
   - `adapters/go/`: Go adapters
   - `adapters/py/`: Python adapters
   - `cmd/temporaless/`: the local-filesystem-only Go operator CLI; every subcommand maps to one inspector, janitor, or store adapter function
+  - `cmd/temporaless-console/`: the optional read-only console server over `adapters/go/inspection` and `adapters/go/console`, with its UI host in `ui/` (Node at build time only; `make build-console`). Core ships no UI and must never depend on it.
   - `examples/go/` and `examples/py/`: language-specific examples
 - The core owns workflow/activity replay, protobuf records, and blessed storage infrastructure.
 - Inside core, workflow packages are the business layer and storage packages are infrastructure. OpenDAL-backed point stores may live in core storage.

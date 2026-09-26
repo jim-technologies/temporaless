@@ -104,7 +104,7 @@ type and original size.
 [`adapters/go/inspection`](../adapters/go/inspection) serves the contract
 directly over OpenDAL bucket stores, with per-caller store, namespace, and
 payload scoping and bounded listings. It is the backend of the optional
-read-only console. Index-backed global search (filter every run by status,
+[read-only console](console.md). Index-backed global search (filter every run by status,
 type, or time) is a later `RecordQueryService` extension; bucket-native
 inspection reports `indexed_search=false`.
 

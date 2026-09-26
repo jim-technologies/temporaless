@@ -47,6 +47,7 @@ core/rs/              Experimental Rust SDK — storage + minimal workflow runti
 core/ts/              TypeScript SDK — generated protobuf, ConnectRPC wrappers, visual/run projection, invariantprotocol projection
 adapters/{go,py}/     Adapters: claims, schedulers, inspectors, retention, Temporal compat
 cmd/temporaless/      Local-filesystem operator CLI (Go) over the inspector/janitor adapters
+cmd/temporaless-console/  Optional read-only console (Go server + embedded UI) over the inspection adapter
 examples/{go,py}/     Runnable demos: fetch-prices, llm-completion, production-server, quant-service, stocks-pipeline, twitter-webhook
 docs/                 Architecture and design notes
 ```
@@ -105,6 +106,7 @@ work without a package registry; its source stays under `core/ts`.
 | [`adapters/go/cronscheduler`](adapters/go/cronscheduler) | In-process cron scheduler with stateless seeding from existing runs |
 | [`adapters/go/inspector`](adapters/go/inspector) | List in-flight / failed workflows, reset records for re-execution |
 | [`adapters/go/inspection`](adapters/go/inspection) | Read-only `RunInspectionService` over bucket stores: workflow directory, runs of a workflow, due-ledger wakes, and `DescribeRun` with derived history and pending state |
+| [`adapters/go/console`](adapters/go/console) | Backend of the optional read-only [console](docs/console.md) (`cmd/temporaless-console`): a dashboard facade over `RunInspectionService`, the executions template, JWT/OpenFGA or static-token authentication, and scope-bound page tokens. Core ships no UI. |
 | [`adapters/go/visualization`](adapters/go/visualization) | Validate and digest optional `WorkflowPlan` messages, provide an opt-in descriptor + operation-allowlist approval validator, inspect one run, and project plan nodes onto durable record evidence for a UI |
 | [`adapters/go/janitor`](adapters/go/janitor) | Sweep COMPLETED runs older than a max-age threshold |
 | [`adapters/go/backfill`](adapters/go/backfill) | Run a workflow over many run_ids with bounded concurrency + per-run status (Dagster/Prefect/Airflow-style backfill) |

@@ -84,11 +84,23 @@ lockstep policy.
   property per response field (the vendored terminal contract has no generic
   JSON payload yet), and pending hints read relative times ("next in 24s",
   "44m late") instead of clock times.
+- The documentation says what ships: core has no UI and depends on none, and
+  the optional read-only console projects records (`docs/console.md`,
+  `docs/comparisons.md`, the inspector README, the README layout and adapter
+  table, the SDK adapter matrix, `AGENTS.md`, and a console section in
+  `docs/production-checklist.md`).
 - `make build` also builds the console; `make validate` lints and
   format-checks the console configuration schema, type-checks the console UI,
   and `scripts/check_versions.py` requires the UI's terminal-core dependency
   and the vendored contract to come from one commit, locked in the form
   `npm install` writes. `make audit` also audits the console UI lockfile.
+
+### Removed
+
+- The "A UI / dashboard: the S3 / GCS console is the dashboard" entry under
+  what Temporaless deliberately does not ship, and the inspector README's
+  "does not ship a UI" wording. Core still ships no UI; the optional
+  read-only console supersedes both statements.
 
 ### Fixed
 

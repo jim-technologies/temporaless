@@ -9,7 +9,7 @@ responsibilities required for a serverless deployment.
 | Understand design choices | [Philosophy](philosophy.md), [comparisons](comparisons.md) |
 | Write workflows | [Getting started](getting-started.md), [canonical protobuf workflows](canonical-workflows.md) |
 | Deploy and resume | [Deployment](deployment.md), [scheduling](scheduling.md), [production checklist](production-checklist.md) |
-| Recover and operate | [Runbook](runbook.md), [operator CLI](operator-cli.md), [hard cases](hard-cases.md), [claims](claims.md) |
+| Recover and operate | [Runbook](runbook.md), [operator CLI](operator-cli.md), [read-only console](console.md), [hard cases](hard-cases.md), [claims](claims.md) |
 | Emit logs and index records | [CloudEvents](cloudevents.md), [analytics](analytics.md), [ClickHouse and Iceberg](clickhouse-iceberg.md) |
 | Implement storage/query boundaries | [Storage RPC](storage-rpc.md), [adapter contract](adapter-contract.md) |
 | Adapt another orchestrator | [Portability](adapter-portability.md), [Temporal](temporal-adapter.md), [Dagster/Prefect](orchestrator-adapters.md) |

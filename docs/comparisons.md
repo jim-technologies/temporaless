@@ -86,7 +86,7 @@ join it to durable records. See
 
 These would all be reasonable additions; we've chosen not to:
 
-- **A UI / dashboard.** The S3 / GCS console is the dashboard. Records are the source of truth.
+- **A UI in the core.** The runtime and SDKs ship no UI and nothing depends on one: records are the source of truth. The optional [read-only console](console.md) (`cmd/temporaless-console`) projects them into an executions view; it holds no state, writes nothing, and scales to zero.
 - **A scheduler service.** The cron scheduler is a Python class you call from a Kubernetes CronJob or a `while true: tick(); sleep(60s)` loop. There's no scheduler binary.
 - **A control plane.** No "register a workflow definition" step. The decorator IS the registration.
 - **An asset / lineage system.** Use Dagster.
@@ -111,7 +111,7 @@ We're not aiming to compete head-on with these for asset-graph or lineage worklo
 | Sensors (file-arrived, time-elapsed, upstream-finished) | `workflow.sleep(timer_id, duration)` for time; `workflow.wait_event(event_id, payload_type, poll_options)` for external triggers. Sleep always creates a durable wake. Event/dependency waits are manual by default; pass caller-owned `PollOptions` only when the timer scanner should recheck them. |
 | Cross-DAG dependencies ("DAG B waits for DAG A's run") | Python: `await temporaless.dependencies.wait_for_workflow(store, workflow_id="A", run_id=date, result_factory=..., poll_options=...)`; Go: `dependencies.WaitForWorkflow(ctx, store, key, newResult, pollOptions)`. Returns A's typed result on COMPLETED; returns a typed pending result if A is unfinished and optionally arms a durable poll; returns `WorkflowDependencyFailedError` if A failed terminally. |
 | Per-run parameters (Airflow `dag_run.conf`) | The protobuf request message IS the parameter bag. Strongly typed; caller-supplied `(workflow_id, run_id)` is the de-duplication key. |
-| Operator UI / re-run from UI | No UI. With the optional query index, list failed runs and use the child-first reset procedure in `docs/runbook.md` from a script, notebook, or the shipped Invariant Protocol projection with operator methods explicitly enabled; then invoke the canonical application workflow RPC. |
+| Operator UI / re-run from UI | Read-only UI: the optional [console](console.md) lists workflows, runs, and scheduled wakes and shows one run's derived history and pending state. No re-run from the UI: with the optional query index, list failed runs and use the child-first reset procedure in `docs/runbook.md` from a script, notebook, or the shipped Invariant Protocol projection with operator methods explicitly enabled; then invoke the canonical application workflow RPC. |
 | Scheduler service (Airflow scheduler, Prefect agent) | `cronscheduler` is a Python class you tick from a Kubernetes CronJob, EventBridge schedule, or `while True: tick(); sleep(60)` loop. No scheduler binary. |
 | Asset graph / lineage (Dagster) | Not provided. Use Dagster if this is your model. |
 

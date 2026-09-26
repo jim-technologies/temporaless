@@ -195,7 +195,7 @@ constraint, or tag that drifts from it.
 
 Most adapters ship for both Go and Python. The single-language ones are so by
 design: `prefectcompat` targets a Python-only framework, `scanquery` is a Go
-development scanner, `inspection` backs the Go read-only console, and
+development scanner, `inspection` and `console` back the Go read-only console, and
 `indexstore` is a Python reference index. Rust ships
 `dispatch` only. Nothing is on the kill list — every adapter has a clear,
 narrow reason to exist (storage RPC, workflow transport, claim coordination,
@@ -216,6 +216,7 @@ target, operations helper).
 | `cronscheduler` | In-process cron with stateless seeding from existing runs | ✓ | ✓ | — |
 | `inspector` | List in-flight/failed workflows, reset records for re-execution | ✓ | ✓ | — |
 | `inspection` | Read-only `RunInspectionService` over bucket stores with derived history and pending state; never writes or repairs | ✓ | — | — |
+| `console` | Backend of the optional read-only console: dashboard facade over `RunInspectionService`, authentication, scoping, page tokens (see [console.md](console.md)) | ✓ | — | — |
 | `visualization` | Structurally validate/digest optional `WorkflowPlan`, strictly verify callable RPC descriptors + approval, inspect a run, and project node IDs onto durable record evidence | ✓ | ✓ | — |
 | `janitor` | Sweep COMPLETED runs older than max-age | ✓ | ✓ | — |
 | `backfill` | Run a workflow over many run_ids with bounded concurrency + report | ✓ | ✓ | — |

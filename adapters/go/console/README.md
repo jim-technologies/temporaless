@@ -2,7 +2,7 @@
 
 The optional, read-only operator console. Core Temporaless ships no UI; this
 adapter and [`cmd/temporaless-console`](../../../cmd/temporaless-console) are
-opt-in.
+opt-in. Operator documentation: [`docs/console.md`](../../../docs/console.md).
 
 - **`TerminalService`** projects [`RunInspectionService`](../../../docs/inspection.md)
   onto the public terminal-core dashboard contract (vendored under

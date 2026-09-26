@@ -5,7 +5,7 @@ helpers over the authoritative record store.
 
 ## Purpose
 
-Temporaless does not ship a UI or control plane. The bundled "view" of system state is whatever you can decode from `*.binpb` records. This adapter turns "list workflows currently in flight" or "list failed workflows" into a single function call.
+Core Temporaless ships no UI or control plane; the `*.binpb` records are the source of truth. This adapter turns "list workflows currently in flight" or "list failed workflows" into a single function call. For a read-only view in a browser, the optional [console](../../../docs/console.md) serves `RunInspectionService` over the same records.
 
 ## Position
 
