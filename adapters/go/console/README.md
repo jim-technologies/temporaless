@@ -10,8 +10,10 @@ opt-in. Operator documentation: [`docs/console.md`](../../../docs/console.md).
   workflows, runs, a run's summary, pending state, derived history, payloads,
   and scheduled wakes with generic widgets. Only `Get` and `ListSources` are
   implemented; streams, AI, and actions answer Unimplemented. Sources that
-  depend on a selection the operator has not made yet return an empty payload
-  that says what to pick.
+  depend on a selection the operator has not made yet answer with one row,
+  event, or object that says what to pick. Times are formatted server-side in
+  the zone the `tz` parameter names (UTC by default), with the zone in every
+  time column's label.
 - **`NewInvariantServer`** registers both services on one Invariant Protocol
   server. The HTTP, MCP, and CLI projections include only the read methods
   (`ProjectedMethods`); request validation runs on every call.

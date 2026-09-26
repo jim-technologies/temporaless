@@ -12,7 +12,8 @@
       "runs_page_token": "",
       "run_id": "",
       "overdue_only": "false",
-      "wakes_page_token": ""
+      "wakes_page_token": "",
+      "tz": "UTC"
     }
   },
   "widgets": [
@@ -79,7 +80,8 @@
           "namespace": "${ctx.namespace}",
           "status": "${ctx.status}",
           "prefix": "${ctx.prefix}",
-          "page_token": "${ctx.directory_page_token}"
+          "page_token": "${ctx.directory_page_token}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 15000
       },
@@ -90,14 +92,15 @@
       "component": "record_grid",
       "span": 5,
       "height": 420,
-      "title": "Runs of ${ctx.workflow_id}",
+      "title": "Runs · newest run ID first",
       "source": {
         "source_id": "temporaless.runs",
         "params": {
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
-          "page_token": "${ctx.runs_page_token}"
+          "page_token": "${ctx.runs_page_token}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 15000
       },
@@ -115,7 +118,8 @@
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
-          "run_id": "${ctx.run_id}"
+          "run_id": "${ctx.run_id}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 10000
       }
@@ -132,7 +136,8 @@
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
-          "run_id": "${ctx.run_id}"
+          "run_id": "${ctx.run_id}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 10000
       }
@@ -150,7 +155,8 @@
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
-          "run_id": "${ctx.run_id}"
+          "run_id": "${ctx.run_id}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 10000
       },
@@ -168,7 +174,8 @@
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
-          "run_id": "${ctx.run_id}"
+          "run_id": "${ctx.run_id}",
+          "tz": "${ctx.tz}"
         }
       }
     },
@@ -217,7 +224,8 @@
           "store": "${ctx.store}",
           "namespace": "${ctx.namespace}",
           "overdue_only": "${ctx.overdue_only}",
-          "page_token": "${ctx.wakes_page_token}"
+          "page_token": "${ctx.wakes_page_token}",
+          "tz": "${ctx.tz}"
         },
         "refreshIntervalMs": 30000
       },

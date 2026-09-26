@@ -12,12 +12,20 @@ One page, top to bottom:
 - **Workflows**: the latest run of every workflow ID in a namespace (from the
   latest-run pointers), with status, workflow type, start and duration, and
   what an unfinished run is waiting on. Filter by status.
-- **Runs of** the selected workflow ID.
+- **Runs** of the selected workflow ID, newest run ID first.
 - **Run**: the selected run's summary, its pending state, its history, a
   per-boundary table (one row per activity, timer, event, and claim), its
   rendered inputs and results, and the whole `DescribeRun` response.
 - **Scheduled wakes**: the due ledger, with overdue wakes flagged and any
   disagreement with the canonical timer reported (never repaired).
+
+Times are UTC by default. The header's **UTC / Local** switch shows them in
+the browser's time zone instead; the server formats every time in the chosen
+zone (the sources' `tz` parameter), each time column names its zone, and
+event timestamps carry their offset. The choice is kept per viewer in the
+browser, never in a shared link. Before a store, workflow, or run is picked,
+each panel says what to pick next, and a failed run's summary shows its
+failure where an unfinished run shows what it waits on.
 
 It shows only what records evidence. An unfinished run is labelled
 retrying, sleeping, polling, executing (a live claim), overdue wake, stale

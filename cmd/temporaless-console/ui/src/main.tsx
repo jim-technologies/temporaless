@@ -1,13 +1,13 @@
 import { StrictMode, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Dashboard, type Template } from 'medallion-terminal-core/dashboard'
-import { Badge, Button, Callout, DesignSystemProvider, FormField, Input, LoadingState } from 'medallion-terminal-core/toolkit'
+import { Badge, Button, ButtonGroup, Callout, DesignSystemProvider, FormField, Input, LoadingState } from 'medallion-terminal-core/toolkit'
 import 'medallion-terminal-core/styles'
 import './styles.css'
 
 // The console host is deliberately thin: the server owns every source and the
-// template; this page supplies chrome, the theme, and (in bearer mode) an
-// in-memory token.
+// template; this page supplies chrome, the theme, the time zone times are
+// shown in, and (in bearer mode) an in-memory token.
 
 interface UIConfig {
   title: string
@@ -34,6 +34,64 @@ function saveTheme(theme: Theme) {
   } catch {
     // A per-viewer convenience only.
   }
+}
+
+// The terminal-core tokens are scoped to .mtc-root, so the document root
+// carries that class and the theme too: the page background behind and
+// around the app is the --mtc-bg token, not a hard-coded color.
+function applyTheme(theme: Theme) {
+  const root = document.documentElement
+  root.classList.add('mtc-root')
+  root.dataset.theme = theme
+  root.style.colorScheme = theme
+}
+
+// Times are UTC unless the viewer switches to their browser's zone. The
+// server formats every time in the zone the tz parameter names and labels
+// each time column with it.
+type TimeMode = 'utc' | 'local'
+const TIME_KEY = 'temporaless-console.time'
+
+function browserZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
+function zoneFor(mode: TimeMode, localZone: string): string {
+  return mode === 'local' ? localZone : 'UTC'
+}
+
+function savedTimeMode(): TimeMode {
+  try {
+    if (window.localStorage.getItem(TIME_KEY) === 'local') return 'local'
+  } catch {
+    // Storage can be unavailable; UTC is the default.
+  }
+  return 'utc'
+}
+
+function saveTimeMode(mode: TimeMode) {
+  try {
+    window.localStorage.setItem(TIME_KEY, mode)
+  } catch {
+    // A per-viewer convenience only.
+  }
+}
+
+// The dashboard restores its context from ctx.* query parameters, which win
+// over the template's defaults. The zone is the viewer's choice, not part of
+// a shared link, so the host writes it there before each dashboard mount.
+function pinZone(zone: string) {
+  const url = new URL(window.location.href)
+  url.searchParams.set('ctx.tz', zone)
+  window.history.replaceState(window.history.state, '', url)
+}
+
+function withZone(template: Template, zone: string): Template {
+  return { ...template, context: { values: { ...(template.context?.values ?? {}), tz: zone } } }
 }
 
 function TokenForm({ onSubmit }: { onSubmit: (token: string) => void }) {
@@ -70,15 +128,26 @@ function accessLabel(auth: UIConfig['auth'], signedIn: boolean): string {
 function App({ config }: { config: UIConfig }) {
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [token, setToken] = useState<string>()
+  const localZone = useMemo(browserZone, [])
+  const [timeMode, setTimeMode] = useState<TimeMode>(() => {
+    const mode = savedTimeMode()
+    pinZone(zoneFor(mode, localZone))
+    return mode
+  })
+  const zone = zoneFor(timeMode, localZone)
+  const template = useMemo(() => withZone(config.template, zone), [config.template, zone])
   const headers = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token])
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    document.documentElement.style.colorScheme = theme
-  }, [theme])
+  useEffect(() => applyTheme(theme), [theme])
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
     setTheme(next)
     saveTheme(next)
+  }
+  const chooseTime = (mode: TimeMode) => {
+    if (mode === timeMode) return
+    pinZone(zoneFor(mode, localZone))
+    setTimeMode(mode)
+    saveTimeMode(mode)
   }
   const needsToken = config.auth === 'bearer' && !token
 
@@ -94,6 +163,27 @@ function App({ config }: { config: UIConfig }) {
         <div className="console-header-end">
           <Badge intent="success" dot>Read-only</Badge>
           <Badge intent="neutral">{accessLabel(config.auth, Boolean(token))}</Badge>
+          <ButtonGroup label="Show times in" className="console-time">
+            <Button
+              size="small"
+              variant={timeMode === 'utc' ? 'solid' : 'outline'}
+              intent={timeMode === 'utc' ? 'primary' : 'neutral'}
+              aria-pressed={timeMode === 'utc'}
+              onClick={() => chooseTime('utc')}
+            >
+              UTC
+            </Button>
+            <Button
+              size="small"
+              variant={timeMode === 'local' ? 'solid' : 'outline'}
+              intent={timeMode === 'local' ? 'primary' : 'neutral'}
+              aria-pressed={timeMode === 'local'}
+              title={`Show times in your browser's zone, ${localZone}`}
+              onClick={() => chooseTime('local')}
+            >
+              Local · {localZone}
+            </Button>
+          </ButtonGroup>
           <Button size="small" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
             {theme === 'dark' ? 'Light theme' : 'Dark theme'}
           </Button>
@@ -103,7 +193,8 @@ function App({ config }: { config: UIConfig }) {
       {needsToken ? <TokenForm onSubmit={setToken} /> : (
         <main className="console-main">
           <Dashboard
-            template={config.template}
+            key={zone}
+            template={template}
             backendUrl=""
             backendHeaders={headers}
             theme={theme}
@@ -145,6 +236,7 @@ function Bootstrap() {
   )
 }
 
+applyTheme(initialTheme())
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root element')
 createRoot(root).render(<StrictMode><Bootstrap /></StrictMode>)

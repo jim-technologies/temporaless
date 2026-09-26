@@ -138,6 +138,24 @@ lockstep policy.
   ledger listing, and the `Limits` documentation states which listings each
   bound covers (timers come from the point store's `ListTimers`, and the
   namespace presence probe is unbounded).
+- The console shows times in UTC by default everywhere, with a UTC / Local
+  switch in the header. Tables and object views used to render datetime
+  fields in the browser's zone without saying so, beside UTC history and
+  timestamp-shaped run IDs. The facade's timed sources take a `tz` parameter
+  (UTC or an IANA zone; `Local` and malformed names are refused), format
+  every time server-side, label each time column with its zone ("Started
+  (UTC)"), and give event timestamps their offset; the template passes the
+  viewer's choice, and the binary embeds the zone database.
+- Waiting and outcome states read correctly. Before a store, workflow, or run
+  is picked, the runs, pending, history, per-boundary, and wakes panels show
+  the server's prompt instead of "No matching records", "No data", or "No
+  events", and the runs panel is no longer titled "Runs of" with nothing
+  after it. A failed run's summary shows "Failure" instead of listing the
+  failure under "Waiting on"; a finished run's pending table says why it is
+  empty. Timer durations use the same "4m 30s" form as every other duration.
+- The console page background is the terminal-core `--mtc-bg` token in both
+  themes: the document root carries the token scope, replacing hard-coded
+  colors (the light one did not match the token).
 - `package-lock.json` is again exactly what `npm install` writes. npm records
   the GitHub-hosted Invariant Protocol dependency under its canonical
   `git+ssh` source (it still clones the public repository over HTTPS), and

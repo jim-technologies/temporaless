@@ -23,6 +23,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// Viewers pick the zone the console displays times in; embedding the
+	// zone database resolves every IANA name the same way on any base image.
+	_ "time/tzdata"
 )
 
 //go:embed all:assets

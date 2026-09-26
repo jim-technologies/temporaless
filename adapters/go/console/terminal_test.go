@@ -97,10 +97,13 @@ func TestTerminalWaitsForSelections(t *testing.T) {
 		want   string
 	}{
 		{console.SourceNamespaces, map[string]string{"store": ""}, `{"table":{}}`},
-		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": ""}, `Choose a store and a namespace`},
-		{console.SourceRuns, map[string]string{"store": "engine", "namespace": "default", "workflow_id": ""}, `Select a workflow`},
+		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": ""}, `"next_step":"Choose a store and a namespace above."`},
+		{console.SourceWakes, map[string]string{"store": "", "namespace": ""}, `"next_step":"Choose a store and a namespace above."`},
+		{console.SourceRuns, map[string]string{"store": "engine", "namespace": "default", "workflow_id": ""}, `"next_step":"Pick a workflow in the list above to see its runs."`},
 		{console.SourceRunSummary, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "run_id": ""}, `Select a run`},
-		{console.SourceRunHistory, map[string]string{"store": "engine"}, `{"events":{}}`},
+		{console.SourceRunPending, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather"}, `"next_step":"Pick a workflow, then one of its runs."`},
+		{console.SourceRunCompact, map[string]string{"store": "engine"}, `"next_step":"Pick a workflow, then one of its runs."`},
+		{console.SourceRunHistory, map[string]string{"store": "engine"}, `{"events":{"events":[{"label":"Pick a workflow, then one of its runs."`},
 	}
 	for _, test := range tests {
 		t.Run(test.source, func(t *testing.T) {
@@ -156,4 +159,98 @@ func TestTerminalListSources(t *testing.T) {
 
 func dataRequest(source string, params map[string]string) *terminalv1.DataRequest {
 	return &terminalv1.DataRequest{SourceId: source, Params: params}
+}
+
+func TestTerminalTimeZones(t *testing.T) {
+	terminal := newTerminal(t, inspection.AllowAll)
+	run := func(tz string) map[string]string {
+		return map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "run_id": "20260925T080000", "tz": tz}
+	}
+	directory := func(tz string) map[string]string {
+		return map[string]string{"store": "engine", "namespace": "default", "tz": tz}
+	}
+	// pull:weather started at 08:00:00 UTC; its retry timer fires at
+	// 08:14:30 UTC. Kuala Lumpur is UTC+8 all year.
+	tests := []struct {
+		name   string
+		source string
+		params map[string]string
+		want   []string
+	}{
+		{"directory defaults to UTC", console.SourceDirectory, directory(""), []string{`"label":"Started (UTC)"`, `"label":"Ordered at (UTC)"`, `"started":"2026-09-25 08:00:00"`}},
+		{"directory in a local zone", console.SourceDirectory, directory("Asia/Kuala_Lumpur"), []string{`"label":"Started (Asia/Kuala_Lumpur)"`, `"started":"2026-09-25 16:00:00"`}},
+		{"runs", console.SourceRuns, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "tz": "UTC"}, []string{`"label":"Started (UTC)"`, `"label":"Completed (UTC)"`, `"started":"2026-09-25 08:00:00"`}},
+		{"wakes", console.SourceWakes, directory("Asia/Kuala_Lumpur"), []string{`"label":"Fires at (Asia/Kuala_Lumpur)"`, `"fires_at":"2026-09-25 16:14:30"`}},
+		{"summary", console.SourceRunSummary, run(""), []string{`"label":"Started (UTC)"`, `"value":"2026-09-25 08:00:00"`, `"label":"Observed (UTC)"`}},
+		{"pending", console.SourceRunPending, run("Asia/Kuala_Lumpur"), []string{`"label":"At (Asia/Kuala_Lumpur)"`, `"at":"2026-09-25 16:14:30"`}},
+		{"history instants carry their offset", console.SourceRunHistory, run(""), []string{`"timestamp":"2026-09-25T08:00:00Z"`, `next attempt 08:14:30 UTC`}},
+		{"history in a local zone", console.SourceRunHistory, run("Asia/Kuala_Lumpur"), []string{`"timestamp":"2026-09-25T16:00:00+08:00"`, `next attempt 16:14:30 +08`}},
+		{"compact", console.SourceRunCompact, run(""), []string{`"label":"First (UTC)"`, `"label":"Last (UTC)"`}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := get(t, terminal, test.source, test.params)
+			for _, want := range test.want {
+				if !strings.Contains(body, want) {
+					t.Fatalf("response lacks %s\n%s", want, body)
+				}
+			}
+			for _, format := range []string{"COLUMN_TYPE_TIMESTAMP", "RECORD_FIELD_TYPE_DATETIME", `"format":"datetime"`, `"updatedAt"`} {
+				if test.source != console.SourceDirectory && strings.Contains(body, format) {
+					t.Fatalf("response still asks the browser to format a time (%s): %s", format, body)
+				}
+			}
+		})
+	}
+	for _, tz := range []string{"Mars/Olympus_Mons", "Local", "../../etc/passwd", "/etc/localtime", strings.Repeat("A", 80)} {
+		_, err := terminal.Get(context.Background(), dataRequest(console.SourceDirectory, directory(tz)))
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("tz %q code = %s, want InvalidArgument", tz, status.Code(err))
+		}
+	}
+}
+
+func TestTerminalRunSummaryByOutcome(t *testing.T) {
+	terminal := newTerminal(t, inspection.AllowAll)
+	summary := func(workflowID, runID string) string {
+		return get(t, terminal, console.SourceRunSummary, map[string]string{"store": "engine", "namespace": "default", "workflow_id": workflowID, "run_id": runID})
+	}
+	tests := []struct {
+		name     string
+		body     string
+		want     []string
+		excluded []string
+	}{
+		{"a failed run names its failure", summary("pull:polymarket", "20260925T075500"),
+			[]string{`"key":"failure","label":"Failure","value":"upstream_5xx: bad gateway"`}, []string{`"label":"Waiting on"`}},
+		{"a completed run waits on nothing", summary("pull:odds", "20260925T075000"),
+			nil, []string{`"label":"Waiting on"`, `"label":"Failure"`}},
+		{"a running run says what it waits on", summary("pull:weather", "20260925T080000"),
+			[]string{`"key":"pending","label":"Waiting on","value":"fetch:page-3`}, []string{`"label":"Failure"`}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := strings.ReplaceAll(test.body, " ", "")
+			for _, want := range test.want {
+				if !strings.Contains(body, strings.ReplaceAll(want, " ", "")) {
+					t.Fatalf("summary lacks %s\n%s", want, test.body)
+				}
+			}
+			for _, excluded := range test.excluded {
+				if strings.Contains(body, strings.ReplaceAll(excluded, " ", "")) {
+					t.Fatalf("summary has %s\n%s", excluded, test.body)
+				}
+			}
+		})
+	}
+	// A finished run's pending table says why it is empty.
+	pending := get(t, terminal, console.SourceRunPending, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:polymarket", "run_id": "20260925T075500"})
+	if !strings.Contains(pending, `"detail":"Nothing pending: the run failed"`) {
+		t.Fatalf("failed run pending: %s", pending)
+	}
+	// Durations read the same everywhere: the retry timer's 4m30s is "4m 30s".
+	compact := get(t, terminal, console.SourceRunCompact, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "run_id": "20260925T080000"})
+	if !strings.Contains(compact, `"duration":"4m 30s"`) {
+		t.Fatalf("compact timer duration: %s", compact)
+	}
 }

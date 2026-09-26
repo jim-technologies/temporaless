@@ -10,9 +10,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jim-technologies/temporaless/adapters/go/console/internal/terminalv1"
@@ -34,6 +37,9 @@ type TerminalService struct {
 
 	inspection inspectionv1.RunInspectionServiceServer
 	now        func() time.Time
+	// zones caches loaded time zones by name; only valid IANA names are
+	// stored, so it holds at most the zone database.
+	zones sync.Map
 }
 
 var _ terminalv1.TerminalServiceServer = (*TerminalService)(nil)
@@ -72,6 +78,8 @@ func (service *TerminalService) ListSources(context.Context, *terminalv1.ListSou
 		param("workflow_id", "Workflow ID of the run.", true),
 		param("run_id", "Run ID to describe.", true),
 	}
+	tz := param("tz", "Time zone for displayed times: UTC (the default) or an IANA zone name such as Europe/Berlin. Column labels name it.", false)
+	timedRun := append(slices.Clone(run), tz)
 	pageToken := param("page_token", "Opaque token from the previous page; empty for the first page.", false)
 	statusFilter := param("status", "Latest-run status filter.", false)
 	statusFilter.Type = terminalv1.ParamType_PARAM_TYPE_ENUM
@@ -83,15 +91,15 @@ func (service *TerminalService) ListSources(context.Context, *terminalv1.ListSou
 		{Id: SourceStores, Name: "Record stores", Description: "Stores this caller may inspect, as picker choices.", Shape: terminalv1.Shape_SHAPE_TABLE, Tags: tags},
 		{Id: SourceNamespaces, Name: "Namespaces", Description: "Namespaces of one store and whether each holds records.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: []*terminalv1.SourceParam{store}, Tags: tags},
 		{Id: SourceDirectory, Name: "Workflows", Description: "One row per workflow ID with its latest run and derived pending state.", Shape: terminalv1.Shape_SHAPE_RECORD_SET,
-			Params: []*terminalv1.SourceParam{store, namespace, statusFilter, param("prefix", "Workflow ID prefix.", false), pageToken}, Tags: tags},
+			Params: []*terminalv1.SourceParam{store, namespace, statusFilter, param("prefix", "Workflow ID prefix.", false), pageToken, tz}, Tags: tags},
 		{Id: SourceRuns, Name: "Runs of a workflow", Description: "Runs of one workflow ID, newest run ID first.", Shape: terminalv1.Shape_SHAPE_RECORD_SET,
-			Params: []*terminalv1.SourceParam{store, namespace, param("workflow_id", "Workflow ID whose runs to list.", true), pageToken}, Tags: tags},
+			Params: []*terminalv1.SourceParam{store, namespace, param("workflow_id", "Workflow ID whose runs to list.", true), pageToken, tz}, Tags: tags},
 		{Id: SourceWakes, Name: "Scheduled wakes", Description: "SCHEDULED durable timers from the due ledger, with ledger agreement and lateness.", Shape: terminalv1.Shape_SHAPE_RECORD_SET,
-			Params: []*terminalv1.SourceParam{store, namespace, overdue, pageToken}, Tags: tags},
-		{Id: SourceRunSummary, Name: "Run summary", Description: "Status, derived sub-state, timing, and record counts for one run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
-		{Id: SourceRunPending, Name: "Pending", Description: "Retrying activities, scheduled timers, and held claims of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: run, Tags: tags},
-		{Id: SourceRunHistory, Name: "History", Description: "History derived from one run's record timestamps; evidence, not a journal.", Shape: terminalv1.Shape_SHAPE_EVENTS, Params: run, Tags: tags},
-		{Id: SourceRunCompact, Name: "History by boundary", Description: "One row per activity, timer, event, and claim of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: run, Tags: tags},
+			Params: []*terminalv1.SourceParam{store, namespace, overdue, pageToken, tz}, Tags: tags},
+		{Id: SourceRunSummary, Name: "Run summary", Description: "Status, derived sub-state, timing, and record counts for one run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: timedRun, Tags: tags},
+		{Id: SourceRunPending, Name: "Pending", Description: "Retrying activities, scheduled timers, and held claims of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: timedRun, Tags: tags},
+		{Id: SourceRunHistory, Name: "History", Description: "History derived from one run's record timestamps; evidence, not a journal.", Shape: terminalv1.Shape_SHAPE_EVENTS, Params: timedRun, Tags: tags},
+		{Id: SourceRunCompact, Name: "History by boundary", Description: "One row per activity, timer, event, and claim of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: timedRun, Tags: tags},
 		{Id: SourceRunPayload, Name: "Inputs and results", Description: "Rendered workflow, activity, and event payloads of one run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
 		{Id: SourceRunJSON, Name: "Run JSON", Description: "The complete DescribeRun response as ProtoJSON, one property per response field.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
 	}}, nil
@@ -104,19 +112,23 @@ func param(key, description string, required bool) *terminalv1.SourceParam {
 // Get implements TerminalService.
 func (service *TerminalService) Get(ctx context.Context, request *terminalv1.DataRequest) (*terminalv1.DataResponse, error) {
 	params := request.GetParams()
+	zone, err := service.zone(params["tz"])
+	if err != nil {
+		return nil, err
+	}
 	switch request.GetSourceId() {
 	case SourceStores:
 		return service.stores(ctx)
 	case SourceNamespaces:
 		return service.namespaces(ctx, params)
 	case SourceDirectory:
-		return service.directory(ctx, params)
+		return service.directory(ctx, params, zone)
 	case SourceRuns:
-		return service.runs(ctx, params)
+		return service.runs(ctx, params, zone)
 	case SourceWakes:
-		return service.wakes(ctx, params)
+		return service.wakes(ctx, params, zone)
 	case SourceRunSummary, SourceRunPending, SourceRunHistory, SourceRunCompact, SourceRunPayload, SourceRunJSON:
-		return service.run(ctx, request.GetSourceId(), params)
+		return service.run(ctx, request.GetSourceId(), params, zone)
 	default:
 		return nil, status.Errorf(codes.NotFound, "unknown source %q", request.GetSourceId())
 	}
@@ -135,9 +147,25 @@ func unselected(params map[string]string, keys ...string) bool {
 	return false
 }
 
+// Prompts for sources whose selection is still empty. Generic widgets show
+// their own "no data" text for an empty payload, so a waiting source answers
+// with one row, event, or object that carries the prompt instead.
+const (
+	promptStore    = "Choose a store and a namespace above."
+	promptWorkflow = "Pick a workflow in the list above to see its runs."
+	promptRun      = "Pick a workflow, then one of its runs, to see its durable records, derived history, and pending state."
+	// promptRunShort fits a table cell or an event line.
+	promptRunShort = "Pick a workflow, then one of its runs."
+)
+
 func emptyRecords(tableID, prompt string) *terminalv1.DataResponse {
 	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Records{Records: &terminalv1.RecordSetPayload{
-		TableId: tableID, TableName: prompt, Capabilities: &terminalv1.RecordCapabilities{},
+		TableId:      tableID,
+		TableName:    prompt,
+		PrimaryField: "next_step",
+		Fields:       []*terminalv1.RecordField{textField("next_step", "Next step")},
+		Records:      []*terminalv1.WorkRecord{{Id: "next-step", Values: structOf(map[string]any{"next_step": prompt})}},
+		Capabilities: &terminalv1.RecordCapabilities{},
 	}}}
 }
 
@@ -145,14 +173,19 @@ func emptyRecords(tableID, prompt string) *terminalv1.DataResponse {
 func emptyRun(sourceID string) *terminalv1.DataResponse {
 	switch sourceID {
 	case SourceRunPending, SourceRunCompact:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: &terminalv1.TablePayload{}}}
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: &terminalv1.TablePayload{
+			Columns: []*terminalv1.TableColumn{{Key: "next_step", Label: "Next step"}},
+			Rows:    []*structpb.Struct{row(map[string]any{"next_step": promptRunShort})},
+		}}}
 	case SourceRunHistory:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Events{Events: &terminalv1.EventPayload{}}}
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Events{Events: &terminalv1.EventPayload{
+			Events: []*terminalv1.Event{{Label: promptRunShort, Status: terminalv1.EventStatus_EVENT_STATUS_UNSPECIFIED}},
+		}}}
 	default:
 		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: &terminalv1.ObjectPayload{
 			ObjectType:  "Workflow run",
 			Title:       "Select a run",
-			Description: proto.String("Pick a workflow, then one of its runs, to see its durable records, derived history, and pending state."),
+			Description: proto.String(promptRun),
 		}}}
 	}
 }
@@ -202,9 +235,9 @@ var workflowStatusFilters = map[string]temporalessv1.WorkflowStatus{
 	"completed": temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 }
 
-func (service *TerminalService) directory(ctx context.Context, params map[string]string) (*terminalv1.DataResponse, error) {
+func (service *TerminalService) directory(ctx context.Context, params map[string]string, zone displayZone) (*terminalv1.DataResponse, error) {
 	if unselected(params, "store", "namespace") {
-		return emptyRecords(SourceDirectory, "Choose a store and a namespace"), nil
+		return emptyRecords(SourceDirectory, promptStore), nil
 	}
 	filter, ok := workflowStatusFilters[params["status"]]
 	if !ok {
@@ -230,10 +263,10 @@ func (service *TerminalService) directory(ctx context.Context, params map[string
 			textField("workflow_id", "Workflow ID"),
 			textField("run_id", "Latest run"),
 			textField("type", "Type"),
-			datetimeField("ordered_at", "Ordered at"),
-			datetimeField("started", "Started"),
+			textField("ordered_at", zone.label("Ordered at")),
+			textField("started", zone.label("Started")),
 			textField("duration", "Duration"),
-			textField("pending", "Pending"),
+			textField("pending", "Waiting on or failure"),
 		},
 		Capabilities:  &terminalv1.RecordCapabilities{},
 		NextPageToken: optional(response.GetNextPageToken()),
@@ -258,8 +291,8 @@ func (service *TerminalService) directory(ctx context.Context, params map[string
 				"workflow_id": key.GetWorkflowId(),
 				"run_id":      key.GetRunId(),
 				"type":        shortType(run.GetWorkflowType()),
-				"ordered_at":  timestamp(pointer.GetRunOrderTime()),
-				"started":     timestamp(run.GetCreatedAt()),
+				"ordered_at":  zone.cell(pointer.GetRunOrderTime()),
+				"started":     zone.cell(run.GetCreatedAt()),
 				"duration":    runDuration(run.GetCreatedAt(), run.GetCompletedAt(), now),
 				"pending":     hint,
 			}),
@@ -275,9 +308,9 @@ func (service *TerminalService) directory(ctx context.Context, params map[string
 	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Records{Records: records}}, nil
 }
 
-func (service *TerminalService) runs(ctx context.Context, params map[string]string) (*terminalv1.DataResponse, error) {
+func (service *TerminalService) runs(ctx context.Context, params map[string]string, zone displayZone) (*terminalv1.DataResponse, error) {
 	if unselected(params, "store", "namespace", "workflow_id") {
-		return emptyRecords(SourceRuns, "Select a workflow to list its runs"), nil
+		return emptyRecords(SourceRuns, promptWorkflow), nil
 	}
 	response, err := service.inspection.ListWorkflowRuns(ctx, &inspectionv1.ListWorkflowRunsRequest{
 		Store:      params["store"],
@@ -300,8 +333,8 @@ func (service *TerminalService) runs(ctx context.Context, params map[string]stri
 		Fields: []*terminalv1.RecordField{
 			stateField("status", "Status"),
 			textField("run_id", "Run ID"),
-			datetimeField("started", "Started"),
-			datetimeField("completed", "Completed"),
+			textField("started", zone.label("Started")),
+			textField("completed", zone.label("Completed")),
 			textField("duration", "Duration"),
 			textField("failure", "Failure"),
 		},
@@ -320,8 +353,8 @@ func (service *TerminalService) runs(ctx context.Context, params map[string]stri
 			Values: structOf(map[string]any{
 				"status":    state,
 				"run_id":    run.GetKey().GetRunId(),
-				"started":   timestamp(run.GetCreatedAt()),
-				"completed": timestamp(run.GetCompletedAt()),
+				"started":   zone.cell(run.GetCreatedAt()),
+				"completed": zone.cell(run.GetCompletedAt()),
 				"duration":  runDuration(run.GetCreatedAt(), run.GetCompletedAt(), now),
 				"failure":   failureText(run.GetFailure()),
 			}),
@@ -331,9 +364,9 @@ func (service *TerminalService) runs(ctx context.Context, params map[string]stri
 	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Records{Records: records}}, nil
 }
 
-func (service *TerminalService) wakes(ctx context.Context, params map[string]string) (*terminalv1.DataResponse, error) {
+func (service *TerminalService) wakes(ctx context.Context, params map[string]string, zone displayZone) (*terminalv1.DataResponse, error) {
 	if unselected(params, "store", "namespace") {
-		return emptyRecords(SourceWakes, "Choose a store and a namespace"), nil
+		return emptyRecords(SourceWakes, promptStore), nil
 	}
 	overdueOnly, err := strconv.ParseBool(defaultString(params["overdue_only"], "false"))
 	if err != nil {
@@ -371,7 +404,7 @@ func (service *TerminalService) wakes(ctx context.Context, params map[string]str
 				{Value: "run_finished", Label: "Run finished", Color: proto.String("neutral")},
 			}},
 			textField("kind", "Kind"),
-			datetimeField("fires_at", "Fires at"),
+			textField("fires_at", zone.label("Fires at")),
 			textField("lateness", "Relative"),
 			textField("workflow_id", "Workflow ID"),
 			textField("run_id", "Run ID"),
@@ -396,7 +429,7 @@ func (service *TerminalService) wakes(ctx context.Context, params map[string]str
 			Values: structOf(map[string]any{
 				"state":       state,
 				"kind":        timerKind(timer.GetTimerKind()),
-				"fires_at":    timestamp(timer.GetFireAt()),
+				"fires_at":    zone.cell(timer.GetFireAt()),
 				"lateness":    relative(timer.GetFireAt().AsTime(), now),
 				"workflow_id": wake.GetWorkflowKey().GetWorkflowId(),
 				"run_id":      wake.GetWorkflowKey().GetRunId(),
@@ -412,7 +445,7 @@ func (service *TerminalService) wakes(ctx context.Context, params map[string]str
 	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Records{Records: records}}, nil
 }
 
-func (service *TerminalService) run(ctx context.Context, sourceID string, params map[string]string) (*terminalv1.DataResponse, error) {
+func (service *TerminalService) run(ctx context.Context, sourceID string, params map[string]string, zone displayZone) (*terminalv1.DataResponse, error) {
 	if unselected(params, "store", "namespace", "workflow_id", "run_id") {
 		return emptyRun(sourceID), nil
 	}
@@ -429,13 +462,13 @@ func (service *TerminalService) run(ctx context.Context, sourceID string, params
 	}
 	switch sourceID {
 	case SourceRunSummary:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: runSummaryObject(params, description)}}, nil
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: runSummaryObject(params, description, zone)}}, nil
 	case SourceRunPending:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: pendingTable(description)}}, nil
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: pendingTable(description, zone)}}, nil
 	case SourceRunHistory:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Events{Events: historyEvents(description)}}, nil
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Events{Events: historyEvents(description, zone)}}, nil
 	case SourceRunCompact:
-		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: compactTable(description)}}, nil
+		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Table{Table: compactTable(description, zone)}}, nil
 	case SourceRunPayload:
 		return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: payloadsObject(description)}}, nil
 	default:
@@ -503,10 +536,6 @@ func textField(key, label string) *terminalv1.RecordField {
 	return &terminalv1.RecordField{Key: key, Label: label, Type: terminalv1.RecordFieldType_RECORD_FIELD_TYPE_TEXT, ReadOnly: true}
 }
 
-func datetimeField(key, label string) *terminalv1.RecordField {
-	return &terminalv1.RecordField{Key: key, Label: label, Type: terminalv1.RecordFieldType_RECORD_FIELD_TYPE_DATETIME, ReadOnly: true}
-}
-
 // runState maps recorded status plus derived pending state onto one status
 // value and a one-line hint that names the evidencing record. It never
 // reports a status the records cannot evidence.
@@ -551,7 +580,7 @@ func runState(workflowStatus temporalessv1.WorkflowStatus, pending *inspectionv1
 	}
 }
 
-func runSummaryObject(params map[string]string, description *inspectionv1.DescribeRunResponse) *terminalv1.ObjectPayload {
+func runSummaryObject(params map[string]string, description *inspectionv1.DescribeRunResponse, zone displayZone) *terminalv1.ObjectPayload {
 	workflow := description.GetWorkflow()
 	observed := description.GetObservedAt().AsTime()
 	state, hint := runState(workflow.GetStatus(), description.GetPending(), workflow.GetFailure(), observed)
@@ -589,29 +618,33 @@ func runSummaryObject(params map[string]string, description *inspectionv1.Descri
 		claims = "not inspected by this store"
 	}
 
-	properties := []*terminalv1.ObjectProperty{
-		prop("status", "Status", statusText, "Summary"),
-		prop("pending", "Waiting on", defaultString(hint, "—"), "Summary"),
+	// The line under the status says why the run is where it is: what an
+	// unfinished run waits on, or how a failed run failed.
+	properties := []*terminalv1.ObjectProperty{prop("status", "Status", statusText, "Summary")}
+	switch workflow.GetStatus() {
+	case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS:
+		properties = append(properties, prop("pending", "Waiting on", defaultString(hint, "—"), "Summary"))
+	case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+		properties = append(properties, prop("failure", "Failure", defaultString(failureText(workflow.GetFailure()), "no failure recorded"), "Summary"))
+	}
+	properties = append(properties,
 		prop("workflow_id", "Workflow ID", params["workflow_id"], "Summary"),
 		prop("run_id", "Run ID", params["run_id"], "Summary"),
 		prop("type", "Type", defaultString(workflow.GetWorkflowType(), "—"), "Summary"),
 		prop("namespace", "Namespace", params["namespace"], "Summary"),
 		prop("store", "Store", params["store"], "Summary"),
-		datetimeProp("started", "Started", workflow.GetCreatedAt(), "Timing"),
-		datetimeProp("ordered_at", "Ordered at", workflow.GetRunOrderTime(), "Timing"),
-		datetimeProp("completed", "Completed", workflow.GetCompletedAt(), "Timing"),
+		timeProp("started", "Started", workflow.GetCreatedAt(), "Timing", zone),
+		timeProp("ordered_at", "Ordered at", workflow.GetRunOrderTime(), "Timing", zone),
+		timeProp("completed", "Completed", workflow.GetCompletedAt(), "Timing", zone),
 		prop("duration", "Duration", runDuration(workflow.GetCreatedAt(), workflow.GetCompletedAt(), observed), "Timing"),
-		datetimeProp("observed_at", "Observed", description.GetObservedAt(), "Timing"),
+		timeProp("observed_at", "Observed", description.GetObservedAt(), "Timing", zone),
 		prop("activities", "Activities", fmt.Sprintf("%d done · %d retrying · %d failed", done, retrying, failed), "Evidence"),
 		prop("timers", "Timers", fmt.Sprintf("%d scheduled · %d fired", scheduledTimers, firedTimers), "Evidence"),
 		prop("events", "Events", fmt.Sprintf("%d received", len(description.GetEvents())), "Evidence"),
 		prop("claims", "Claims", claims, "Evidence"),
-	}
+	)
 	if description.GetTruncated() {
 		properties = append(properties, prop("truncated", "Truncated", "a record kind exceeded the store's per-run bound; counts are partial", "Evidence"))
-	}
-	if failure := workflow.GetFailure(); failure != nil {
-		properties = append(properties, prop("failure", "Failure", failureText(failure), "Summary"))
 	}
 	keys := make([]string, 0, len(workflow.GetAnnotations()))
 	for key := range workflow.GetAnnotations() {
@@ -632,7 +665,6 @@ func runSummaryObject(params map[string]string, description *inspectionv1.Descri
 		Description: proto.String("Derived from durable records. Temporaless keeps point records, not a journal: " +
 			"overwritten intermediate states and released claims are not shown."),
 		Status:     proto.String(statusText),
-		UpdatedAt:  optional(timestamp(description.GetObservedAt())),
 		Tags:       tags,
 		Properties: properties,
 		Links: []*terminalv1.ObjectLink{{
@@ -649,14 +681,14 @@ func runSummaryObject(params map[string]string, description *inspectionv1.Descri
 	return object
 }
 
-func pendingTable(description *inspectionv1.DescribeRunResponse) *terminalv1.TablePayload {
+func pendingTable(description *inspectionv1.DescribeRunResponse, zone displayZone) *terminalv1.TablePayload {
 	observed := description.GetObservedAt().AsTime()
 	table := &terminalv1.TablePayload{Columns: []*terminalv1.TableColumn{
 		{Key: "kind", Label: "Kind"},
 		{Key: "id", Label: "ID"},
 		{Key: "state", Label: "State"},
 		{Key: "relative", Label: "When"},
-		{Key: "at", Label: "At", Type: terminalv1.ColumnType_COLUMN_TYPE_TIMESTAMP, Format: proto.String("datetime")},
+		{Key: "at", Label: zone.label("At")},
 		{Key: "detail", Label: "Detail"},
 	}}
 	for _, activity := range description.GetActivities() {
@@ -678,7 +710,7 @@ func pendingTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		}
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "activity", "id": activity.GetKey().GetActivityId(), "state": "retrying",
-			"at": timestamp(activity.GetNextAttemptAt()), "relative": relativeOrEmpty(activity.GetNextAttemptAt(), observed), "detail": detail,
+			"at": zone.cell(activity.GetNextAttemptAt()), "relative": relativeOrEmpty(activity.GetNextAttemptAt(), observed), "detail": detail,
 		}))
 	}
 	for _, timer := range description.GetTimers() {
@@ -687,7 +719,7 @@ func pendingTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		}
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "timer", "id": timer.GetKey().GetTimerId(), "state": "scheduled",
-			"at": timestamp(timer.GetFireAt()), "relative": relativeOrEmpty(timer.GetFireAt(), observed),
+			"at": zone.cell(timer.GetFireAt()), "relative": relativeOrEmpty(timer.GetFireAt(), observed),
 			"detail": timerKind(timer.GetTimerKind()) + " · woken by the timer scanner (at least once)",
 		}))
 	}
@@ -698,9 +730,19 @@ func pendingTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		}
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "claim", "id": claim.GetKey().GetClaimId(), "state": state,
-			"at": timestamp(claim.GetLeaseExpiresAt()), "relative": relativeOrEmpty(claim.GetLeaseExpiresAt(), observed),
+			"at": zone.cell(claim.GetLeaseExpiresAt()), "relative": relativeOrEmpty(claim.GetLeaseExpiresAt(), observed),
 			"detail": "owner " + claim.GetOwnerId() + " · lease expiry is diagnostic",
 		}))
+	}
+	if len(table.Rows) == 0 {
+		reason := "no retrying activity, scheduled timer, or held claim"
+		switch description.GetWorkflow().GetStatus() {
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED:
+			reason = "the run completed"
+		case temporalessv1.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+			reason = "the run failed"
+		}
+		table.Rows = append(table.Rows, row(map[string]any{"kind": "—", "id": "", "state": "", "relative": "", "at": "", "detail": "Nothing pending: " + reason}))
 	}
 	return table
 }
@@ -725,7 +767,7 @@ var historyText = map[inspectionv1.RunHistoryEventKind]struct {
 	inspectionv1.RunHistoryEventKind_RUN_HISTORY_EVENT_KIND_UNSPECIFIED:                {"record", terminalv1.EventStatus_EVENT_STATUS_UNSPECIFIED},
 }
 
-func historyEvents(description *inspectionv1.DescribeRunResponse) *terminalv1.EventPayload {
+func historyEvents(description *inspectionv1.DescribeRunResponse, zone displayZone) *terminalv1.EventPayload {
 	payload := &terminalv1.EventPayload{}
 	for _, event := range description.GetHistory() {
 		text := historyText[event.GetKind()]
@@ -740,11 +782,11 @@ func historyEvents(description *inspectionv1.DescribeRunResponse) *terminalv1.Ev
 		if event.GetUntil() != nil {
 			switch event.GetKind() {
 			case inspectionv1.RunHistoryEventKind_RUN_HISTORY_EVENT_KIND_TIMER_SCHEDULED:
-				body = append(body, fmt.Sprintf("%s timer fires %s", timerKind(event.GetTimerKind()), clock(event.GetUntil())))
+				body = append(body, fmt.Sprintf("%s timer fires %s", timerKind(event.GetTimerKind()), zone.clock(event.GetUntil())))
 			case inspectionv1.RunHistoryEventKind_RUN_HISTORY_EVENT_KIND_ACTIVITY_RETRY_BACKOFF:
-				body = append(body, "next attempt "+clock(event.GetUntil()))
+				body = append(body, "next attempt "+zone.clock(event.GetUntil()))
 			case inspectionv1.RunHistoryEventKind_RUN_HISTORY_EVENT_KIND_CLAIM_HELD:
-				body = append(body, "diagnostic lease until "+clock(event.GetUntil()))
+				body = append(body, "diagnostic lease until "+zone.clock(event.GetUntil()))
 			default:
 				body = append(body, "took "+span(event.GetTime(), event.GetUntil()))
 			}
@@ -757,7 +799,7 @@ func historyEvents(description *inspectionv1.DescribeRunResponse) *terminalv1.Ev
 			source = strings.SplitN(event.GetEventId(), "/", 2)[0]
 		}
 		payload.Events = append(payload.Events, &terminalv1.Event{
-			Timestamp: timestamp(event.GetTime()),
+			Timestamp: zone.instant(event.GetTime()),
 			Label:     label,
 			Status:    text.status,
 			Body:      optional(strings.Join(body, " · ")),
@@ -768,15 +810,15 @@ func historyEvents(description *inspectionv1.DescribeRunResponse) *terminalv1.Ev
 	return payload
 }
 
-func compactTable(description *inspectionv1.DescribeRunResponse) *terminalv1.TablePayload {
+func compactTable(description *inspectionv1.DescribeRunResponse, zone displayZone) *terminalv1.TablePayload {
 	observed := description.GetObservedAt().AsTime()
 	table := &terminalv1.TablePayload{Columns: []*terminalv1.TableColumn{
 		{Key: "kind", Label: "Kind"},
 		{Key: "id", Label: "ID"},
 		{Key: "status", Label: "Status"},
 		{Key: "attempts", Label: "Attempts", Type: terminalv1.ColumnType_COLUMN_TYPE_NUMBER},
-		{Key: "first", Label: "First", Type: terminalv1.ColumnType_COLUMN_TYPE_TIMESTAMP, Format: proto.String("datetime")},
-		{Key: "last", Label: "Last", Type: terminalv1.ColumnType_COLUMN_TYPE_TIMESTAMP, Format: proto.String("datetime")},
+		{Key: "first", Label: zone.label("First")},
+		{Key: "last", Label: zone.label("Last")},
 		{Key: "duration", Label: "Duration"},
 		{Key: "detail", Label: "Detail"},
 	}}
@@ -790,7 +832,7 @@ func compactTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "activity", "id": activity.GetKey().GetActivityId(),
 			"status":   strings.ToLower(strings.TrimPrefix(activity.GetStatus().String(), "ACTIVITY_STATUS_")),
-			"attempts": len(attempts), "first": timestamp(first), "last": timestamp(last),
+			"attempts": len(attempts), "first": zone.cell(first), "last": zone.cell(last),
 			"duration": runDuration(first, last, observed), "detail": failureText(activity.GetFailure()),
 		}))
 	}
@@ -798,21 +840,21 @@ func compactTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "timer", "id": timer.GetKey().GetTimerId(),
 			"status":   strings.ToLower(strings.TrimPrefix(timer.GetStatus().String(), "TIMER_STATUS_")),
-			"attempts": 0, "first": timestamp(timer.GetCreatedAt()), "last": timestamp(firstSet(timer.GetFiredAt(), timer.GetFireAt())),
-			"duration": timer.GetDuration().AsDuration().String(), "detail": timerKind(timer.GetTimerKind()),
+			"attempts": 0, "first": zone.cell(timer.GetCreatedAt()), "last": zone.cell(firstSet(timer.GetFiredAt(), timer.GetFireAt())),
+			"duration": compactDuration(timer.GetDuration().AsDuration()), "detail": timerKind(timer.GetTimerKind()),
 		}))
 	}
 	for _, event := range description.GetEvents() {
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "event", "id": event.GetKey().GetEventId(), "status": "received",
-			"attempts": 0, "first": timestamp(event.GetReceivedAt()), "last": timestamp(event.GetReceivedAt()),
+			"attempts": 0, "first": zone.cell(event.GetReceivedAt()), "last": zone.cell(event.GetReceivedAt()),
 			"duration": "", "detail": shortTypeURL(event.GetPayload().GetTypeUrl()),
 		}))
 	}
 	for _, claim := range description.GetClaims() {
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "claim", "id": claim.GetKey().GetClaimId(), "status": "held",
-			"attempts": 0, "first": timestamp(claim.GetCreatedAt()), "last": timestamp(claim.GetLeaseExpiresAt()),
+			"attempts": 0, "first": zone.cell(claim.GetCreatedAt()), "last": zone.cell(claim.GetLeaseExpiresAt()),
 			"duration": "", "detail": "owner " + claim.GetOwnerId(),
 		}))
 	}
@@ -864,11 +906,8 @@ func prop(key, label, value, group string) *terminalv1.ObjectProperty {
 	return &terminalv1.ObjectProperty{Key: key, Label: label, Value: structpb.NewStringValue(value), Group: proto.String(group)}
 }
 
-func datetimeProp(key, label string, value *timestamppb.Timestamp, group string) *terminalv1.ObjectProperty {
-	if value == nil {
-		return prop(key, label, "—", group)
-	}
-	return &terminalv1.ObjectProperty{Key: key, Label: label, Value: structpb.NewStringValue(timestamp(value)), Format: proto.String("datetime"), Group: proto.String(group)}
+func timeProp(key, label string, value *timestamppb.Timestamp, group string, zone displayZone) *terminalv1.ObjectProperty {
+	return prop(key, zone.label(label), defaultString(zone.cell(value), "—"), group)
 }
 
 func row(values map[string]any) *structpb.Struct {
@@ -904,6 +943,8 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
+// timestamp renders an instant for machine fields such as updated_at: RFC
+// 3339 in UTC, whatever zone the viewer displays.
 func timestamp(value *timestamppb.Timestamp) string {
 	if value == nil {
 		return ""
@@ -911,11 +952,69 @@ func timestamp(value *timestamppb.Timestamp) string {
 	return value.AsTime().UTC().Format(time.RFC3339)
 }
 
-func clock(value *timestamppb.Timestamp) string {
+// displayZone renders instants for people in one time zone: UTC unless the
+// viewer asks for another. Table cells leave the zone out because their
+// column label names it; event timestamps and free text carry it.
+type displayZone struct {
+	location *time.Location
+	name     string
+}
+
+var (
+	utcZone         = displayZone{location: time.UTC, name: "UTC"}
+	zoneNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$`)
+)
+
+// zone resolves the tz param: empty or UTC, or an IANA zone name. "Local"
+// is refused because it would name the server's zone, not the viewer's.
+func (service *TerminalService) zone(name string) (displayZone, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "UTC" {
+		return utcZone, nil
+	}
+	if cached, ok := service.zones.Load(name); ok {
+		return cached.(displayZone), nil
+	}
+	invalid := status.Error(codes.InvalidArgument, "tz must be UTC or an IANA time zone name such as Europe/Berlin")
+	if name == "Local" || len(name) > 64 || !zoneNamePattern.MatchString(name) {
+		return displayZone{}, invalid
+	}
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		return displayZone{}, invalid
+	}
+	zone := displayZone{location: location, name: name}
+	service.zones.Store(name, zone)
+	return zone, nil
+}
+
+// label names the zone in a column or property label: "Started (UTC)".
+func (zone displayZone) label(label string) string {
+	return label + " (" + zone.name + ")"
+}
+
+// cell renders an instant for a column whose label names the zone.
+func (zone displayZone) cell(value *timestamppb.Timestamp) string {
+	if value == nil {
+		return ""
+	}
+	return value.AsTime().In(zone.location).Format("2006-01-02 15:04:05")
+}
+
+// instant renders an ISO 8601 instant with its offset, for event timestamps.
+func (zone displayZone) instant(value *timestamppb.Timestamp) string {
+	if value == nil {
+		return ""
+	}
+	return value.AsTime().In(zone.location).Format(time.RFC3339)
+}
+
+// clock renders a time of day with its zone abbreviation, for free text.
+func (zone displayZone) clock(value *timestamppb.Timestamp) string {
 	if value == nil {
 		return "—"
 	}
-	return value.AsTime().UTC().Format("15:04:05Z")
+	return value.AsTime().In(zone.location).Format("15:04:05 MST")
 }
 
 func firstSet(values ...*timestamppb.Timestamp) *timestamppb.Timestamp {
