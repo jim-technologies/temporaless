@@ -24,7 +24,18 @@ INVARIANT_ALLOW_SCRIPT_PREFIX = "github:jim-technologies/invariantprotocol#"
 # canonical git+ssh URL whatever form package.json declares, and still clones
 # a public host over HTTPS first. The lock must hold exactly what `npm install`
 # writes so regenerating it is a no-op; the pinned SHA must match package.json.
-INVARIANT_LOCKED_SOURCE = f"git+ssh://git@{INVARIANT_REPOSITORY}#{{sha}}"
+NPM_LOCKED_GIT_SOURCE = "git+ssh://git@{repository}#{sha}"
+# The optional console's UI host renders with the dashboard framework whose
+# protobuf contract is vendored under third_party/. Both must come from one
+# commit, so the UI and the Go facade agree on the wire shapes.
+CONSOLE_UI = "cmd/temporaless-console/ui"
+DASHBOARD_PACKAGE = "medallion-terminal-core"
+DASHBOARD_REPOSITORY = "github.com/jim-technologies/medallion-terminal-core.git"
+DASHBOARD_SPEC = re.compile(
+    r"github:jim-technologies/medallion-terminal-core#([0-9a-f]{40})"
+)
+DASHBOARD_VENDORED = "third_party/medallion-terminal-core/README.md"
+DASHBOARD_VENDORED_COMMIT = re.compile(r"\(commit `([0-9a-f]{40})`\)")
 OPENDAL_REPOSITORY = "https://github.com/apache/opendal.git"
 FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 LICENSE = "Apache-2.0"
@@ -165,6 +176,75 @@ def temporaless_requirements(pyproject: dict[str, Any]) -> dict[str, str]:
     return found
 
 
+def console_ui_errors(root_package: dict[str, Any]) -> list[str]:
+    """Check the console UI host's pins against the vendored contract."""
+    errors: list[str] = []
+    package_path = f"{CONSOLE_UI}/package.json"
+    lock_path = f"{CONSOLE_UI}/package-lock.json"
+    package = read_json(package_path)
+    lock = read_json(lock_path)
+    if package.get("private") is not True:
+        errors.append(f"{package_path} must set private=true")
+    if package.get("engines") != root_package.get("engines"):
+        errors.append(
+            f"{package_path} engines are {package.get('engines')!r}; "
+            f"expected the root package's {root_package.get('engines')!r}"
+        )
+
+    dependency = package.get("dependencies", {}).get(DASHBOARD_PACKAGE)
+    match = (
+        DASHBOARD_SPEC.fullmatch(dependency) if isinstance(dependency, str) else None
+    )
+    sha = match.group(1) if match is not None else None
+    if sha is None:
+        errors.append(
+            f"{package_path} must pin {DASHBOARD_PACKAGE} to one full Git SHA; "
+            f"found {dependency!r}"
+        )
+    vendored = DASHBOARD_VENDORED_COMMIT.search((ROOT / DASHBOARD_VENDORED).read_text())
+    vendored_sha = vendored.group(1) if vendored is not None else None
+    if vendored_sha is None:
+        errors.append(f"{DASHBOARD_VENDORED} must record the vendored commit")
+    elif sha is not None and sha != vendored_sha:
+        errors.append(
+            f"{package_path} pins {DASHBOARD_PACKAGE} at {sha}, but the contract "
+            f"under third_party/ is vendored from {vendored_sha}; move both together"
+        )
+
+    root_dependency = (
+        lock.get("packages", {})
+        .get("", {})
+        .get("dependencies", {})
+        .get(DASHBOARD_PACKAGE)
+    )
+    if root_dependency != dependency:
+        errors.append(
+            f"{lock_path} root {DASHBOARD_PACKAGE} dependency is "
+            f"{root_dependency!r}; expected {dependency!r}"
+        )
+    locked = lock.get("packages", {}).get(f"node_modules/{DASHBOARD_PACKAGE}")
+    if not isinstance(locked, dict):
+        errors.append(f"{lock_path} is missing node_modules/{DASHBOARD_PACKAGE}")
+        return errors
+    expected_source = (
+        NPM_LOCKED_GIT_SOURCE.format(repository=DASHBOARD_REPOSITORY, sha=sha)
+        if sha is not None
+        else None
+    )
+    if locked.get("resolved") != expected_source:
+        errors.append(
+            f"{lock_path} locked {DASHBOARD_PACKAGE} source is "
+            f"{locked.get('resolved')!r}; expected {expected_source!r} "
+            "(the form npm install writes)"
+        )
+    integrity = locked.get("integrity")
+    if not isinstance(integrity, str) or not integrity.startswith("sha512-"):
+        errors.append(
+            f"{lock_path} locked {DASHBOARD_PACKAGE} must have sha512 integrity"
+        )
+    return errors
+
+
 def main() -> int:
     version = (ROOT / "VERSION").read_text().strip()
     errors: list[str] = []
@@ -227,7 +307,9 @@ def main() -> int:
         errors.append(f"package-lock.json is missing node_modules/{INVARIANT_PACKAGE}")
     else:
         expected_locked_source = (
-            INVARIANT_LOCKED_SOURCE.format(sha=invariant_sha)
+            NPM_LOCKED_GIT_SOURCE.format(
+                repository=INVARIANT_REPOSITORY, sha=invariant_sha
+            )
             if invariant_sha is not None
             else None
         )
@@ -280,6 +362,8 @@ def main() -> int:
         or allow_scripts.get("protobufjs") is not False
     ):
         errors.append("package.json allowScripts must explicitly deny protobufjs")
+
+    errors.extend(console_ui_errors(package))
 
     discovered_pyprojects = {"core/py/pyproject.toml"} | {
         path.relative_to(ROOT).as_posix()

@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+# Build the optional read-only console: the UI host under
+# cmd/temporaless-console/ui (Node is build-time only) into
+# cmd/temporaless-console/assets/dist, then the Go binary that embeds it.
+# Without npm the binary is still built; it serves the read-only API and a
+# page that says how to build the UI.
+#
+#   flox activate -- make build-console      # writes build/temporaless-console
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+ui=cmd/temporaless-console/ui
+out="${TEMPORALESS_CONSOLE_OUT:-build/temporaless-console}"
+
+if command -v npm >/dev/null 2>&1; then
+  # A fresh checkout has no node_modules; install the locked tree exactly.
+  if [ ! -d "$ui/node_modules" ]; then
+    (cd "$ui" && npm ci)
+  fi
+  (cd "$ui" && npm run build)
+else
+  rm -rf cmd/temporaless-console/assets/dist
+  echo "npm is not on PATH (enter the Flox env); building the console without its UI." >&2
+fi
+
+mkdir -p "$(dirname "$out")"
+go build -trimpath -o "$out" ./cmd/temporaless-console
+echo "built $out"

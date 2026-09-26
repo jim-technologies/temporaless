@@ -19,7 +19,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help help-all validate audit version-check version-set release generate public-surface fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build ts-check tidy-check
+.PHONY: help help-all validate audit version-check version-set release generate public-surface fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build build-console ts-check tidy-check
 
 help: ## One-screen help (make help-all for every target)
 	@echo "Daily:"
@@ -65,6 +65,7 @@ fmt-go: ## rewrite Go sources in place with gofmt
 fmt-proto: ## rewrite protobuf sources in place with buf format
 	buf format -w api
 	buf format -w adapters/py/dagstercompat/tests/proto
+	buf format -w adapters/go/console/proto
 
 fmt-py: ## rewrite Python sources in place with ruff format
 	uv run --project adapters/py/cloudevents ruff format adapters/py/cloudevents/src adapters/py/cloudevents/tests
@@ -125,7 +126,7 @@ test-rs: ## run the Rust workspace tests (when cargo is installed)
 		echo "Skipping the Rust SDK tests; cargo is not on PATH (enter the Flox env)." >&2; \
 	fi
 
-build: ## produce the artifacts locally — Go packages, TypeScript dist, Rust workspace
+build: build-console ## produce the artifacts locally — Go packages, the console, TypeScript dist, Rust workspace
 	$(GO) build $(GO_PKGS)
 	@if command -v npm >/dev/null 2>&1; then \
 		npm run build; \
@@ -137,6 +138,9 @@ build: ## produce the artifacts locally — Go packages, TypeScript dist, Rust w
 	else \
 		echo "Skipping the Rust build; cargo is not on PATH (enter the Flox env)." >&2; \
 	fi
+
+build-console: ## build the optional read-only console UI and the binary that embeds it (build/temporaless-console)
+	scripts/build-console
 
 ts-check: ## run the TypeScript client build and tests
 	npm run check

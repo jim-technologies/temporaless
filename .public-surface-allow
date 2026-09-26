@@ -30,16 +30,19 @@ cluster-shape | */gen/buf/validate/* | vendored protovalidate sources ship these
 cluster-shape | docs/* | the operator CLI workflow namespace flag, not a cluster namespace | %2d-namespace default
 
 # ---------------------------------------------------------------------------
-# npm's lockfile identity for the one pinned GitHub-hosted Git dependency. npm
-# records every GitHub-hosted Git dependency under this canonical URL whatever
-# form package.json declares, and still installs a public host over HTTPS, so
-# the lock is kept byte for byte as `npm install` writes it. The version check
-# names the same form and pins it to the one SHA package.json declares. The
-# guard matches lower-cased text after its fleet baseline masks public
-# repository coordinates, so the patterns name only the scheme prefix.
+# npm's lockfile identity for the pinned GitHub-hosted Git dependencies (the
+# TypeScript projection's Invariant Protocol and the console UI's dashboard
+# framework). npm records every GitHub-hosted Git dependency under this
+# canonical URL whatever form package.json declares, and still installs a
+# public host over HTTPS, so each lock is kept byte for byte as `npm install`
+# writes it. The version check names the same form and pins it to the one SHA
+# package.json declares. The guard matches lower-cased text after its fleet
+# baseline masks public repository coordinates, so the patterns name only the
+# scheme prefix.
 # ---------------------------------------------------------------------------
 private-remote | package-lock.json | npm writes this canonical source for the pinned public dependency and clones it over HTTPS; hand-editing it would make the lock irreproducible | "resolved": "git\+%73sh://git@
-private-remote | scripts/check_versions.py | the version check spells the exact lockfile source npm writes for the pinned public dependency | git\+%73sh://git@[{]invariant_repository[}]#
+private-remote | cmd/temporaless-console/ui/package-lock.json | npm writes this canonical source for the pinned public dashboard framework and clones it over HTTPS; hand-editing it would make the lock irreproducible | "resolved": "git\+%73sh://git@
+private-remote | scripts/check_versions.py | the version check spells the exact lockfile source npm writes for the pinned public dependencies | git\+%73sh://git@[{]repository[}]#
 
 # ---------------------------------------------------------------------------
 # The optional console adapter serves the public terminal-core TerminalService

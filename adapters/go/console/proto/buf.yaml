@@ -1,0 +1,9 @@
+# The optional console's configuration schema. It is not part of the published
+# temporaless.v1 contract (the root module), but it follows the same lint
+# rules: every message and field is operator-facing documentation.
+version: v2
+lint:
+  use:
+    - STANDARD
+    - COMMENT_MESSAGE
+    - COMMENT_FIELD

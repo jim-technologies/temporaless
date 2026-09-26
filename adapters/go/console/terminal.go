@@ -93,7 +93,7 @@ func (service *TerminalService) ListSources(context.Context, *terminalv1.ListSou
 		{Id: SourceRunHistory, Name: "History", Description: "History derived from one run's record timestamps; evidence, not a journal.", Shape: terminalv1.Shape_SHAPE_EVENTS, Params: run, Tags: tags},
 		{Id: SourceRunCompact, Name: "History by boundary", Description: "One row per activity, timer, event, and claim of one run.", Shape: terminalv1.Shape_SHAPE_TABLE, Params: run, Tags: tags},
 		{Id: SourceRunPayload, Name: "Inputs and results", Description: "Rendered workflow, activity, and event payloads of one run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
-		{Id: SourceRunJSON, Name: "Run JSON", Description: "The complete DescribeRun response as ProtoJSON, in property describe_run.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
+		{Id: SourceRunJSON, Name: "Run JSON", Description: "The complete DescribeRun response as ProtoJSON, one property per response field.", Shape: terminalv1.Shape_SHAPE_OBJECT, Params: run, Tags: tags},
 	}}, nil
 }
 
@@ -443,24 +443,37 @@ func (service *TerminalService) run(ctx context.Context, sourceID string, params
 	}
 }
 
-// runJSON wraps the complete description in one object property. Until the
-// terminal contract gains a generic JSON payload case, a template's json
-// widget reads it with transform "properties.0.value".
+// runJSONFields orders the DescribeRun response for reading: the run, what it
+// waits on, and its history before the raw records.
+var runJSONFields = []string{"workflow", "pending", "history", "activities", "timers", "events", "claims", "payloads",
+	"claimsInspected", "payloadVisibility", "truncated", "observedAt"}
+
+// runJSON renders the complete DescribeRun response as ProtoJSON, one object
+// property per response field. The terminal contract this facade serves has
+// no generic JSON payload case yet, so an object view carries it.
 func runJSON(description *inspectionv1.DescribeRunResponse) (*terminalv1.DataResponse, error) {
 	data, err := protojson.Marshal(description)
 	if err != nil {
 		return nil, err
 	}
-	value := &structpb.Value{}
-	if err := protojson.Unmarshal(data, value); err != nil {
+	fields := &structpb.Struct{}
+	if err := protojson.Unmarshal(data, fields); err != nil {
 		return nil, err
 	}
-	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: &terminalv1.ObjectPayload{
-		ObjectType: "DescribeRunResponse",
-		ObjectId:   runID(description),
-		Title:      "Run JSON",
-		Properties: []*terminalv1.ObjectProperty{{Key: "describe_run", Label: "DescribeRunResponse", Value: value, Format: proto.String("json")}},
-	}}}, nil
+	object := &terminalv1.ObjectPayload{
+		ObjectType:  "DescribeRunResponse",
+		ObjectId:    runID(description),
+		Title:       "DescribeRun response",
+		Description: proto.String("temporaless.v1.RunInspectionService/DescribeRun as ProtoJSON. Record bodies are verbatim; the history and pending state are derived."),
+	}
+	for _, field := range runJSONFields {
+		value, ok := fields.GetFields()[field]
+		if !ok {
+			continue
+		}
+		object.Properties = append(object.Properties, &terminalv1.ObjectProperty{Key: field, Label: field, Value: value, Format: proto.String("json"), Group: proto.String("DescribeRunResponse")})
+	}
+	return &terminalv1.DataResponse{Payload: &terminalv1.DataResponse_Object{Object: object}}, nil
 }
 
 func runID(description *inspectionv1.DescribeRunResponse) string {
@@ -510,27 +523,27 @@ func runState(workflowStatus temporalessv1.WorkflowStatus, pending *inspectionv1
 	at := pending.GetAt()
 	switch pending.GetReason() {
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_OVERDUE_WAKE:
-		return "overdue_wake", fmt.Sprintf("timer %s was due %s (%s)", pending.GetResourceId(), clock(at), relative(at.AsTime(), now))
+		return "overdue_wake", fmt.Sprintf("timer %s is %s", pending.GetResourceId(), relative(at.AsTime(), now))
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_RETRYING:
 		hint := fmt.Sprintf("%s · attempt %d", pending.GetResourceId(), pending.GetAttempt())
 		if pending.GetMaximumAttempts() > 0 {
 			hint += fmt.Sprintf("/%d", pending.GetMaximumAttempts())
 		}
 		if at != nil {
-			hint += " · next " + clock(at)
+			hint += " · next " + relative(at.AsTime(), now)
 		}
 		if code := pending.GetLastFailure().GetCode(); code != "" {
 			hint += " · " + code
 		}
 		return "retrying", hint
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_STALE_CLAIM:
-		return "stale_claim", fmt.Sprintf("claim %s lease expired %s; verify before cleanup", pending.GetResourceId(), clock(at))
+		return "stale_claim", fmt.Sprintf("claim %s lease expired, %s; verify before cleanup", pending.GetResourceId(), relative(at.AsTime(), now))
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_EXECUTING:
-		return "executing", fmt.Sprintf("claim %s held until %s", pending.GetResourceId(), clock(at))
+		return "executing", fmt.Sprintf("claim %s held, lease ends %s", pending.GetResourceId(), relativeOrEmpty(at, now))
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_SLEEPING:
-		return "sleeping", fmt.Sprintf("wakes %s · %s", clock(at), pending.GetResourceId())
+		return "sleeping", fmt.Sprintf("wakes %s · %s", relative(at.AsTime(), now), pending.GetResourceId())
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_POLLING:
-		return "polling", fmt.Sprintf("polls %s · %s", clock(at), pending.GetResourceId())
+		return "polling", fmt.Sprintf("polls %s · %s", relative(at.AsTime(), now), pending.GetResourceId())
 	case inspectionv1.RunPendingReason_RUN_PENDING_REASON_WAITING_NO_WAKE:
 		return "waiting", "no durable wake, retry, or claim will re-invoke this run"
 	default:
@@ -642,8 +655,8 @@ func pendingTable(description *inspectionv1.DescribeRunResponse) *terminalv1.Tab
 		{Key: "kind", Label: "Kind"},
 		{Key: "id", Label: "ID"},
 		{Key: "state", Label: "State"},
+		{Key: "relative", Label: "When"},
 		{Key: "at", Label: "At", Type: terminalv1.ColumnType_COLUMN_TYPE_TIMESTAMP, Format: proto.String("datetime")},
-		{Key: "relative", Label: "Relative"},
 		{Key: "detail", Label: "Detail"},
 	}}
 	for _, activity := range description.GetActivities() {

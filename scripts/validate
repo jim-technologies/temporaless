@@ -6,6 +6,8 @@ buf lint
 buf format --diff --exit-code api
 buf lint adapters/py/dagstercompat/tests/proto
 buf format --diff --exit-code adapters/py/dagstercompat/tests/proto
+buf lint adapters/go/console/proto
+buf format --diff --exit-code adapters/go/console/proto
 head_commit="$(git rev-parse HEAD)"
 release_tag="v$(tr -d '\n' < VERSION)"
 baseline_tag=""
@@ -70,6 +72,7 @@ if [ "${CI:-}" = "true" ]; then
   git diff --exit-code -- \
     api \
     core/go/gen \
+    adapters/go/console/configv1 \
     adapters/go/console/internal/terminalv1 \
     adapters/go/console/descriptors \
     core/py/src/buf \
@@ -80,6 +83,7 @@ if [ "${CI:-}" = "true" ]; then
   generated_untracked="$(git ls-files --others --exclude-standard -- \
     api \
     core/go/gen \
+    adapters/go/console/configv1 \
     adapters/go/console/internal/terminalv1 \
     adapters/go/console/descriptors \
     core/py/src/buf \
@@ -100,6 +104,12 @@ if command -v npm >/dev/null 2>&1; then
     npm ci
   fi
   npm run check
+  # The optional console's UI host type-checks against the pinned dashboard
+  # framework. Building it (make build-console) is not part of the gate.
+  if [ ! -d cmd/temporaless-console/ui/node_modules ]; then
+    (cd cmd/temporaless-console/ui && npm ci)
+  fi
+  (cd cmd/temporaless-console/ui && npm run check)
 else
   echo "Skipping TypeScript client checks; npm is not on PATH (enter the Flox env)." >&2
 fi

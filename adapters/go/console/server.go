@@ -167,7 +167,7 @@ func securityHeaders(next http.Handler) http.Handler {
 
 const missingUI = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Temporaless console</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;line-height:1.5">
-<h1>Temporaless console</h1><p>This binary was built without its UI. Build it with <code>make console</code>;
+<h1>Temporaless console</h1><p>This binary was built without its UI. Build it with <code>make build-console</code>;
 the read-only API and <code>/ui/config</code> are served either way.</p></body></html>`
 
 // uiHandler serves the built single-page app: real files as themselves,

@@ -23,7 +23,7 @@
       "height": 72,
       "title": "Store",
       "source": { "source_id": "temporaless.stores" },
-      "options": { "key": "store", "label": "Store" }
+      "options": { "key": "store", "label": "" }
     },
     {
       "id": "namespace",
@@ -32,7 +32,7 @@
       "height": 72,
       "title": "Namespace",
       "source": { "source_id": "temporaless.namespaces", "params": { "store": "${ctx.store}" } },
-      "options": { "key": "namespace", "label": "Namespace" }
+      "options": { "key": "namespace", "label": "" }
     },
     {
       "id": "status",
@@ -42,7 +42,7 @@
       "title": "Latest run",
       "options": {
         "key": "status",
-        "label": "Latest run",
+        "label": "",
         "choices": [
           { "value": "all", "label": "All statuses" },
           { "value": "running", "label": "Running" },
@@ -59,7 +59,7 @@
       "title": "Wakes",
       "options": {
         "key": "overdue_only",
-        "label": "Wakes",
+        "label": "",
         "choices": [
           { "value": "false", "label": "All scheduled wakes" },
           { "value": "true", "label": "Overdue only" }
@@ -70,7 +70,7 @@
       "id": "workflows",
       "component": "record_grid",
       "span": 12,
-      "height": 400,
+      "height": 470,
       "title": "Workflows · latest run per workflow ID",
       "source": {
         "source_id": "temporaless.directory",
@@ -190,7 +190,7 @@
     },
     {
       "id": "run_json",
-      "component": "json",
+      "component": "object_view",
       "span": 6,
       "height": 360,
       "title": "DescribeRun JSON",
@@ -202,8 +202,7 @@
           "namespace": "${ctx.namespace}",
           "workflow_id": "${ctx.workflow_id}",
           "run_id": "${ctx.run_id}"
-        },
-        "transform": "properties.0.value"
+        }
       }
     },
     {

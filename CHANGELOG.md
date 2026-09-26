@@ -53,6 +53,22 @@ lockstep policy.
   tenant, and expiry. Tests cover the JWT matrix, JWKS rotation, OpenFGA,
   scoping, token replay, the projected method set, and an end-to-end HTTP
   run that proves the store is unchanged.
+- `cmd/temporaless-console`, the optional read-only console server. It
+  reads a protobuf-defined configuration
+  (`adapters/go/console/proto/temporaless/console/v1/config.proto`, YAML or
+  JSON, unknown fields rejected, every credential a mounted file), opens
+  OpenDAL `fs` or `s3` stores, and serves `RunInspectionService` and the
+  dashboard facade over Connect/HTTP and MCP (plus optional native gRPC),
+  `/healthz` and `/readyz`, `/ui/config`, and an embedded UI. The UI host in
+  `cmd/temporaless-console/ui` renders the executions template with
+  terminal-core v0.5.2 (pinned to the vendored contract's commit), keeps a
+  bearer token in tab memory only, and follows the light or dark theme.
+  `-check` validates the configuration and opens every store. OpenDAL's
+  unpacked native libraries are deleted from `TMPDIR` once the stores are
+  open, so the process writes nothing else. `make build-console` builds the
+  UI and the binary; `docker build --target console .` builds a distroless
+  image. See `docs/console.md`, which records the S3 service check and a
+  measured cold start of about 0.25 s to the first page.
 
 ### Changed
 
@@ -64,6 +80,15 @@ lockstep policy.
   0.16.4 (commit `f5922050`), which moves the lock to
   `@bufbuild/protovalidate` 1.3.0 and `@grpc/grpc-js` 1.14.5, and
   `engines.node` states the `>=24.18.0` floor Invariant Protocol declares.
+- The console's DescribeRun panel shows the whole response as one JSON
+  property per response field (the vendored terminal contract has no generic
+  JSON payload yet), and pending hints read relative times ("next in 24s",
+  "44m late") instead of clock times.
+- `make build` also builds the console; `make validate` lints and
+  format-checks the console configuration schema, type-checks the console UI,
+  and `scripts/check_versions.py` requires the UI's terminal-core dependency
+  and the vendored contract to come from one commit, locked in the form
+  `npm install` writes. `make audit` also audits the console UI lockfile.
 
 ### Fixed
 

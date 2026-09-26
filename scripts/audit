@@ -15,8 +15,9 @@ cd "$repo_root"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
-echo "==> npm audit (npm lockfile)"
+echo "==> npm audit (npm lockfiles)"
 npm audit --audit-level=moderate
+(cd cmd/temporaless-console/ui && npm audit --audit-level=moderate)
 
 echo "==> govulncheck (Go dependency reachability)"
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...

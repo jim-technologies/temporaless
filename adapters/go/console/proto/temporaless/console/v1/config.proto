@@ -1,0 +1,153 @@
+// Configuration of the optional read-only console (cmd/temporaless-console).
+//
+// The file is YAML or JSON in ProtoJSON field names. Secrets are never inline:
+// every credential is a path to a mounted file.
+syntax = "proto3";
+
+package temporaless.console.v1;
+
+import "google/protobuf/duration.proto";
+
+option go_package = "github.com/jim-technologies/temporaless/adapters/go/console/configv1;configv1";
+
+// ConsoleConfig is the whole console configuration.
+message ConsoleConfig {
+  // Listen address, e.g. "127.0.0.1:8080". Loopback authentication requires a
+  // loopback address.
+  string listen = 1;
+  // Optional native gRPC listen address. Empty disables native gRPC; the HTTP
+  // listener always serves Connect/HTTP and MCP.
+  string grpc_listen = 2;
+  // Title shown in the UI.
+  string title = 3;
+  // How callers authenticate and how stores are scoped to them.
+  Authentication authentication = 4;
+  // Registered record stores.
+  repeated Store stores = 5;
+  // Mounted file holding the page-token MAC key (at least 32 bytes).
+  // Required unless authentication is loopback.
+  string page_token_key_file = 6;
+  // Optional overrides of the per-request bounds.
+  Limits limits = 7;
+}
+
+// Authentication selects one mode.
+message Authentication {
+  // The mode.
+  oneof mode {
+    // No authentication; the listener must be a loopback address.
+    Loopback loopback = 1;
+    // One shared bearer token from a mounted file; sees every store.
+    StaticToken static_token = 2;
+    // Verified JWTs; stores are scoped to the token's tenant.
+    Jwt jwt = 3;
+  }
+  // Relationship checks for JWT mode. Required with jwt.
+  OpenFga openfga = 4;
+  // Relationship user type; empty selects "user".
+  string user_type = 5;
+  // Relationship object type of a tenant; empty selects "workspace".
+  string workspace_type = 6;
+}
+
+// Loopback is the development mode.
+message Loopback {}
+
+// StaticToken reads one bearer token.
+message StaticToken {
+  // Mounted file holding the token (at least 16 bytes).
+  string token_file = 1;
+}
+
+// Jwt configures JWT verification.
+message Jwt {
+  // Required iss claim.
+  string issuer = 1;
+  // Required aud member.
+  string audience = 2;
+  // JWKS URL. Set exactly one of jwks_url and jwks_file.
+  string jwks_url = 3;
+  // Mounted JWKS file.
+  string jwks_file = 4;
+  // Subject claim; empty selects "sub".
+  string subject_claim = 5;
+  // Tenant claim; empty selects "workspace_id".
+  string workspace_claim = 6;
+}
+
+// OpenFga configures the relationship checks.
+message OpenFga {
+  // HTTP API base URL.
+  string api_url = 1;
+  // OpenFGA store ID.
+  string store_id = 2;
+  // Optional pinned authorization model.
+  string authorization_model_id = 3;
+  // Optional mounted file holding an API bearer token.
+  string token_file = 4;
+}
+
+// Store registers one record store.
+message Store {
+  // Stable ID used by requests.
+  string id = 1;
+  // Name shown in pickers.
+  string display_name = 2;
+  // Namespaces this store serves.
+  repeated string namespaces = 3;
+  // Where the records live.
+  oneof backend {
+    // A local directory (development).
+    FilesystemBackend filesystem = 4;
+    // An S3-compatible bucket. Give the console read-only credentials.
+    S3Backend s3 = 5;
+  }
+  // Read run-scoped claims from the bucket (only when claims live there).
+  bool list_claims = 6;
+  // Overdue-wake grace; empty selects two minutes.
+  google.protobuf.Duration overdue_grace = 7;
+  // Optional FileDescriptorSet for rendering application payloads.
+  string payload_descriptors_file = 8;
+  // Tenant that owns the store in JWT mode.
+  string workspace = 9;
+  // Relation that grants reading; empty selects "can_read".
+  string read_relation = 10;
+  // Relation that grants payload values; empty selects the read relation.
+  string payload_relation = 11;
+}
+
+// FilesystemBackend is a local OpenDAL fs root.
+message FilesystemBackend {
+  // Directory holding the temporaless/v2 tree.
+  string root = 1;
+}
+
+// S3Backend is an OpenDAL s3 operator.
+message S3Backend {
+  // Bucket name.
+  string bucket = 1;
+  // Prefix inside the bucket that holds the temporaless/v2 tree.
+  string root = 2;
+  // Endpoint for S3-compatible stores; empty uses AWS.
+  string endpoint = 3;
+  // Region; required by AWS, often "auto" elsewhere.
+  string region = 4;
+  // Mounted file holding the access key ID.
+  string access_key_id_file = 5;
+  // Mounted file holding the secret access key.
+  string secret_access_key_file = 6;
+}
+
+// Limits overrides per-request bounds. Zero keeps the default.
+message Limits {
+  // Default page size.
+  uint32 default_page_size = 1;
+  // Maximum page size.
+  uint32 max_page_size = 2;
+  // Objects a filtered listing reads per request.
+  uint32 read_budget = 3;
+  // Run directories listed per workflow.
+  uint32 max_listed_runs = 4;
+  // Records read per kind per run.
+  uint32 max_run_records = 5;
+}

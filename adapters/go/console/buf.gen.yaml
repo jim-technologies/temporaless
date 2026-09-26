@@ -1,6 +1,7 @@
-# Go bindings for the vendored terminal-core TerminalService contract (see
-# third_party/medallion-terminal-core/README.md). The upstream protos carry no
-# go_package, so each file is mapped into this adapter's internal package.
+# Go bindings for the console configuration and the vendored terminal-core
+# TerminalService contract (see
+# third_party/medallion-terminal-core/README.md). The upstream protos carry
+# no go_package, so each file is mapped into this adapter's internal package.
 # Invariant Protocol registers gRPC service descriptors, hence the gRPC stubs.
 version: v2
 plugins:
@@ -20,3 +21,5 @@ plugins:
       - Mmedallion/terminal/v1/template.proto=github.com/jim-technologies/temporaless/adapters/go/console/internal/terminalv1;terminalv1
 inputs:
   - directory: third_party/medallion-terminal-core/proto
+  # The console's own configuration schema.
+  - directory: adapters/go/console/proto

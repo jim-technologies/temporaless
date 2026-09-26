@@ -61,3 +61,7 @@ scripts/
 core/py/benchmarks/
 core/py/tests/
 adapters/
+
+# The optional console target (`--target console`) builds the Go adapters it
+# imports; the Python image copies only core/py and examples/py.
+!adapters/go/

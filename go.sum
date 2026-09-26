@@ -32,6 +32,8 @@ github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYW
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/apache/opendal-go-services/fs v0.1.16 h1:ABG6lfT52p8D/qrOkCC4T/2FvBj6qRp2tMXR/7qZFNY=
 github.com/apache/opendal-go-services/fs v0.1.16/go.mod h1:7EnuyeXRuQh+L47rZ7y2OrhYJLlUYvgvFPItM98XJ5s=
+github.com/apache/opendal-go-services/s3 v0.1.16 h1:uhK+59UPW9zXWqEPkA1lYvJWkH78qut8Gc4Ju2aRRY8=
+github.com/apache/opendal-go-services/s3 v0.1.16/go.mod h1:yxJOySIbAGWEaCRWR7oPZdymr/n7Set9Ezs5wY7SfxI=
 github.com/apache/opendal/bindings/go v0.1.16 h1:W80lrbhmXrcCwvEcrydYhjMFUTyOPue9wgfrD4lhBKE=
 github.com/apache/opendal/bindings/go v0.1.16/go.mod h1:qwqj3zMxKnwvMsu368eoowMK+tG4NgSqToIeMHWT4qk=
 github.com/aws/aws-sdk-go-v2 v1.42.1 h1:9eOTgu1z/dVtYpNZ3/8/XbbaX0x/BqE3HUzAzs6K0ek=

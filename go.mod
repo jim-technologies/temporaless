@@ -7,6 +7,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	connectrpc.com/connect v1.21.0
 	github.com/apache/opendal-go-services/fs v0.1.16
+	github.com/apache/opendal-go-services/s3 v0.1.16
 	github.com/apache/opendal/bindings/go v0.1.16
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/google/uuid v1.6.0
@@ -16,6 +17,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	go.temporal.io/api v1.63.6
 	go.temporal.io/sdk v1.49.0
+	go.yaml.in/yaml/v3 v3.0.5
 	gocloud.dev v0.46.0
 	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
@@ -61,7 +63,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

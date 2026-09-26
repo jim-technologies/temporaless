@@ -54,7 +54,7 @@ func TestTerminalSources(t *testing.T) {
 		{console.SourceNamespaces, map[string]string{"store": "engine"}, []string{`"value":"default"`}},
 		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": "default"}, []string{
 			`"records"`, `"status":"retrying"`, `"status":"failed"`, `"status":"completed"`,
-			`"pending":"fetch:page-3 · attempt 2/6 · next 08:14:30Z · rate_limited"`,
+			`"pending":"fetch:page-3 · attempt 2/6 · next in 30s · rate_limited"`,
 			`"type":"Struct → Struct"`, `"workflow_id":"pull:weather"`, `"runs_page_token":""`,
 		}},
 		{console.SourceDirectory, map[string]string{"store": "engine", "namespace": "default", "status": "failed"}, []string{`"pending":"upstream_5xx: bad gateway"`}},
@@ -75,7 +75,7 @@ func TestTerminalSources(t *testing.T) {
 		}},
 		{console.SourceRunCompact, run, []string{`"kind":"activity"`, `"status":"retrying"`, `"attempts":2`}},
 		{console.SourceRunPayload, run, []string{`"key":"workflow.input"`, `"pages":6`}},
-		{console.SourceRunJSON, run, []string{`"key":"describe_run"`, `"pending"`, `"RUN_PENDING_REASON_RETRYING"`}},
+		{console.SourceRunJSON, run, []string{`"key":"workflow"`, `"key":"pending"`, `"RUN_PENDING_REASON_RETRYING"`, `"key":"history"`}},
 	}
 	for _, test := range tests {
 		t.Run(test.source, func(t *testing.T) {
