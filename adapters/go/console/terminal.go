@@ -479,15 +479,21 @@ func (service *TerminalService) run(ctx context.Context, sourceID string, params
 }
 
 // runJSONDescription says what the DescribeRun JSON source holds: records as
-// stored except for OpaquePayload stand-ins, plus derived views.
+// stored except for OpaquePayload stand-ins, plus derived views, with object
+// keys sorted.
 const runJSONDescription = "temporaless.v1.RunInspectionService/DescribeRun as ProtoJSON. Records are as stored, except that " +
 	"a payload whose type this server cannot resolve, and every payload when yours are redacted, is a " +
-	"temporaless.v1.OpaquePayload naming the stored type. The history and pending state are derived."
+	"temporaless.v1.OpaquePayload naming the stored type. The history and pending state are derived. " +
+	"Object keys are in alphabetical order; DescribeRun itself answers in field order."
 
 // runJSON returns the complete DescribeRun response as one ProtoJSON document
 // in the terminal contract's json case, which the json widget renders
 // verbatim. ProtoJSON keeps 64-bit integers as strings, so nothing loses
-// precision on the way through google.protobuf.Value.
+// precision on the way through google.protobuf.Value. Its objects are
+// google.protobuf.Struct maps, which have no member order, and ProtoJSON
+// writes map keys sorted, so every level reads in alphabetical order rather
+// than field order. The source stays one document you can copy whole; the
+// run panels before it in the template are the curated reading order.
 func runJSON(description *inspectionv1.DescribeRunResponse) (*terminalv1.DataResponse, error) {
 	data, err := protojson.Marshal(description)
 	if err != nil {

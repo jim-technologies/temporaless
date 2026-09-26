@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { StrictMode, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createProductFetch, ensureOk, toSourceError, type ProductFetch, type SourceError } from 'medallion-terminal-core/app'
 import { Dashboard, type Template } from 'medallion-terminal-core/dashboard'
@@ -59,14 +59,20 @@ function saveTheme(theme: Theme) {
   }
 }
 
-// The terminal-core tokens are scoped to .mtc-root, so the document root
-// carries that class and the theme too: the page background behind and
-// around the app is the --mtc-bg token, not a hard-coded color.
-function applyTheme(theme: Theme) {
-  const root = document.documentElement
-  root.classList.add('mtc-root')
-  root.dataset.theme = theme
-  root.style.colorScheme = theme
+// The terminal-core tokens, type scale, and density are scoped to the
+// .mtc-root that DesignSystemProvider renders around the console, and neither
+// the package nor this host styles <html> or <body> with them: .mtc-root sets
+// its own font size, so on <html> it would shrink the rem every token is
+// measured in. The document only follows the theme's color scheme, and its
+// canvas (seen when the page overscrolls) takes the app root's --mtc-bg.
+function useDocumentCanvas(theme: Theme) {
+  const appRoot = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const html = document.documentElement
+    html.style.colorScheme = theme
+    if (appRoot.current) html.style.backgroundColor = getComputedStyle(appRoot.current).backgroundColor
+  }, [theme])
+  return appRoot
 }
 
 // Times are UTC unless the viewer switches to their browser's zone. The
@@ -231,7 +237,7 @@ function App({ config }: { config: UIConfig }) {
   const transport = useMemo(() => consoleFetch(config.auth === 'bearer'
     ? error => setSession(current => (current.token === token ? { refused: error } : current))
     : undefined), [config.auth, token])
-  useEffect(() => applyTheme(theme), [theme])
+  const appRoot = useDocumentCanvas(theme)
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
     setTheme(next)
@@ -246,7 +252,7 @@ function App({ config }: { config: UIConfig }) {
   const signIn = (value: string) => setSession({ token: value })
 
   return (
-    <DesignSystemProvider theme={theme} className="console-app">
+    <DesignSystemProvider ref={appRoot} theme={theme} className="console-app">
       <header className="console-header">
         <div className="console-brand">
           <Icon name="workflow" className="console-mark" />
@@ -305,6 +311,8 @@ function App({ config }: { config: UIConfig }) {
 }
 
 function Bootstrap() {
+  const [theme] = useState<Theme>(initialTheme)
+  const appRoot = useDocumentCanvas(theme)
   const [config, setConfig] = useState<UIConfig>()
   const [error, setError] = useState<SourceError>()
   const [attempt, setAttempt] = useState(0)
@@ -325,7 +333,7 @@ function Bootstrap() {
   }
   if (config) return <App config={config} />
   return (
-    <DesignSystemProvider theme={initialTheme()} className="console-bootstrap">
+    <DesignSystemProvider ref={appRoot} theme={theme} className="console-bootstrap">
       {error
         ? <SourceErrorState error={error} onRetry={retry} />
         : <LoadingState label="Opening the console" />}
@@ -333,7 +341,6 @@ function Bootstrap() {
   )
 }
 
-applyTheme(initialTheme())
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root element')
 createRoot(root).render(<StrictMode><Bootstrap /></StrictMode>)

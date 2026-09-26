@@ -94,8 +94,14 @@ lockstep policy.
   integrity. The DescribeRun JSON panel is the `json` widget over the
   contract's new `DataResponse.json` case (`google.protobuf.Value`), so
   `temporaless.run.json` answers with the whole `DescribeRunResponse` as one
-  ProtoJSON document (`SHAPE_JSON`), and its title says that unresolved or
-  redacted payloads are `OpaquePayload`. A facade test pins every source to
+  ProtoJSON document (`SHAPE_JSON`), and its title says that it is raw, with
+  keys A–Z, and that unresolved or redacted payloads are `OpaquePayload`. The
+  keys are alphabetical at every level because the contract's
+  `google.protobuf.Value` objects are `Struct` maps, which have no member
+  order and which ProtoJSON writes sorted; the run panels before it (summary,
+  pending state, history, per-boundary table, payloads) are the curated
+  reading order, and the source description says `DescribeRun` itself
+  answers in field order. A facade test pins every source to
   the payload case its declared shape names, and every template widget to a
   source of its shape.
 - The console UI host adopts terminal-core v0.6.0's transport and states.
@@ -112,11 +118,26 @@ lockstep policy.
   console refuses mid-session shows the session-expired state and reopens
   the same selection once a new token is given, and a late 401 for a
   replaced token is ignored. The configuration load shows a typed error with
-  Retry, and polled panels are marked stale after three missed intervals
-  (`staleAfterMs`). The page uses the standard density, tokens v2, and the
+  Retry. The page renders inside the `.mtc-root` that `DesignSystemProvider`
+  draws around the app, with the standard density, tokens v2, and the
   vendored Inter and JetBrains Mono fonts, which the build emits as files,
   so the console's CSP allows fonts from its own origin only
-  (`font-src 'self'`).
+  (`font-src 'self'`). `<html>` and `<body>` carry no terminal-core class,
+  so the rem stays 16 px and the type scale and density render as designed
+  (measured in Chromium: 13 px body text, 12 px table text, 14 px panel
+  titles, 32 px rows, 28 px controls); the document only follows the
+  theme's color scheme and paints its canvas with the app's `--mtc-bg`. The
+  Runs and Run panels, and the Pending and History panels, now split their
+  rows evenly so the Runs and Pending tables keep their time columns in
+  view at that scale, and the raw DescribeRun JSON panel is the wider one
+  of its row so its title and long type URLs fit.
+
+  Known limitation: panels are not marked stale yet. The template's
+  per-panel `staleAfterMs` (three poll intervals) is the input terminal-core
+  documents for its stale marker, but terminal-core v0.6.0 drops it when it
+  resolves a `source_id` source; the marker appears once the console moves
+  to the terminal-core release that carries `staleAfterMs` through
+  `resolveSource`.
 - The documentation says what ships: core has no UI and depends on none, and
   the optional read-only console projects records (`docs/console.md`,
   `docs/comparisons.md`, the inspector README, the README layout and adapter
@@ -137,6 +158,11 @@ lockstep policy.
 
 ### Removed
 
+- The console UI host's `mtc-root` class, `data-theme`, and `--mtc-bg` body
+  rule on the document root. `.mtc-root` sets its own font size, so on
+  `<html>` it made the rem 13 px and shrank every token to 13/16 (9.75 px
+  table text, 26 px rows, 22.75 px controls), and terminal-core styles only
+  its own root, never `<html>` or `<body>`.
 - The console's DescribeRun object-view fallback, which split the response
   into one JSON property per response field because the terminal contract
   had no JSON payload, and the `docs/console.md` paragraph that described it

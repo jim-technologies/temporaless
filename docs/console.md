@@ -15,10 +15,23 @@ One page, top to bottom:
 - **Runs** of the selected workflow ID, newest run ID first.
 - **Run**: the selected run's summary, its pending state, its history, a
   per-boundary table (one row per activity, timer, event, and claim), its
-  rendered inputs and results, and the whole `DescribeRun` response as one
-  ProtoJSON document (keys in alphabetical order).
+  rendered inputs and results, and, last, the whole `DescribeRun` response as
+  one raw ProtoJSON document.
 - **Scheduled wakes**: the due ledger, with overdue wakes flagged and any
   disagreement with the canonical timer reported (never repaired).
+
+The panels before the raw document are the curated reading of that same
+response, in reading order: the summary (status, what an unfinished run waits
+on or how a failed run failed, timing, and record counts), then the pending
+state, the history, the per-boundary table, and the rendered payloads. The raw
+document's keys are in alphabetical order at every level, and the console
+cannot change that. The dashboard contract carries the document as a
+`google.protobuf.Value`, whose objects are `google.protobuf.Struct` maps: a
+map has no member order, and ProtoJSON writes map keys sorted. Reordering them
+would mean splitting the response into separate properties again or
+rewriting responses in the UI host, and one document you can copy whole is
+worth more. `RunInspectionService/DescribeRun` itself answers in field order,
+workflow first.
 
 Times are UTC by default. The header's **UTC / Local** switch shows them in
 the browser's time zone instead; the server formats every time in the chosen
@@ -37,9 +50,16 @@ records shows "Not found", and an unreachable console shows "Service
 unavailable" with Retry. Each keeps the server's reason, the error code, and
 the request ID under Details; the request ID is the `X-Request-Id` the UI sends
 and the console logs for that call. A call that gets no response within 30
-seconds fails instead of holding up its panel's polling, and a list or run
-panel that has not refreshed for three of its poll intervals is marked stale in
-its header.
+seconds fails instead of holding up its panel's polling.
+
+Known limitation: panels are not yet marked stale. Each polled list and run
+panel sets `staleAfterMs` in the template (three of its poll intervals), the
+input terminal-core documents for its stale marker, but terminal-core v0.6.0
+drops `staleAfterMs` when it resolves a `source_id` source, so the marker never
+shows. It will show once the console moves to the terminal-core release that
+carries `staleAfterMs` through `resolveSource`; until then the age of the
+last refresh in each panel's header ("just now", "37s ago") is the only
+freshness cue.
 
 It shows only what records evidence. An unfinished run is labelled
 retrying, sleeping, polling, executing (a live claim), overdue wake, stale
@@ -240,6 +260,12 @@ The template renders with terminal-core v0.6.0. The contract under
 `scripts/check_versions.py` enforces it. To move to a newer release, replace
 the vendored protos from its tag, move the UI pin to the same commit, run
 `make generate`, and relock the UI with `npm install`.
+
+The UI host renders inside the `.mtc-root` that terminal-core's
+`DesignSystemProvider` draws around the console; it never puts a
+terminal-core class or font size on `<html>` or `<body>`, so the rem stays the
+browser's 16 px and the type scale and the standard density (32 px rows,
+28 px controls) render at their designed sizes.
 
 ## Not in this version
 

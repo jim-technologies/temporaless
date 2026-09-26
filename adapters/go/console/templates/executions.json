@@ -91,7 +91,7 @@
     {
       "id": "runs",
       "component": "record_grid",
-      "span": 5,
+      "span": 6,
       "height": 420,
       "title": "Runs · newest run ID first",
       "source": {
@@ -111,7 +111,7 @@
     {
       "id": "run",
       "component": "object_view",
-      "span": 7,
+      "span": 6,
       "height": 420,
       "title": "Run ${ctx.run_id}",
       "source": {
@@ -130,7 +130,7 @@
     {
       "id": "pending",
       "component": "table",
-      "span": 5,
+      "span": 6,
       "height": 300,
       "title": "Pending",
       "source": {
@@ -149,7 +149,7 @@
     {
       "id": "history",
       "component": "events",
-      "span": 7,
+      "span": 6,
       "height": 300,
       "title": "History · derived from durable records",
       "refresh_policy": "self",
@@ -187,7 +187,7 @@
     {
       "id": "payloads",
       "component": "object_view",
-      "span": 6,
+      "span": 5,
       "height": 360,
       "title": "Inputs and results",
       "source": {
@@ -203,9 +203,9 @@
     {
       "id": "run_json",
       "component": "json",
-      "span": 6,
+      "span": 7,
       "height": 360,
-      "title": "DescribeRun JSON · unresolved or redacted payloads are OpaquePayload",
+      "title": "DescribeRun JSON · raw, keys A–Z · unresolved or redacted payloads are OpaquePayload",
       "refresh_policy": "manual",
       "source": {
         "source_id": "temporaless.run.json",

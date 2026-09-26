@@ -1,17 +1,16 @@
-/* Console chrome only. Every color, font, and radius comes from the
-   terminal-core tokens on .mtc-root. The document root carries that class
-   and the theme (main.tsx), so the page background is the --mtc-bg token
-   in both themes and stays consistent with the dashboard widgets. */
+/* Console chrome only. Every color, font, type size, and radius comes from the
+   terminal-core tokens, which exist inside the .mtc-root that
+   DesignSystemProvider renders as .console-app (or .console-bootstrap).
+   Nothing here gives <html> or <body> a terminal-core class or font size:
+   the rem stays the browser's 16 px, so the type scale and the standard
+   density render as designed. The app root fills the viewport; main.tsx
+   paints the document canvas behind it with the same --mtc-bg. */
 
 html,
 body,
 #root {
   margin: 0;
   min-height: 100%;
-}
-
-body {
-  background: var(--mtc-bg);
 }
 
 .console-app,
@@ -49,7 +48,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--mtc-font-size-lg);
+  line-height: var(--mtc-line-height-lg);
   min-width: 0;
 }
 
@@ -61,7 +61,7 @@ body {
 }
 
 .console-product {
-  font-weight: 600;
+  font-weight: var(--mtc-font-weight-semibold);
 }
 
 .console-divider {
@@ -93,8 +93,8 @@ body {
   padding: 10px 16px;
   border-top: 1px solid var(--mtc-border);
   color: var(--mtc-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--mtc-font-size-sm);
+  line-height: var(--mtc-line-height-sm);
 }
 
 .console-gate {
@@ -110,7 +110,7 @@ body {
   max-width: 420px;
   padding: 24px;
   border: 1px solid var(--mtc-border);
-  border-radius: 6px;
+  border-radius: var(--mtc-radius-lg);
   background: var(--mtc-surface);
 }
 
