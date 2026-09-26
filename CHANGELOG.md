@@ -69,6 +69,12 @@ lockstep policy.
   UI and the binary; `docker build --target console .` builds a distroless
   image. See `docs/console.md`, which records the S3 service check and a
   measured cold start of about 0.25 s to the first page.
+- `temporaless.v1.OpaquePayload` (`type_url`, `value`, `redacted`), the
+  stand-in a `DescribeRunResponse` record carries for a payload the server
+  cannot render as ProtoJSON or the caller may not see, and
+  `console.RegisterPayloadTypes`, which registers a store's
+  `payloadDescriptorsFile` types process-wide (refusing, not overwriting, a
+  conflicting file or declaration) so the JSON projections render them.
 
 ### Changed
 
@@ -104,6 +110,18 @@ lockstep policy.
 
 ### Fixed
 
+- `DescribeRun` works over Connect/HTTP JSON and MCP, and in the console's
+  DescribeRun JSON panel, for runs whose records hold application-typed
+  payloads. The response kept each stored Any, and the projections'
+  ProtoJSON encoder resolves Any only through the process registry, so any
+  non-well-known payload failed the whole call with `unable to resolve`, even
+  with the type in the store's `payloadDescriptorsFile` and even for a
+  viewer whose payloads were redacted. Records now keep a stored Any only
+  when it marshals with the process-wide types (the console registers each
+  store's descriptor set there); every other payload, and every redacted one,
+  is a `temporaless.v1.OpaquePayload`, the form `docs/inspection.md`
+  documents. Tests call DescribeRun through the real Connect JSON and MCP
+  surfaces with a registered type, an unknown type, and a redacted viewer.
 - `package-lock.json` is again exactly what `npm install` writes. npm records
   the GitHub-hosted Invariant Protocol dependency under its canonical
   `git+ssh` source (it still clones the public repository over HTTPS), and

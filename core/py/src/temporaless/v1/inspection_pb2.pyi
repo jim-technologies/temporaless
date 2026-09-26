@@ -349,6 +349,16 @@ class RunPendingState(_message.Message):
     last_failure: _temporaless_pb2.ActivityFailure
     def __init__(self, reason: _Optional[_Union[RunPendingReason, str]] = ..., resource_id: _Optional[str] = ..., at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., attempt: _Optional[int] = ..., maximum_attempts: _Optional[int] = ..., last_failure: _Optional[_Union[_temporaless_pb2.ActivityFailure, _Mapping]] = ...) -> None: ...
 
+class OpaquePayload(_message.Message):
+    __slots__ = ("type_url", "value", "redacted")
+    TYPE_URL_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    REDACTED_FIELD_NUMBER: _ClassVar[int]
+    type_url: str
+    value: bytes
+    redacted: bool
+    def __init__(self, type_url: _Optional[str] = ..., value: _Optional[bytes] = ..., redacted: _Optional[bool] = ...) -> None: ...
+
 class RenderedPayload(_message.Message):
     __slots__ = ("path", "type_url", "size_bytes", "json", "opaque", "redacted")
     PATH_FIELD_NUMBER: _ClassVar[int]

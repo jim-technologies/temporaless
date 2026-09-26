@@ -94,10 +94,28 @@ reports `UNSPECIFIED`.
 Workflow inputs and results, activity inputs and results, and event payloads
 are `google.protobuf.Any`. `DescribeRun` returns one `RenderedPayload` per
 Any: ProtoJSON when the type is a well-known type or appears in a configured
-descriptor set, otherwise the opaque bytes. When the caller may not see
-payloads, the response reports `PAYLOAD_VISIBILITY_REDACTED`: each Any keeps
-its type URL with an empty value and the rendered payload carries only the
-type and original size.
+descriptor set, otherwise the opaque bytes.
+
+The records in the response must marshal on every projection, including
+Connect/HTTP JSON and MCP, whose ProtoJSON encoder resolves an Any only
+through the types the server process knows. So a record keeps its stored Any
+only when the server can render it that way: a well-known type, a type linked
+into the server, or a type the operator registered (the console registers
+each store's `payloadDescriptorsFile`). Any other payload is replaced by an
+Any packing `temporaless.v1.OpaquePayload`, which keeps the stored type URL
+and bytes:
+
+```json
+{"@type":"type.googleapis.com/temporaless.v1.OpaquePayload",
+ "typeUrl":"type.googleapis.com/acme.orders.v1.Order","value":"CgZvLTEwMDEQAw=="}
+```
+
+Decode `value` with the application's descriptor when a typed view is needed;
+a binary client unpacks the `OpaquePayload` and rebuilds the Any from its two
+fields. When the caller may not see payloads, the response reports
+`PAYLOAD_VISIBILITY_REDACTED`: every record payload is an `OpaquePayload` with
+`redacted: true` and no value, whatever its type, and the rendered payload
+carries only the type and original size.
 
 ## Implementations
 

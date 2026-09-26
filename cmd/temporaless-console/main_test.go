@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,12 @@ import (
 	opendal "github.com/apache/opendal/bindings/go"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -244,5 +251,114 @@ func TestRunCheck(t *testing.T) {
 	}
 	if code := run(context.Background(), []string{}, &stderr, release); code != 2 {
 		t.Fatalf("missing -config exit %d", code)
+	}
+}
+
+// ticketFile writes an application file the console binary does not link,
+// <pkg>.Ticket { string <fieldName> = 1; }, as a descriptor set.
+func ticketFile(t *testing.T, dir, name, pkg, fieldName string) (string, *descriptorpb.FileDescriptorSet) {
+	t.Helper()
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: proto.String(name), Package: proto.String(pkg), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Ticket"), Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String(fieldName), Number: proto.Int32(1), JsonName: proto.String(fieldName),
+			Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+		}}}},
+	}}}
+	data, err := proto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeTemp(t, dir, filepath.Base(name)+".binpb", string(data)), set
+}
+
+func TestBuildRegistersPayloadDescriptors(t *testing.T) {
+	dir := t.TempDir()
+	records := filepath.Join(dir, "records")
+	seedRecords(t, records)
+	descriptors, set := ticketFile(t, dir, "acme/cmd/v1/ticket.proto", "acme.cmd.v1", "id")
+	files, err := protodesc.NewFiles(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := files.FindDescriptorByName("acme.cmd.v1.Ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := dynamicpb.NewMessage(descriptor.(protoreflect.MessageDescriptor))
+	ticket.Set(descriptor.(protoreflect.MessageDescriptor).Fields().ByName("id"), protoreflect.ValueOfString("t-1"))
+	value, err := proto.Marshal(ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator, err := opendal.NewOperator(opendalfs.Scheme, opendal.OperatorOptions{"root": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer operator.Close()
+	if err := storage.NewOpenDALStore(operator).PutWorkflow(context.Background(), &temporalessv1.WorkflowRecord{
+		SchemaVersion: storage.WorkflowRecordSchemaVersion,
+		Key:           (&storage.WorkflowKey{Namespace: "default", WorkflowID: "app:tickets", RunID: "r1"}).Proto(),
+		WorkflowType:  "workflow:acme.cmd.v1.Ticket->acme.cmd.v1.Ticket",
+		Input:         &anypb.Any{TypeUrl: "type.googleapis.com/acme.cmd.v1.Ticket", Value: value},
+		Status:        temporalessv1.WorkflowStatus_WORKFLOW_STATUS_IN_PROGRESS,
+		CreatedAt:     timestamppb.New(time.Date(2026, 9, 25, 7, 50, 0, 0, time.UTC)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadConfig(writeTemp(t, dir, "console.yaml", "listen: 127.0.0.1:0\nauthentication: {loopback: {}}\n"+
+		"stores: [{id: engine, namespaces: [default], filesystem: {root: "+records+"}, payloadDescriptorsFile: "+descriptors+"}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	console, err := build(config, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer console.close()
+	server := httptest.NewServer(console.handler)
+	defer server.Close()
+	response, err := server.Client().Post(server.URL+"/temporaless.v1.RunInspectionService/DescribeRun", "application/json",
+		strings.NewReader(`{"store":"engine","key":{"namespace":"default","workflow_id":"app:tickets","run_id":"r1"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	var described struct {
+		Workflow struct {
+			Input map[string]string `json:"input"`
+		} `json:"workflow"`
+	}
+	if response.StatusCode != http.StatusOK || json.Unmarshal(body, &described) != nil ||
+		described.Workflow.Input["@type"] != "type.googleapis.com/acme.cmd.v1.Ticket" || described.Workflow.Input["id"] != "t-1" {
+		t.Fatalf("DescribeRun = %d %s", response.StatusCode, body)
+	}
+
+	// Payload types are process-wide, so stores that disagree are refused
+	// at start instead of rendering with each other's schema.
+	first, _ := ticketFile(t, dir, "acme/shared/v1/ticket.proto", "acme.shared.v1", "id")
+	second, _ := ticketFile(t, t.TempDir(), "acme/shared/v1/ticket.proto", "acme.shared.v1", "code")
+	redeclared, _ := ticketFile(t, t.TempDir(), "acme/cmd/v1/other.proto", "acme.cmd.v1", "id")
+	tests := []struct {
+		name       string
+		a, b       string
+		wantReason string
+	}{
+		{"same file, another definition", first, second, "different definition"},
+		{"another file declaring a registered message", descriptors, redeclared, "already declared"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := loadConfig(writeTemp(t, t.TempDir(), "conflict.yaml", "listen: 127.0.0.1:0\nauthentication: {loopback: {}}\nstores:\n"+
+				"  - {id: a, namespaces: [default], filesystem: {root: "+records+"}, payloadDescriptorsFile: "+test.a+"}\n"+
+				"  - {id: b, namespaces: [default], filesystem: {root: "+records+"}, payloadDescriptorsFile: "+test.b+"}\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := build(config, nil, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil || !strings.Contains(err.Error(), test.wantReason) {
+				t.Fatalf("build = %v, want an error naming %q", err, test.wantReason)
+			}
+		})
 	}
 }

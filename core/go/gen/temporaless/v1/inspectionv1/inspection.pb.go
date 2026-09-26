@@ -111,8 +111,9 @@ const (
 	PayloadVisibility_PAYLOAD_VISIBILITY_UNSPECIFIED PayloadVisibility = 0
 	// Payload values are returned as stored.
 	PayloadVisibility_PAYLOAD_VISIBILITY_VISIBLE PayloadVisibility = 1
-	// Payload values were removed; each Any keeps its type URL with an empty
-	// value, and RenderedPayload reports the original size.
+	// Payload values were removed: each payload Any in the records is an
+	// OpaquePayload with `redacted` set and no value, and RenderedPayload
+	// reports the original size.
 	PayloadVisibility_PAYLOAD_VISIBILITY_REDACTED PayloadVisibility = 2
 )
 
@@ -1538,6 +1539,14 @@ func (x *DescribeRunRequest) GetKey() *v1.WorkflowKey {
 // DescribeRunResponse is one run's durable evidence plus derived views. It is
 // composed from several point reads and listings, not a transactional
 // snapshot.
+//
+// Record payloads (workflow and activity input and result, event payload)
+// stay as stored when the server can render them as ProtoJSON with the types
+// it resolves process-wide: well-known types, types linked into the binary,
+// and descriptors the operator registered. Every other payload, and every
+// payload the caller may not see, is replaced by an Any packing an
+// OpaquePayload, so the response marshals on every projection (binary,
+// Connect/HTTP JSON, MCP) without the application's descriptors.
 type DescribeRunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The run's workflow record. Absent when only child records exist.
@@ -1887,6 +1896,76 @@ func (x *RunPendingState) GetLastFailure() *v1.ActivityFailure {
 	return nil
 }
 
+// OpaquePayload stands in for a record payload in a DescribeRunResponse when
+// the server cannot resolve the payload's type or the caller may not see its
+// value. Its ProtoJSON form is
+// {"@type":"type.googleapis.com/temporaless.v1.OpaquePayload",
+// "typeUrl":"<stored type URL>","value":"<base64 protobuf bytes>"}; decode
+// `value` with the application's descriptor for `type_url` when a typed view
+// is needed.
+type OpaquePayload struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Type URL of the stored payload.
+	TypeUrl string `protobuf:"bytes,1,opt,name=type_url,json=typeUrl" json:"type_url,omitempty"`
+	// The stored protobuf bytes. Empty when `redacted` is set.
+	Value []byte `protobuf:"bytes,2,opt,name=value" json:"value,omitempty"`
+	// True when the caller may not see payload values.
+	Redacted      bool `protobuf:"varint,3,opt,name=redacted" json:"redacted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OpaquePayload) Reset() {
+	*x = OpaquePayload{}
+	mi := &file_temporaless_v1_inspection_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OpaquePayload) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OpaquePayload) ProtoMessage() {}
+
+func (x *OpaquePayload) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_inspection_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OpaquePayload.ProtoReflect.Descriptor instead.
+func (*OpaquePayload) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_inspection_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *OpaquePayload) GetTypeUrl() string {
+	if x != nil {
+		return x.TypeUrl
+	}
+	return ""
+}
+
+func (x *OpaquePayload) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *OpaquePayload) GetRedacted() bool {
+	if x != nil {
+		return x.Redacted
+	}
+	return false
+}
+
 // RenderedPayload is one Any from a run's records prepared for display.
 type RenderedPayload struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1913,7 +1992,7 @@ type RenderedPayload struct {
 
 func (x *RenderedPayload) Reset() {
 	*x = RenderedPayload{}
-	mi := &file_temporaless_v1_inspection_proto_msgTypes[19]
+	mi := &file_temporaless_v1_inspection_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1925,7 +2004,7 @@ func (x *RenderedPayload) String() string {
 func (*RenderedPayload) ProtoMessage() {}
 
 func (x *RenderedPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_inspection_proto_msgTypes[19]
+	mi := &file_temporaless_v1_inspection_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1938,7 +2017,7 @@ func (x *RenderedPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenderedPayload.ProtoReflect.Descriptor instead.
 func (*RenderedPayload) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_inspection_proto_rawDescGZIP(), []int{19}
+	return file_temporaless_v1_inspection_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RenderedPayload) GetPath() string {
@@ -2145,7 +2224,11 @@ const file_temporaless_v1_inspection_proto_rawDesc = "" +
 	"\x02at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x02at\x12\x18\n" +
 	"\aattempt\x18\x04 \x01(\rR\aattempt\x12)\n" +
 	"\x10maximum_attempts\x18\x05 \x01(\rR\x0fmaximumAttempts\x12B\n" +
-	"\flast_failure\x18\x06 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\vlastFailure\"\xcc\x01\n" +
+	"\flast_failure\x18\x06 \x01(\v2\x1f.temporaless.v1.ActivityFailureR\vlastFailure\"\\\n" +
+	"\rOpaquePayload\x12\x19\n" +
+	"\btype_url\x18\x01 \x01(\tR\atypeUrl\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1a\n" +
+	"\bredacted\x18\x03 \x01(\bR\bredacted\"\xcc\x01\n" +
 	"\x0fRenderedPayload\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x19\n" +
 	"\btype_url\x18\x02 \x01(\tR\atypeUrl\x12\x1d\n" +
@@ -2212,7 +2295,7 @@ func file_temporaless_v1_inspection_proto_rawDescGZIP() []byte {
 }
 
 var file_temporaless_v1_inspection_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_temporaless_v1_inspection_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_temporaless_v1_inspection_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_temporaless_v1_inspection_proto_goTypes = []any{
 	(WakeLedgerState)(0),                      // 0: temporaless.v1.WakeLedgerState
 	(PayloadVisibility)(0),                    // 1: temporaless.v1.PayloadVisibility
@@ -2237,64 +2320,65 @@ var file_temporaless_v1_inspection_proto_goTypes = []any{
 	(*DescribeRunResponse)(nil),               // 20: temporaless.v1.DescribeRunResponse
 	(*RunHistoryEvent)(nil),                   // 21: temporaless.v1.RunHistoryEvent
 	(*RunPendingState)(nil),                   // 22: temporaless.v1.RunPendingState
-	(*RenderedPayload)(nil),                   // 23: temporaless.v1.RenderedPayload
-	nil,                                       // 24: temporaless.v1.WorkflowRunSummary.AnnotationsEntry
-	(*durationpb.Duration)(nil),               // 25: google.protobuf.Duration
-	(v1.WorkflowStatus)(0),                    // 26: temporaless.v1.WorkflowStatus
-	(*v1.LatestWorkflowRunPointer)(nil),       // 27: temporaless.v1.LatestWorkflowRunPointer
-	(*v1.WorkflowKey)(nil),                    // 28: temporaless.v1.WorkflowKey
-	(*v1.ActivityFailure)(nil),                // 29: temporaless.v1.ActivityFailure
-	(*timestamppb.Timestamp)(nil),             // 30: google.protobuf.Timestamp
-	(*v1.TimerRecord)(nil),                    // 31: temporaless.v1.TimerRecord
-	(*v1.WorkflowRecord)(nil),                 // 32: temporaless.v1.WorkflowRecord
-	(*v1.ActivityRecord)(nil),                 // 33: temporaless.v1.ActivityRecord
-	(*v1.EventRecord)(nil),                    // 34: temporaless.v1.EventRecord
-	(*v1.ClaimRecord)(nil),                    // 35: temporaless.v1.ClaimRecord
-	(v1.TimerKind)(0),                         // 36: temporaless.v1.TimerKind
-	(*structpb.Value)(nil),                    // 37: google.protobuf.Value
+	(*OpaquePayload)(nil),                     // 23: temporaless.v1.OpaquePayload
+	(*RenderedPayload)(nil),                   // 24: temporaless.v1.RenderedPayload
+	nil,                                       // 25: temporaless.v1.WorkflowRunSummary.AnnotationsEntry
+	(*durationpb.Duration)(nil),               // 26: google.protobuf.Duration
+	(v1.WorkflowStatus)(0),                    // 27: temporaless.v1.WorkflowStatus
+	(*v1.LatestWorkflowRunPointer)(nil),       // 28: temporaless.v1.LatestWorkflowRunPointer
+	(*v1.WorkflowKey)(nil),                    // 29: temporaless.v1.WorkflowKey
+	(*v1.ActivityFailure)(nil),                // 30: temporaless.v1.ActivityFailure
+	(*timestamppb.Timestamp)(nil),             // 31: google.protobuf.Timestamp
+	(*v1.TimerRecord)(nil),                    // 32: temporaless.v1.TimerRecord
+	(*v1.WorkflowRecord)(nil),                 // 33: temporaless.v1.WorkflowRecord
+	(*v1.ActivityRecord)(nil),                 // 34: temporaless.v1.ActivityRecord
+	(*v1.EventRecord)(nil),                    // 35: temporaless.v1.EventRecord
+	(*v1.ClaimRecord)(nil),                    // 36: temporaless.v1.ClaimRecord
+	(v1.TimerKind)(0),                         // 37: temporaless.v1.TimerKind
+	(*structpb.Value)(nil),                    // 38: google.protobuf.Value
 }
 var file_temporaless_v1_inspection_proto_depIdxs = []int32{
 	6,  // 0: temporaless.v1.GetInspectionCapabilitiesResponse.stores:type_name -> temporaless.v1.InspectionStore
-	25, // 1: temporaless.v1.InspectionStore.overdue_grace:type_name -> google.protobuf.Duration
+	26, // 1: temporaless.v1.InspectionStore.overdue_grace:type_name -> google.protobuf.Duration
 	9,  // 2: temporaless.v1.ListNamespacesResponse.namespaces:type_name -> temporaless.v1.InspectionNamespace
-	26, // 3: temporaless.v1.ListWorkflowDirectoryRequest.status:type_name -> temporaless.v1.WorkflowStatus
+	27, // 3: temporaless.v1.ListWorkflowDirectoryRequest.status:type_name -> temporaless.v1.WorkflowStatus
 	12, // 4: temporaless.v1.ListWorkflowDirectoryResponse.entries:type_name -> temporaless.v1.WorkflowDirectoryEntry
-	27, // 5: temporaless.v1.WorkflowDirectoryEntry.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
+	28, // 5: temporaless.v1.WorkflowDirectoryEntry.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
 	13, // 6: temporaless.v1.WorkflowDirectoryEntry.run:type_name -> temporaless.v1.WorkflowRunSummary
 	22, // 7: temporaless.v1.WorkflowDirectoryEntry.pending:type_name -> temporaless.v1.RunPendingState
-	28, // 8: temporaless.v1.WorkflowRunSummary.key:type_name -> temporaless.v1.WorkflowKey
-	26, // 9: temporaless.v1.WorkflowRunSummary.status:type_name -> temporaless.v1.WorkflowStatus
-	29, // 10: temporaless.v1.WorkflowRunSummary.failure:type_name -> temporaless.v1.ActivityFailure
-	30, // 11: temporaless.v1.WorkflowRunSummary.created_at:type_name -> google.protobuf.Timestamp
-	30, // 12: temporaless.v1.WorkflowRunSummary.completed_at:type_name -> google.protobuf.Timestamp
-	30, // 13: temporaless.v1.WorkflowRunSummary.run_order_time:type_name -> google.protobuf.Timestamp
-	24, // 14: temporaless.v1.WorkflowRunSummary.annotations:type_name -> temporaless.v1.WorkflowRunSummary.AnnotationsEntry
+	29, // 8: temporaless.v1.WorkflowRunSummary.key:type_name -> temporaless.v1.WorkflowKey
+	27, // 9: temporaless.v1.WorkflowRunSummary.status:type_name -> temporaless.v1.WorkflowStatus
+	30, // 10: temporaless.v1.WorkflowRunSummary.failure:type_name -> temporaless.v1.ActivityFailure
+	31, // 11: temporaless.v1.WorkflowRunSummary.created_at:type_name -> google.protobuf.Timestamp
+	31, // 12: temporaless.v1.WorkflowRunSummary.completed_at:type_name -> google.protobuf.Timestamp
+	31, // 13: temporaless.v1.WorkflowRunSummary.run_order_time:type_name -> google.protobuf.Timestamp
+	25, // 14: temporaless.v1.WorkflowRunSummary.annotations:type_name -> temporaless.v1.WorkflowRunSummary.AnnotationsEntry
 	13, // 15: temporaless.v1.ListWorkflowRunsResponse.runs:type_name -> temporaless.v1.WorkflowRunSummary
 	18, // 16: temporaless.v1.ListScheduledWakesResponse.wakes:type_name -> temporaless.v1.ScheduledWake
-	31, // 17: temporaless.v1.ScheduledWake.timer:type_name -> temporaless.v1.TimerRecord
-	28, // 18: temporaless.v1.ScheduledWake.workflow_key:type_name -> temporaless.v1.WorkflowKey
+	32, // 17: temporaless.v1.ScheduledWake.timer:type_name -> temporaless.v1.TimerRecord
+	29, // 18: temporaless.v1.ScheduledWake.workflow_key:type_name -> temporaless.v1.WorkflowKey
 	0,  // 19: temporaless.v1.ScheduledWake.ledger_state:type_name -> temporaless.v1.WakeLedgerState
-	26, // 20: temporaless.v1.ScheduledWake.workflow_status:type_name -> temporaless.v1.WorkflowStatus
-	28, // 21: temporaless.v1.DescribeRunRequest.key:type_name -> temporaless.v1.WorkflowKey
-	32, // 22: temporaless.v1.DescribeRunResponse.workflow:type_name -> temporaless.v1.WorkflowRecord
-	33, // 23: temporaless.v1.DescribeRunResponse.activities:type_name -> temporaless.v1.ActivityRecord
-	31, // 24: temporaless.v1.DescribeRunResponse.timers:type_name -> temporaless.v1.TimerRecord
-	34, // 25: temporaless.v1.DescribeRunResponse.events:type_name -> temporaless.v1.EventRecord
-	35, // 26: temporaless.v1.DescribeRunResponse.claims:type_name -> temporaless.v1.ClaimRecord
+	27, // 20: temporaless.v1.ScheduledWake.workflow_status:type_name -> temporaless.v1.WorkflowStatus
+	29, // 21: temporaless.v1.DescribeRunRequest.key:type_name -> temporaless.v1.WorkflowKey
+	33, // 22: temporaless.v1.DescribeRunResponse.workflow:type_name -> temporaless.v1.WorkflowRecord
+	34, // 23: temporaless.v1.DescribeRunResponse.activities:type_name -> temporaless.v1.ActivityRecord
+	32, // 24: temporaless.v1.DescribeRunResponse.timers:type_name -> temporaless.v1.TimerRecord
+	35, // 25: temporaless.v1.DescribeRunResponse.events:type_name -> temporaless.v1.EventRecord
+	36, // 26: temporaless.v1.DescribeRunResponse.claims:type_name -> temporaless.v1.ClaimRecord
 	21, // 27: temporaless.v1.DescribeRunResponse.history:type_name -> temporaless.v1.RunHistoryEvent
 	22, // 28: temporaless.v1.DescribeRunResponse.pending:type_name -> temporaless.v1.RunPendingState
-	23, // 29: temporaless.v1.DescribeRunResponse.payloads:type_name -> temporaless.v1.RenderedPayload
-	30, // 30: temporaless.v1.DescribeRunResponse.observed_at:type_name -> google.protobuf.Timestamp
+	24, // 29: temporaless.v1.DescribeRunResponse.payloads:type_name -> temporaless.v1.RenderedPayload
+	31, // 30: temporaless.v1.DescribeRunResponse.observed_at:type_name -> google.protobuf.Timestamp
 	1,  // 31: temporaless.v1.DescribeRunResponse.payload_visibility:type_name -> temporaless.v1.PayloadVisibility
 	2,  // 32: temporaless.v1.RunHistoryEvent.kind:type_name -> temporaless.v1.RunHistoryEventKind
-	30, // 33: temporaless.v1.RunHistoryEvent.time:type_name -> google.protobuf.Timestamp
-	30, // 34: temporaless.v1.RunHistoryEvent.until:type_name -> google.protobuf.Timestamp
-	29, // 35: temporaless.v1.RunHistoryEvent.failure:type_name -> temporaless.v1.ActivityFailure
-	36, // 36: temporaless.v1.RunHistoryEvent.timer_kind:type_name -> temporaless.v1.TimerKind
+	31, // 33: temporaless.v1.RunHistoryEvent.time:type_name -> google.protobuf.Timestamp
+	31, // 34: temporaless.v1.RunHistoryEvent.until:type_name -> google.protobuf.Timestamp
+	30, // 35: temporaless.v1.RunHistoryEvent.failure:type_name -> temporaless.v1.ActivityFailure
+	37, // 36: temporaless.v1.RunHistoryEvent.timer_kind:type_name -> temporaless.v1.TimerKind
 	3,  // 37: temporaless.v1.RunPendingState.reason:type_name -> temporaless.v1.RunPendingReason
-	30, // 38: temporaless.v1.RunPendingState.at:type_name -> google.protobuf.Timestamp
-	29, // 39: temporaless.v1.RunPendingState.last_failure:type_name -> temporaless.v1.ActivityFailure
-	37, // 40: temporaless.v1.RenderedPayload.json:type_name -> google.protobuf.Value
+	31, // 38: temporaless.v1.RunPendingState.at:type_name -> google.protobuf.Timestamp
+	30, // 39: temporaless.v1.RunPendingState.last_failure:type_name -> temporaless.v1.ActivityFailure
+	38, // 40: temporaless.v1.RenderedPayload.json:type_name -> google.protobuf.Value
 	4,  // 41: temporaless.v1.RunInspectionService.GetInspectionCapabilities:input_type -> temporaless.v1.GetInspectionCapabilitiesRequest
 	7,  // 42: temporaless.v1.RunInspectionService.ListNamespaces:input_type -> temporaless.v1.ListNamespacesRequest
 	10, // 43: temporaless.v1.RunInspectionService.ListWorkflowDirectory:input_type -> temporaless.v1.ListWorkflowDirectoryRequest
@@ -2319,7 +2403,7 @@ func file_temporaless_v1_inspection_proto_init() {
 	if File_temporaless_v1_inspection_proto != nil {
 		return
 	}
-	file_temporaless_v1_inspection_proto_msgTypes[19].OneofWrappers = []any{
+	file_temporaless_v1_inspection_proto_msgTypes[20].OneofWrappers = []any{
 		(*RenderedPayload_Json)(nil),
 		(*RenderedPayload_Opaque)(nil),
 	}
@@ -2329,7 +2413,7 @@ func file_temporaless_v1_inspection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporaless_v1_inspection_proto_rawDesc), len(file_temporaless_v1_inspection_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

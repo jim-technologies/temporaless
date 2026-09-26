@@ -11,6 +11,7 @@ import (
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -62,38 +63,69 @@ func (service *Service) DescribeRun(
 	if renderer == nil {
 		renderer = service.renderer
 	}
-	render := func(path string, payload *anypb.Any) *anypb.Any {
+	render := func(path string, payload *anypb.Any) (*anypb.Any, error) {
 		if payload == nil {
-			return nil
+			return nil, nil
 		}
 		response.Payloads = append(response.Payloads, renderer.Render(path, payload, grant.Payloads))
-		if grant.Payloads {
-			return payload
-		}
-		return &anypb.Any{TypeUrl: payload.GetTypeUrl()}
+		return recordPayload(payload, grant.Payloads)
 	}
 
 	if records.Workflow != nil {
 		workflow := proto.Clone(records.Workflow).(*temporalessv1.WorkflowRecord)
-		workflow.Input = render("workflow.input", workflow.GetInput())
-		workflow.Result = render("workflow.result", workflow.GetResult())
+		if workflow.Input, err = render("workflow.input", workflow.GetInput()); err != nil {
+			return nil, err
+		}
+		if workflow.Result, err = render("workflow.result", workflow.GetResult()); err != nil {
+			return nil, err
+		}
 		response.Workflow = workflow
 	}
 	for _, record := range records.Activities {
 		activity := proto.Clone(record).(*temporalessv1.ActivityRecord)
 		prefix := "activity/" + activity.GetKey().GetActivityId()
-		activity.Input = render(prefix+".input", activity.GetInput())
-		activity.Result = render(prefix+".result", activity.GetResult())
+		if activity.Input, err = render(prefix+".input", activity.GetInput()); err != nil {
+			return nil, err
+		}
+		if activity.Result, err = render(prefix+".result", activity.GetResult()); err != nil {
+			return nil, err
+		}
 		response.Activities = append(response.Activities, activity)
 	}
 	for _, record := range records.Events {
 		event := proto.Clone(record).(*temporalessv1.EventRecord)
-		event.Payload = render("event/"+event.GetKey().GetEventId()+".payload", event.GetPayload())
+		if event.Payload, err = render("event/"+event.GetKey().GetEventId()+".payload", event.GetPayload()); err != nil {
+			return nil, err
+		}
 		response.Events = append(response.Events, event)
 	}
 	response.Timers = records.Timers
 	response.Claims = records.Claims
 	return response, nil
+}
+
+// recordPayload is the Any a response record carries for one stored payload.
+// A visible payload stays as stored when ProtoJSON can render it with the
+// types this process resolves (protoregistry.GlobalTypes: well-known types,
+// linked types, and registered descriptors), which is exactly what the
+// Connect/HTTP JSON, MCP, and CLI projections marshal with. Anything else,
+// and every redacted payload, becomes an OpaquePayload, so no projection
+// fails to marshal the response.
+func recordPayload(payload *anypb.Any, visible bool) (*anypb.Any, error) {
+	if visible {
+		if _, err := protojson.Marshal(payload); err == nil {
+			return payload, nil
+		}
+	}
+	opaque := &inspectionv1.OpaquePayload{TypeUrl: payload.GetTypeUrl(), Redacted: !visible}
+	if visible {
+		opaque.Value = payload.GetValue()
+	}
+	wrapped, err := anypb.New(opaque)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "wrap payload: %v", err)
+	}
+	return wrapped, nil
 }
 
 // readRun reads one run's child records, at most Limits.MaxRunRecords per

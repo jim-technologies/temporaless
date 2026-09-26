@@ -297,14 +297,23 @@ enum PayloadVisibility {
   PAYLOAD_VISIBILITY_UNSPECIFIED = 0;
   // Payload values are returned as stored.
   PAYLOAD_VISIBILITY_VISIBLE = 1;
-  // Payload values were removed; each Any keeps its type URL with an empty
-  // value, and RenderedPayload reports the original size.
+  // Payload values were removed: each payload Any in the records is an
+  // OpaquePayload with `redacted` set and no value, and RenderedPayload
+  // reports the original size.
   PAYLOAD_VISIBILITY_REDACTED = 2;
 }
 
 // DescribeRunResponse is one run's durable evidence plus derived views. It is
 // composed from several point reads and listings, not a transactional
 // snapshot.
+//
+// Record payloads (workflow and activity input and result, event payload)
+// stay as stored when the server can render them as ProtoJSON with the types
+// it resolves process-wide: well-known types, types linked into the binary,
+// and descriptors the operator registered. Every other payload, and every
+// payload the caller may not see, is replaced by an Any packing an
+// OpaquePayload, so the response marshals on every projection (binary,
+// Connect/HTTP JSON, MCP) without the application's descriptors.
 message DescribeRunResponse {
   // The run's workflow record. Absent when only child records exist.
   WorkflowRecord workflow = 1;
@@ -435,6 +444,22 @@ message RunPendingState {
   uint32 maximum_attempts = 5;
   // The last attempt failure, for RETRYING.
   ActivityFailure last_failure = 6;
+}
+
+// OpaquePayload stands in for a record payload in a DescribeRunResponse when
+// the server cannot resolve the payload's type or the caller may not see its
+// value. Its ProtoJSON form is
+// {"@type":"type.googleapis.com/temporaless.v1.OpaquePayload",
+// "typeUrl":"<stored type URL>","value":"<base64 protobuf bytes>"}; decode
+// `value` with the application's descriptor for `type_url` when a typed view
+// is needed.
+message OpaquePayload {
+  // Type URL of the stored payload.
+  string type_url = 1;
+  // The stored protobuf bytes. Empty when `redacted` is set.
+  bytes value = 2;
+  // True when the caller may not see payload values.
+  bool redacted = 3;
 }
 
 // RenderedPayload is one Any from a run's records prepared for display.

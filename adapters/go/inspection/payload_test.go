@@ -143,8 +143,12 @@ func TestDescribeRunRedactsPayloads(t *testing.T) {
 		t.Fatalf("visibility = %s", response.GetPayloadVisibility())
 	}
 	for _, payload := range []*anypb.Any{response.GetWorkflow().GetInput(), response.GetWorkflow().GetResult(), response.GetEvents()[0].GetPayload()} {
-		if payload.GetTypeUrl() == "" || len(payload.GetValue()) != 0 {
-			t.Fatalf("payload %s kept %d bytes", payload.GetTypeUrl(), len(payload.GetValue()))
+		opaque := &inspectionv1.OpaquePayload{}
+		if err := payload.UnmarshalTo(opaque); err != nil {
+			t.Fatalf("redacted payload is %s, want an OpaquePayload: %v", payload.GetTypeUrl(), err)
+		}
+		if !opaque.GetRedacted() || opaque.GetTypeUrl() == "" || len(opaque.GetValue()) != 0 {
+			t.Fatalf("redacted payload = %v, want the type URL only", opaque)
 		}
 	}
 	paths := map[string]bool{}
@@ -177,4 +181,66 @@ func jsonEqual(t *testing.T, left, right string) bool {
 		t.Fatal(err)
 	}
 	return proto.Equal(leftValue, rightValue)
+}
+
+// TestDescribeRunRecordPayloads covers what the response records carry for
+// each stored payload: the stored Any when ProtoJSON can render it with the
+// process-wide types, otherwise an OpaquePayload holding the stored bytes.
+func TestDescribeRunRecordPayloads(t *testing.T) {
+	set := orderDescriptors(t)
+	order := orderPayload(t, set)
+	wellKnown, err := anypb.New(wrapperspb.String("20260925T080000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := &anypb.Any{TypeUrl: wellKnown.GetTypeUrl(), Value: []byte{0xff, 0xff}}
+	tests := []struct {
+		name       string
+		payload    *anypb.Any
+		wantStored bool
+	}{
+		{"well-known type stays as stored", wellKnown, true},
+		{"application type outside the process registry is opaque", order, false},
+		{"undecodable bytes of a known type are opaque", corrupt, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			// Descriptors on the store render the payload for display; the
+			// record keeps the opaque stand-in because the process-wide
+			// registry, which the JSON projections use, does not know it.
+			renderer, err := inspection.NewPayloadRenderer(set, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.store.Payloads = renderer
+			run := key("app:orders", "r1")
+			record := f.workflow(run, temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED, -time.Hour, duration(-time.Minute))
+			record.Input = test.payload
+			if err := f.records.PutWorkflow(context.Background(), record); err != nil {
+				t.Fatal(err)
+			}
+			response, err := f.service(inspection.Options{}).DescribeRun(context.Background(), &inspectionv1.DescribeRunRequest{Store: "engine", Key: run.Proto()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := response.GetWorkflow().GetInput()
+			if test.wantStored {
+				if !proto.Equal(input, test.payload) {
+					t.Fatalf("input = %v, want the stored payload", input)
+				}
+			} else {
+				opaque := &inspectionv1.OpaquePayload{}
+				if err := input.UnmarshalTo(opaque); err != nil {
+					t.Fatalf("input is %s, want an OpaquePayload: %v", input.GetTypeUrl(), err)
+				}
+				if opaque.GetRedacted() || opaque.GetTypeUrl() != test.payload.GetTypeUrl() || string(opaque.GetValue()) != string(test.payload.GetValue()) {
+					t.Fatalf("opaque = %v, want the stored type URL and bytes", opaque)
+				}
+			}
+			if _, err := protojson.Marshal(response); err != nil {
+				t.Fatalf("the response does not marshal as ProtoJSON: %v", err)
+			}
+		})
+	}
 }

@@ -161,6 +161,12 @@ func build(config *configv1.ConsoleConfig, assets fs.FS, logger *slog.Logger) (*
 				server.close()
 				return nil, fmt.Errorf("store %q: %w", storeConfig.GetId(), err)
 			}
+			// The HTTP, MCP, and CLI projections resolve Any payloads
+			// process-wide, so the store's types are registered there too.
+			if err := console.RegisterPayloadTypes(descriptors); err != nil {
+				server.close()
+				return nil, fmt.Errorf("store %q: %w", storeConfig.GetId(), err)
+			}
 			if store.Payloads, err = inspection.NewPayloadRenderer(descriptors, 0); err != nil {
 				server.close()
 				return nil, fmt.Errorf("store %q: %w", storeConfig.GetId(), err)

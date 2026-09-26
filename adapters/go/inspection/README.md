@@ -45,6 +45,11 @@ service, err := inspection.NewService([]*inspection.Store{{
 - **Payloads** render as ProtoJSON for well-known types, types linked into the
   binary, and types in an optional `FileDescriptorSet`; anything else keeps its
   opaque bytes, and payloads over the render limit report only type and size.
+  The records in a `DescribeRun` response keep a stored Any only when ProtoJSON
+  can marshal it with `protoregistry.GlobalTypes`, which the Connect/HTTP JSON
+  and MCP projections use; otherwise, and whenever payloads are redacted, the
+  record carries a `temporaless.v1.OpaquePayload` so the response marshals on
+  every projection.
 
 Claims are listed only when `Store.ListClaims` is set, because the Go point
 store has no claim listing and claims may live elsewhere. Without it,

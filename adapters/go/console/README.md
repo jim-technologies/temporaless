@@ -15,6 +15,10 @@ opt-in. Operator documentation: [`docs/console.md`](../../../docs/console.md).
 - **`NewInvariantServer`** registers both services on one Invariant Protocol
   server. The HTTP, MCP, and CLI projections include only the read methods
   (`ProjectedMethods`); request validation runs on every call.
+- **`RegisterPayloadTypes`** registers an application `FileDescriptorSet`
+  process-wide. Those projections resolve `Any` payloads through the global
+  registry, so this is what makes `DescribeRun` show a store's own types as
+  typed ProtoJSON; conflicting definitions are refused, never overwritten.
 - **`Handler`** serves the authenticated API (every `POST`), the UI and
   `/ui/config` (no secrets), and `/healthz` / `/readyz`, with a strict CSP.
 
