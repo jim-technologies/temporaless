@@ -81,17 +81,33 @@ function saveTimeMode(mode: TimeMode) {
   }
 }
 
-// The dashboard restores its context from ctx.* query parameters, which win
-// over the template's defaults. The zone is the viewer's choice, not part of
-// a shared link, so the host writes it there before each dashboard mount.
-function pinZone(zone: string) {
-  const url = new URL(window.location.href)
-  url.searchParams.set('ctx.tz', zone)
-  window.history.replaceState(window.history.state, '', url)
-}
+// The zone is the viewer's choice, not part of a shared link. The dashboard
+// mirrors every context key into ctx.* query parameters, so the zone is not
+// a context key here: the host binds the template's ${ctx.tz} source
+// parameters to the chosen zone before each dashboard mount.
+const ZONE_PARAM = '${ctx.tz}'
 
 function withZone(template: Template, zone: string): Template {
-  return { ...template, context: { values: { ...(template.context?.values ?? {}), tz: zone } } }
+  const { tz: _templateDefault, ...values } = template.context?.values ?? {}
+  return {
+    ...template,
+    context: { values },
+    widgets: template.widgets.map(widget => {
+      const params = widget.source?.params
+      if (!params) return widget
+      const bound = Object.fromEntries(Object.entries(params).map(([key, value]) => [key, value.replaceAll(ZONE_PARAM, zone)]))
+      return { ...widget, source: { ...widget.source, params: bound } }
+    }),
+  }
+}
+
+// A link can still carry ctx.tz (hand-written, or copied from a development
+// build); drop it so the dashboard neither reads it nor copies it back.
+function dropLinkedZone() {
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('ctx.tz')) return
+  url.searchParams.delete('ctx.tz')
+  window.history.replaceState(window.history.state, '', url)
 }
 
 function TokenForm({ onSubmit }: { onSubmit: (token: string) => void }) {
@@ -130,9 +146,8 @@ function App({ config }: { config: UIConfig }) {
   const [token, setToken] = useState<string>()
   const localZone = useMemo(browserZone, [])
   const [timeMode, setTimeMode] = useState<TimeMode>(() => {
-    const mode = savedTimeMode()
-    pinZone(zoneFor(mode, localZone))
-    return mode
+    dropLinkedZone()
+    return savedTimeMode()
   })
   const zone = zoneFor(timeMode, localZone)
   const template = useMemo(() => withZone(config.template, zone), [config.template, zone])
@@ -145,7 +160,6 @@ function App({ config }: { config: UIConfig }) {
   }
   const chooseTime = (mode: TimeMode) => {
     if (mode === timeMode) return
-    pinZone(zoneFor(mode, localZone))
     setTimeMode(mode)
     saveTimeMode(mode)
   }

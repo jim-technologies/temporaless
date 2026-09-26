@@ -481,6 +481,12 @@ func (service *TerminalService) run(ctx context.Context, sourceID string, params
 var runJSONFields = []string{"workflow", "pending", "history", "activities", "timers", "events", "claims", "payloads",
 	"claimsInspected", "payloadVisibility", "truncated", "observedAt"}
 
+// runJSONDescription says what the DescribeRun JSON panel holds: records as
+// stored except for OpaquePayload stand-ins, plus derived views.
+const runJSONDescription = "temporaless.v1.RunInspectionService/DescribeRun as ProtoJSON. Records are as stored, except that " +
+	"a payload whose type this server cannot resolve, and every payload when yours are redacted, is a " +
+	"temporaless.v1.OpaquePayload naming the stored type. The history and pending state are derived."
+
 // runJSON renders the complete DescribeRun response as ProtoJSON, one object
 // property per response field. The terminal contract this facade serves has
 // no generic JSON payload case yet, so an object view carries it.
@@ -497,7 +503,7 @@ func runJSON(description *inspectionv1.DescribeRunResponse) (*terminalv1.DataRes
 		ObjectType:  "DescribeRunResponse",
 		ObjectId:    runID(description),
 		Title:       "DescribeRun response",
-		Description: proto.String("temporaless.v1.RunInspectionService/DescribeRun as ProtoJSON. Record bodies are verbatim; the history and pending state are derived."),
+		Description: proto.String(runJSONDescription),
 	}
 	for _, field := range runJSONFields {
 		value, ok := fields.GetFields()[field]
@@ -844,11 +850,12 @@ func compactTable(description *inspectionv1.DescribeRunResponse, zone displayZon
 			"duration": compactDuration(timer.GetDuration().AsDuration()), "detail": timerKind(timer.GetTimerKind()),
 		}))
 	}
+	stored := storedPayloadTypes(description)
 	for _, event := range description.GetEvents() {
 		table.Rows = append(table.Rows, row(map[string]any{
 			"kind": "event", "id": event.GetKey().GetEventId(), "status": "received",
 			"attempts": 0, "first": zone.cell(event.GetReceivedAt()), "last": zone.cell(event.GetReceivedAt()),
-			"duration": "", "detail": shortTypeURL(event.GetPayload().GetTypeUrl()),
+			"duration": "", "detail": stored["event/"+event.GetKey().GetEventId()+".payload"],
 		}))
 	}
 	for _, claim := range description.GetClaims() {
@@ -859,6 +866,25 @@ func compactTable(description *inspectionv1.DescribeRunResponse, zone displayZon
 		}))
 	}
 	return table
+}
+
+// storedPayloadTypes maps each rendered payload's path to the short name of
+// the type it was stored as, marked when the viewer's payloads are redacted.
+// A record's own Any is not that type: DescribeRun replaces a payload this
+// process cannot resolve, and every payload a redacted viewer sees, with an
+// OpaquePayload stand-in. The RenderedPayload at the same path always names
+// the stored type, even for a payload that really was stored as an
+// OpaquePayload, which unwrapping the record's Any would misname.
+func storedPayloadTypes(description *inspectionv1.DescribeRunResponse) map[string]string {
+	types := make(map[string]string, len(description.GetPayloads()))
+	for _, payload := range description.GetPayloads() {
+		name := shortTypeURL(payload.GetTypeUrl())
+		if payload.GetRedacted() {
+			name += " · redacted"
+		}
+		types[payload.GetPath()] = name
+	}
+	return types
 }
 
 func payloadsObject(description *inspectionv1.DescribeRunResponse) *terminalv1.ObjectPayload {

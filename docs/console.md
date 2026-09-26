@@ -23,9 +23,12 @@ Times are UTC by default. The header's **UTC / Local** switch shows them in
 the browser's time zone instead; the server formats every time in the chosen
 zone (the sources' `tz` parameter), each time column names its zone, and
 event timestamps carry their offset. The choice is kept per viewer in the
-browser, never in a shared link. Before a store, workflow, or run is picked,
-each panel says what to pick next, and a failed run's summary shows its
-failure where an unfinished run shows what it waits on.
+browser and never written into the page URL: the UI host binds the
+template's `tz` source parameters to it instead of making it a dashboard
+context value, so a copied link opens in the recipient's own choice. Before a
+store, workflow, or run is picked, each panel says what to pick next, and a
+failed run's summary shows its failure where an unfinished run shows what it
+waits on.
 
 It shows only what records evidence. An unfinished run is labelled
 retrying, sleeping, polling, executing (a live claim), overdue wake, stale

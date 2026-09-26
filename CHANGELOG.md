@@ -129,6 +129,15 @@ lockstep policy.
   is a `temporaless.v1.OpaquePayload`, the form `docs/inspection.md`
   documents. Tests call DescribeRun through the real Connect JSON and MCP
   surfaces with a registered type, an unknown type, and a redacted viewer.
+  The console still names every payload by the type it was stored as: the
+  per-boundary table's event Detail and the payloads panel read it from the
+  `RenderedPayload` at the same path (marked "· redacted" for a redacted
+  viewer), never from the stand-in, so an unregistered or redacted payload no
+  longer shows as `OpaquePayload`. `docs/inspection.md` tells other clients to
+  do the same, and the DescribeRun JSON panel says records may carry an
+  `OpaquePayload`. Facade tests over Connect cover an unregistered type, a
+  Struct, and a payload stored as an `OpaquePayload`, for a payload reader
+  and a redacted viewer.
 - Inspection keeps the documented per-request read concurrency. Each request
   now resolves its store through a view whose point reads, listings, and raw
   reads share one semaphore of `Limits.Concurrency` slots; before, a
@@ -144,8 +153,11 @@ lockstep policy.
   timestamp-shaped run IDs. The facade's timed sources take a `tz` parameter
   (UTC or an IANA zone; `Local` and malformed names are refused), format
   every time server-side, label each time column with its zone ("Started
-  (UTC)"), and give event timestamps their offset; the template passes the
-  viewer's choice, and the binary embeds the zone database.
+  (UTC)"), and give event timestamps their offset; the UI host binds the
+  template's `tz` source parameters to the viewer's choice rather than making
+  it a dashboard context value, so the choice never lands in the page URL and
+  a copied link opens in the recipient's own choice. The binary embeds the
+  zone database.
 - Waiting and outcome states read correctly. Before a store, workflow, or run
   is picked, the runs, pending, history, per-boundary, and wakes panels show
   the server's prompt instead of "No matching records", "No data", or "No
@@ -172,6 +184,16 @@ lockstep policy.
   `connectworkflow`, `scanquery`, and `indexstore` adapters, and the
   capability matrix gains a CloudEvents row. The audit no longer claims every
   adapter ships for both Go and Python.
+
+### Known limitations
+
+- The console serves its waiting prompts as data rows, because the
+  terminal-core v0.5.2 widgets it renders with have no empty state. Before a
+  workflow is picked, the runs grid shows the prompt in a sortable "Next step"
+  column and counts it ("1 shown"), the history panel shows its event filter
+  above a single prompt event, and the prompt's type size differs between the
+  record grid and the table widget. The prompts move to the terminal-core
+  v0.7.0 empty-state components.
 
 ## [0.11.1] — 2026-09-25
 

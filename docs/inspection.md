@@ -117,6 +117,11 @@ fields. When the caller may not see payloads, the response reports
 `redacted: true` and no value, whatever its type, and the rendered payload
 carries only the type and original size.
 
+To show a payload's type, read the `RenderedPayload` at the same path
+(`event/approval.payload`), which always names the stored type and says
+whether it was redacted. Unwrapping the record's Any instead misnames a
+payload the application itself stored as an `OpaquePayload`.
+
 ## Implementations
 
 [`adapters/go/inspection`](../adapters/go/inspection) serves the contract

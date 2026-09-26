@@ -17,6 +17,7 @@ import (
 	"github.com/jim-technologies/temporaless/adapters/go/console"
 	"github.com/jim-technologies/temporaless/adapters/go/inspection"
 	temporalessv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1"
+	inspectionv1 "github.com/jim-technologies/temporaless/core/go/gen/temporaless/v1/inspectionv1"
 	"github.com/jim-technologies/temporaless/core/go/storage"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -25,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -79,7 +81,9 @@ func packApplication(t *testing.T, set *descriptorpb.FileDescriptorSet, name, va
 // ScopedAccess with payloads reserved for can_write, and the Invariant
 // Protocol projections. The order type is registered the way
 // cmd/temporaless-console registers a store's payloadDescriptorsFile; the
-// invoice type is known to nobody.
+// invoice type is known to nobody. The run's events carry an invoice
+// ("approval"), a well-known Struct ("note"), and a payload the application
+// stored as an OpaquePayload itself ("relay").
 func typedHarness(t *testing.T) (*httptest.Server, *signer, *anypb.Any) {
 	t.Helper()
 	if err := console.RegisterPayloadTypes(orderSet()); err != nil {
@@ -109,6 +113,30 @@ func typedHarness(t *testing.T) (*httptest.Server, *signer, *anypb.Any) {
 		CompletedAt:   at(-39 * time.Minute),
 	}); err != nil {
 		t.Fatal(err)
+	}
+	note, err := structpb.NewStruct(map[string]any{"reviewer": "ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, message := range map[string]proto.Message{
+		"approval": invoice,
+		"note":     note,
+		"relay":    &inspectionv1.OpaquePayload{TypeUrl: orderURL, Value: order.GetValue()},
+	} {
+		payload, ok := message.(*anypb.Any)
+		if !ok {
+			if payload, err = anypb.New(message); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := records.PutEvent(context.Background(), &temporalessv1.EventRecord{
+			SchemaVersion: storage.EventRecordSchemaVersion,
+			Key:           storage.EventKey{Namespace: run.Namespace, WorkflowID: run.WorkflowID, RunID: run.RunID, EventID: id}.Proto(),
+			Payload:       payload,
+			ReceivedAt:    at(-39*time.Minute - 30*time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	store := &inspection.Store{ID: "engine", Namespaces: []string{"default"}, Records: records, Bucket: inspection.NewOpenDALBucket(operator), Payloads: renderer}
@@ -246,7 +274,8 @@ func TestDescribeRunProjectsApplicationPayloads(t *testing.T) {
 			wantVisibility: "PAYLOAD_VISIBILITY_VISIBLE",
 			wantInput:      registered,
 			wantResult:     unknown,
-			wantRendered:   map[string]string{"workflow.input": "json", "workflow.result": "opaque"},
+			wantRendered: map[string]string{"workflow.input": "json", "workflow.result": "opaque",
+				"event/approval.payload": "opaque", "event/note.payload": "json", "event/relay.payload": "json"},
 		},
 		{
 			name:           "redacted viewer",
@@ -254,7 +283,8 @@ func TestDescribeRunProjectsApplicationPayloads(t *testing.T) {
 			wantVisibility: "PAYLOAD_VISIBILITY_REDACTED",
 			wantInput:      redactedOrder,
 			wantResult:     redactedInvoice,
-			wantRendered:   map[string]string{"workflow.input": "redacted", "workflow.result": "redacted"},
+			wantRendered: map[string]string{"workflow.input": "redacted", "workflow.result": "redacted",
+				"event/approval.payload": "redacted", "event/note.payload": "redacted", "event/relay.payload": "redacted"},
 		},
 	}
 	for _, test := range tests {
@@ -275,7 +305,9 @@ func TestDescribeRunProjectsApplicationPayloads(t *testing.T) {
 						rendered[payload["path"].(string)] = "redacted"
 					case payload["json"] != nil:
 						rendered[payload["path"].(string)] = "json"
-						assertJSON(t, "rendered input", payload["json"], map[string]any{"id": "o-1001", "quantity": "3"})
+						if payload["path"] == "workflow.input" {
+							assertJSON(t, "rendered input", payload["json"], map[string]any{"id": "o-1001", "quantity": "3"})
+						}
 					case payload["opaque"] != nil:
 						rendered[payload["path"].(string)] = "opaque"
 					}
@@ -293,6 +325,74 @@ func TestDescribeRunProjectsApplicationPayloads(t *testing.T) {
 		if code != http.StatusOK || !strings.Contains(string(data), opaqueURL) {
 			t.Fatalf("run JSON source = %d %s", code, data)
 		}
+	}
+}
+
+// TestTerminalNamesStoredPayloadTypes pins what the dashboard shows as a
+// payload's type: the type it was stored as, never the OpaquePayload
+// stand-in DescribeRun puts in the records for an unregistered type or a
+// redacted viewer. It reads the per-boundary table and the payloads panel
+// through the real Connect projection of the terminal facade.
+func TestTerminalNamesStoredPayloadTypes(t *testing.T) {
+	server, signer, _ := typedHarness(t)
+	editor := signer.token(t, "ES256", claims(nil))
+	viewer := signer.token(t, "ES256", claims(map[string]any{"sub": "user-9"}))
+	params := map[string]string{"store": "engine", "namespace": "default", "workflow_id": "app:orders", "run_id": "r1"}
+	get := func(t *testing.T, token, source string) map[string]any {
+		t.Helper()
+		code, data := postJSON(t, server, "/"+terminalService()+"/Get", token, nil, map[string]any{"source_id": source, "params": params})
+		if code != http.StatusOK {
+			t.Fatalf("%s = %d %s", source, code, data)
+		}
+		decoded := map[string]any{}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	tests := []struct {
+		name  string
+		token string
+		// Detail of each event row in the per-boundary table.
+		wantDetail map[string]string
+		// Label of each event payload in the payloads panel.
+		wantLabel map[string]string
+	}{
+		{
+			name:       "payload reader",
+			token:      editor,
+			wantDetail: map[string]string{"approval": "Invoice", "note": "Struct", "relay": "OpaquePayload"},
+			wantLabel: map[string]string{"event/approval.payload": "payload · Invoice", "event/note.payload": "payload · Struct",
+				"event/relay.payload": "payload · OpaquePayload"},
+		},
+		{
+			name:       "redacted viewer",
+			token:      viewer,
+			wantDetail: map[string]string{"approval": "Invoice · redacted", "note": "Struct · redacted", "relay": "OpaquePayload · redacted"},
+			wantLabel: map[string]string{"event/approval.payload": "payload · Invoice", "event/note.payload": "payload · Struct",
+				"event/relay.payload": "payload · OpaquePayload"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detail := map[string]string{}
+			table, _ := get(t, test.token, console.SourceRunCompact)["table"].(map[string]any)
+			for _, item := range table["rows"].([]any) {
+				if row := item.(map[string]any); row["kind"] == "event" {
+					detail[row["id"].(string)], _ = row["detail"].(string)
+				}
+			}
+			assertJSON(t, "event details", detail, test.wantDetail)
+
+			label := map[string]string{}
+			object, _ := get(t, test.token, console.SourceRunPayload)["object"].(map[string]any)
+			for _, item := range object["properties"].([]any) {
+				if property := item.(map[string]any); strings.HasPrefix(property["key"].(string), "event/") {
+					label[property["key"].(string)], _ = property["label"].(string)
+				}
+			}
+			assertJSON(t, "event payload labels", label, test.wantLabel)
+		})
 	}
 }
 
