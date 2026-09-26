@@ -114,11 +114,18 @@ type Limits struct {
 	ReadBudget int
 	// MaxListedRuns caps the run directories listed for one workflow_id.
 	MaxListedRuns int
-	// MaxListedObjects caps pointer and ledger listings per namespace.
+	// MaxListedObjects caps the latest-run pointer, due-ledger, and
+	// quarantined-ledger listings of one namespace; a larger listing fails
+	// and asks for an index. ListNamespaces lists each pointer directory once
+	// to probe presence and does not apply it.
 	MaxListedObjects int
-	// MaxRunRecords caps records read per record kind for one run.
+	// MaxRunRecords caps the activity, event, and claim records read per kind
+	// for one run, and the timers returned. Timers come from the point store's
+	// ListTimers, which reads every timer and due-ledger entry of the run.
 	MaxRunRecords int
-	// Concurrency caps parallel point reads per request.
+	// Concurrency caps the store reads (point reads, listings, and raw reads)
+	// in flight for one request. Every read of a request shares the one
+	// budget, including nested fan-out.
 	Concurrency int
 }
 
@@ -293,7 +300,7 @@ func (service *Service) storeScope(ctx context.Context, storeID string) (*Store,
 	if !visible {
 		return nil, Grant{}, status.Errorf(codes.NotFound, "store %q is not available", storeID)
 	}
-	return store, grant, nil
+	return service.requestView(store), grant, nil
 }
 
 // namespaceScope additionally requires a granted namespace. An empty

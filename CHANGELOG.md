@@ -129,6 +129,15 @@ lockstep policy.
   is a `temporaless.v1.OpaquePayload`, the form `docs/inspection.md`
   documents. Tests call DescribeRun through the real Connect JSON and MCP
   surfaces with a registered type, an unknown type, and a redacted viewer.
+- Inspection keeps the documented per-request read concurrency. Each request
+  now resolves its store through a view whose point reads, listings, and raw
+  reads share one semaphore of `Limits.Concurrency` slots; before, a
+  directory page read its pointers eight at a time and every in-progress
+  entry read its run eight at a time again, up to 64 reads at once. The
+  quarantined-ledger count now refuses past `MaxListedObjects` like the
+  ledger listing, and the `Limits` documentation states which listings each
+  bound covers (timers come from the point store's `ListTimers`, and the
+  namespace presence probe is unbounded).
 - `package-lock.json` is again exactly what `npm install` writes. npm records
   the GitHub-hosted Invariant Protocol dependency under its canonical
   `git+ssh` source (it still clones the public repository over HTTPS), and

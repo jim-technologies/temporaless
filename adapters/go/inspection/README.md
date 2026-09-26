@@ -32,7 +32,9 @@ service, err := inspection.NewService([]*inspection.Store{{
 - **Bounded.** `Limits` caps page size, reads per request (filtered pages
   return a continuation token when the budget runs out), run directories per
   workflow, objects per namespace listing, records per run kind (then
-  `truncated`), and read concurrency.
+  `truncated`), and read concurrency. The concurrency cap is one budget per
+  request: every point read, listing, and raw read of the request, nested
+  fan-out included, waits for a slot of the same semaphore.
 - **Scoped.** `Options.Access` decides, per caller, which stores are visible,
   which of each store's namespaces may be read, and whether payload values are
   returned or redacted. An empty namespace is always rejected. `AllowAll` is

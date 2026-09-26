@@ -40,6 +40,9 @@ func (service *Service) ListScheduledWakes(
 	if err != nil {
 		return nil, service.storeError(err)
 	}
+	if len(quarantined) > service.limits.MaxListedObjects {
+		return nil, service.storeError(fmt.Errorf("%w: %d quarantined ledger entries in namespace %q", errTooManyObjects, len(quarantined), namespace))
+	}
 	response := &inspectionv1.ListScheduledWakesResponse{}
 	for _, path := range quarantined {
 		if strings.HasSuffix(path, ".binpb") {

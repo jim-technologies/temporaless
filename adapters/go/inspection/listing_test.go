@@ -294,6 +294,18 @@ func TestListScheduledWakes(t *testing.T) {
 	// Reporting never repairs: the missing canonical timer stays missing and
 	// the torn ledger entry stays where it is.
 	assertUnchanged(t, before, f.snapshot())
+
+	// The quarantined-ledger count is bounded like the ledger listing: past
+	// MaxListedObjects the call refuses instead of listing without bound.
+	for index := range 7 {
+		f.write(fmt.Sprintf("temporaless/v2/default/_due_invalid/extra-%d.binpb", index), []byte("quarantined"))
+	}
+	limits := inspection.DefaultLimits()
+	limits.MaxListedObjects = 6
+	_, err = f.service(inspection.Options{Limits: limits}).ListScheduledWakes(context.Background(), &inspectionv1.ListScheduledWakesRequest{Store: "engine", Namespace: "default"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("over-bound quarantine listing code = %s (%v), want FailedPrecondition", status.Code(err), err)
+	}
 }
 
 func TestCapabilitiesAndNamespacesFollowAccess(t *testing.T) {

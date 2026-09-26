@@ -128,7 +128,7 @@ limits: {defaultPageSize: 50, maxPageSize: 100}
 | `stores[].filesystem` / `stores[].s3` | Where the `temporaless/v2` tree lives. Give the console read-only credentials. |
 | `stores[].listClaims` | Read run-scoped claims from the bucket (only when claims live there). Without it a run reports that claims were not inspected. |
 | `stores[].payloadDescriptorsFile` | A `FileDescriptorSet` (for example `buf build -o engine.binpb`) for rendering application payloads as JSON. The console registers its types process-wide, so `DescribeRun` over Connect/HTTP JSON and MCP shows them as typed ProtoJSON too; stores that define the same file or type differently are refused at start. Well-known types always render; any other payload is carried as an opaque `temporaless.v1.OpaquePayload` (type URL and bytes). See [run inspection](inspection.md#payloads). |
-| `limits` | Page size (default 50, max 100), objects a filtered page reads (500), run directories listed per workflow (20,000; beyond that the call refuses and asks for an index), and records read per kind per run (2,000; beyond that the run is marked truncated). |
+| `limits` | Page size (default 50, max 100), objects a filtered page reads (500), run directories listed per workflow (20,000; beyond that the call refuses and asks for an index), and records read per kind per run (2,000; beyond that the run is marked truncated). Each request also keeps at most 8 store reads in flight, one budget shared by nested reads. |
 | `grpcListen` | Optional native gRPC listener. Not allowed in loopback mode. |
 
 ## Authentication and tenancy
