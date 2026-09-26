@@ -11,7 +11,8 @@ One page, top to bottom:
 
 - **Workflows**: the latest run of every workflow ID in a namespace (from the
   latest-run pointers), with status, workflow type, start and duration, and
-  what an unfinished run is waiting on. Filter by status.
+  what an unfinished run is waiting on or how a failed one failed. Filter by
+  status.
 - **Runs** of the selected workflow ID, newest run ID first.
 - **Run**: the selected run's summary, its pending state, its history, a
   per-boundary table (one row per activity, timer, event, and claim), its
@@ -267,8 +268,39 @@ the vendored protos from its tag, move the UI pin to the same commit, run
 The UI host renders inside the `.mtc-root` that terminal-core's
 `DesignSystemProvider` draws around the console; it never puts a
 terminal-core class or font size on `<html>` or `<body>`, so the rem stays the
-browser's 16 px and the type scale and the standard density (32 px rows,
-28 px controls) render at their designed sizes.
+browser's 16 px and the standard density's tokens resolve at their designed
+sizes (`--mtc-row-height` 32 px, `--mtc-control-height-md` 28 px). Not every
+widget sizes itself from those tokens. Measured on the rendered elements in
+Chromium at 1280 and 1440 px wide, in both themes:
+
+| Element | Text | Height |
+| --- | --- | --- |
+| Page text, panel titles | 13 px, 14 px | |
+| List rows (Workflows, Runs, Scheduled wakes) | 12 px | 38 px |
+| Pending and per-boundary table rows | 14 px | 41 px |
+| Store, namespace, and filter selects | 14 px | 33 px |
+| Header buttons (UTC / Local, theme) | | 24 px |
+| Sign-in token field and button | | 28 px |
+| Status chips, "N shown" counts | 10 px | |
+| "read-only" and "derived history" tags | 9 px | |
+
+The rows and selects are taller than the density tokens, and the chips and
+tags smaller than the 11 px floor of the type scale, because terminal-core
+v0.6.0's record grid, table, and select widgets use their own padding and
+fixed sizes there; changing them is terminal-core's to do.
+
+Lists keep one line per row. The dashboard contract carries no column
+widths, so the UI host's stylesheet sets them for terminal-core's record
+grids: every column is as wide as its widest value (up to 20rem) and never
+wraps, so an id or a time never breaks mid-token; the last column, each
+list's free text (what a run waits on, its failure, the ledger state), takes
+the width left over; and a value wider than its column ends in an ellipsis,
+with the whole value as its tooltip. Each list carries only the columns that
+fit a 1280 px page, and the Run panel shows the rest, such as the run order
+time. At 1280 and 1440 px no list cell wraps and no list scrolls sideways,
+and nine workflows fit the Workflows panel with the whole panel inside a
+1440×900 window; at 390 px a list scrolls sideways inside its panel, and the
+page does not.
 
 ## Not in this version
 

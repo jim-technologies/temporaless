@@ -208,6 +208,17 @@ function SignInGate({ refused, onSignedIn, fetch }: { refused?: SourceError, onS
   )
 }
 
+// titleClippedCell gives a list cell that styles.css clipped to an ellipsis
+// its whole value as a tooltip. It runs when the pointer or keyboard focus
+// reaches a record-grid cell, so the title matches what the cell holds then,
+// and a cell that fits again loses it.
+export function titleClippedCell(event: { target: EventTarget | null }) {
+  const cell = event.target instanceof Element ? event.target.closest('td > button') : null
+  if (!(cell instanceof HTMLElement)) return
+  if (cell.scrollWidth > cell.clientWidth) cell.title = cell.textContent?.trim() ?? ''
+  else cell.removeAttribute('title')
+}
+
 // accessLabel names how this tab reaches the API; it never claims a sign-in
 // that has not happened.
 function accessLabel(auth: UIConfig['auth'], signedIn: boolean): string {
@@ -301,7 +312,7 @@ export function App({ config, fetch }: { config: UIConfig, fetch?: BaseFetch }) 
         </div>
       </header>
       {needsToken ? <SignInGate refused={session.refused} onSignedIn={signIn} fetch={fetch} /> : (
-        <main className="console-main">
+        <main className="console-main" onPointerOver={titleClippedCell} onFocus={titleClippedCell}>
           <Dashboard
             key={zone}
             template={template}

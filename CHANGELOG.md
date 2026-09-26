@@ -123,14 +123,43 @@ lockstep policy.
   vendored Inter and JetBrains Mono fonts, which the build emits as files,
   so the console's CSP allows fonts from its own origin only
   (`font-src 'self'`). `<html>` and `<body>` carry no terminal-core class,
-  so the rem stays 16 px and the type scale and density render as designed
-  (measured in Chromium: 13 px body text, 12 px table text, 14 px panel
-  titles, 32 px rows, 28 px controls); the document only follows the
-  theme's color scheme and paints its canvas with the app's `--mtc-bg`. The
-  Runs and Run panels, and the Pending and History panels, now split their
-  rows evenly so the Runs and Pending tables keep their time columns in
-  view at that scale, and the raw DescribeRun JSON panel is the wider one
-  of its row so its title and long type URLs fit.
+  so the rem stays 16 px and the density tokens resolve at their designed
+  sizes (`--mtc-row-height` 32 px, `--mtc-control-height-md` 28 px); the
+  document only follows the theme's color scheme and paints its canvas with
+  the app's `--mtc-bg`. Measured on the rendered elements in Chromium at
+  1280 and 1440 px, both themes: 13 px page text, 14 px panel titles, 12 px
+  list text in 38 px rows, 14 px text in the Pending and per-boundary
+  tables' 41 px rows, 33 px selects, 24 px header buttons, and a 28 px token
+  field and button at the sign-in gate. Rows and selects are taller than the
+  tokens, and status chips and "N shown" counts (10 px) and the run panel's
+  "read-only" and "derived history" tags (9 px) are below the 11 px floor of
+  the type scale, because terminal-core v0.6.0's record grid, table, and
+  select widgets use their own padding and fixed sizes there;
+  `docs/console.md` lists them. The raw DescribeRun JSON panel is the wider
+  one of its row so its title and long type URLs fit.
+- The console's lists (Workflows, Runs, Scheduled wakes) keep one line per
+  row at the 16 px rem, as the executions list is designed: times and ids no
+  longer wrap or break mid-token ("2026-09-26" over "05:45:34",
+  "2026-09-01..2026-09-" over "24"), which had pushed the Workflows rows to
+  51 px and three of nine workflows behind the panel's inner scroll. The
+  dashboard contract carries no column widths, so the UI host's stylesheet
+  sets them for terminal-core's record grids: each column is as wide as its
+  widest value (up to 20rem, instead of terminal-core's 9rem minimum) and
+  never wraps; the last column, each list's free text, which the server
+  orders last, takes the width left over; and a value wider than its column
+  ends in an ellipsis, with the whole value as the tooltip the UI host sets
+  when the pointer or focus reaches the cell. The Workflows list drops its
+  Ordered at column (the Run panel's Timing still shows the run order time)
+  and its panel grows to 495 px; the Runs list spans the page, so its six
+  columns fit without a sideways scroll; the Run and Pending panels share a
+  row; and History spans the page at 460 px, so a failed run's final
+  "Workflow failed" event is in view. Measured in Chromium at 1280 and
+  1440 px, both themes: no list cell wraps, no list scrolls sideways, and
+  nine workflows show without an inner scroll, with the whole Workflows
+  panel inside a 1440×900 window; at 1280 px a long failure is clipped and
+  carries its tooltip. At 390 px a list scrolls sideways inside its panel,
+  and the page does not. A facade test pins each list's column order, and a
+  UI test the tooltip.
 
   Known limitation: panels are not marked stale yet. The template's
   per-panel `staleAfterMs` (three poll intervals) is the input terminal-core

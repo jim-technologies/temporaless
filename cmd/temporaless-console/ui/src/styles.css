@@ -89,6 +89,37 @@ body,
   padding: 12px 16px 16px;
 }
 
+/* List rows are one line, like any operator list. The Workflows, Runs, and
+   Scheduled wakes lists are terminal-core record grids, whose read-only
+   cells are a button in a <td>, and the dashboard contract carries no
+   column widths, so the host sets them here. No cell wraps, so an id, time,
+   or duration never breaks mid-token, and each column is as wide as its
+   widest value (up to 20rem) instead of terminal-core's 9rem minimum. The
+   last column, each list's free text (the server orders it last), takes the
+   width left over, at least 9rem. A value wider than its column ends in an
+   ellipsis, and app.tsx gives a clipped cell its whole value as a tooltip. */
+.console-main td:has(> button) {
+  min-width: 0;
+}
+
+.console-main td > button {
+  display: block;
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.console-main td:last-child:has(> button) {
+  min-width: 9rem;
+  width: 100%;
+  max-width: 0;
+}
+
+.console-main td:last-child > button {
+  max-width: none;
+}
+
 .console-footer {
   padding: 10px 16px;
   border-top: 1px solid var(--mtc-border);

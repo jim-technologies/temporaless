@@ -71,7 +71,7 @@
       "id": "workflows",
       "component": "record_grid",
       "span": 12,
-      "height": 470,
+      "height": 495,
       "title": "Workflows · latest run per workflow ID",
       "source": {
         "source_id": "temporaless.directory",
@@ -91,8 +91,8 @@
     {
       "id": "runs",
       "component": "record_grid",
-      "span": 6,
-      "height": 420,
+      "span": 12,
+      "height": 280,
       "title": "Runs · newest run ID first",
       "source": {
         "source_id": "temporaless.runs",
@@ -131,7 +131,7 @@
       "id": "pending",
       "component": "table",
       "span": 6,
-      "height": 300,
+      "height": 420,
       "title": "Pending",
       "source": {
         "source_id": "temporaless.run.pending",
@@ -149,8 +149,8 @@
     {
       "id": "history",
       "component": "events",
-      "span": 6,
-      "height": 300,
+      "span": 12,
+      "height": 460,
       "title": "History · derived from durable records",
       "refresh_policy": "self",
       "source": {

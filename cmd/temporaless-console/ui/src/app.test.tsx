@@ -243,6 +243,48 @@ describe('bearer sign-in', () => {
   })
 })
 
+describe('list cells', () => {
+  it('give a clipped cell its whole value as a tooltip, and a cell that fits none', async () => {
+    const failure = 'upstream_5xx: write:bronze failed after 6 attempts'
+    const text = (key: string, label: string) => ({ key, label, type: 'RECORD_FIELD_TYPE_TEXT', readOnly: true })
+    const list: Template = {
+      title: 'Executions',
+      widgets: [{ id: 'workflows', component: 'record_grid', title: 'Workflows', source: { source_id: 'temporaless.directory' } }],
+    }
+    const server = fakeConsole(() => answer(200, { records: {
+      tableId: 'temporaless.directory',
+      tableName: 'Workflows',
+      primaryField: 'workflow_id',
+      fields: [text('workflow_id', 'Workflow ID'), text('pending', 'Waiting on or failure')],
+      records: [{ id: 'pull:polymarket', values: { workflow_id: 'pull:polymarket', pending: failure } }],
+      capabilities: {},
+    } }))
+    await render(<App config={{ ...loopback, template: list }} fetch={server.fetch} />)
+
+    const cell = (value: string) => [...container.querySelectorAll<HTMLElement>('td > button')].find(element => element.textContent === value)
+    const clipped = await until(() => cell(failure), 'the failure cell')
+    const fits = cell('pull:polymarket')!
+    // jsdom lays nothing out, so each cell is given the widths Chromium
+    // measured for it at 1280 px: its content, and the box that shows it.
+    const lay = (element: HTMLElement, content: number, box: number) => Object.defineProperties(element, {
+      scrollWidth: { value: content, configurable: true },
+      clientWidth: { value: box, configurable: true },
+    })
+    lay(clipped, 322, 285)
+    lay(fits, 130, 130)
+    await act(async () => {
+      for (const element of [clipped, fits]) element.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+    })
+    expect(clipped.title).toBe(failure)
+    expect(fits.hasAttribute('title')).toBe(false)
+
+    // Wider again (a resize), the cell loses the tooltip when focus reaches it.
+    lay(clipped, 322, 445)
+    await act(async () => clipped.focus())
+    expect(clipped.hasAttribute('title')).toBe(false)
+  })
+})
+
 describe('loopback access', () => {
   it('opens the dashboard with no gate and sends no token', async () => {
     const server = fakeConsole(echo)

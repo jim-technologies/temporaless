@@ -237,6 +237,14 @@ var workflowStatusFilters = map[string]temporalessv1.WorkflowStatus{
 	"completed": temporalessv1.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
 }
 
+// The Workflows, Runs, and Scheduled wakes lists are record grids that the
+// UI host keeps to one line per row (cmd/temporaless-console/ui/src/styles.css):
+// ids, times, and durations never wrap, and the last column takes the width
+// left over and ends in an ellipsis, with the whole value as its tooltip. So
+// each list's free text (what a run waits on, its failure, the ledger state)
+// is its last field, and a list carries only the columns that fit a 1280 px
+// page; the Run panel shows the rest, such as the run order time.
+
 func (service *TerminalService) directory(ctx context.Context, params map[string]string, zone displayZone) (*terminalv1.DataResponse, error) {
 	if unselected(params, "store", "namespace") {
 		return emptyRecords(SourceDirectory, promptStore), nil
@@ -265,7 +273,6 @@ func (service *TerminalService) directory(ctx context.Context, params map[string
 			textField("workflow_id", "Workflow ID"),
 			textField("run_id", "Latest run"),
 			textField("type", "Type"),
-			textField("ordered_at", zone.label("Ordered at")),
 			textField("started", zone.label("Started")),
 			textField("duration", "Duration"),
 			textField("pending", "Waiting on or failure"),
@@ -293,7 +300,6 @@ func (service *TerminalService) directory(ctx context.Context, params map[string
 				"workflow_id": key.GetWorkflowId(),
 				"run_id":      key.GetRunId(),
 				"type":        shortType(run.GetWorkflowType()),
-				"ordered_at":  zone.cell(pointer.GetRunOrderTime()),
 				"started":     zone.cell(run.GetCreatedAt()),
 				"duration":    runDuration(run.GetCreatedAt(), run.GetCompletedAt(), now),
 				"pending":     hint,

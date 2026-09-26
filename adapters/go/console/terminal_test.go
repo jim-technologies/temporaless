@@ -232,6 +232,37 @@ func TestTerminalListSources(t *testing.T) {
 	}
 }
 
+// The UI host keeps list rows to one line and lets only the last column
+// shrink to an ellipsis, so each list names its columns in this order: ids,
+// times, and durations first, the free text last.
+func TestTerminalListColumns(t *testing.T) {
+	terminal := newTerminal(t, inspection.AllowAll)
+	params := map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather"}
+	tests := []struct {
+		source string
+		want   []string
+	}{
+		{console.SourceDirectory, []string{"status", "workflow_id", "run_id", "type", "started", "duration", "pending"}},
+		{console.SourceRuns, []string{"status", "run_id", "started", "completed", "duration", "failure"}},
+		{console.SourceWakes, []string{"state", "kind", "fires_at", "lateness", "workflow_id", "run_id", "timer_id", "ledger"}},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			response, err := terminal.Get(context.Background(), dataRequest(test.source, params))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var keys []string
+			for _, field := range response.GetRecords().GetFields() {
+				keys = append(keys, field.GetKey())
+			}
+			if strings.Join(keys, ",") != strings.Join(test.want, ",") {
+				t.Fatalf("columns %v, want %v", keys, test.want)
+			}
+		})
+	}
+}
+
 func dataRequest(source string, params map[string]string) *terminalv1.DataRequest {
 	return &terminalv1.DataRequest{SourceId: source, Params: params}
 }
@@ -252,7 +283,7 @@ func TestTerminalTimeZones(t *testing.T) {
 		params map[string]string
 		want   []string
 	}{
-		{"directory defaults to UTC", console.SourceDirectory, directory(""), []string{`"label":"Started (UTC)"`, `"label":"Ordered at (UTC)"`, `"started":"2026-09-25 08:00:00"`}},
+		{"directory defaults to UTC", console.SourceDirectory, directory(""), []string{`"label":"Started (UTC)"`, `"started":"2026-09-25 08:00:00"`}},
 		{"directory in a local zone", console.SourceDirectory, directory("Asia/Kuala_Lumpur"), []string{`"label":"Started (Asia/Kuala_Lumpur)"`, `"started":"2026-09-25 16:00:00"`}},
 		{"runs", console.SourceRuns, map[string]string{"store": "engine", "namespace": "default", "workflow_id": "pull:weather", "tz": "UTC"}, []string{`"label":"Started (UTC)"`, `"label":"Completed (UTC)"`, `"started":"2026-09-25 08:00:00"`}},
 		{"wakes", console.SourceWakes, directory("Asia/Kuala_Lumpur"), []string{`"label":"Fires at (Asia/Kuala_Lumpur)"`, `"fires_at":"2026-09-25 16:14:30"`}},
