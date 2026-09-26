@@ -244,9 +244,10 @@ Core ships no UI. If you run [`cmd/temporaless-console`](console.md):
   OpenFGA token, both S3 credentials, and the page-token MAC key (at least 32
   bytes). The configuration rejects unknown fields and inline credentials
   have no field.
-- [ ] **`/tmp` is writable** (a small in-memory `emptyDir` or `tmpfs` with a
-  read-only root filesystem): OpenDAL unpacks its native libraries there at
-  start and the console deletes them once its stores are open.
+- [ ] **`/tmp` is writable and exec-capable** (a small in-memory `emptyDir`
+  or `tmpfs` with a read-only root filesystem; Docker's `--tmpfs` needs
+  `exec`): OpenDAL unpacks its native libraries there at start, maps them,
+  and the console deletes them once its stores are open.
 - [ ] **Probes use `/healthz` and `/readyz`**; neither touches the bucket, so
   a scale-from-zero wake is not gated on storage latency.
 - [ ] **The history is read as evidence.** The console derives it from record

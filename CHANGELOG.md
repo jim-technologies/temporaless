@@ -64,8 +64,8 @@ lockstep policy.
   terminal-core v0.5.2 (pinned to the vendored contract's commit), keeps a
   bearer token in tab memory only, and follows the light or dark theme.
   `-check` validates the configuration and opens every store. OpenDAL's
-  unpacked native libraries are deleted from `TMPDIR` once the stores are
-  open, so the process writes nothing else. `make build-console` builds the
+  unpacked native libraries are deleted from `TMPDIR` (which must allow
+  execution) once the stores are open, so the process writes nothing else. `make build-console` builds the
   UI and the binary; `docker build --target console .` builds a distroless
   image. See `docs/console.md`, which records the S3 service check and a
   measured cold start of about 0.25 s to the first page.

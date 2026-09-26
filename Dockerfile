@@ -11,8 +11,9 @@
 # distroless runtime carries only the binary, CA certificates, and the
 # libffi/libgcc runtime OpenDAL's purego binding loads. At start OpenDAL
 # unpacks one native library per storage service into TMPDIR and the console
-# removes them once its stores are open, so /tmp must be writable (an
-# in-memory emptyDir when the root filesystem is read-only). Mount the
+# removes them once its stores are open, so /tmp must be writable and allow
+# execution (an in-memory emptyDir when the root filesystem is read-only;
+# Docker's --tmpfs needs the exec option). Mount the
 # configuration at /etc/temporaless-console/console.yaml and every credential
 # as a file it names; nothing else is written.
 

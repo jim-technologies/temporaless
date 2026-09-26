@@ -154,10 +154,13 @@ cannot be replayed under another scope.
 - **Image.** `docker build --target console .` builds a distroless image
   that runs as uid 65532 and reads `/etc/temporaless-console/console.yaml`.
   Mount credentials as files that the configuration names.
-- **Writable `/tmp`.** OpenDAL's Go binding unpacks one native library per
-  storage service into `TMPDIR` at start, and the console deletes them once
-  its stores are open. Nothing else is written. With a read-only root
-  filesystem, mount a small in-memory `emptyDir` or `tmpfs` at `/tmp`.
+- **Writable, exec-capable `/tmp`.** OpenDAL's Go binding unpacks one native
+  library per storage service into `TMPDIR` at start and maps it from there,
+  and the console deletes them once its stores are open. Nothing else is
+  written. With a read-only root filesystem, mount a small in-memory
+  `emptyDir` or `tmpfs` at `/tmp` that allows execution: Docker's `--tmpfs`
+  defaults to `noexec` (add `exec`), and on a `noexec` mount the console exits
+  with `failed to map segment from shared object`.
 - **Probes.** `GET /healthz` and `GET /readyz`. Neither touches the bucket,
   so waking from zero replicas does not wait on storage.
 - **Scale to zero.** The process is stateless and starts in about a quarter
@@ -192,6 +195,13 @@ using credentials that may only list and read:
 The resident set was about 73 MB, `TMPDIR` was empty once the stores were
 open, and an unauthenticated call got 401. The endpoint was local, so
 network latency is excluded; on a real bucket, add its round-trip times.
+
+The `console` image (85.6 MB) run the way it would be deployed, with a
+read-only root filesystem, a 64 MB exec-capable tmpfs at `/tmp`, all
+capabilities dropped, `no-new-privileges`, uid 65532, and the configuration
+and credentials mounted read-only, answered `/healthz` 0.24 s after
+`docker run` returned and served the first directory page in 65 ms, using
+about 58 MiB.
 
 ## Dashboard framework versions
 
