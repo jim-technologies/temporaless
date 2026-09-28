@@ -13,6 +13,16 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Changed
+
+- `MAKEFILE-CONTRACT.md` carries the fleet-wide `make release` row: after the
+  same guards in every public repository (clean tree, `HEAD` pushed to
+  `origin/main`, `VERSION` equal to the first changelog heading, tag absent)
+  the verb creates and pushes the annotated `v<VERSION>` tag and exits 0; the
+  tag is the distribution. A new paragraph states that `run` and `deploy` are
+  not part of the contract. `scripts/release` already does exactly this, so
+  only the words change; CONVENTIONS.md states it.
+
 ## [0.12.0] — 2026-09-26
 
 ### Added
