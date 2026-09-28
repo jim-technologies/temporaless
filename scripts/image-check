@@ -48,6 +48,8 @@ cleanup() {
     docker rm --force "$container" >/dev/null 2>&1 || true
   fi
   docker image rm "$image" >/dev/null 2>&1 || true
+  # The mounted directories are read-only (0555); make them removable.
+  chmod -R u+w "$work" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -160,6 +162,12 @@ fi
 echo "SIGTERM: exit 0"
 
 echo "==> scan: trivy image, fixed HIGH/CRITICAL"
+# Trivy's vulnerability database lives in a cache this repository owns
+# (TRIVY_CACHE_DIR, default ~/.cache/temporaless/trivy), downloaded only when
+# Trivy's own freshness check asks for it.
+TRIVY_CACHE_DIR="${TRIVY_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/temporaless/trivy}"
+export TRIVY_CACHE_DIR
+mkdir -p "$TRIVY_CACHE_DIR"
 docker save --output "$work/image.tar" "$image"
 status=0
 trivy image \

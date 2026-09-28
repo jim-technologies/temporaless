@@ -32,7 +32,8 @@ lockstep policy.
   vulnerabilities and fails when Trivy recognised no Go modules in the
   binary or no Debian packages in the base. It needs a Docker daemon, so
   `make validate` and CI never run it. Trivy 0.74.0 joins the Flox manifest
-  in its own `trivy` group.
+  in its own `trivy` group; its database is cached under
+  `~/.cache/temporaless/trivy` (`TRIVY_CACHE_DIR` overrides it).
 - `docs/cloudevents.md` shows a CloudEvents publisher that bridges each
   observation to one OpenTelemetry log record (structured CloudEvent JSON as
   the body, the event type as the event name, the CloudEvents attributes
