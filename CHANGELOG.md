@@ -37,6 +37,17 @@ lockstep policy.
   `scripts/python-projects`, which `make fmt`, `make test`, `make validate`,
   and `make audit` read; the four copies of that list are gone. `make test-go
   GO_PKGS=...` still narrows the Go packages.
+- The `Dockerfile` pins each base image once, as the `NODE_IMAGE`,
+  `GO_IMAGE`, `DEBIAN_IMAGE`, `DISTROLESS_IMAGE`, `PYTHON_IMAGE`, and
+  `UV_IMAGE` build arguments (same tags and digests; the Python base is no
+  longer written twice). Both runtime stages carry the OCI
+  `org.opencontainers.image.*` labels (`title`, `description`, `source`,
+  `licenses`, `base.name`, and `version`, `revision`, `created` from the
+  `IMAGE_VERSION`, `IMAGE_REVISION`, and `IMAGE_CREATED` build arguments).
+  The console binary is copied with `--chmod=0555`, and the Python image
+  runs as `USER 10001:10001` instead of the named `app` user, which
+  Kubernetes' `runAsNonRoot` refuses unless the pod sets `runAsUser`. The
+  Docker `HEALTHCHECK` stays.
 
 ### Removed
 

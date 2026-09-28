@@ -260,10 +260,11 @@ Core ships no UI. If you run [`cmd/temporaless-console`](console.md):
 (distroless, uid 65532); see [console.md](console.md). A target-less build
 produces the ConnectStore image below.
 
-The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. The image keeps `/app` root-owned while running as the unprivileged `app` user, so application code and the virtual environment cannot be modified by a compromised process. It's a starting point; for your own service:
+The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. The image keeps `/app` root-owned while running as the unprivileged `app` user, so application code and the virtual environment cannot be modified by a compromised process. It names that user numerically (`USER 10001:10001`), so a Kubernetes pod with `runAsNonRoot: true` admits the image without setting `runAsUser`. It's a starting point; for your own service:
 
 - Replace the `CMD` line with your entrypoint.
-- Keep the exact Python and uv image digests pinned; update tag and digest together.
+- Keep the exact Python and uv image digests pinned; they are the `PYTHON_IMAGE` and `UV_IMAGE` build arguments at the top of the `Dockerfile`, and each moves tag and digest together.
+- Set the OCI labels from your build: `IMAGE_VERSION`, `IMAGE_REVISION`, and `IMAGE_CREATED` fill `org.opencontainers.image.version`, `revision`, and `created`; unset, they read `unknown` and the Unix epoch.
 - Keep application files root-owned and run as the non-root user (`uid 10001`
   in the bundled Dockerfile). Mount only the paths that genuinely need writes.
 - Run with a read-only root filesystem. Provide a small `tmpfs` for `/tmp` if
