@@ -60,6 +60,11 @@
         "pkg-group": "rust",
         "version": "1.97.1"
       },
+      "trivy": {
+        "pkg-path": "trivy",
+        "pkg-group": "trivy",
+        "version": "0.74.0"
+      },
       "uv": {
         "pkg-path": "uv",
         "version": ">=0.11.26"
@@ -1310,6 +1315,93 @@
       },
       "system": "x86_64-linux",
       "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "trivy",
+      "broken": false,
+      "derivation": "/nix/store/k4sskhnhx78qcsgfc7q2wlnx8wqrxwrx-trivy-0.74.0.drv",
+      "description": "Simple and comprehensive vulnerability scanner for containers, suitable for CI",
+      "install_id": "trivy",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "name": "trivy-0.74.0",
+      "pname": "trivy",
+      "rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "rev_count": 1079315,
+      "rev_date": "2026-09-25T08:03:29Z",
+      "scrape_date": "2026-09-26T05:00:42.228384Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.74.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/xlb7aczbz3g4hicja4bq69kdlmr8s1iq-trivy-0.74.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "trivy",
+      "priority": 5
+    },
+    {
+      "attr_path": "trivy",
+      "broken": false,
+      "derivation": "/nix/store/j5xwpk8p88gkmy2ik5s10jpz4vp33gzm-trivy-0.74.0.drv",
+      "description": "Simple and comprehensive vulnerability scanner for containers, suitable for CI",
+      "install_id": "trivy",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "name": "trivy-0.74.0",
+      "pname": "trivy",
+      "rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "rev_count": 1079315,
+      "rev_date": "2026-09-25T08:03:29Z",
+      "scrape_date": "2026-09-26T05:32:48.998130Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.74.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/z7674nzb7w22xihsgac23039smsmrrpg-trivy-0.74.0"
+      },
+      "system": "aarch64-linux",
+      "group": "trivy",
+      "priority": 5
+    },
+    {
+      "attr_path": "trivy",
+      "broken": false,
+      "derivation": "/nix/store/d4d6jlfbg79sqh81yjbjmalqg8ndyaas-trivy-0.74.0.drv",
+      "description": "Simple and comprehensive vulnerability scanner for containers, suitable for CI",
+      "install_id": "trivy",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "name": "trivy-0.74.0",
+      "pname": "trivy",
+      "rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "rev_count": 1079315,
+      "rev_date": "2026-09-25T08:03:29Z",
+      "scrape_date": "2026-09-26T06:08:46.996098Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.74.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/i7z77dayvrbj6yfxa6licvpnxwfgm5lz-trivy-0.74.0"
+      },
+      "system": "x86_64-linux",
+      "group": "trivy",
       "priority": 5
     }
   ]

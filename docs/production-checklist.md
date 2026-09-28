@@ -257,7 +257,8 @@ Core ships no UI. If you run [`cmd/temporaless-console`](console.md):
 ## Container image (optional)
 
 `docker build --target console .` builds the read-only console image
-(distroless, uid 65532); see [console.md](console.md). A target-less build
+(distroless, uid 65532); see [console.md](console.md). `make image-check`
+builds, smokes, and scans that image from `HEAD`. A target-less build
 produces the ConnectStore image below.
 
 The bundled `Dockerfile` is multi-stage (digest-pinned Python 3.14.6-slim) — useful if your platform takes a container (Lambda container images, Cloud Run, Modal, Fly Machines, plain ECS). Its default command starts the ConnectStore-only Python example and therefore requires the explicit auth/storage environment described above. The image keeps `/app` root-owned while running as the unprivileged `app` user, so application code and the virtual environment cannot be modified by a compromised process. It names that user numerically (`USER 10001:10001`), so a Kubernetes pod with `runAsNonRoot: true` admits the image without setting `runAsUser`. It's a starting point; for your own service:

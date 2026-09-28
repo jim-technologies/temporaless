@@ -19,6 +19,20 @@ lockstep policy.
   package under `core/go` depends on `adapters/` or `cmd/` (`go list -deps`)
   or when `core/py/src` imports a `temporaless_*` adapter package. Both hold
   today; core tests that exercise an adapter are outside the guard.
+- `make image-check` (`scripts/image-check`), the maintainer step before
+  `make release`. It builds the `console` target from the committed `HEAD`
+  (`git archive`) with the OCI labels set from `VERSION` and the commit, runs
+  it the way `docs/console.md` deploys it (uid 65532, read-only root
+  filesystem, all capabilities dropped, `no-new-privileges`, a 64 MB
+  exec-capable tmpfs at `/tmp`, configuration and credentials mounted
+  read-only), and requires `-check` to pass without a network, `/healthz`
+  and `/readyz` to answer, an authenticated `GetInspectionCapabilities` to
+  succeed and an unauthenticated one to get 401, and SIGTERM to exit 0. It
+  then scans the image with `trivy image` for fixed HIGH and CRITICAL
+  vulnerabilities and fails when Trivy recognised no Go modules in the
+  binary or no Debian packages in the base. It needs a Docker daemon, so
+  `make validate` and CI never run it. Trivy 0.74.0 joins the Flox manifest
+  in its own `trivy` group.
 
 ### Changed
 
@@ -54,6 +68,9 @@ lockstep policy.
 - The Makefile's `GOFMT` and `GOFLAGS` variables and its inline shell loops.
   `make test-go GOFLAGS=...` still works, because a command-line variable
   reaches the environment and `go` reads `GOFLAGS` from there.
+- The CONVENTIONS.md note that the image build, scan, and smoke "left CI"
+  with a bare `docker build` as the operator path; `make image-check` is
+  that path now.
 
 ## [0.12.0] — 2026-09-26
 

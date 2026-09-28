@@ -221,6 +221,15 @@ cannot be replayed under another scope.
   fits. The first request waits for the scaler to start a pod.
 - **Credentials.** Read-only bucket credentials. The console cannot write,
   but read-only credentials make that true even if it had a bug.
+- **Check the image before a tag.** `flox activate -- make image-check`
+  builds the `console` target from `HEAD`, runs it the way this section
+  deploys it (uid 65532, read-only root filesystem, all capabilities dropped,
+  `no-new-privileges`, a 64 MB exec-capable tmpfs at `/tmp`, configuration
+  and credentials mounted read-only), requires `-check` to pass without a
+  network, `/healthz` and `/readyz` to answer, one authenticated call to
+  succeed and an unauthenticated one to get 401, and SIGTERM to exit 0, then
+  scans the image with Trivy for fixed HIGH and CRITICAL vulnerabilities. It
+  needs Docker, so `make validate` and CI do not run it.
 
 ### S3 support and cold start
 

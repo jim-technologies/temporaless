@@ -16,6 +16,8 @@
 # Docker's --tmpfs needs the exec option). Mount the
 # configuration at /etc/temporaless-console/console.yaml and every credential
 # as a file it names; nothing else is written.
+# `make image-check` builds this target from HEAD, runs it that way, and
+# scans it with Trivy (scripts/image-check).
 
 # Every base image is pinned by tag and digest here, once; update the tag and
 # the digest together. IMAGE_VERSION, IMAGE_REVISION and IMAGE_CREATED set

@@ -28,6 +28,7 @@ and every tool the gate or the audits need comes from the manifest:
 - `nodejs` 24: the TypeScript SDK's package and test runtime.
 - `cargo`/`rustc`/`clippy`/`rustfmt` 1.97.1: the one pinned Rust toolchain.
 - `cargo-audit` and `gitleaks`: back the scheduled `make audit` verb.
+- `trivy` 0.74.0: scans the console image in the maintainer's `make image-check` (Docker comes from the host).
 
 The environment intentionally does not include language-specific linters,
 generators, or `protoc`. Third-party Go, Python, Rust, and TypeScript

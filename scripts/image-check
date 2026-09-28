@@ -1,0 +1,222 @@
+#!/bin/sh
+set -eu
+
+# Build, smoke and scan the read-only console image: the maintainer step
+# before `make release` (`make image-check`). It needs a Docker daemon, which
+# the Flox environment cannot supply, so `make validate` and CI never run it.
+# Trivy and Python come from the Flox environment; run it as
+# `flox activate -- make image-check`.
+#
+# 1. Build `--target console` from the committed HEAD (`git archive`, so
+#    uncommitted changes never reach the image), with the OCI labels set from
+#    VERSION and the commit.
+# 2. Smoke it the way docs/console.md deploys it: uid 65532, read-only root
+#    filesystem, all capabilities dropped, no-new-privileges, a 64 MB
+#    exec-capable tmpfs at /tmp, configuration and credentials mounted
+#    read-only. A `-check` run without a network opens the store and exits;
+#    a serving run must answer GET /healthz and GET /readyz, serve one
+#    authenticated RunInspectionService call, refuse an unauthenticated one,
+#    and exit 0 on SIGTERM.
+# 3. Scan it with `trivy image` for fixed HIGH and CRITICAL vulnerabilities.
+#    The scan fails when Trivy recognised no Go modules in the console binary
+#    or no Debian packages in the base, so "nothing scanned" never passes.
+#    libffi and libgcc are copied from a Debian stage without dpkg metadata,
+#    so Trivy does not see them; the Debian base image digest covers them.
+#
+# The image is removed at exit; the build cache stays.
+
+cd "$(dirname "$0")/.."
+
+for command in docker git python3 trivy; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "image-check needs $command on PATH (Trivy and Python come from the Flox env; Docker from the host)." >&2
+    exit 1
+  fi
+done
+if ! docker info >/dev/null 2>&1; then
+  echo "image-check needs a running Docker daemon." >&2
+  exit 1
+fi
+
+revision="$(git rev-parse HEAD)"
+version="$(tr -d '\n' <VERSION)"
+image="temporaless-console:image-check-$(printf '%s' "$revision" | cut -c1-12)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/temporaless-image-check.XXXXXX")"
+container=""
+cleanup() {
+  if [ -n "$container" ]; then
+    docker rm --force "$container" >/dev/null 2>&1 || true
+  fi
+  docker image rm "$image" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "image-check builds the committed HEAD $revision; uncommitted changes are not in the image." >&2
+fi
+
+echo "==> build --target console ($version, $revision)"
+git archive --format=tar HEAD | docker build \
+  --target console \
+  --build-arg IMAGE_VERSION="$version" \
+  --build-arg IMAGE_REVISION="$revision" \
+  --build-arg IMAGE_CREATED="$(git show --no-patch --format=%cI HEAD)" \
+  --tag "$image" \
+  -
+
+echo "==> smoke: uid 65532, read-only root, no capabilities, exec tmpfs"
+mkdir "$work/etc" "$work/records"
+token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+printf '%s\n' "$token" >"$work/etc/token"
+od -An -N48 -tx1 /dev/urandom | tr -d ' \n' >"$work/etc/page-token-key"
+cat >"$work/etc/console.yaml" <<'YAML'
+listen: 0.0.0.0:8080
+pageTokenKeyFile: /etc/temporaless-console/page-token-key
+authentication: {staticToken: {tokenFile: /etc/temporaless-console/token}}
+stores:
+  - id: image-check
+    displayName: Image check
+    namespaces: [default]
+    filesystem: {root: /records}
+YAML
+chmod 0444 "$work/etc/token" "$work/etc/page-token-key" "$work/etc/console.yaml"
+chmod 0555 "$work/etc" "$work/records"
+
+set -- \
+  --user 65532:65532 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,exec,nosuid,nodev,size=64m \
+  --mount "type=bind,source=$work/etc,target=/etc/temporaless-console,readonly" \
+  --mount "type=bind,source=$work/records,target=/records,readonly"
+
+docker run --rm --network none "$@" "$image" -check
+
+container="$(docker run --detach --publish 127.0.0.1::8080 "$@" "$image")"
+port="$(docker port "$container" 8080/tcp | head -n 1 | sed 's/.*://')"
+TOKEN="$token" python3 - "http://127.0.0.1:$port" <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+base = sys.argv[1]
+
+
+def call(path, *, token=None):
+    request = urllib.request.Request(base + path)
+    if path.startswith("/temporaless."):
+        request.data = b"{}"
+        request.add_header("Content-Type", "application/json")
+    if token is not None:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+
+started = time.monotonic()
+while True:
+    try:
+        status, _ = call("/healthz")
+    except OSError:
+        status = 0
+    if status == 200:
+        break
+    if time.monotonic() - started > 30:
+        sys.exit("the console did not answer /healthz within 30 s")
+    time.sleep(0.1)
+print(f"/healthz answered {time.monotonic() - started:.2f} s after docker run returned")
+
+capabilities = "/temporaless.v1.RunInspectionService/GetInspectionCapabilities"
+checks = [
+    ("/readyz", None, 200),
+    (capabilities, os.environ["TOKEN"], 200),
+    (capabilities, None, 401),
+]
+for path, token, expected in checks:
+    status, body = call(path, token=token)
+    label = path + (" (authenticated)" if token else "")
+    if status != expected:
+        sys.exit(f"{label}: HTTP {status}, want {expected}: {body[:200]!r}")
+    if token is not None:
+        json.loads(body)
+    print(f"{label}: HTTP {status}")
+PY
+docker stop --time 15 "$container" >/dev/null
+exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container")"
+if [ "$exit_code" != 0 ]; then
+  docker logs "$container" >&2 || true
+  echo "the console exited $exit_code on SIGTERM, want 0." >&2
+  exit 1
+fi
+echo "SIGTERM: exit 0"
+
+echo "==> scan: trivy image, fixed HIGH/CRITICAL"
+docker save --output "$work/image.tar" "$image"
+status=0
+trivy image \
+  --input "$work/image.tar" \
+  --quiet \
+  --scanners vuln \
+  --severity HIGH,CRITICAL \
+  --ignore-unfixed \
+  --list-all-pkgs \
+  --format json \
+  --output "$work/report.json" \
+  --exit-code 1 \
+  --timeout 20m || status=$?
+TRIVY_STATUS="$status" python3 - "$work/report.json" <<'PY'
+import json
+import os
+import sys
+
+try:
+    with open(sys.argv[1]) as file:
+        report = json.load(file)
+except (OSError, ValueError):
+    sys.exit(f"Trivy wrote no report (exit {os.environ['TRIVY_STATUS']})")
+results = report.get("Results") or []
+go_modules = sum(
+    len(result.get("Packages") or [])
+    for result in results
+    if result.get("Type") == "gobinary"
+    and result.get("Target", "").lstrip("/") == "usr/local/bin/temporaless-console"
+)
+os_packages = sum(
+    len(result.get("Packages") or []) for result in results if result.get("Class") == "os-pkgs"
+)
+findings = sorted(
+    {
+        f"{v['Severity']} {v['VulnerabilityID']} {v['PkgName']} {v.get('InstalledVersion', '')}"
+        f" (fixed in {v.get('FixedVersion', '')}) in {result.get('Target', '')}"
+        for result in results
+        for v in result.get("Vulnerabilities") or []
+    }
+)
+print(f"Trivy recognised {go_modules} Go modules in the console binary and {os_packages} Debian packages")
+failed = False
+if go_modules == 0:
+    print("Trivy recognised no Go modules in /usr/local/bin/temporaless-console", file=sys.stderr)
+    failed = True
+if os_packages == 0:
+    print("Trivy recognised no Debian packages in the base image", file=sys.stderr)
+    failed = True
+if findings:
+    print("fixed HIGH/CRITICAL vulnerabilities:", file=sys.stderr)
+    for finding in findings:
+        print("  " + finding, file=sys.stderr)
+    failed = True
+elif os.environ["TRIVY_STATUS"] != "0":
+    print(f"Trivy failed (exit {os.environ['TRIVY_STATUS']})", file=sys.stderr)
+    failed = True
+sys.exit(1 if failed else 0)
+PY
+echo "image-check passed: $image ($version, $revision)"

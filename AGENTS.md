@@ -129,6 +129,7 @@ locally and in CI:
 - `nodejs` (TypeScript SDK runtime)
 - `cargo` / `rustc` / `clippy` / `rustfmt` (the one pinned Rust toolchain)
 - `cargo-audit` and `gitleaks` (the `make audit` tools)
+- `trivy` (the `make image-check` scanner; Docker itself comes from the host)
 
 Every Python uv project is listed once, with the paths ruff formats in it, in
 `scripts/python-projects`; `make fmt`, `make test`, `make validate`, and

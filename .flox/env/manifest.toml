@@ -17,7 +17,7 @@ gcc-unwrapped.outputs = ["lib"]
 # and the local gate resolve identical tools. Buf is the protobuf toolchain;
 # Node backs the TypeScript SDK; the Rust toolchain is pinned to the same
 # 1.97.1 the repository always gated on; cargo-audit and gitleaks back the
-# scheduled `make audit` verb.
+# scheduled `make audit` verb; Trivy backs the maintainer's `make image-check`.
 buf.pkg-path = "buf"
 buf.pkg-group = "buf"
 buf.version = "1.72.0"
@@ -42,6 +42,9 @@ cargo-audit.version = "0.22.2"
 gitleaks.pkg-path = "gitleaks"
 gitleaks.pkg-group = "audit"
 gitleaks.version = "8.30.1"
+trivy.pkg-path = "trivy"
+trivy.pkg-group = "trivy"
+trivy.version = "0.74.0"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"

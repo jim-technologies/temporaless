@@ -15,7 +15,7 @@ environment, so both paths are the same path.
 
 | # | Convention | Status | Notes |
 |---|------------|--------|-------|
-| 1 | Deps via Flox: `.flox/env/manifest.toml` installs every toolchain — `go`, `python314`, `uv`, `buf`, `libffi`, the `gcc-unwrapped` lib output, Node 24, the Rust 1.97.1 toolchain, `cargo-audit`, and `gitleaks`; language libraries live in `go.mod`/uv locks/`Cargo.lock`/`package-lock.json`. | **Conforms** | golangci-lint runs as a pinned Go module. Flox is the only toolchain provider, locally and in CI; `rust-toolchain.toml` is gone. |
+| 1 | Deps via Flox: `.flox/env/manifest.toml` installs every toolchain — `go`, `python314`, `uv`, `buf`, `libffi`, the `gcc-unwrapped` lib output, Node 24, the Rust 1.97.1 toolchain, `cargo-audit`, `gitleaks`, and `trivy`; language libraries live in `go.mod`/uv locks/`Cargo.lock`/`package-lock.json`. | **Conforms** | golangci-lint runs as a pinned Go module. Flox is the only toolchain provider, locally and in CI; `rust-toolchain.toml` is gone. |
 | 2 | `flox activate -- make validate` clean. | **Conforms** | Verified green: golangci-lint `0 issues`, `go vet` clean, `go test -race ./...` all `ok`. |
 | 3 | ONE gate verb: `make validate` runs gofmt-check + `go vet` + golangci-lint + `go test -race` (plus the cross-language suites). | **Conforms** | `Makefile` `validate:` delegates to `scripts/validate`; Go tests use `-race`; `check`/`gate` no longer exist. |
 | 3a | "gofumpt-check" in the brief. | **Intentional deviation** | Repo formats with `gofmt` only (manifest + `.golangci.yml` `formatters: [gofmt]`); gofumpt is not installed and adding it would reformat sources (a change). gofmt + golangci-lint is the agreed Google-Go gate here. |
@@ -46,6 +46,7 @@ jim-technologies open-source Makefile contract.
 | `make generate`; stale committed output fails `validate` | **Conforms** | `generate` delegates to `scripts/generate`; `validate` rejects a stale checked-in descriptor, and CI rejects any regeneration diff on main. |
 | `make release` tags `v<VERSION>` after the shared guards; CI never publishes | **Conforms** | `scripts/release` refuses a dirty tree (untracked files included), a HEAD not pushed to `origin/main`, a `VERSION` that differs from the first changelog heading (`scripts/check_versions.py` in tag mode), and an existing tag, then creates and pushes the one annotated root `vVERSION` tag and exits 0. The tag is the distribution: every SDK installs from Git (AGENTS.md forbids registry publication; npm is `private: true`, Cargo `publish = false`). |
 | Public-surface guard inside `validate` | **Conforms** | `scripts/public-surface-check` is the shared guard used by every public repository. It scans the content of every tracked file, every tracked path, and the commit messages a push would publish, and it self-validates before each scan so it cannot pass by having stopped checking. `validate` runs it and `scripts/public-surface-check-test`. Exceptions are justified one-liners in `.public-surface-allow`; this repository's extra brand-isolation denials are in `.public-surface-deny`. |
+| Added verb `make image-check` | **Conforms** | A repository may add verbs. This one builds the console image from `HEAD`, runs it hardened (uid 65532, read-only root, no capabilities, exec tmpfs), probes it, and scans it with Trivy before a tag. It needs Docker, so it is an opt-in maintainer step, never part of the gate. |
 | No `make run`, no `make deploy` | **Conforms** | Neither target exists: the framework has no local server loop and owns no deployment surface. No CI deploy step exists anywhere. |
 | No privately resolving dependencies | **Conforms** | Every lock resolves from public registries or pinned public GitHub URLs (`apache/opendal`, `jim-technologies/invariantprotocol`); the Git-SHA install checks in `make audit` prove a stranger can install all four SDKs. |
 | No CI secrets | **Conforms** | Workflows hold zero secrets. The former CI-side `BUF_TOKEN` regeneration proof is gone; maintainers prove a trusted BSR regeneration locally with `TEMPORALESS_REQUIRE_BUF_GENERATE=1` before releasing schema changes, and every gate still validates the checked-in descriptor and compiles/tests every generated consumer. |
@@ -79,7 +80,7 @@ block and existing config differed, the stricter of the two was adopted.
   claim takeover and full Rust parity remain explicitly outside the current
   core contract rather than being implied as complete.
 - **Gate:** `flox activate -- make validate` is GREEN, Rust 1.97.1
-  format/Clippy/tests included via the Flox toolchain. The container image
-  build/scan/smoke check left CI with the Flox-only consolidation (it needs a
-  Docker daemon, which Flox cannot supply); `docker build` from the
-  repository `Dockerfile` remains the operator path.
+  format/Clippy/tests included via the Flox toolchain. The console image
+  build, smoke, and scan is `make image-check` (`scripts/image-check`), the
+  maintainer step before `make release`: it needs a Docker daemon, which
+  Flox cannot supply, so it stays outside `make validate` and CI.

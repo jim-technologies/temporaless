@@ -18,7 +18,7 @@ GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lin
 
 .DEFAULT_GOAL := help
 
-.PHONY: help help-all validate audit version-check version-set release generate public-surface fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build build-console ts-check tidy-check
+.PHONY: help help-all validate audit version-check version-set release generate public-surface fmt fmt-go fmt-proto fmt-py fmt-rs fmt-check vet lint test test-go test-ts test-py test-rs build build-console image-check ts-check tidy-check
 
 help: ## One-screen help (make help-all for every target)
 	@echo "Daily:"
@@ -100,6 +100,9 @@ build: ## produce the artifacts locally — the console, Go packages, TypeScript
 
 build-console: ## build the optional read-only console UI and the binary that embeds it (build/temporaless-console)
 	scripts/build-console
+
+image-check: ## maintainer step before release — build, smoke and scan the console image from HEAD (needs Docker; not in validate)
+	scripts/image-check
 
 ts-check: ## run the TypeScript client build and tests
 	npm run check
