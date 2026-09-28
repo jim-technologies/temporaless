@@ -33,6 +33,15 @@ lockstep policy.
   binary or no Debian packages in the base. It needs a Docker daemon, so
   `make validate` and CI never run it. Trivy 0.74.0 joins the Flox manifest
   in its own `trivy` group.
+- `docs/cloudevents.md` shows a CloudEvents publisher that bridges each
+  observation to one OpenTelemetry log record (structured CloudEvent JSON as
+  the body, the event type as the event name, the CloudEvents attributes
+  under the OpenTelemetry semantic-convention keys), in Go and Python; both
+  examples were run against the official SDKs.
+- `docs/production-checklist.md` asks scale-to-zero fleets to run the cron
+  scheduler, timer scanner, and janitor as platform jobs and to leave the
+  in-process background helper unconfigured on serving replicas, and states
+  how a janitor on a pod uses the bundled index.
 
 ### Changed
 
@@ -62,6 +71,13 @@ lockstep policy.
   runs as `USER 10001:10001` instead of the named `app` user, which
   Kubernetes' `runAsNonRoot` refuses unless the pod sets `runAsUser`. The
   Docker `HEALTHCHECK` stays.
+- `temporaless-indexstore`: `db_path` is optional in `IndexedStore(...)` and
+  `IndexedStore.from_opendal(...)` and defaults to `":memory:"`. Without a
+  path the index is a working copy in process memory that a job rebuilds
+  from the bucket, queries, and closes, writing nothing to local disk; the
+  adapter README documents that as the supported posture on pods and
+  scale-to-zero jobs, and a file path as the write-through choice for a host
+  that owns its disk. Callers that pass a path are unchanged.
 
 ### Removed
 

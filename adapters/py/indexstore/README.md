@@ -12,6 +12,38 @@ metadata into SQLite. The bucket remains the source of truth; query results are
 loaded back from the wrapped store before being returned. The index can be
 rebuilt from a populated v2 bucket.
 
+## Where the index lives
+
+- **In memory, rebuilt when needed: the default, and the supported posture on
+  pods and scale-to-zero jobs.** Without a `db_path`, `IndexedStore` keeps
+  the index in process memory (`":memory:"`). Workflow invocations and ticks
+  write records through the plain bucket store and never touch an index. A
+  job that needs cross-run queries, such as the janitor's retention sweep or
+  an operator listing in-flight runs, builds one, rebuilds it from the
+  bucket, queries, and closes it, so nothing is written to local disk:
+
+  ```python
+  from datetime import UTC, datetime, timedelta
+  from temporaless.janitor import sweep
+
+  index = IndexedStore.from_opendal(operator)  # db_path=":memory:"
+  try:
+      await index.rebuild()
+      deleted = await sweep(index, datetime.now(UTC), timedelta(days=30))
+  finally:
+      await index.close()
+  ```
+
+  An in-memory index sees only the writes made through that instance after
+  its rebuild. The rebuild reads every record under `temporaless/v2/` (one
+  listing per directory and one read per record), so size the job's timeout
+  to the retention window it walks.
+- **A file, maintained write-through.** Pass `db_path` for a long-lived
+  process on a host that owns its disk, such as a workstation or a single VM.
+  Every indexed record write adds one journaled SQLite commit after the
+  bucket write. The file is a rebuildable cache, never the source of truth;
+  do not give a pod an index file on node disk or an `emptyDir`.
+
 Operational notes:
 
 - Write-through is best-effort after the bucket write. If SQLite upsert/delete
@@ -41,11 +73,12 @@ Operational notes:
   does not block the async runtime. Call `await store.close()` during graceful
   shutdown; close waits for any in-flight index operation without blocking the
   event loop.
-- This package intentionally opens SQLite files only. It is a convenience
-  implementation, not Temporaless's database contract. Other databases,
-  search engines, warehouses, or remote index services implement the generated
-  `RecordQueryService` (or the matching language-local `QueryStore` seam) in a
-  separate adapter without changing core workflow code.
+- This package intentionally opens SQLite only, in memory or as a file. It is
+  a convenience implementation, not Temporaless's database contract. Other
+  databases, search engines, warehouses, or remote index services implement
+  the generated `RecordQueryService` (or the matching language-local
+  `QueryStore` seam) in a separate adapter without changing core workflow
+  code.
 
 For the production ClickHouse query-index and Iceberg analytical-projection
 contract, see [`docs/clickhouse-iceberg.md`](../../../docs/clickhouse-iceberg.md).

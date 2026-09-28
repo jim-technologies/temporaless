@@ -84,6 +84,98 @@ protobuf-only framework storage convention. A downstream receiver that accepts
 only JSON object data needs an application-owned schema-aware translator; do
 not silently serialize arbitrary `Any` payloads as JSON.
 
+## Publishing through OpenTelemetry logs
+
+Where a deployment's logs and audit events already travel through
+OpenTelemetry, the publisher can hand each observation to the process's own
+`LoggerProvider` as one log record, so observations share the resource,
+exporter, and batching of every other log. The body is the structured-mode
+CloudEvent JSON (the protobuf key as `data_base64`), the event name is the
+CloudEvent `type`, and the CloudEvents attributes use the OpenTelemetry
+semantic-convention keys, so a collector routes on type without parsing the
+body. Emitting queues the record in the SDK's batch processor and returns,
+which keeps the callback's I/O bounded; the exporter's queue limits and
+retries then decide delivery, so the feed stays best-effort as described
+below. Configure the provider (an OTLP exporter behind a batch processor) at
+process start: with none configured the global provider is a no-op and
+observations are dropped.
+
+Go, with `go.opentelemetry.io/otel/log` v0.22.0 (record values are
+`attribute` values); pass it as `cloudevents.Options.Publish`:
+
+```go
+import (
+    "context"
+    "time"
+
+    "github.com/cloudevents/sdk-go/v2/event"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/log"
+    "go.opentelemetry.io/otel/log/global"
+)
+
+func publishToOTel(ctx context.Context, observed event.Event) error {
+    body, err := observed.MarshalJSON() // structured mode
+    if err != nil {
+        return err
+    }
+    now := time.Now()
+    var record log.Record
+    record.SetTimestamp(now)
+    record.SetObservedTimestamp(now)
+    record.SetEventName(observed.Type())
+    record.SetSeverity(log.SeverityInfo)
+    record.SetSeverityText("INFO")
+    record.SetBody(attribute.StringValue(string(body)))
+    record.AddAttributes(
+        attribute.String("cloudevents.event_id", observed.ID()),
+        attribute.String("cloudevents.event_source", observed.Source()),
+        attribute.String("cloudevents.event_spec_version", observed.SpecVersion()),
+        attribute.String("cloudevents.event_type", observed.Type()),
+    )
+    global.GetLoggerProvider().Logger("temporaless.records").Emit(ctx, record)
+    return nil
+}
+```
+
+Python, with `opentelemetry-api` (whose logs API is still
+`opentelemetry._logs`); pass it as `Options(publish=publish_to_otel)`:
+
+```python
+import time
+
+from cloudevents.core.formats.json import JSONFormat
+from cloudevents.core.v1.event import CloudEvent
+from opentelemetry._logs import SeverityNumber, get_logger_provider
+
+_logger = get_logger_provider().get_logger("temporaless.records")
+_structured = JSONFormat()
+
+
+async def publish_to_otel(event: CloudEvent) -> None:
+    observed = time.time_ns()
+    occurred = event.get_time()
+    _logger.emit(
+        timestamp=int(occurred.timestamp() * 1_000_000) * 1_000 if occurred else observed,
+        observed_timestamp=observed,
+        event_name=event.get_type(),
+        severity_number=SeverityNumber.INFO,
+        severity_text="INFO",
+        body=_structured.write(event).decode(),  # structured mode
+        attributes={
+            "cloudevents.event_id": event.get_id(),
+            "cloudevents.event_source": event.get_source(),
+            "cloudevents.event_spec_version": event.get_specversion(),
+            "cloudevents.event_type": event.get_type(),
+        },
+    )
+```
+
+In both languages a logger looked up before the provider is installed
+forwards to it once it is. Both examples were run against the official SDKs:
+Go `sdk-go/v2` 2.16.2 with `otel/log` v0.22.0, and Python `cloudevents`
+2.2.0 with `opentelemetry-sdk` 1.44.0.
+
 ## Delivery and recovery
 
 A successful storage mutation happens before publication. A publisher error

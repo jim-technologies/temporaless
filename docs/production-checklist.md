@@ -151,6 +151,13 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   The production-server examples serve records only. Wire `BackgroundWorkers`
   into the application workflow service, deploy a separate operator with a
   real workflow dispatcher, or use an external scheduler/queue.
+- [ ] **On scale-to-zero fleets the three ticks are platform jobs.** Run the
+  cron scheduler, the timer scanner, and the janitor as scheduled jobs (for
+  example Kubernetes CronJobs with `concurrencyPolicy: Forbid`) and leave the
+  in-process helper (`temporaless.background.BackgroundWorkers`, Go
+  `adapters/go/background`) unconfigured on serving replicas. A resident loop
+  keeps a replica from scaling to zero, and every scaled-out replica runs its
+  own copy ([operator-vs-handler replicas](deployment.md#operator-vs-handler-replicas)).
 - [ ] **Every failed timer-scanner tick alerts.** Canonical repair failures and
   corrupt `_due` entries fail the tick rather than returning a partial success;
   inspect the deterministic `_due_invalid` forensic copy and restore or
@@ -160,7 +167,10 @@ The shape of the framework is *very thin*: there is no engine to operate, no con
   satisfy the live-wake retention constraint above. Wire the deployment's
   `ClaimRunStore` so run-scoped claims are removed before records, and
   externally quiesce eligible runs during the nontransactional sweep. Daily /
-  weekly per your retention policy.
+  weekly per your retention policy. With the bundled SQLite index on a pod,
+  the janitor job builds it in memory (no `db_path`), rebuilds it from the
+  bucket, sweeps, and closes it; no writer keeps an index file on node disk
+  ([indexstore README](../adapters/py/indexstore/README.md#where-the-index-lives)).
 - [ ] **Due-ledger cleanup is offline and quiescent.** Generic `_due` entries
   are deterministic prepared records; terminal/canceled tombstones remain to
   suppress interrupted transitions. Stop timer writers/scanners and verify

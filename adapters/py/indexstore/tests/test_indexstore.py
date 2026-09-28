@@ -78,6 +78,33 @@ async def test_write_through_lists_workflows(tmp_path) -> None:
     assert [record.key.workflow_id for record in records] == ["prices:aapl"]
 
 
+async def test_default_index_is_an_in_memory_working_copy(tmp_path) -> None:
+    # Without a db_path the index is an in-memory SQLite database: no file,
+    # and each instance sees only its own writes until it rebuilds from the
+    # bucket.
+    operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
+    writer = IndexedStore.from_opendal(operator)
+    sweep_copy = IndexedStore.from_opendal(operator)
+    try:
+        await writer.put_workflow(
+            _workflow("prices:aapl", "r1", temporaless_pb2.WORKFLOW_STATUS_FAILED)
+        )
+
+        before, _ = await sweep_copy.list_workflows("", "", temporaless_pb2.WORKFLOW_STATUS_FAILED)
+        assert await sweep_copy.rebuild() == 0  # no corrupt records skipped
+        after, _ = await sweep_copy.list_workflows("", "", temporaless_pb2.WORKFLOW_STATUS_FAILED)
+        database_files = await sweep_copy._run_db(
+            lambda conn: [row["file"] for row in conn.execute("PRAGMA database_list")]
+        )
+    finally:
+        await writer.close()
+        await sweep_copy.close()
+
+    assert before == []
+    assert [record.key.workflow_id for record in after] == ["prices:aapl"]
+    assert database_files == [""]
+
+
 async def test_claim_run_listing_passes_through(tmp_path) -> None:
     operator = opendal.AsyncOperator("fs", root=str(tmp_path / "bucket"))
     store = IndexedStore.from_opendal(operator, tmp_path / "index.sqlite")

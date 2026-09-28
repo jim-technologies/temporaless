@@ -79,12 +79,20 @@ class IndexedStore:
     response. When claims use a separate backend, pass it as ``claim_store``
     so both point ``DeleteRun`` and retention ``Sweep`` clean coordination
     records before deleting the run.
+
+    ``db_path`` defaults to ``":memory:"``: the index is a working copy in
+    process memory that sees only writes made through this instance, so a
+    job that needs cross-run queries calls ``rebuild()`` from the bucket,
+    queries, and closes it, writing nothing to local disk. That is the
+    supported posture for pods and scale-to-zero jobs. A file path keeps a
+    write-through index across restarts on a host that owns its disk, at one
+    journaled SQLite commit per indexed record write.
     """
 
     def __init__(
         self,
         inner: Store,
-        db_path: str | Path,
+        db_path: str | Path = ":memory:",
         *,
         operator: opendal.AsyncOperator | None = None,
         claim_store: ClaimStore | None = None,
@@ -107,7 +115,7 @@ class IndexedStore:
     def from_opendal(
         cls,
         operator: opendal.AsyncOperator,
-        db_path: str | Path,
+        db_path: str | Path = ":memory:",
         *,
         claim_store: ClaimStore | None = None,
     ) -> IndexedStore:

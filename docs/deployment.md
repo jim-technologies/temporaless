@@ -653,7 +653,8 @@ Record observations, durable annotations, and request telemetry serve different 
 
 Install the optional [CloudEvents adapter](cloudevents.md) on the authenticated
 record-store server. Its publisher hands typed-key invalidations to your
-existing event transport; downstream consumers own logs, query indexes, and
+existing event transport ([OpenTelemetry logs](cloudevents.md#publishing-through-opentelemetry-logs)
+are one); downstream consumers own logs, query indexes, and
 Iceberg analytical tables. Keep publisher I/O bounded and reconcile missed
 observations. Post-write publication is best-effort and cannot supply complete
 historical audit evidence. Incoming workflow signals remain separate durable
