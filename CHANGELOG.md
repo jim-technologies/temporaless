@@ -13,6 +13,13 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Added
+
+- `make validate` guards the import direction: it fails when a non-test Go
+  package under `core/go` depends on `adapters/` or `cmd/` (`go list -deps`)
+  or when `core/py/src` imports a `temporaless_*` adapter package. Both hold
+  today; core tests that exercise an adapter are outside the guard.
+
 ### Changed
 
 - `MAKEFILE-CONTRACT.md` carries the fleet-wide `make release` row: after the

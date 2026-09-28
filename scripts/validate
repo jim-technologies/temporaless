@@ -117,6 +117,24 @@ fi
 # Go is first-class and always part of the release gate. Generated protobuf
 # packages under core/go/gen are Buf-owned and excluded from gofmt.
 scripts/gofmt-check
+# Import direction (AGENTS.md, Architecture): core never depends on an
+# adapter or a command. A non-test Go package under core/go must not reach
+# adapters/ or cmd/ (go list -deps leaves test imports out), and the Python
+# core source must not import an adapter package (temporaless_*). Core tests
+# that exercise an adapter are outside this guard.
+core_go_deps="$(go list -deps ./core/go/...)"
+core_go_inversions="$(printf '%s\n' "$core_go_deps" | grep -E '^github.com/jim-technologies/temporaless/(adapters|cmd)(/|$)' || true)"
+if [ -n "$core_go_inversions" ]; then
+  echo "core/go depends on adapter or command packages:" >&2
+  echo "$core_go_inversions" >&2
+  exit 1
+fi
+core_py_inversions="$(grep -rnE --include='*.py' '^[[:space:]]*(from|import)[[:space:]]+temporaless_' core/py/src || true)"
+if [ -n "$core_py_inversions" ]; then
+  echo "core/py/src imports an adapter package:" >&2
+  echo "$core_py_inversions" >&2
+  exit 1
+fi
 go mod tidy -diff
 go vet ./...
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
