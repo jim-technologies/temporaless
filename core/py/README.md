@@ -28,6 +28,29 @@ Use the same root `vX.Y.Z` release tag or immutable commit for core and every
 adapter. All Temporaless Python distributions share the repository `VERSION`;
 there is no adapter-specific version stream.
 
+The shared `buf.validate` Python module comes from Buf's generated packages,
+pinned by wheel URL and SHA256. Ordinary pip installs resolve those wheels
+without extra index configuration. Temporaless does not ship a second copy,
+and uninstalling this version leaves the shared schema intact.
+
+When upgrading from Temporaless 0.12.1 or earlier, create a fresh virtual
+environment, or uninstall **all** distributions that previously shipped
+`buf/validate/validate_pb2.py` before installing the new versions. An ordinary
+in-place pip upgrade can install the shared dependency first and then delete
+its files while uninstalling the old owner. For an environment whose only old
+owner is Temporaless:
+
+```sh
+python -m pip uninstall -y temporaless
+python -m pip install "temporaless @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"
+```
+
+If another distribution also owns that path, uninstall it in the first step
+and reinstall a version that uses the same shared dependency. If an ordinary
+upgrade has already broken imports, rebuilding the environment is the safest
+repair. Rolling back to a version with vendored validation code also requires
+a fresh environment; do not mix old owners with the new shared packages.
+
 ## Visual Plans
 
 An AI planner or graph editor can produce a protobuf

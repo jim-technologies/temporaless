@@ -1,12 +1,14 @@
 [project]
 name = "temporaless"
-version = "0.12.1"
+version = "0.12.2"
 description = "Storage-first serverless workflow replay for protobuf activities."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
+    "bufbuild-protovalidate-protocolbuffers-python @ https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-python/bufbuild_protovalidate_protocolbuffers_python-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl#sha256=1fc540461329e0768d897fb7641d7bd42eaf6a0409caed93ba8b968e07f89551",
+    "bufbuild-protovalidate-protocolbuffers-pyi @ https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-pyi/bufbuild_protovalidate_protocolbuffers_pyi-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl#sha256=4bce3808f220e4476cc6b2b82bcbd55aae608161837576aacb6e48c13a0cfcd6",
     "connectrpc>=0.12.1",
     "croniter>=6.2.4",
     "opendal>=0.47.3",
@@ -29,7 +31,11 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/buf", "src/temporaless"]
+packages = ["src/temporaless"]
+
+[tool.hatch.metadata]
+# Both BSR wheels are explicit so ordinary pip installs need no extra index.
+allow-direct-references = true
 
 [tool.uv]
 package = true
@@ -41,7 +47,7 @@ temporaless-indexstore = { path = "../../adapters/py/indexstore", editable = tru
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-extend-exclude = ["src/buf", "src/temporaless/v1"]
+extend-exclude = ["src/temporaless/v1"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -67,8 +73,8 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "protoc-gen-connectrpc @ git+https://github.com/connectrpc/connect-py.git@7155f2f4142ee0c6e4aed5ad98542567fbc4c93c#subdirectory=protoc-gen-connectrpc",
     "ruff>=0.16.0",
-    "temporaless-connectworkflow==0.12.1",
-    "temporaless-indexstore==0.12.1",
+    "temporaless-connectworkflow==0.12.2",
+    "temporaless-indexstore==0.12.2",
     "ty>=0.0.64",
     "types-protobuf>=7.34.1.20260518",
     "uvicorn>=0.51.0",

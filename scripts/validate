@@ -36,6 +36,7 @@ fi
 # The Python Connect generator is intentionally installed from the locked core
 # development environment because the BSR-hosted plugin lags the 0.11 runtime.
 uv sync --project core/py --locked
+scripts/check-python-wheel
 # Remote BSR plugins need authentication to avoid the strict anonymous rate
 # limit, and CI is secretless by policy: every gate — CI included — validates
 # the checked-in descriptor and compiles/tests every generated consumer

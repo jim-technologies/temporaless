@@ -15,6 +15,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from buf.validate import validate_pb2
 
 PROJECT = Path(__file__).resolve().parents[1]
 GENERATED = sorted((PROJECT / "src").rglob("*_pb2.py"))
@@ -56,7 +57,13 @@ def declared_floor() -> tuple[int, int, int]:
 
 def test_generated_modules_are_discovered() -> None:
     names = {path.relative_to(PROJECT / "src").as_posix() for path in GENERATED}
-    assert {"temporaless/v1/temporaless_pb2.py", "buf/validate/validate_pb2.py"} <= names
+    assert {"temporaless/v1/temporaless_pb2.py", "temporaless/v1/inspection_pb2.py"} <= names
+    assert not any(name.startswith("buf/") for name in names)
+
+
+def test_declared_protobuf_floor_covers_external_validation_schema() -> None:
+    assert validate_pb2.__file__ is not None
+    assert declared_floor() >= gencode_version(Path(validate_pb2.__file__))
 
 
 @pytest.mark.parametrize(

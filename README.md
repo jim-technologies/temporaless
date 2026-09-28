@@ -67,6 +67,11 @@ subdirectory builds, npm, and Cargo require local package metadata. CI rejects
 any drift, and `make version-set VERSION=X.Y.Z` updates every mirror together.
 Historical tags remain immutable and predate this unified release policy.
 
+Python upgrades from 0.12.1 or earlier require a fresh virtual environment or
+uninstalling every old `buf.validate` owner before installing the new versions.
+Ordinary in-place pip upgrades can remove the new dependency's files while
+uninstalling the old package. See the [Python migration instructions](core/py/README.md).
+
 ```sh
 go get github.com/jim-technologies/temporaless@COMMIT_SHA
 pip install "temporaless @ git+https://github.com/jim-technologies/temporaless.git@COMMIT_SHA#subdirectory=core/py"

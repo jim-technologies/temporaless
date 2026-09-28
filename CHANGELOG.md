@@ -13,6 +13,24 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-28
+
+### Fixed
+
+- The Python wheel no longer owns `buf.validate`. It uses the official Buf
+  generated Python and typing wheels, pinned by immutable URL and SHA256,
+  so installing or removing this version leaves the shared schema intact.
+  The generated schema is byte-identical to the previous Temporaless copy;
+  protobuf contracts, validation rules and stored records are unchanged.
+- The ordinary validation gate installs a clean wheel, exercises real local
+  storage and validation, and checks shared schema ownership after uninstall
+  and reinstall. It also tests the supported upgrade from the actual 0.12.1
+  wheel: uninstall old schema owners before installing the new packages.
+- Upgrades from 0.12.1 or earlier require a fresh environment or explicit
+  uninstall of all old `buf.validate` owners first. An ordinary in-place pip
+  upgrade may delete files belonging to the new shared dependency; the Python
+  README documents the migration and repair path.
+
 ## [0.12.1] - 2026-09-28
 
 ### Added

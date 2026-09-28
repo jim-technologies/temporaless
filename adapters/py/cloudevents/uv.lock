@@ -3,6 +3,42 @@ revision = 3
 requires-python = ">=3.14"
 
 [[package]]
+name = "bufbuild-protovalidate-protocolbuffers-pyi"
+version = "36.2.0.1.20260825204119+511051f7f437"
+source = { url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-pyi/bufbuild_protovalidate_protocolbuffers_pyi-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl" }
+dependencies = [
+    { name = "protobuf" },
+    { name = "types-protobuf" },
+]
+wheels = [
+    { url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-pyi/bufbuild_protovalidate_protocolbuffers_pyi-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl", hash = "sha256:4bce3808f220e4476cc6b2b82bcbd55aae608161837576aacb6e48c13a0cfcd6" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "protobuf", specifier = ">=3.20" },
+    { name = "types-protobuf" },
+]
+
+[[package]]
+name = "bufbuild-protovalidate-protocolbuffers-python"
+version = "36.2.0.1.20260825204119+511051f7f437"
+source = { url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-python/bufbuild_protovalidate_protocolbuffers_python-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl" }
+dependencies = [
+    { name = "bufbuild-protovalidate-protocolbuffers-pyi" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-python/bufbuild_protovalidate_protocolbuffers_python-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl", hash = "sha256:1fc540461329e0768d897fb7641d7bd42eaf6a0409caed93ba8b968e07f89551" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bufbuild-protovalidate-protocolbuffers-pyi", specifier = ">=36.2.0.1.20260825204119" },
+    { name = "protobuf", specifier = ">=3.20" },
+]
+
+[[package]]
 name = "cloudevents"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -323,9 +359,11 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.12.1"
+version = "0.12.2"
 source = { editable = "../../../core/py" }
 dependencies = [
+    { name = "bufbuild-protovalidate-protocolbuffers-pyi" },
+    { name = "bufbuild-protovalidate-protocolbuffers-python" },
     { name = "connectrpc" },
     { name = "croniter" },
     { name = "opendal" },
@@ -335,6 +373,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bufbuild-protovalidate-protocolbuffers-pyi", url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-pyi/bufbuild_protovalidate_protocolbuffers_pyi-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl" },
+    { name = "bufbuild-protovalidate-protocolbuffers-python", url = "https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-python/bufbuild_protovalidate_protocolbuffers_python-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl" },
     { name = "connectrpc", specifier = ">=0.12.1" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "opendal", specifier = ">=0.47.3" },
@@ -359,7 +399,7 @@ dev = [
 
 [[package]]
 name = "temporaless-cloudevents"
-version = "0.12.1"
+version = "0.12.2"
 source = { editable = "." }
 dependencies = [
     { name = "cloudevents" },

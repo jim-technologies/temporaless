@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+
+root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+cd "$root"
+
+uv build --wheel --out-dir "$tmp/dist" core/py
+wheel="$tmp/dist/temporaless-$(tr -d '\n' < VERSION)-py3-none-any.whl"
+python3 - "$wheel" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    assert not any(name.startswith("buf/") for name in wheel.namelist()), "wheel owns buf"
+PY
+uv export --project core/py --locked --no-dev --no-emit-project --format requirements-txt > "$tmp/requirements.txt"
+uv venv --quiet "$tmp/env"
+uv pip sync --python "$tmp/env/bin/python" --require-hashes "$tmp/requirements.txt"
+uv pip install --python "$tmp/env/bin/python" --no-deps "$wheel"
+
+cd "$tmp"
+"$tmp/env/bin/python" -I - "$root" <<'PY'
+import asyncio
+from importlib.metadata import distributions
+from pathlib import Path
+import sys
+import tempfile
+
+import buf.validate.validate_pb2 as validation
+import opendal
+import protovalidate
+import temporaless
+from temporaless.connectstore import ConnectStore
+from temporaless.storage import OpenDALStore, WorkflowKey, WORKFLOW_RECORD_SCHEMA_VERSION
+from temporaless.v1 import temporaless_pb2
+
+assert not Path(temporaless.__file__).is_relative_to(Path(sys.argv[1]))
+assert hasattr(validation, "FieldPath")
+owners = [dist.metadata["Name"] for dist in distributions()
+          if "buf/validate/validate_pb2.py" in {str(file) for file in dist.files or ()}]
+assert owners == ["bufbuild-protovalidate-protocolbuffers-python"], (
+    f"unexpected buf.validate owners: {owners}; rebuild the environment or uninstall "
+    "all legacy owners before installing the new packages (core/py/README.md)"
+)
+
+async def exercise():
+    with tempfile.TemporaryDirectory() as path:
+        store = ConnectStore.local(OpenDALStore(opendal.AsyncOperator("fs", root=path)))
+        key = WorkflowKey(workflow_id="wheel:fixture", run_id="run")
+        assert await store.get_workflow(key) is None
+        expected = temporaless_pb2.WorkflowRecord(
+            schema_version=WORKFLOW_RECORD_SCHEMA_VERSION,
+            key=key.to_proto(),
+            workflow_type="fixture:google.protobuf.StringValue->google.protobuf.StringValue",
+            status=temporaless_pb2.WORKFLOW_STATUS_COMPLETED,
+        )
+        await store.put_workflow(expected)
+        assert await store.get_workflow(key) == expected
+        invalid = temporaless_pb2.GetWorkflowRequest()
+        try:
+            protovalidate.validate(invalid)
+        except protovalidate.ValidationError:
+            pass
+        else:
+            raise AssertionError("published validation rules were not enforced")
+
+asyncio.run(exercise())
+PY
+
+uv pip uninstall --python "$tmp/env/bin/python" temporaless
+"$tmp/env/bin/python" -I - <<'PY'
+import importlib.util
+import buf.validate.validate_pb2 as validation
+
+assert importlib.util.find_spec("temporaless") is None
+assert hasattr(validation, "FieldPath"), "uninstall removed the shared schema"
+PY
+uv pip install --python "$tmp/env/bin/python" --no-deps "$wheel"
+"$tmp/env/bin/python" -I -c 'from temporaless.connectstore import ConnectStore; import buf.validate.validate_pb2'
+uv pip check --python "$tmp/env/bin/python"
+
+# Build the released old owner, then exercise the documented pip migration.
+cd "$root"
+mkdir "$tmp/legacy"
+git archive bcb66841f67718df0c04204d3d2f6ad4101ae0ae core/py | tar -x -C "$tmp/legacy"
+uv build --wheel --out-dir "$tmp/legacy-dist" "$tmp/legacy/core/py"
+uv export --project core/py --locked --no-dev --no-emit-project \
+  --no-emit-package bufbuild-protovalidate-protocolbuffers-python \
+  --no-emit-package bufbuild-protovalidate-protocolbuffers-pyi \
+  --format requirements-txt > "$tmp/legacy-requirements.txt"
+uv venv --quiet --seed "$tmp/upgrade"
+uv pip install --python "$tmp/upgrade/bin/python" --require-hashes -r "$tmp/legacy-requirements.txt"
+cd "$tmp"
+"$tmp/upgrade/bin/python" -m pip install --no-deps "$tmp/legacy-dist/temporaless-0.12.1-py3-none-any.whl"
+"$tmp/upgrade/bin/python" -I - <<'PY'
+from importlib.metadata import distribution
+from temporaless.connectstore import ConnectStore
+
+assert "buf/validate/validate_pb2.py" in {str(file) for file in distribution("temporaless").files}
+PY
+"$tmp/upgrade/bin/python" -m pip uninstall -y temporaless
+"$tmp/upgrade/bin/python" -m pip install "$wheel"
+"$tmp/upgrade/bin/python" -I - <<'PY'
+from importlib.metadata import distributions
+from temporaless.connectstore import ConnectStore
+import buf.validate.validate_pb2 as validation
+
+assert hasattr(validation, "FieldPath")
+for path, expected in (
+    ("buf/validate/validate_pb2.py", "bufbuild-protovalidate-protocolbuffers-python"),
+    ("buf/validate/validate_pb2.pyi", "bufbuild-protovalidate-protocolbuffers-pyi"),
+):
+    owners = [dist.metadata["Name"] for dist in distributions()
+              if path in {str(file) for file in dist.files or ()}]
+    assert owners == [expected], owners
+PY
+"$tmp/upgrade/bin/python" -m pip check
+echo "Python wheel: isolated storage/validation, single schema owner, uninstall/reinstall and legacy migration passed."

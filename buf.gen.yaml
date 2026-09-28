@@ -17,10 +17,8 @@ plugins:
       - temporaless.v1.RunInspectionService
   - remote: buf.build/protocolbuffers/python:v36.2
     out: core/py/src
-    include_imports: true
   - remote: buf.build/protocolbuffers/pyi:v36.2
     out: core/py/src
-    include_imports: true
   # The BSR plugin trails the connectrpc-python runtime. Use the locked
   # local generator so generated clients and servers select Google protobuf
   # codecs to match the rest of Temporaless.
