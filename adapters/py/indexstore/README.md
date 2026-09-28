@@ -69,8 +69,8 @@ Operational notes:
   self-heal. Runtime-created scheduled timers always set `fire_at`; malformed
   scheduled timer records with unset `fire_at` are outside the supported record
   contract and may be ignored by the index.
-- SQLite operations and lock acquisition run on worker threads so index I/O
-  does not block the async runtime. Call `await store.close()` during graceful
+- SQLite operations run on worker threads, while connection ownership uses an
+  async lock, so index I/O does not block the async runtime. Call `await store.close()` during graceful
   shutdown; close waits for any in-flight index operation without blocking the
   event loop.
 - This package intentionally opens SQLite only, in memory or as a file. It is
@@ -79,6 +79,60 @@ Operational notes:
   the generated `RecordQueryService` (or the matching language-local
   `QueryStore` seam) in a separate adapter without changing core workflow
   code.
+
+## Injecting the transaction executor
+
+The default synchronous constructor and `from_opendal()` still prepare an owned
+stdlib SQLite connection, with `":memory:"` as the default. To supply a connection
+boundary explicitly, use the async factory:
+
+```python
+from temporaless.storage import OpenDALStore
+from temporaless_indexstore import IndexedStore, SQLiteExecutor
+
+executor = SQLiteExecutor("index.sqlite")
+index = await IndexedStore.from_executor(
+    OpenDALStore(operator), executor, operator=operator, owns_executor=False
+)
+try:
+    await index.rebuild()
+finally:
+    await index.close()  # drains accepted SQL transactions; keeps borrowed executor open
+    await executor.close()  # caller owns its lifetime
+```
+
+`IndexExecutor.transaction(immediate=False)` yields one `IndexSession`; its
+async `execute(sql, parameters)` returns materialized row mappings. Success
+commits before returning. Errors or cancellation before commit roll back the
+whole unit, including schema changes. A blocked SQLite worker must finish before
+rollback or close can release its connection. Once commit has started, a cancelled
+caller can observe a committed outcome; the adapter never automatically retries
+an uncertain operation. Session use from another task, nested transactions and
+explicit transaction-control SQL are rejected by `SQLiteExecutor`. Use each
+executor on one event loop.
+
+The factory prepares the schema asynchronously. Executors are borrowed unless
+`owns_executor=True`; ownership then transfers on factory entry, including setup
+failure. Index close is idempotent and never closes the authoritative bucket. Stop callers
+and rebuilds before closing: close drains accepted SQL transactions, not bucket
+I/O or the remaining steps of a query/rebuild coroutine.
+Constructor setup remains synchronous, as before; all subsequent SQLite I/O and
+close run off the event loop. Failed rebuild cleanup now rolls its DDL back as a
+unit and retains its owner/staging state for the existing explicit recovery path.
+
+This seam requires SQLite SQL and connection-pinned transactions. Rebuild setup,
+merge and cleanup use `BEGIN IMMEDIATE`; trigger definitions remain complete SQL
+statements and concurrent-writer dirty tracking is preserved. No executor for
+PostgreSQL, remote SQL batches or snapshot publication is provided or qualified.
+A process-local SQLite lock is not a distributed execution fence: the bundled
+record service still reports fenced execution unsupported and refuses its RPCs.
+
+There is no buffering or `flush()` API, and no journal/synchronous setting change.
+The protobufs, record keys, derived SQLite schema, ordering, query-bound `v1`
+offset tokens, read repair and per-operation commit boundary stay unchanged.
+The complete index behavior suite runs through both constructor and injected
+paths; executor tests exercise real SQLite lock contention, rollback and close.
+Rolling back the package requires no record or derived-schema migration.
 
 For the production ClickHouse query-index and Iceberg analytical-projection
 contract, see [`docs/clickhouse-iceberg.md`](../../../docs/clickhouse-iceberg.md).

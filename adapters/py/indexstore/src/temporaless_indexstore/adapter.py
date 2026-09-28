@@ -4,9 +4,8 @@ import asyncio
 import hashlib
 import logging
 import sqlite3
-import threading
 import uuid
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -45,6 +44,14 @@ from temporaless.storage import (
 )
 from temporaless.v1 import temporaless_pb2
 
+from temporaless_indexstore.executor import (
+    IndexExecutor,
+    IndexRow,
+    IndexSession,
+    SQLiteExecutor,
+    _finish,
+)
+
 _LOGGER = logging.getLogger(__name__)
 _WORKFLOWS_TABLE = "workflows"
 _ACTIVITIES_TABLE = "activities"
@@ -69,6 +76,48 @@ _REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER = "_rebuild_track_activities_delete"
 _REBUILD_TRACK_TIMERS_INSERT_TRIGGER = "_rebuild_track_timers_insert"
 _REBUILD_TRACK_TIMERS_UPDATE_TRIGGER = "_rebuild_track_timers_update"
 _REBUILD_TRACK_TIMERS_DELETE_TRIGGER = "_rebuild_track_timers_delete"
+
+
+_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS workflows (
+        namespace TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        PRIMARY KEY (namespace, workflow_id, run_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS workflows_status_completed
+        ON workflows(namespace, status, completed_at)""",
+    """CREATE INDEX IF NOT EXISTS workflows_by_id_created
+        ON workflows(namespace, workflow_id, created_at)""",
+    """CREATE TABLE IF NOT EXISTS activities (
+        namespace TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        activity_id TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        PRIMARY KEY (namespace, workflow_id, run_id, activity_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS activities_status
+        ON activities(namespace, status, created_at)""",
+    """CREATE TABLE IF NOT EXISTS timers (
+        namespace TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        timer_id TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        fire_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        fired_at TEXT NOT NULL,
+        PRIMARY KEY (namespace, workflow_id, run_id, timer_id)
+    )""",
+    """CREATE INDEX IF NOT EXISTS timers_due
+        ON timers(namespace, status, fire_at)""",
+)
 
 
 class IndexedStore:
@@ -97,7 +146,26 @@ class IndexedStore:
         operator: opendal.AsyncOperator | None = None,
         claim_store: ClaimStore | None = None,
     ) -> None:
+        executor = SQLiteExecutor(db_path, schema=_SCHEMA)
+        self._configure(
+            inner, executor, owns_executor=True, operator=operator, claim_store=claim_store
+        )
+
+    def _configure(
+        self,
+        inner: Store,
+        executor: IndexExecutor,
+        *,
+        owns_executor: bool,
+        operator: opendal.AsyncOperator | None,
+        claim_store: ClaimStore | None,
+    ) -> None:
         self._inner = inner
+        self._executor = executor
+        self._owns_executor = owns_executor
+        self._closed = False
+        self._close_completed = False
+        self._close_lock = asyncio.Lock()
         self._operator = operator
         if claim_store is not None:
             self._claim_store = claim_store
@@ -105,11 +173,38 @@ class IndexedStore:
             self._claim_store = inner
         else:
             self._claim_store = None
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
         self._rebuild_lock = asyncio.Lock()
-        self._init_schema()
+
+    @classmethod
+    async def from_executor(
+        cls,
+        inner: Store,
+        executor: IndexExecutor,
+        *,
+        owns_executor: bool = False,
+        operator: opendal.AsyncOperator | None = None,
+        claim_store: ClaimStore | None = None,
+    ) -> IndexedStore:
+        """Prepare the unchanged SQLite schema using an injected executor.
+
+        Borrowed executors remain open after index close or setup failure.
+        With owns_executor=True, ownership transfers on entry, including failure.
+        The executor must implement SQLite SQL, transactions, and rebuild triggers;
+        this factory does not make an arbitrary SQL backend compatible.
+        """
+        store = cls.__new__(cls)
+        store._configure(
+            inner, executor, owns_executor=owns_executor, operator=operator, claim_store=claim_store
+        )
+        try:
+            async with executor.transaction() as session:
+                for statement in _SCHEMA:
+                    await session.execute(statement)
+        except BaseException:
+            if owns_executor:
+                await executor.close()
+            raise
+        return store
 
     @classmethod
     def from_opendal(
@@ -609,7 +704,9 @@ class IndexedStore:
             skipped = 0
             rebuild_error: BaseException | None = None
             try:
-                await self._run_db(lambda conn: _reset_rebuild_index(conn, owner=rebuild_owner))
+                await self._run_db(
+                    lambda conn: _reset_rebuild_index(conn, owner=rebuild_owner), immediate=True
+                )
                 async for path in _walk_binpb(self._operator, "temporaless/v2/"):
                     kind = _v2_record_kind(path)
                     if kind == "workflow":
@@ -660,14 +757,17 @@ class IndexedStore:
                                 conn, record, table=_REBUILD_TIMERS_TABLE
                             )
                         )
-                await self._run_db(_swap_rebuild_index)
+                await self._run_db(_swap_rebuild_index, immediate=True)
             except BaseException as exc:
                 rebuild_error = exc
                 raise
             finally:
                 try:
-                    await asyncio.shield(
-                        self._run_db(lambda conn: _drop_rebuild_index(conn, owner=rebuild_owner))
+                    await _finish(
+                        self._run_db(
+                            lambda conn: _drop_rebuild_index(conn, owner=rebuild_owner),
+                            immediate=True,
+                        )
                     )
                 except sqlite3.OperationalError:
                     if rebuild_error is None:
@@ -676,13 +776,19 @@ class IndexedStore:
             return skipped
 
     async def close(self) -> None:
-        """Close the SQLite connection without blocking the event loop."""
-
-        await asyncio.to_thread(self._close_db)
-
-    def _close_db(self) -> None:
-        with self._lock:
-            self._conn.close()
+        """Drain accepted SQL transactions; close only an owned executor, never the bucket."""
+        async with self._close_lock:
+            if self._close_completed:
+                return
+            self._closed = True
+            if self._owns_executor:
+                await self._executor.close()
+            else:
+                # Taking a session drains accepted work without closing the
+                # caller's shared executor.
+                async with self._executor.transaction():
+                    pass
+            self._close_completed = True
 
     def _require_claim_store(self) -> ClaimStore:
         if self._claim_store is None:
@@ -741,78 +847,24 @@ class IndexedStore:
             ) from exc
         _claim_keys_for_run(key, records)
 
-    async def _run_db[T](self, fn: Callable[[sqlite3.Connection], T]) -> T:
-        def run() -> T:
-            with self._lock:
-                try:
-                    result = fn(self._conn)
-                except Exception:
-                    self._conn.rollback()
-                    raise
-                else:
-                    self._conn.commit()
-                    return result
-
-        return await asyncio.to_thread(run)
-
-    def _init_schema(self) -> None:
-        with self._lock:
-            self._conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS workflows (
-                    namespace TEXT NOT NULL,
-                    workflow_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    status INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    PRIMARY KEY (namespace, workflow_id, run_id)
-                );
-                CREATE INDEX IF NOT EXISTS workflows_status_completed
-                    ON workflows(namespace, status, completed_at);
-                CREATE INDEX IF NOT EXISTS workflows_by_id_created
-                    ON workflows(namespace, workflow_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS activities (
-                    namespace TEXT NOT NULL,
-                    workflow_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    activity_id TEXT NOT NULL,
-                    status INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    PRIMARY KEY (namespace, workflow_id, run_id, activity_id)
-                );
-                CREATE INDEX IF NOT EXISTS activities_status
-                    ON activities(namespace, status, created_at);
-
-                CREATE TABLE IF NOT EXISTS timers (
-                    namespace TEXT NOT NULL,
-                    workflow_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    timer_id TEXT NOT NULL,
-                    status INTEGER NOT NULL,
-                    fire_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    fired_at TEXT NOT NULL,
-                    PRIMARY KEY (namespace, workflow_id, run_id, timer_id)
-                );
-                CREATE INDEX IF NOT EXISTS timers_due
-                    ON timers(namespace, status, fire_at);
-                """
-            )
-            self._conn.commit()
+    async def _run_db[T](
+        self, fn: Callable[[IndexSession], Awaitable[T]], *, immediate: bool = False
+    ) -> T:
+        if self._closed:
+            raise RuntimeError("index is closed")
+        async with self._executor.transaction(immediate=immediate) as session:
+            return await fn(session)
 
 
-def _upsert_workflow(
-    conn: sqlite3.Connection,
+async def _upsert_workflow(
+    conn: IndexSession,
     record: temporaless_pb2.WorkflowRecord,
     *,
     table: str = _WORKFLOWS_TABLE,
 ) -> None:
     _validate_table(table, {_WORKFLOWS_TABLE, _REBUILD_WORKFLOWS_TABLE})
     key = workflow_key_from_proto(record.key)
-    conn.execute(
+    await conn.execute(
         f"""
         INSERT INTO {table}(namespace, workflow_id, run_id, status, created_at, completed_at)
         VALUES(?, ?, ?, ?, ?, ?)
@@ -832,15 +884,15 @@ def _upsert_workflow(
     )
 
 
-def _upsert_activity(
-    conn: sqlite3.Connection,
+async def _upsert_activity(
+    conn: IndexSession,
     record: temporaless_pb2.ActivityRecord,
     *,
     table: str = _ACTIVITIES_TABLE,
 ) -> None:
     _validate_table(table, {_ACTIVITIES_TABLE, _REBUILD_ACTIVITIES_TABLE})
     key = activity_key_from_proto(record.key)
-    conn.execute(
+    await conn.execute(
         f"""
         INSERT INTO {table}(
             namespace, workflow_id, run_id, activity_id, status, created_at, completed_at
@@ -863,15 +915,15 @@ def _upsert_activity(
     )
 
 
-def _upsert_timer(
-    conn: sqlite3.Connection,
+async def _upsert_timer(
+    conn: IndexSession,
     record: temporaless_pb2.TimerRecord,
     *,
     table: str = _TIMERS_TABLE,
 ) -> None:
     _validate_table(table, {_TIMERS_TABLE, _REBUILD_TIMERS_TABLE})
     key = timer_key_from_proto(record.key)
-    conn.execute(
+    await conn.execute(
         f"""
         INSERT INTO {table}(
             namespace, workflow_id, run_id, timer_id, status, fire_at, created_at, fired_at
@@ -901,31 +953,31 @@ def _validate_table(table: str, allowed: set[str]) -> None:
         raise ValueError(f"unsupported index table {table!r}")
 
 
-def _delete_workflow_row(
-    conn: sqlite3.Connection,
+async def _delete_workflow_row(
+    conn: IndexSession,
     key: WorkflowKey,
     *,
     mark_dirty: bool = False,
 ) -> None:
-    conn.execute(
+    await conn.execute(
         "DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?",
         (key.namespace, key.workflow_id, key.run_id),
     )
     if mark_dirty:
-        _mark_rebuild_dirty(
+        await _mark_rebuild_dirty(
             conn,
             _REBUILD_DIRTY_WORKFLOWS_TABLE,
             (key.namespace, key.workflow_id, key.run_id),
         )
 
 
-def _delete_activity_row(
-    conn: sqlite3.Connection,
+async def _delete_activity_row(
+    conn: IndexSession,
     key: ActivityKey,
     *,
     mark_dirty: bool = False,
 ) -> None:
-    conn.execute(
+    await conn.execute(
         """
         DELETE FROM activities
         WHERE namespace=? AND workflow_id=? AND run_id=? AND activity_id=?
@@ -933,20 +985,20 @@ def _delete_activity_row(
         (key.namespace, key.workflow_id, key.run_id, key.activity_id),
     )
     if mark_dirty:
-        _mark_rebuild_dirty(
+        await _mark_rebuild_dirty(
             conn,
             _REBUILD_DIRTY_ACTIVITIES_TABLE,
             (key.namespace, key.workflow_id, key.run_id, key.activity_id),
         )
 
 
-def _delete_timer_row(
-    conn: sqlite3.Connection,
+async def _delete_timer_row(
+    conn: IndexSession,
     key: TimerKey,
     *,
     mark_dirty: bool = False,
 ) -> None:
-    conn.execute(
+    await conn.execute(
         """
         DELETE FROM timers
         WHERE namespace=? AND workflow_id=? AND run_id=? AND timer_id=?
@@ -954,54 +1006,56 @@ def _delete_timer_row(
         (key.namespace, key.workflow_id, key.run_id, key.timer_id),
     )
     if mark_dirty:
-        _mark_rebuild_dirty(
+        await _mark_rebuild_dirty(
             conn,
             _REBUILD_DIRTY_TIMERS_TABLE,
             (key.namespace, key.workflow_id, key.run_id, key.timer_id),
         )
 
 
-def _delete_run_rows(
-    conn: sqlite3.Connection,
+async def _delete_run_rows(
+    conn: IndexSession,
     key: WorkflowKey,
     *,
     mark_dirty: bool = False,
 ) -> None:
     params = (key.namespace, key.workflow_id, key.run_id)
-    conn.execute("DELETE FROM activities WHERE namespace=? AND workflow_id=? AND run_id=?", params)
-    conn.execute("DELETE FROM timers WHERE namespace=? AND workflow_id=? AND run_id=?", params)
-    conn.execute("DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?", params)
+    await conn.execute(
+        "DELETE FROM activities WHERE namespace=? AND workflow_id=? AND run_id=?", params
+    )
+    await conn.execute(
+        "DELETE FROM timers WHERE namespace=? AND workflow_id=? AND run_id=?", params
+    )
+    await conn.execute(
+        "DELETE FROM workflows WHERE namespace=? AND workflow_id=? AND run_id=?", params
+    )
     if mark_dirty:
-        _mark_rebuild_run_dirty(conn, key)
+        await _mark_rebuild_run_dirty(conn, key)
 
 
-def _mark_rebuild_dirty(
-    conn: sqlite3.Connection,
+async def _mark_rebuild_dirty(
+    conn: IndexSession,
     table: str,
     values: tuple[str, ...],
 ) -> None:
-    if not _table_exists(conn, table):
+    if not await _table_exists(conn, table):
         return
     placeholders = ", ".join("?" for _ in values)
-    conn.execute(
+    await conn.execute(
         f"INSERT INTO {table} VALUES({placeholders}) ON CONFLICT DO NOTHING",
         values,
     )
 
 
-def _mark_rebuild_run_dirty(conn: sqlite3.Connection, key: WorkflowKey) -> None:
+async def _mark_rebuild_run_dirty(conn: IndexSession, key: WorkflowKey) -> None:
     params = (key.namespace, key.workflow_id, key.run_id)
-    _mark_rebuild_dirty(conn, _REBUILD_DIRTY_RUNS_TABLE, params)
-    _mark_rebuild_dirty(conn, _REBUILD_DIRTY_WORKFLOWS_TABLE, params)
+    await _mark_rebuild_dirty(conn, _REBUILD_DIRTY_RUNS_TABLE, params)
+    await _mark_rebuild_dirty(conn, _REBUILD_DIRTY_WORKFLOWS_TABLE, params)
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        is not None
+async def _table_exists(conn: IndexSession, table: str) -> bool:
+    return bool(
+        await conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?", (table,))
     )
 
 
@@ -1015,15 +1069,15 @@ def _due_timer_sort_key(item: DueTimer) -> tuple[datetime, str, str, str, str]:
     )
 
 
-def _select_workflows(
-    conn: sqlite3.Connection,
+async def _select_workflows(
+    conn: IndexSession,
     namespace: str,
     workflow_id: str,
     status: temporaless_pb2.WorkflowStatus,
     order_by: str,
     page_size: int,
     page_token: str,
-) -> tuple[list[sqlite3.Row], str]:
+) -> tuple[list[IndexRow], str]:
     where: list[str] = []
     params: list[object] = []
     if namespace:
@@ -1035,7 +1089,7 @@ def _select_workflows(
     if status != temporaless_pb2.WORKFLOW_STATUS_UNSPECIFIED:
         where.append("status=?")
         params.append(int(status))
-    return _select_rows(
+    return await _select_rows(
         conn,
         "workflows",
         where,
@@ -1063,7 +1117,7 @@ def _workflow_matches_query(
 
 
 def _workflow_row_matches_record(
-    row: sqlite3.Row,
+    row: IndexRow,
     record: temporaless_pb2.WorkflowRecord,
 ) -> bool:
     key = workflow_key_from_proto(record.key)
@@ -1077,8 +1131,8 @@ def _workflow_row_matches_record(
     )
 
 
-def _select_activities(
-    conn: sqlite3.Connection,
+async def _select_activities(
+    conn: IndexSession,
     namespace: str,
     workflow_id: str,
     run_id: str,
@@ -1086,7 +1140,7 @@ def _select_activities(
     order_by: str,
     page_size: int,
     page_token: str,
-) -> tuple[list[sqlite3.Row], str]:
+) -> tuple[list[IndexRow], str]:
     where: list[str] = []
     params: list[object] = []
     if namespace:
@@ -1101,7 +1155,7 @@ def _select_activities(
     if status != temporaless_pb2.ACTIVITY_STATUS_UNSPECIFIED:
         where.append("status=?")
         params.append(int(status))
-    return _select_rows(
+    return await _select_rows(
         conn,
         "activities",
         where,
@@ -1131,7 +1185,7 @@ def _activity_matches_query(
 
 
 def _activity_row_matches_record(
-    row: sqlite3.Row,
+    row: IndexRow,
     record: temporaless_pb2.ActivityRecord,
 ) -> bool:
     key = activity_key_from_proto(record.key)
@@ -1146,8 +1200,8 @@ def _activity_row_matches_record(
     )
 
 
-def _select_rows(
-    conn: sqlite3.Connection,
+async def _select_rows(
+    conn: IndexSession,
     table: str,
     where: list[str],
     params: list[object],
@@ -1157,7 +1211,7 @@ def _select_rows(
     *,
     allowed_order: set[str],
     key_columns: tuple[str, ...],
-) -> tuple[list[sqlite3.Row], str]:
+) -> tuple[list[IndexRow], str]:
     order_sql = _order_by_sql(order_by, allowed_order, key_columns=key_columns)
     query_fingerprint = _query_fingerprint(table, where, params, order_sql)
     offset = _decode_offset(page_token, query_fingerprint)
@@ -1173,81 +1227,76 @@ def _select_rows(
         limit_params.append(offset)
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
-    rows = list(
-        conn.execute(
-            f"SELECT * FROM {table}{where_sql} ORDER BY {order_sql}{limit_sql}",
-            (*params, *limit_params),
-        )
+    rows = await conn.execute(
+        f"SELECT * FROM {table}{where_sql} ORDER BY {order_sql}{limit_sql}",
+        (*params, *limit_params),
     )
     if page_size <= 0 or len(rows) <= page_size:
         return rows, ""
     return rows[:page_size], _encode_offset(offset + page_size, query_fingerprint)
 
 
-def _select_sweep(conn: sqlite3.Connection, namespace: str, cutoff: str) -> list[sqlite3.Row]:
+async def _select_sweep(conn: IndexSession, namespace: str, cutoff: str) -> list[IndexRow]:
     params: list[object] = [int(temporaless_pb2.WORKFLOW_STATUS_COMPLETED), cutoff]
     where = "status=? AND completed_at != '' AND completed_at <= ?"
     if namespace:
         where = f"namespace=? AND {where}"
         params.insert(0, namespace)
-    return list(conn.execute(f"SELECT * FROM workflows WHERE {where}", params))
+    return await conn.execute(f"SELECT * FROM workflows WHERE {where}", params)
 
 
-def _select_due_timers(conn: sqlite3.Connection, namespace: str, now: str) -> list[sqlite3.Row]:
+async def _select_due_timers(conn: IndexSession, namespace: str, now: str) -> list[IndexRow]:
     params: list[object] = [int(temporaless_pb2.TIMER_STATUS_SCHEDULED), now]
     where = "status=? AND fire_at != '' AND fire_at <= ?"
     if namespace:
         where = f"namespace=? AND {where}"
         params.insert(0, namespace)
-    return list(conn.execute(f"SELECT * FROM timers WHERE {where} ORDER BY fire_at ASC", params))
+    return await conn.execute(f"SELECT * FROM timers WHERE {where} ORDER BY fire_at ASC", params)
 
 
-def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
+async def _reset_rebuild_index(conn: IndexSession, *, owner: str) -> None:
     try:
-        conn.executescript(
-            f"""
-        BEGIN IMMEDIATE;
-        CREATE TABLE {_REBUILD_OWNER_TABLE}(owner TEXT PRIMARY KEY);
-        INSERT INTO {_REBUILD_OWNER_TABLE}(owner) VALUES('{owner}');
-        CREATE TABLE {_REBUILD_WORKFLOWS_TABLE} AS SELECT * FROM workflows WHERE 0;
-        CREATE TABLE {_REBUILD_ACTIVITIES_TABLE} AS SELECT * FROM activities WHERE 0;
-        CREATE TABLE {_REBUILD_TIMERS_TABLE} AS SELECT * FROM timers WHERE 0;
-        CREATE TABLE {_REBUILD_EXISTING_WORKFLOWS_TABLE} AS
-            SELECT namespace, workflow_id, run_id FROM workflows;
-        CREATE TABLE {_REBUILD_EXISTING_ACTIVITIES_TABLE} AS
-            SELECT namespace, workflow_id, run_id, activity_id FROM activities;
-        CREATE TABLE {_REBUILD_EXISTING_TIMERS_TABLE} AS
-            SELECT namespace, workflow_id, run_id, timer_id FROM timers;
-        CREATE TABLE {_REBUILD_DIRTY_WORKFLOWS_TABLE} AS
-            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0;
-        CREATE TABLE {_REBUILD_DIRTY_ACTIVITIES_TABLE} AS
-            SELECT namespace, workflow_id, run_id, activity_id FROM activities WHERE 0;
-        CREATE TABLE {_REBUILD_DIRTY_TIMERS_TABLE} AS
-            SELECT namespace, workflow_id, run_id, timer_id FROM timers WHERE 0;
-        CREATE TABLE {_REBUILD_DIRTY_RUNS_TABLE} AS
-            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0;
-        CREATE UNIQUE INDEX {_REBUILD_WORKFLOWS_TABLE}_pk
-            ON {_REBUILD_WORKFLOWS_TABLE}(namespace, workflow_id, run_id);
-        CREATE UNIQUE INDEX {_REBUILD_ACTIVITIES_TABLE}_pk
-            ON {_REBUILD_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id);
-        CREATE UNIQUE INDEX {_REBUILD_TIMERS_TABLE}_pk
-            ON {_REBUILD_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id);
-        CREATE UNIQUE INDEX {_REBUILD_DIRTY_WORKFLOWS_TABLE}_pk
-            ON {_REBUILD_DIRTY_WORKFLOWS_TABLE}(namespace, workflow_id, run_id);
-        CREATE UNIQUE INDEX {_REBUILD_DIRTY_ACTIVITIES_TABLE}_pk
-            ON {_REBUILD_DIRTY_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id);
-        CREATE UNIQUE INDEX {_REBUILD_DIRTY_TIMERS_TABLE}_pk
-            ON {_REBUILD_DIRTY_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id);
-        CREATE UNIQUE INDEX {_REBUILD_DIRTY_RUNS_TABLE}_pk
-            ON {_REBUILD_DIRTY_RUNS_TABLE}(namespace, workflow_id, run_id);
-
-        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER}
+        await conn.execute(f"CREATE TABLE {_REBUILD_OWNER_TABLE}(owner TEXT PRIMARY KEY)")
+        await conn.execute(f"INSERT INTO {_REBUILD_OWNER_TABLE}(owner) VALUES(?)", (owner,))
+        for statement in (
+            f"""CREATE TABLE {_REBUILD_WORKFLOWS_TABLE} AS SELECT * FROM workflows WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_ACTIVITIES_TABLE} AS SELECT * FROM activities WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_TIMERS_TABLE} AS SELECT * FROM timers WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_EXISTING_WORKFLOWS_TABLE} AS
+            SELECT namespace, workflow_id, run_id FROM workflows""",
+            f"""CREATE TABLE {_REBUILD_EXISTING_ACTIVITIES_TABLE} AS
+            SELECT namespace, workflow_id, run_id, activity_id FROM activities""",
+            f"""CREATE TABLE {_REBUILD_EXISTING_TIMERS_TABLE} AS
+            SELECT namespace, workflow_id, run_id, timer_id FROM timers""",
+            f"""CREATE TABLE {_REBUILD_DIRTY_WORKFLOWS_TABLE} AS
+            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_DIRTY_ACTIVITIES_TABLE} AS
+            SELECT namespace, workflow_id, run_id, activity_id FROM activities WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_DIRTY_TIMERS_TABLE} AS
+            SELECT namespace, workflow_id, run_id, timer_id FROM timers WHERE 0""",
+            f"""CREATE TABLE {_REBUILD_DIRTY_RUNS_TABLE} AS
+            SELECT namespace, workflow_id, run_id FROM workflows WHERE 0""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_WORKFLOWS_TABLE}_pk
+            ON {_REBUILD_WORKFLOWS_TABLE}(namespace, workflow_id, run_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_ACTIVITIES_TABLE}_pk
+            ON {_REBUILD_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_TIMERS_TABLE}_pk
+            ON {_REBUILD_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_DIRTY_WORKFLOWS_TABLE}_pk
+            ON {_REBUILD_DIRTY_WORKFLOWS_TABLE}(namespace, workflow_id, run_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_DIRTY_ACTIVITIES_TABLE}_pk
+            ON {_REBUILD_DIRTY_ACTIVITIES_TABLE}(namespace, workflow_id, run_id, activity_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_DIRTY_TIMERS_TABLE}_pk
+            ON {_REBUILD_DIRTY_TIMERS_TABLE}(namespace, workflow_id, run_id, timer_id)""",
+            f"""CREATE UNIQUE INDEX {_REBUILD_DIRTY_RUNS_TABLE}_pk
+            ON {_REBUILD_DIRTY_RUNS_TABLE}(namespace, workflow_id, run_id)""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER}
         AFTER INSERT ON workflows BEGIN
             INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER}
         AFTER UPDATE ON workflows BEGIN
             INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id)
@@ -1255,21 +1304,20 @@ def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
             INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_DELETE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_WORKFLOWS_DELETE_TRIGGER}
         AFTER DELETE ON workflows BEGIN
             INSERT INTO {_REBUILD_DIRTY_WORKFLOWS_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id)
                 ON CONFLICT DO NOTHING;
-        END;
-
-        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_INSERT_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_INSERT_TRIGGER}
         AFTER INSERT ON activities BEGIN
             INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.activity_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_UPDATE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_UPDATE_TRIGGER}
         AFTER UPDATE ON activities BEGIN
             INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.activity_id)
@@ -1277,21 +1325,20 @@ def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
             INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.activity_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_ACTIVITIES_DELETE_TRIGGER}
         AFTER DELETE ON activities BEGIN
             INSERT INTO {_REBUILD_DIRTY_ACTIVITIES_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.activity_id)
                 ON CONFLICT DO NOTHING;
-        END;
-
-        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_INSERT_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_TIMERS_INSERT_TRIGGER}
         AFTER INSERT ON timers BEGIN
             INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.timer_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_UPDATE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_TIMERS_UPDATE_TRIGGER}
         AFTER UPDATE ON timers BEGIN
             INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.timer_id)
@@ -1299,15 +1346,15 @@ def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
             INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
                 VALUES(NEW.namespace, NEW.workflow_id, NEW.run_id, NEW.timer_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        CREATE TRIGGER {_REBUILD_TRACK_TIMERS_DELETE_TRIGGER}
+        END""",
+            f"""CREATE TRIGGER {_REBUILD_TRACK_TIMERS_DELETE_TRIGGER}
         AFTER DELETE ON timers BEGIN
             INSERT INTO {_REBUILD_DIRTY_TIMERS_TABLE}
                 VALUES(OLD.namespace, OLD.workflow_id, OLD.run_id, OLD.timer_id)
                 ON CONFLICT DO NOTHING;
-        END;
-        """
-        )
+        END""",
+        ):
+            await conn.execute(statement)
     except sqlite3.OperationalError as exc:
         if "already exists" in str(exc):
             raise RuntimeError(
@@ -1316,14 +1363,13 @@ def _reset_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
         raise
 
 
-def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
+async def _swap_rebuild_index(conn: IndexSession) -> None:
     # The connection lock serializes this transaction with write-through index
     # updates from this instance. BEGIN IMMEDIATE also prevents another SQLite
     # connection from writing after the tracking triggers are removed and
     # before the staged merge commits.
-    conn.execute("BEGIN IMMEDIATE")
-    _drop_rebuild_tracking_triggers(conn)
-    _delete_rows_absent_from_rebuild(
+    await _drop_rebuild_tracking_triggers(conn)
+    await _delete_rows_absent_from_rebuild(
         conn,
         live_table=_TIMERS_TABLE,
         existing_table=_REBUILD_EXISTING_TIMERS_TABLE,
@@ -1332,7 +1378,7 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id", "timer_id"),
     )
-    _delete_rows_absent_from_rebuild(
+    await _delete_rows_absent_from_rebuild(
         conn,
         live_table=_ACTIVITIES_TABLE,
         existing_table=_REBUILD_EXISTING_ACTIVITIES_TABLE,
@@ -1341,7 +1387,7 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id", "activity_id"),
     )
-    _delete_rows_absent_from_rebuild(
+    await _delete_rows_absent_from_rebuild(
         conn,
         live_table=_WORKFLOWS_TABLE,
         existing_table=_REBUILD_EXISTING_WORKFLOWS_TABLE,
@@ -1350,7 +1396,7 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id"),
     )
-    _merge_rebuild_rows(
+    await _merge_rebuild_rows(
         conn,
         live_table=_WORKFLOWS_TABLE,
         rebuild_table=_REBUILD_WORKFLOWS_TABLE,
@@ -1358,7 +1404,7 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id"),
     )
-    _merge_rebuild_rows(
+    await _merge_rebuild_rows(
         conn,
         live_table=_ACTIVITIES_TABLE,
         rebuild_table=_REBUILD_ACTIVITIES_TABLE,
@@ -1366,7 +1412,7 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
         dirty_runs_table=_REBUILD_DIRTY_RUNS_TABLE,
         key_columns=("namespace", "workflow_id", "run_id", "activity_id"),
     )
-    _merge_rebuild_rows(
+    await _merge_rebuild_rows(
         conn,
         live_table=_TIMERS_TABLE,
         rebuild_table=_REBUILD_TIMERS_TABLE,
@@ -1376,8 +1422,8 @@ def _swap_rebuild_index(conn: sqlite3.Connection) -> None:
     )
 
 
-def _delete_rows_absent_from_rebuild(
-    conn: sqlite3.Connection,
+async def _delete_rows_absent_from_rebuild(
+    conn: IndexSession,
     *,
     live_table: str,
     existing_table: str,
@@ -1399,7 +1445,7 @@ def _delete_rows_absent_from_rebuild(
         f"{dirty_runs_table}.{column}={live_table}.{column}"
         for column in ("namespace", "workflow_id", "run_id")
     )
-    conn.execute(
+    await conn.execute(
         f"""
         DELETE FROM {live_table}
         WHERE EXISTS (
@@ -1422,8 +1468,8 @@ def _delete_rows_absent_from_rebuild(
     )
 
 
-def _merge_rebuild_rows(
-    conn: sqlite3.Connection,
+async def _merge_rebuild_rows(
+    conn: IndexSession,
     *,
     live_table: str,
     rebuild_table: str,
@@ -1438,7 +1484,7 @@ def _merge_rebuild_rows(
         f"{dirty_runs_table}.{column}={rebuild_table}.{column}"
         for column in ("namespace", "workflow_id", "run_id")
     )
-    conn.execute(
+    await conn.execute(
         f"""
         INSERT OR REPLACE INTO {live_table}
         SELECT {rebuild_table}.* FROM {rebuild_table}
@@ -1454,7 +1500,7 @@ def _merge_rebuild_rows(
     )
 
 
-def _drop_rebuild_tracking_triggers(conn: sqlite3.Connection) -> None:
+async def _drop_rebuild_tracking_triggers(conn: IndexSession) -> None:
     for trigger in (
         _REBUILD_TRACK_TIMERS_DELETE_TRIGGER,
         _REBUILD_TRACK_TIMERS_UPDATE_TRIGGER,
@@ -1466,30 +1512,30 @@ def _drop_rebuild_tracking_triggers(conn: sqlite3.Connection) -> None:
         _REBUILD_TRACK_WORKFLOWS_UPDATE_TRIGGER,
         _REBUILD_TRACK_WORKFLOWS_INSERT_TRIGGER,
     ):
-        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        await conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 
 
-def _drop_rebuild_index(conn: sqlite3.Connection, *, owner: str) -> None:
+async def _drop_rebuild_index(conn: IndexSession, *, owner: str) -> None:
     try:
-        row = conn.execute(f"SELECT owner FROM {_REBUILD_OWNER_TABLE}").fetchone()
+        rows = await conn.execute(f"SELECT owner FROM {_REBUILD_OWNER_TABLE}")
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc):
             return
         raise
-    if row is None or row["owner"] != owner:
+    if not rows or rows[0]["owner"] != owner:
         return
-    _drop_rebuild_tracking_triggers(conn)
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_RUNS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_TIMERS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_ACTIVITIES_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_WORKFLOWS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_TIMERS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_ACTIVITIES_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_WORKFLOWS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_TIMERS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_ACTIVITIES_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_WORKFLOWS_TABLE}")
-    conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_OWNER_TABLE}")
+    await _drop_rebuild_tracking_triggers(conn)
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_RUNS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_TIMERS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_ACTIVITIES_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_DIRTY_WORKFLOWS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_TIMERS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_ACTIVITIES_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_EXISTING_WORKFLOWS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_TIMERS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_ACTIVITIES_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_WORKFLOWS_TABLE}")
+    await conn.execute(f"DROP TABLE IF EXISTS {_REBUILD_OWNER_TABLE}")
 
 
 def _order_by_sql(

@@ -31,6 +31,15 @@ lockstep policy.
 - Document the complete mutation audit, future crash/takeover/stale-holder proof
   matrix, migration boundaries and the limit on external provider side effects.
 
+### Changed
+
+- The optional Python SQLite index accepts an injected async transaction executor
+  through `IndexedStore.from_executor`. Existing constructors, memory/file
+  defaults, per-operation commits, query tokens and derived schema are unchanged.
+  Explicit owned/borrowed close and cancellation draining preserve connection
+  ownership; failed rebuild cleanup now rolls back its DDL atomically. No remote
+  backend, buffering, core SQL dependency or execution fencing is introduced.
+
 ## [0.12.2] - 2026-09-28
 
 ### Fixed
