@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-28
+
 ### Added
 
 - `make validate` guards the import direction: it fails when a non-test Go
