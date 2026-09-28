@@ -129,6 +129,10 @@ locally and in CI:
 - `cargo` / `rustc` / `clippy` / `rustfmt` (the one pinned Rust toolchain)
 - `cargo-audit` and `gitleaks` (the `make audit` tools)
 
+Every Python uv project is listed once, with the paths ruff formats in it, in
+`scripts/python-projects`; `make fmt`, `make test`, `make validate`, and
+`make audit` read that list, so a new Python adapter is added there.
+
 Do not add language-specific libraries, linters, or generators to Flox if they
 can live in `go.mod`, `uv.lock`, or `buf.gen.yaml`. Toolchains a workflow
 needs must come from the Flox manifest, never from setup actions or ad-hoc

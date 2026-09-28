@@ -22,6 +22,20 @@ lockstep policy.
   tag is the distribution. A new paragraph states that `run` and `deploy` are
   not part of the contract. `scripts/release` already does exactly this, so
   only the words change; CONVENTIONS.md states it.
+- The Makefile is a router, as `MAKEFILE-CONTRACT.md` asks: `fmt`, `test`,
+  `build`, `fmt-check`, and the `fmt-<lang>` and `test-<lang>` sub-verbs each
+  call one script (`scripts/fmt`, `scripts/test`, `scripts/build`,
+  `scripts/gofmt-check`), and the gate calls `scripts/gofmt-check` too. The
+  seven Python uv projects and their ruff paths are listed once, in
+  `scripts/python-projects`, which `make fmt`, `make test`, `make validate`,
+  and `make audit` read; the four copies of that list are gone. `make test-go
+  GO_PKGS=...` still narrows the Go packages.
+
+### Removed
+
+- The Makefile's `GOFMT` and `GOFLAGS` variables and its inline shell loops.
+  `make test-go GOFLAGS=...` still works, because a command-line variable
+  reaches the environment and `go` reads `GOFLAGS` from there.
 
 ## [0.12.0] — 2026-09-26
 

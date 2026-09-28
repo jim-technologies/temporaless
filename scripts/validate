@@ -116,12 +116,7 @@ else
 fi
 # Go is first-class and always part of the release gate. Generated protobuf
 # packages under core/go/gen are Buf-owned and excluded from gofmt.
-unformatted="$(gofmt -l . | grep -v '^core/go/gen/' || true)"
-if [ -n "$unformatted" ]; then
-  echo "gofmt needs to run on:" >&2
-  echo "$unformatted" >&2
-  exit 1
-fi
+scripts/gofmt-check
 go mod tidy -diff
 go vet ./...
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
@@ -133,43 +128,34 @@ if command -v cargo >/dev/null 2>&1; then
 else
   echo "Skipping the Rust SDK checks; cargo is not on PATH (enter the Flox env)." >&2
 fi
-uv run --project core/py ruff format --check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
-uv run --project core/py ruff check core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
-uv run --project core/py ty check core/py/src/temporaless core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py --exclude='**/temporaless/v1/**' --exclude='**/buf/**'
-uv run --project core/py pytest core/py/tests
-uv sync --project adapters/py/connectworkflow --locked
-uv run --project adapters/py/connectworkflow ruff format --check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
-uv run --project adapters/py/connectworkflow ruff check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
-uv run --project adapters/py/connectworkflow ty check adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
-uv run --project adapters/py/connectworkflow pytest adapters/py/connectworkflow/tests
-uv sync --project adapters/py/dagstercompat --locked
-uv run --project adapters/py/dagstercompat ruff format --check adapters/py/dagstercompat/tests
-uv run --project adapters/py/dagstercompat ruff check adapters/py/dagstercompat/tests
-uv run --project adapters/py/dagstercompat ty check adapters/py/dagstercompat/tests/test_process_boundary.py --extra-search-path adapters/py/dagstercompat/tests/gen
-uv run --project core/py ty check adapters/py/dagstercompat/tests/temporaless_server.py --extra-search-path adapters/py/dagstercompat/tests/server_gen
-uv run --project adapters/py/dagstercompat pytest adapters/py/dagstercompat/tests
-uv sync --project adapters/py/temporalcompat --locked
-uv run --project adapters/py/temporalcompat ruff format --check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
-uv run --project adapters/py/temporalcompat ruff check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
-uv run --project adapters/py/temporalcompat ty check adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
-uv run --project adapters/py/temporalcompat pytest adapters/py/temporalcompat/tests
-uv sync --project adapters/py/prefectcompat --locked
-uv run --project adapters/py/prefectcompat ruff format --check adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
-uv run --project adapters/py/prefectcompat ruff check adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
-uv run --project adapters/py/prefectcompat ty check adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
-# Prefect's temporary test server otherwise emits shutdown INFO logs after
-# pytest closes its captured stream, creating a misleading logging traceback
-# despite a successful suite. Tests do not assert logging behavior.
-PREFECT_LOGGING_LEVEL=ERROR \
-  PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore \
-  uv run --project adapters/py/prefectcompat pytest adapters/py/prefectcompat/tests
-uv sync --project adapters/py/indexstore --locked
-uv run --project adapters/py/indexstore ruff format --check adapters/py/indexstore/src adapters/py/indexstore/tests
-uv run --project adapters/py/indexstore ruff check adapters/py/indexstore/src adapters/py/indexstore/tests
-uv run --project adapters/py/indexstore ty check adapters/py/indexstore/src adapters/py/indexstore/tests
-uv run --project adapters/py/indexstore pytest adapters/py/indexstore/tests
-uv sync --project adapters/py/cloudevents --locked
-uv run --project adapters/py/cloudevents ruff format --check adapters/py/cloudevents/src adapters/py/cloudevents/tests
-uv run --project adapters/py/cloudevents ruff check adapters/py/cloudevents/src adapters/py/cloudevents/tests
-uv run --project adapters/py/cloudevents ty check adapters/py/cloudevents/src adapters/py/cloudevents/tests
-uv run --project adapters/py/cloudevents pytest adapters/py/cloudevents/tests
+# Every Python uv project in scripts/python-projects: a locked sync, the ruff
+# format check and lint over its listed paths, ty, and its tests. ty follows
+# the ruff paths except in two projects: core/py leaves out its tests and the
+# Buf-owned generated packages, and dagstercompat checks its generated-code
+# fixtures against their own search paths.
+# Prefect's temporary test server otherwise logs after pytest has closed its
+# captured stream, printing a misleading traceback after a green suite; only
+# the Prefect adapter reads these variables.
+PREFECT_LOGGING_LEVEL=ERROR
+PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore
+export PREFECT_LOGGING_LEVEL PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW
+while read -r project paths <&3; do
+  case "$project" in '' | '#'*) continue ;; esac
+  uv sync --project "$project" --locked
+  # $paths is the space-separated path list from scripts/python-projects.
+  uv run --project "$project" ruff format --check $paths
+  uv run --project "$project" ruff check $paths
+  case "$project" in
+    core/py)
+      uv run --project core/py ty check core/py/src/temporaless core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py --exclude='**/temporaless/v1/**' --exclude='**/buf/**'
+      ;;
+    adapters/py/dagstercompat)
+      uv run --project adapters/py/dagstercompat ty check adapters/py/dagstercompat/tests/test_process_boundary.py --extra-search-path adapters/py/dagstercompat/tests/gen
+      uv run --project core/py ty check adapters/py/dagstercompat/tests/temporaless_server.py --extra-search-path adapters/py/dagstercompat/tests/server_gen
+      ;;
+    *)
+      uv run --project "$project" ty check $paths
+      ;;
+  esac
+  uv run --project "$project" pytest "$project/tests"
+done 3<scripts/python-projects

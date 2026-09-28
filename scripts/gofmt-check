@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+# Fail when a Go source is not gofmt-clean. Generated protobuf packages under
+# core/go/gen are Buf-owned and excluded. `make validate` runs this; `make
+# fmt-check` runs it alone for fast feedback.
+
+cd "$(dirname "$0")/.."
+
+unformatted="$(gofmt -l . | grep -v '^core/go/gen/' || true)"
+if [ -n "$unformatted" ]; then
+  echo "gofmt needs to run on:" >&2
+  echo "$unformatted" >&2
+  echo "run 'make fmt'" >&2
+  exit 1
+fi

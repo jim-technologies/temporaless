@@ -23,19 +23,12 @@ echo "==> govulncheck (Go dependency reachability)"
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
 echo "==> pip-audit (Python environments)"
-for project in \
-  core/py \
-  adapters/py/cloudevents \
-  adapters/py/connectworkflow \
-  adapters/py/dagstercompat \
-  adapters/py/indexstore \
-  adapters/py/prefectcompat \
-  adapters/py/temporalcompat
-do
+while read -r project _ <&3; do
+  case "$project" in '' | '#'*) continue ;; esac
   uv run --project "$project" \
     --with "pip-audit==2.10.1" \
     pip-audit --local --progress-spinner=off
-done
+done 3<scripts/python-projects
 
 echo "==> cargo audit (Rust lockfile)"
 cargo audit --file Cargo.lock

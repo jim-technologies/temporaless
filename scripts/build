@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+# Produce the artifacts locally from the tree as committed
+# (MAKEFILE-CONTRACT.md `make build`): the console UI and the binary that
+# embeds it, every Go package, the TypeScript dist, and the Rust workspace.
+# Python ships as source (Git-only distribution) and has nothing to build.
+
+cd "$(dirname "$0")/.."
+
+scripts/build-console
+go build ./...
+if command -v npm >/dev/null 2>&1; then
+  npm run build
+else
+  echo "Skipping the TypeScript build; npm is not on PATH." >&2
+fi
+if command -v cargo >/dev/null 2>&1; then
+  cargo build --workspace --locked
+else
+  echo "Skipping the Rust build; cargo is not on PATH (enter the Flox env)." >&2
+fi

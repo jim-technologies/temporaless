@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+# Rewrite formatting in place (MAKEFILE-CONTRACT.md `make fmt`). With no
+# argument every language is formatted; `go`, `proto`, `py` and `rs` select
+# languages (the fmt-<lang> sub-verbs). `make validate` checks the same
+# formatting and never rewrites it.
+#
+# usage: scripts/fmt [go|proto|py|rs]...
+
+cd "$(dirname "$0")/.."
+
+fmt_go() {
+  gofmt -w .
+}
+
+fmt_proto() {
+  buf format -w api
+  buf format -w adapters/py/dagstercompat/tests/proto
+  buf format -w adapters/go/console/proto
+}
+
+fmt_py() {
+  while read -r project paths <&3; do
+    case "$project" in '' | '#'*) continue ;; esac
+    # $paths is the space-separated path list from scripts/python-projects.
+    uv run --project "$project" ruff format $paths
+  done 3<scripts/python-projects
+}
+
+fmt_rs() {
+  if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --all
+  else
+    echo "Skipping Rust formatting; cargo is not on PATH (enter the Flox env)." >&2
+  fi
+}
+
+[ "$#" -gt 0 ] || set -- go proto py rs
+for language in "$@"; do
+  case "$language" in
+    go) fmt_go ;;
+    proto) fmt_proto ;;
+    py) fmt_py ;;
+    rs) fmt_rs ;;
+    *)
+      echo "usage: scripts/fmt [go|proto|py|rs]..." >&2
+      exit 2
+      ;;
+  esac
+done

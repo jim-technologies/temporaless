@@ -6,14 +6,13 @@
 # fast feedback from the individual sub-targets (fmt-check, tidy-check, vet,
 # lint, test-go) without the full cross-language gate.
 #
-# Run inside the Flox env so pinned Go is on PATH; the lint target runs the
-# pinned golangci-lint module through `go run`:
+# Every target names one tool or one script; loops and conditionals live in
+# scripts/. Run inside the Flox env so pinned Go is on PATH; the lint target
+# runs the pinned golangci-lint module through `go run`:
 #
 #   flox activate -- make validate
 
 GO        ?= go
-GOFMT     ?= gofmt
-GOFLAGS   ?=
 GO_PKGS   ?= ./...
 GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
@@ -57,39 +56,23 @@ public-surface: ## guard the public surface — tracked content, paths, and unpu
 	scripts/public-surface-check
 	scripts/public-surface-check-test
 
-fmt: fmt-go fmt-proto fmt-py fmt-rs ## rewrite formatting in place for every language in the repo
+fmt: ## rewrite formatting in place for every language in the repo
+	scripts/fmt
 
 fmt-go: ## rewrite Go sources in place with gofmt
-	$(GOFMT) -w .
+	scripts/fmt go
 
 fmt-proto: ## rewrite protobuf sources in place with buf format
-	buf format -w api
-	buf format -w adapters/py/dagstercompat/tests/proto
-	buf format -w adapters/go/console/proto
+	scripts/fmt proto
 
-fmt-py: ## rewrite Python sources in place with ruff format
-	uv run --project adapters/py/cloudevents ruff format adapters/py/cloudevents/src adapters/py/cloudevents/tests
-	uv run --project core/py ruff format core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
-	uv run --project adapters/py/connectworkflow ruff format adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
-	uv run --project adapters/py/dagstercompat ruff format adapters/py/dagstercompat/tests
-	uv run --project adapters/py/temporalcompat ruff format adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
-	uv run --project adapters/py/prefectcompat ruff format adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
-	uv run --project adapters/py/indexstore ruff format adapters/py/indexstore/src adapters/py/indexstore/tests
+fmt-py: ## rewrite every Python project in scripts/python-projects with ruff format
+	scripts/fmt py
 
 fmt-rs: ## rewrite Rust sources in place with cargo fmt (when cargo is installed)
-	@if command -v cargo >/dev/null 2>&1; then \
-		cargo fmt --all; \
-	else \
-		echo "Skipping Rust formatting; cargo is not on PATH (enter the Flox env)." >&2; \
-	fi
+	scripts/fmt rs
 
 fmt-check: ## fail if any Go source is not gofmt-clean
-	@unformatted="$$($(GOFMT) -l . | grep -v '^core/go/gen/' || true)"; \
-	if [ -n "$$unformatted" ]; then \
-		echo "gofmt needs to run on:"; echo "$$unformatted"; \
-		echo "run 'make fmt'"; \
-		exit 1; \
-	fi
+	scripts/gofmt-check
 
 vet: ## go vet across all packages
 	$(GO) vet $(GO_PKGS)
@@ -97,49 +80,23 @@ vet: ## go vet across all packages
 lint: ## golangci-lint (config in .golangci.yml)
 	$(GOLANGCI_LINT) run $(GO_PKGS)
 
-test: test-go test-ts test-py test-rs ## the full test suite — every language, offline and hermetic
+test: ## the full test suite — every language, offline and hermetic
+	scripts/test
 
-test-go: ## go test with the race detector
-	$(GO) test -race $(GOFLAGS) $(GO_PKGS)
+test-go: ## go test with the race detector (GO_PKGS narrows the packages)
+	scripts/test go
 
 test-ts: ## run the TypeScript client tests and the console UI host tests (when npm is installed)
-	@if command -v npm >/dev/null 2>&1; then \
-		npm test; \
-		if [ ! -d cmd/temporaless-console/ui/node_modules ]; then (cd cmd/temporaless-console/ui && npm ci); fi; \
-		(cd cmd/temporaless-console/ui && npm test); \
-	else \
-		echo "Skipping TypeScript tests; npm is not on PATH." >&2; \
-	fi
+	scripts/test ts
 
-test-py: ## run the Python core and every Python adapter test suite
-	uv run --project adapters/py/cloudevents --locked pytest adapters/py/cloudevents/tests
-	uv run --project core/py --locked pytest core/py/tests
-	uv run --project adapters/py/connectworkflow --locked pytest adapters/py/connectworkflow/tests
-	uv run --project adapters/py/dagstercompat --locked pytest adapters/py/dagstercompat/tests
-	uv run --project adapters/py/temporalcompat --locked pytest adapters/py/temporalcompat/tests
-	PREFECT_LOGGING_LEVEL=ERROR PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore \
-		uv run --project adapters/py/prefectcompat --locked pytest adapters/py/prefectcompat/tests
-	uv run --project adapters/py/indexstore --locked pytest adapters/py/indexstore/tests
+test-py: ## run every Python project's tests in scripts/python-projects
+	scripts/test py
 
 test-rs: ## run the Rust workspace tests (when cargo is installed)
-	@if command -v cargo >/dev/null 2>&1; then \
-		cargo test --workspace --locked; \
-	else \
-		echo "Skipping the Rust SDK tests; cargo is not on PATH (enter the Flox env)." >&2; \
-	fi
+	scripts/test rs
 
-build: build-console ## produce the artifacts locally — Go packages, the console, TypeScript dist, Rust workspace
-	$(GO) build $(GO_PKGS)
-	@if command -v npm >/dev/null 2>&1; then \
-		npm run build; \
-	else \
-		echo "Skipping the TypeScript build; npm is not on PATH." >&2; \
-	fi
-	@if command -v cargo >/dev/null 2>&1; then \
-		cargo build --workspace --locked; \
-	else \
-		echo "Skipping the Rust build; cargo is not on PATH (enter the Flox env)." >&2; \
-	fi
+build: ## produce the artifacts locally — the console, Go packages, TypeScript dist, Rust workspace
+	scripts/build
 
 build-console: ## build the optional read-only console UI and the binary that embeds it (build/temporaless-console)
 	scripts/build-console

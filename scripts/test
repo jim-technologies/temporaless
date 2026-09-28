@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+# The full offline suite (MAKEFILE-CONTRACT.md `make test`). With no argument
+# every language runs; `go`, `ts`, `py` and `rs` select languages (the
+# test-<lang> sub-verbs). Hermetic: OpenDAL fs over temporary directories,
+# locked uv environments, no service started by hand.
+#
+# usage: scripts/test [go|ts|py|rs]...
+# GO_PKGS narrows the Go packages, e.g. `make test-go GO_PKGS=./core/go/...`.
+
+cd "$(dirname "$0")/.."
+
+test_go() {
+  go test -race ${GO_PKGS:-./...}
+}
+
+test_ts() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "Skipping TypeScript tests; npm is not on PATH." >&2
+    return 0
+  fi
+  npm test
+  # The console UI host's tests (jsdom, a fake console behind its fetch).
+  if [ ! -d cmd/temporaless-console/ui/node_modules ]; then
+    (cd cmd/temporaless-console/ui && npm ci)
+  fi
+  (cd cmd/temporaless-console/ui && npm test)
+}
+
+test_py() {
+  # Prefect's temporary test server otherwise logs after pytest has closed its
+  # captured stream, printing a misleading traceback after a green suite. Only
+  # the Prefect adapter reads these variables.
+  PREFECT_LOGGING_LEVEL=ERROR
+  PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore
+  export PREFECT_LOGGING_LEVEL PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW
+  while read -r project _ <&3; do
+    case "$project" in '' | '#'*) continue ;; esac
+    uv run --project "$project" --locked pytest "$project/tests"
+  done 3<scripts/python-projects
+}
+
+test_rs() {
+  if command -v cargo >/dev/null 2>&1; then
+    cargo test --workspace --locked
+  else
+    echo "Skipping the Rust SDK tests; cargo is not on PATH (enter the Flox env)." >&2
+  fi
+}
+
+[ "$#" -gt 0 ] || set -- go ts py rs
+for language in "$@"; do
+  case "$language" in
+    go) test_go ;;
+    ts) test_ts ;;
+    py) test_py ;;
+    rs) test_rs ;;
+    *)
+      echo "usage: scripts/test [go|ts|py|rs]..." >&2
+      exit 2
+      ;;
+  esac
+done

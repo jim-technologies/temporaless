@@ -1,0 +1,11 @@
+# The Python uv projects, one per line: the project directory, then the paths
+# ruff formats and lints in it. Tests always live in <project>/tests.
+# scripts/fmt, scripts/test, scripts/validate and scripts/audit read this one
+# list, so a new Python adapter is added here and nowhere else.
+core/py core/py/src core/py/tests core/py/benchmarks examples/py scripts/check_buf_breaking.py scripts/check_versions.py scripts/set_version.py
+adapters/py/cloudevents adapters/py/cloudevents/src adapters/py/cloudevents/tests
+adapters/py/connectworkflow adapters/py/connectworkflow/src adapters/py/connectworkflow/tests
+adapters/py/dagstercompat adapters/py/dagstercompat/tests
+adapters/py/indexstore adapters/py/indexstore/src adapters/py/indexstore/tests
+adapters/py/prefectcompat adapters/py/prefectcompat/src adapters/py/prefectcompat/tests
+adapters/py/temporalcompat adapters/py/temporalcompat/src adapters/py/temporalcompat/tests
