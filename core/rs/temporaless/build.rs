@@ -118,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///   * `import "buf/validate/validate.proto";` → deleted (Rust SDK doesn't
 ///     run protovalidate — validation happens in Go/Python at write time).
 ///   * Multi-line and inline `(buf.validate.field)` / `(buf.validate.message)`
+///     / `(buf.validate.oneof)`
 ///     option blocks → stripped.
 fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) {
     let mut output = String::with_capacity(input.len());
@@ -215,6 +216,14 @@ fn downgrade_editions_to_proto3(input: &str) -> (String, Vec<(String, String)>) 
                 i += 1;
             }
             i += 1; // consume the closing line
+            continue;
+        }
+
+        if line.trim().starts_with("option (buf.validate.oneof)") {
+            while i < lines.len() && !lines[i].trim().ends_with(';') {
+                i += 1;
+            }
+            i += 1;
             continue;
         }
 

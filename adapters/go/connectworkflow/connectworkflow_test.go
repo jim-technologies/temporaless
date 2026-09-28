@@ -130,6 +130,7 @@ func TestErrorToCodeMapsEachErrorType(t *testing.T) {
 		err      error
 		wantCode connect.Code
 	}{
+		{"fenced execution unsupported", storage.ErrFencedExecutionUnsupported, connect.CodeUnimplemented},
 		{"timer pending", &workflow.TimerPendingError{TimerID: "t1", WakeAt: time.Now()}, connect.CodeUnavailable},
 		{"event pending", &workflow.EventPendingError{EventID: "e1"}, connect.CodeUnavailable},
 		{"workflow dep pending", &workflow.WorkflowDependencyPendingError{WorkflowID: "upstream", RunID: "2026-05-04"}, connect.CodeUnavailable},

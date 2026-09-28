@@ -16,6 +16,9 @@ import (
 )
 
 type Handler struct {
+	// Reserved fenced-execution RPCs remain UNIMPLEMENTED until every mutation
+	// path has a qualified atomic backend and runtime session.
+	temporalessv1connect.UnimplementedRecordStoreServiceHandler
 	Store              storage.Store
 	ClaimStore         storage.ClaimStore
 	EventDeliveryStore storage.EventDeliveryStore
@@ -133,8 +136,9 @@ func (handler *Handler) GetStoreCapabilities(ctx context.Context, _ *connect.Req
 		}
 	}
 	return connect.NewResponse(&temporalessv1.GetStoreCapabilitiesResponse{
-		ClaimCapability:         capability,
-		EventDeliveryCapability: eventCapability,
+		ClaimCapability:           capability,
+		EventDeliveryCapability:   eventCapability,
+		FencedExecutionCapability: temporalessv1.FencedExecutionCapability_FENCED_EXECUTION_CAPABILITY_UNSUPPORTED,
 	}), nil
 }
 

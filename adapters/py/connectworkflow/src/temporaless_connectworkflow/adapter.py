@@ -8,6 +8,7 @@ from functools import wraps
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from google.protobuf.message import Message
+from temporaless.execution import FencedExecutionUnsupportedError
 from temporaless.storage import Store
 from temporaless.workflow import (
     ActivityConflictError,
@@ -40,6 +41,8 @@ class WorkflowMethodWrapOptions[RequestT: Message, ResultT: Message]:
 
 def error_to_connect_code(exc: BaseException) -> tuple[Code, str] | None:
     """Return the stable ConnectRPC code and message for a framework error."""
+    if isinstance(exc, FencedExecutionUnsupportedError):
+        return (Code.UNIMPLEMENTED, str(exc))
     if isinstance(exc, ClaimReleaseError):
         return (Code.INTERNAL, str(exc))
     if isinstance(

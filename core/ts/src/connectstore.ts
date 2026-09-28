@@ -13,6 +13,7 @@ import {
   DueTimersRequestSchema,
   EventDeliveryCapability,
   EventDeliveryDisposition,
+  FencedExecutionCapability,
   GetActivityRequestSchema,
   GetClaimRequestSchema,
   GetEventRequestSchema,
@@ -282,6 +283,20 @@ export class ConnectStore {
       create(GetStoreCapabilitiesRequestSchema),
     );
     return response.claimCapability;
+  }
+
+  async fencedExecutionCapability(): Promise<FencedExecutionCapability> {
+    const response = await this.client.getStoreCapabilities(
+      create(GetStoreCapabilitiesRequestSchema),
+    );
+    const capability = response.fencedExecutionCapability;
+    if (
+      capability === FencedExecutionCapability.UNSPECIFIED ||
+      capability === FencedExecutionCapability.UNSUPPORTED
+    ) {
+      return FencedExecutionCapability.UNSUPPORTED;
+    }
+    throw new Error(`fenced execution is not implemented: capability ${capability}`);
   }
 }
 

@@ -42,6 +42,8 @@ use crate::v1;
 pub struct WorkflowOptions {
     pub workflow_id: String,
     pub run_id: String,
+    /// Reserved request: run refuses it before storage access or body execution.
+    pub fenced_execution: Option<v1::FencedExecutionOptions>,
 }
 
 impl WorkflowOptions {
@@ -49,6 +51,7 @@ impl WorkflowOptions {
         Self {
             workflow_id: workflow_id.into(),
             run_id: run_id.into(),
+            fenced_execution: None,
         }
     }
 }
@@ -136,6 +139,8 @@ impl ActivityError {
 /// with a stored record), and terminal activity failures.
 #[derive(Debug, Error)]
 pub enum RunError {
+    #[error("fenced execution is not implemented")]
+    FencedExecutionUnsupported,
     #[error("storage: {0}")]
     Storage(#[from] StoreError),
     #[error("encode proto: {0}")]
@@ -233,6 +238,9 @@ where
     Fut: Future<Output = Result<Resp, RunError>>,
 {
     let key = WorkflowKey::new(&options.workflow_id, &options.run_id);
+    if options.fenced_execution.is_some() {
+        return Err(RunError::FencedExecutionUnsupported);
+    }
     let workflow_type = message_pair_type::<Req, Resp>("workflow");
 
     // Replay branches.

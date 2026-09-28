@@ -9,6 +9,7 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from google.protobuf.wrappers_pb2 import StringValue
 from temporaless.backfill import backfill
+from temporaless.execution import FencedExecutionUnsupportedError
 from temporaless.storage import OpenDALStore
 from temporaless.v1 import temporaless_connect, temporaless_pb2
 from temporaless.workflow import (
@@ -141,6 +142,10 @@ async def test_generated_asgi_service_executes_and_replays_workflow(
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
+        (
+            FencedExecutionUnsupportedError("fenced execution is not implemented"),
+            Code.UNIMPLEMENTED,
+        ),
         (TimerPendingError("timer", datetime.now(UTC)), Code.UNAVAILABLE),
         (EventPendingError("event"), Code.UNAVAILABLE),
         (WorkflowDependencyPendingError("workflow", "run"), Code.UNAVAILABLE),

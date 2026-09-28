@@ -17,6 +17,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from protobuf.wkt import Any as ConnectAny
 from protovalidate import ValidationError, validate
 
+from temporaless.execution import current_fenced_execution_capability
 from temporaless.storage import (
     CREATE_ONLY_EVENT_DELIVERY,
     NO_ATOMIC_EVENT_DELIVERY,
@@ -270,6 +271,12 @@ class ConnectStore:
                 read_max_bytes=read_max_bytes,
             )
         )
+
+    async def fenced_execution_capability(self) -> temporaless_pb2.FencedExecutionCapability:
+        response = await _storage_rpc(
+            self._client.get_store_capabilities(temporaless_pb2.GetStoreCapabilitiesRequest())
+        )
+        return current_fenced_execution_capability(response.fenced_execution_capability)
 
     async def claim_capability(self) -> temporaless_pb2.ClaimCapability:
         response = await _storage_rpc(
@@ -627,6 +634,31 @@ class ConnectQueryStore:
 
 
 class RecordStoreService:
+    async def acquire_execution(
+        self, request: temporaless_pb2.AcquireExecutionRequest, ctx: RequestContext | None
+    ) -> temporaless_pb2.AcquireExecutionResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "fenced execution is not implemented")
+
+    async def renew_execution(
+        self, request: temporaless_pb2.RenewExecutionRequest, ctx: RequestContext | None
+    ) -> temporaless_pb2.RenewExecutionResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "fenced execution is not implemented")
+
+    async def release_execution(
+        self, request: temporaless_pb2.ReleaseExecutionRequest, ctx: RequestContext | None
+    ) -> temporaless_pb2.ReleaseExecutionResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "fenced execution is not implemented")
+
+    async def apply_execution_mutations(
+        self, request: temporaless_pb2.ApplyExecutionMutationsRequest, ctx: RequestContext | None
+    ) -> temporaless_pb2.ApplyExecutionMutationsResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "fenced execution is not implemented")
+
+    async def get_execution_operation(
+        self, request: temporaless_pb2.GetExecutionOperationRequest, ctx: RequestContext | None
+    ) -> temporaless_pb2.GetExecutionOperationResponse:
+        raise ConnectError(Code.UNIMPLEMENTED, "fenced execution is not implemented")
+
     _claim_store: ClaimStore | None
     _event_delivery_store: EventDeliveryStore | None
 
@@ -668,6 +700,7 @@ class RecordStoreService:
         return temporaless_pb2.GetStoreCapabilitiesResponse(
             claim_capability=capability,
             event_delivery_capability=event_capability,
+            fenced_execution_capability=temporaless_pb2.FENCED_EXECUTION_CAPABILITY_UNSUPPORTED,
         )
 
     async def get_activity(

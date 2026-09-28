@@ -55,6 +55,21 @@ const (
 	// RecordStoreServiceGetStoreCapabilitiesProcedure is the fully-qualified name of the
 	// RecordStoreService's GetStoreCapabilities RPC.
 	RecordStoreServiceGetStoreCapabilitiesProcedure = "/temporaless.v1.RecordStoreService/GetStoreCapabilities"
+	// RecordStoreServiceAcquireExecutionProcedure is the fully-qualified name of the
+	// RecordStoreService's AcquireExecution RPC.
+	RecordStoreServiceAcquireExecutionProcedure = "/temporaless.v1.RecordStoreService/AcquireExecution"
+	// RecordStoreServiceRenewExecutionProcedure is the fully-qualified name of the RecordStoreService's
+	// RenewExecution RPC.
+	RecordStoreServiceRenewExecutionProcedure = "/temporaless.v1.RecordStoreService/RenewExecution"
+	// RecordStoreServiceReleaseExecutionProcedure is the fully-qualified name of the
+	// RecordStoreService's ReleaseExecution RPC.
+	RecordStoreServiceReleaseExecutionProcedure = "/temporaless.v1.RecordStoreService/ReleaseExecution"
+	// RecordStoreServiceApplyExecutionMutationsProcedure is the fully-qualified name of the
+	// RecordStoreService's ApplyExecutionMutations RPC.
+	RecordStoreServiceApplyExecutionMutationsProcedure = "/temporaless.v1.RecordStoreService/ApplyExecutionMutations"
+	// RecordStoreServiceGetExecutionOperationProcedure is the fully-qualified name of the
+	// RecordStoreService's GetExecutionOperation RPC.
+	RecordStoreServiceGetExecutionOperationProcedure = "/temporaless.v1.RecordStoreService/GetExecutionOperation"
 	// RecordStoreServiceGetWorkflowProcedure is the fully-qualified name of the RecordStoreService's
 	// GetWorkflow RPC.
 	RecordStoreServiceGetWorkflowProcedure = "/temporaless.v1.RecordStoreService/GetWorkflow"
@@ -142,6 +157,16 @@ const (
 type RecordStoreServiceClient interface {
 	// Report what the configured store can do (claim coordination tier, etc.).
 	GetStoreCapabilities(context.Context, *connect.Request[v1.GetStoreCapabilitiesRequest]) (*connect.Response[v1.GetStoreCapabilitiesResponse], error)
+	// Reserved atomic execution acquisition; current handlers return UNIMPLEMENTED.
+	AcquireExecution(context.Context, *connect.Request[v1.AcquireExecutionRequest]) (*connect.Response[v1.AcquireExecutionResponse], error)
+	// Reserved conditional renewal; current handlers return UNIMPLEMENTED.
+	RenewExecution(context.Context, *connect.Request[v1.RenewExecutionRequest]) (*connect.Response[v1.RenewExecutionResponse], error)
+	// Reserved conditional release; current handlers return UNIMPLEMENTED.
+	ReleaseExecution(context.Context, *connect.Request[v1.ReleaseExecutionRequest]) (*connect.Response[v1.ReleaseExecutionResponse], error)
+	// Reserved atomic fenced mutation batch; current handlers return UNIMPLEMENTED.
+	ApplyExecutionMutations(context.Context, *connect.Request[v1.ApplyExecutionMutationsRequest]) (*connect.Response[v1.ApplyExecutionMutationsResponse], error)
+	// Reserved read-only outcome recovery; current handlers return UNIMPLEMENTED.
+	GetExecutionOperation(context.Context, *connect.Request[v1.GetExecutionOperationRequest]) (*connect.Response[v1.GetExecutionOperationResponse], error)
 	// Read a single workflow record by key.
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
 	// Write or replace a single workflow record.
@@ -221,6 +246,36 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+RecordStoreServiceGetStoreCapabilitiesProcedure,
 			connect.WithSchema(recordStoreServiceMethods.ByName("GetStoreCapabilities")),
+			connect.WithClientOptions(opts...),
+		),
+		acquireExecution: connect.NewClient[v1.AcquireExecutionRequest, v1.AcquireExecutionResponse](
+			httpClient,
+			baseURL+RecordStoreServiceAcquireExecutionProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("AcquireExecution")),
+			connect.WithClientOptions(opts...),
+		),
+		renewExecution: connect.NewClient[v1.RenewExecutionRequest, v1.RenewExecutionResponse](
+			httpClient,
+			baseURL+RecordStoreServiceRenewExecutionProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("RenewExecution")),
+			connect.WithClientOptions(opts...),
+		),
+		releaseExecution: connect.NewClient[v1.ReleaseExecutionRequest, v1.ReleaseExecutionResponse](
+			httpClient,
+			baseURL+RecordStoreServiceReleaseExecutionProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("ReleaseExecution")),
+			connect.WithClientOptions(opts...),
+		),
+		applyExecutionMutations: connect.NewClient[v1.ApplyExecutionMutationsRequest, v1.ApplyExecutionMutationsResponse](
+			httpClient,
+			baseURL+RecordStoreServiceApplyExecutionMutationsProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("ApplyExecutionMutations")),
+			connect.WithClientOptions(opts...),
+		),
+		getExecutionOperation: connect.NewClient[v1.GetExecutionOperationRequest, v1.GetExecutionOperationResponse](
+			httpClient,
+			baseURL+RecordStoreServiceGetExecutionOperationProcedure,
+			connect.WithSchema(recordStoreServiceMethods.ByName("GetExecutionOperation")),
 			connect.WithClientOptions(opts...),
 		),
 		getWorkflow: connect.NewClient[v1.GetWorkflowRequest, v1.GetWorkflowResponse](
@@ -366,35 +421,65 @@ func NewRecordStoreServiceClient(httpClient connect.HTTPClient, baseURL string, 
 
 // recordStoreServiceClient implements RecordStoreServiceClient.
 type recordStoreServiceClient struct {
-	getStoreCapabilities *connect.Client[v1.GetStoreCapabilitiesRequest, v1.GetStoreCapabilitiesResponse]
-	getWorkflow          *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
-	putWorkflow          *connect.Client[v1.PutWorkflowRequest, v1.PutWorkflowResponse]
-	getLatestWorkflowRun *connect.Client[v1.GetLatestWorkflowRunRequest, v1.GetLatestWorkflowRunResponse]
-	getTimer             *connect.Client[v1.GetTimerRequest, v1.GetTimerResponse]
-	putTimer             *connect.Client[v1.PutTimerRequest, v1.PutTimerResponse]
-	getActivity          *connect.Client[v1.GetActivityRequest, v1.GetActivityResponse]
-	putActivity          *connect.Client[v1.PutActivityRequest, v1.PutActivityResponse]
-	getClaim             *connect.Client[v1.GetClaimRequest, v1.GetClaimResponse]
-	tryCreateClaim       *connect.Client[v1.TryCreateClaimRequest, v1.TryCreateClaimResponse]
-	deleteClaim          *connect.Client[v1.DeleteClaimRequest, v1.DeleteClaimResponse]
-	getEvent             *connect.Client[v1.GetEventRequest, v1.GetEventResponse]
-	putEvent             *connect.Client[v1.PutEventRequest, v1.PutEventResponse]
-	deliverEvent         *connect.Client[v1.DeliverEventRequest, v1.DeliverEventResponse]
-	listActivities       *connect.Client[v1.ListActivitiesRequest, v1.ListActivitiesResponse]
-	listTimers           *connect.Client[v1.ListTimersRequest, v1.ListTimersResponse]
-	listEvents           *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
-	listClaims           *connect.Client[v1.ListClaimsRequest, v1.ListClaimsResponse]
-	deleteWorkflow       *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
-	deleteActivity       *connect.Client[v1.DeleteActivityRequest, v1.DeleteActivityResponse]
-	deleteTimer          *connect.Client[v1.DeleteTimerRequest, v1.DeleteTimerResponse]
-	deleteEvent          *connect.Client[v1.DeleteEventRequest, v1.DeleteEventResponse]
-	deleteRun            *connect.Client[v1.DeleteRunRequest, v1.DeleteRunResponse]
-	dueTimers            *connect.Client[v1.DueTimersRequest, v1.DueTimersResponse]
+	getStoreCapabilities    *connect.Client[v1.GetStoreCapabilitiesRequest, v1.GetStoreCapabilitiesResponse]
+	acquireExecution        *connect.Client[v1.AcquireExecutionRequest, v1.AcquireExecutionResponse]
+	renewExecution          *connect.Client[v1.RenewExecutionRequest, v1.RenewExecutionResponse]
+	releaseExecution        *connect.Client[v1.ReleaseExecutionRequest, v1.ReleaseExecutionResponse]
+	applyExecutionMutations *connect.Client[v1.ApplyExecutionMutationsRequest, v1.ApplyExecutionMutationsResponse]
+	getExecutionOperation   *connect.Client[v1.GetExecutionOperationRequest, v1.GetExecutionOperationResponse]
+	getWorkflow             *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
+	putWorkflow             *connect.Client[v1.PutWorkflowRequest, v1.PutWorkflowResponse]
+	getLatestWorkflowRun    *connect.Client[v1.GetLatestWorkflowRunRequest, v1.GetLatestWorkflowRunResponse]
+	getTimer                *connect.Client[v1.GetTimerRequest, v1.GetTimerResponse]
+	putTimer                *connect.Client[v1.PutTimerRequest, v1.PutTimerResponse]
+	getActivity             *connect.Client[v1.GetActivityRequest, v1.GetActivityResponse]
+	putActivity             *connect.Client[v1.PutActivityRequest, v1.PutActivityResponse]
+	getClaim                *connect.Client[v1.GetClaimRequest, v1.GetClaimResponse]
+	tryCreateClaim          *connect.Client[v1.TryCreateClaimRequest, v1.TryCreateClaimResponse]
+	deleteClaim             *connect.Client[v1.DeleteClaimRequest, v1.DeleteClaimResponse]
+	getEvent                *connect.Client[v1.GetEventRequest, v1.GetEventResponse]
+	putEvent                *connect.Client[v1.PutEventRequest, v1.PutEventResponse]
+	deliverEvent            *connect.Client[v1.DeliverEventRequest, v1.DeliverEventResponse]
+	listActivities          *connect.Client[v1.ListActivitiesRequest, v1.ListActivitiesResponse]
+	listTimers              *connect.Client[v1.ListTimersRequest, v1.ListTimersResponse]
+	listEvents              *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
+	listClaims              *connect.Client[v1.ListClaimsRequest, v1.ListClaimsResponse]
+	deleteWorkflow          *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
+	deleteActivity          *connect.Client[v1.DeleteActivityRequest, v1.DeleteActivityResponse]
+	deleteTimer             *connect.Client[v1.DeleteTimerRequest, v1.DeleteTimerResponse]
+	deleteEvent             *connect.Client[v1.DeleteEventRequest, v1.DeleteEventResponse]
+	deleteRun               *connect.Client[v1.DeleteRunRequest, v1.DeleteRunResponse]
+	dueTimers               *connect.Client[v1.DueTimersRequest, v1.DueTimersResponse]
 }
 
 // GetStoreCapabilities calls temporaless.v1.RecordStoreService.GetStoreCapabilities.
 func (c *recordStoreServiceClient) GetStoreCapabilities(ctx context.Context, req *connect.Request[v1.GetStoreCapabilitiesRequest]) (*connect.Response[v1.GetStoreCapabilitiesResponse], error) {
 	return c.getStoreCapabilities.CallUnary(ctx, req)
+}
+
+// AcquireExecution calls temporaless.v1.RecordStoreService.AcquireExecution.
+func (c *recordStoreServiceClient) AcquireExecution(ctx context.Context, req *connect.Request[v1.AcquireExecutionRequest]) (*connect.Response[v1.AcquireExecutionResponse], error) {
+	return c.acquireExecution.CallUnary(ctx, req)
+}
+
+// RenewExecution calls temporaless.v1.RecordStoreService.RenewExecution.
+func (c *recordStoreServiceClient) RenewExecution(ctx context.Context, req *connect.Request[v1.RenewExecutionRequest]) (*connect.Response[v1.RenewExecutionResponse], error) {
+	return c.renewExecution.CallUnary(ctx, req)
+}
+
+// ReleaseExecution calls temporaless.v1.RecordStoreService.ReleaseExecution.
+func (c *recordStoreServiceClient) ReleaseExecution(ctx context.Context, req *connect.Request[v1.ReleaseExecutionRequest]) (*connect.Response[v1.ReleaseExecutionResponse], error) {
+	return c.releaseExecution.CallUnary(ctx, req)
+}
+
+// ApplyExecutionMutations calls temporaless.v1.RecordStoreService.ApplyExecutionMutations.
+func (c *recordStoreServiceClient) ApplyExecutionMutations(ctx context.Context, req *connect.Request[v1.ApplyExecutionMutationsRequest]) (*connect.Response[v1.ApplyExecutionMutationsResponse], error) {
+	return c.applyExecutionMutations.CallUnary(ctx, req)
+}
+
+// GetExecutionOperation calls temporaless.v1.RecordStoreService.GetExecutionOperation.
+func (c *recordStoreServiceClient) GetExecutionOperation(ctx context.Context, req *connect.Request[v1.GetExecutionOperationRequest]) (*connect.Response[v1.GetExecutionOperationResponse], error) {
+	return c.getExecutionOperation.CallUnary(ctx, req)
 }
 
 // GetWorkflow calls temporaless.v1.RecordStoreService.GetWorkflow.
@@ -516,6 +601,16 @@ func (c *recordStoreServiceClient) DueTimers(ctx context.Context, req *connect.R
 type RecordStoreServiceHandler interface {
 	// Report what the configured store can do (claim coordination tier, etc.).
 	GetStoreCapabilities(context.Context, *connect.Request[v1.GetStoreCapabilitiesRequest]) (*connect.Response[v1.GetStoreCapabilitiesResponse], error)
+	// Reserved atomic execution acquisition; current handlers return UNIMPLEMENTED.
+	AcquireExecution(context.Context, *connect.Request[v1.AcquireExecutionRequest]) (*connect.Response[v1.AcquireExecutionResponse], error)
+	// Reserved conditional renewal; current handlers return UNIMPLEMENTED.
+	RenewExecution(context.Context, *connect.Request[v1.RenewExecutionRequest]) (*connect.Response[v1.RenewExecutionResponse], error)
+	// Reserved conditional release; current handlers return UNIMPLEMENTED.
+	ReleaseExecution(context.Context, *connect.Request[v1.ReleaseExecutionRequest]) (*connect.Response[v1.ReleaseExecutionResponse], error)
+	// Reserved atomic fenced mutation batch; current handlers return UNIMPLEMENTED.
+	ApplyExecutionMutations(context.Context, *connect.Request[v1.ApplyExecutionMutationsRequest]) (*connect.Response[v1.ApplyExecutionMutationsResponse], error)
+	// Reserved read-only outcome recovery; current handlers return UNIMPLEMENTED.
+	GetExecutionOperation(context.Context, *connect.Request[v1.GetExecutionOperationRequest]) (*connect.Response[v1.GetExecutionOperationResponse], error)
 	// Read a single workflow record by key.
 	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
 	// Write or replace a single workflow record.
@@ -591,6 +686,36 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		RecordStoreServiceGetStoreCapabilitiesProcedure,
 		svc.GetStoreCapabilities,
 		connect.WithSchema(recordStoreServiceMethods.ByName("GetStoreCapabilities")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceAcquireExecutionHandler := connect.NewUnaryHandler(
+		RecordStoreServiceAcquireExecutionProcedure,
+		svc.AcquireExecution,
+		connect.WithSchema(recordStoreServiceMethods.ByName("AcquireExecution")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceRenewExecutionHandler := connect.NewUnaryHandler(
+		RecordStoreServiceRenewExecutionProcedure,
+		svc.RenewExecution,
+		connect.WithSchema(recordStoreServiceMethods.ByName("RenewExecution")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceReleaseExecutionHandler := connect.NewUnaryHandler(
+		RecordStoreServiceReleaseExecutionProcedure,
+		svc.ReleaseExecution,
+		connect.WithSchema(recordStoreServiceMethods.ByName("ReleaseExecution")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceApplyExecutionMutationsHandler := connect.NewUnaryHandler(
+		RecordStoreServiceApplyExecutionMutationsProcedure,
+		svc.ApplyExecutionMutations,
+		connect.WithSchema(recordStoreServiceMethods.ByName("ApplyExecutionMutations")),
+		connect.WithHandlerOptions(opts...),
+	)
+	recordStoreServiceGetExecutionOperationHandler := connect.NewUnaryHandler(
+		RecordStoreServiceGetExecutionOperationProcedure,
+		svc.GetExecutionOperation,
+		connect.WithSchema(recordStoreServiceMethods.ByName("GetExecutionOperation")),
 		connect.WithHandlerOptions(opts...),
 	)
 	recordStoreServiceGetWorkflowHandler := connect.NewUnaryHandler(
@@ -735,6 +860,16 @@ func NewRecordStoreServiceHandler(svc RecordStoreServiceHandler, opts ...connect
 		switch r.URL.Path {
 		case RecordStoreServiceGetStoreCapabilitiesProcedure:
 			recordStoreServiceGetStoreCapabilitiesHandler.ServeHTTP(w, r)
+		case RecordStoreServiceAcquireExecutionProcedure:
+			recordStoreServiceAcquireExecutionHandler.ServeHTTP(w, r)
+		case RecordStoreServiceRenewExecutionProcedure:
+			recordStoreServiceRenewExecutionHandler.ServeHTTP(w, r)
+		case RecordStoreServiceReleaseExecutionProcedure:
+			recordStoreServiceReleaseExecutionHandler.ServeHTTP(w, r)
+		case RecordStoreServiceApplyExecutionMutationsProcedure:
+			recordStoreServiceApplyExecutionMutationsHandler.ServeHTTP(w, r)
+		case RecordStoreServiceGetExecutionOperationProcedure:
+			recordStoreServiceGetExecutionOperationHandler.ServeHTTP(w, r)
 		case RecordStoreServiceGetWorkflowProcedure:
 			recordStoreServiceGetWorkflowHandler.ServeHTTP(w, r)
 		case RecordStoreServicePutWorkflowProcedure:
@@ -792,6 +927,26 @@ type UnimplementedRecordStoreServiceHandler struct{}
 
 func (UnimplementedRecordStoreServiceHandler) GetStoreCapabilities(context.Context, *connect.Request[v1.GetStoreCapabilitiesRequest]) (*connect.Response[v1.GetStoreCapabilitiesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.GetStoreCapabilities is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) AcquireExecution(context.Context, *connect.Request[v1.AcquireExecutionRequest]) (*connect.Response[v1.AcquireExecutionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.AcquireExecution is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) RenewExecution(context.Context, *connect.Request[v1.RenewExecutionRequest]) (*connect.Response[v1.RenewExecutionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.RenewExecution is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) ReleaseExecution(context.Context, *connect.Request[v1.ReleaseExecutionRequest]) (*connect.Response[v1.ReleaseExecutionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ReleaseExecution is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) ApplyExecutionMutations(context.Context, *connect.Request[v1.ApplyExecutionMutationsRequest]) (*connect.Response[v1.ApplyExecutionMutationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.ApplyExecutionMutations is not implemented"))
+}
+
+func (UnimplementedRecordStoreServiceHandler) GetExecutionOperation(context.Context, *connect.Request[v1.GetExecutionOperationRequest]) (*connect.Response[v1.GetExecutionOperationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("temporaless.v1.RecordStoreService.GetExecutionOperation is not implemented"))
 }
 
 func (UnimplementedRecordStoreServiceHandler) GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error) {

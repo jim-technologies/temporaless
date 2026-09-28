@@ -503,6 +503,14 @@ func validateEventDeliveryErrorDetails(err error, expected storage.EventKey) err
 	return nil
 }
 
+func (store *ClientStore) FencedExecutionCapability(ctx context.Context) (temporalessv1.FencedExecutionCapability, error) {
+	response, err := store.client.GetStoreCapabilities(ctx, connect.NewRequest(&temporalessv1.GetStoreCapabilitiesRequest{}))
+	if err != nil {
+		return 0, clientStoreError(err)
+	}
+	return storage.CurrentFencedExecutionCapability(response.Msg.GetFencedExecutionCapability())
+}
+
 func (store *ClientStore) ClaimCapability(ctx context.Context) (storage.ClaimCapability, error) {
 	resp, err := store.client.GetStoreCapabilities(ctx, connect.NewRequest(&temporalessv1.GetStoreCapabilitiesRequest{}))
 	if err != nil {

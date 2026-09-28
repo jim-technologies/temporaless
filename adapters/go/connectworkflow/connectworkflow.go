@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
+	"github.com/jim-technologies/temporaless/core/go/storage"
 	"github.com/jim-technologies/temporaless/core/go/workflow"
 	"google.golang.org/protobuf/proto"
 )
@@ -76,6 +77,8 @@ func Handle[
 // It returns the code, a message, and true when err is one of the framework's
 // typed errors; unknown errors return false.
 //
+// ErrFencedExecutionUnsupported maps to CodeUnimplemented.
+//
 // Standard mapping (mirrors temporaless_connectworkflow.error_to_connect_code
 // in Python and docs/deployment.md):
 //
@@ -93,6 +96,9 @@ func Handle[
 // Handle applies this mapping internally. Call ErrorToCode directly when
 // driving workflow.WrapWorkflow yourself at a ConnectRPC boundary.
 func ErrorToCode(err error) (connect.Code, string, bool) {
+	if errors.Is(err, storage.ErrFencedExecutionUnsupported) {
+		return connect.CodeUnimplemented, err.Error(), true
+	}
 	if errors.Is(err, workflow.ErrClaimRelease) {
 		return connect.CodeInternal, err.Error(), true
 	}

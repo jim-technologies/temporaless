@@ -135,6 +135,16 @@ message WorkflowOptions {
   // workflow record's lifecycle time. The framework never derives this value
   // from run_id because run IDs are opaque application-owned identifiers.
   google.protobuf.Timestamp run_order_time = 7;
+  // Request atomic, recoverable execution fencing. This contract is reserved:
+  // current runtimes reject it before reading or mutating any run. It must not
+  // be combined with create-only claims or concurrency slots. Absence preserves
+  // existing execution semantics; presence never silently falls back to them.
+  FencedExecutionOptions fenced_execution = 8;
+  option (buf.validate.message).cel = {
+    id: "temporaless.workflow_options.fencing_excludes_claims"
+    message: "fenced execution cannot use create-only claims or concurrency slots"
+    expression: "!has(this.fenced_execution) || (this.claim_owner_id == '' && this.concurrency_key == '' && this.concurrency_limit == 0u)"
+  };
 }
 
 // ActivityOptions controls how a single activity executes within a workflow.
@@ -1666,6 +1676,394 @@ message GetStoreCapabilitiesResponse {
   ClaimCapability claim_capability = 1;
   // Whether DeliverEvent has distributed atomic create-if-absent semantics.
   EventDeliveryCapability event_delivery_capability = 2;
+  // Atomic execution fencing is a separate guarantee from conditional claims.
+  // This release always reports UNSUPPORTED. Missing or unknown values cannot
+  // authorize fenced execution, including against an older service.
+  FencedExecutionCapability fenced_execution_capability = 3;
+  // Stable incarnation for a qualified fenced store, empty when unsupported.
+  // Callers bind acquisition and receipt recovery to this exact identity; a
+  // recreated/migrated store must not impersonate the previous incarnation.
+  string fenced_execution_store_incarnation = 4;
+}
+
+// FencedExecutionCapability describes the complete run mutation boundary.
+// No bundled store or runtime implements the reserved atomic capability yet.
+enum FencedExecutionCapability {
+  // Missing/unknown support. A caller requiring fencing must refuse execution.
+  FENCED_EXECUTION_CAPABILITY_UNSPECIFIED = 0;
+  // This store cannot atomically fence execution; legacy semantics still apply.
+  FENCED_EXECUTION_CAPABILITY_UNSUPPORTED = 1;
+  // Reserved for a fully qualified store/runtime: ownership transitions and
+  // EVERY authoritative mutation share one atomic boundary. This includes retry
+  // seeding, workflow/activity/timer/event writes, terminal publication, timer
+  // shadow repair and deletion. Tokenless legacy mutations must refuse protected
+  // runs. External immutable delivery and retirement must serialize against the
+  // same persistent run fence. A lease check followed by an independent write
+  // does not satisfy this capability. Current adapters must not advertise it.
+  FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS = 2;
+}
+
+// FencedExecutionOptions requests one recoverable run execution session.
+// Durable fencing excludes stale publications, not arbitrary provider effects:
+// a paused owner may finish a provider call after expiry. Applications retain
+// responsibility for side-effect idempotency, reconciliation and quota ledgers.
+message FencedExecutionOptions {
+  // Caller-provided diagnostic worker identity. Matching it never grants reentry.
+  string owner_id = 1 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Caller-provided unique identity for this acquisition, retained across an
+  // uncertain acquire response. A new invocation must use a different identity.
+  string acquisition_id = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Positive requested lease lifetime; a backend may refuse an unsupported bound.
+  // The authoritative store's clock decides expiry, never an invoker's clock.
+  google.protobuf.Duration lease_duration = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration.gt = {}
+  ];
+}
+
+// ExecutionToken identifies one authority generation for exactly one run.
+// It is compared atomically with every execution-owned mutation. It is not an
+// authentication credential; the transport's normal authorization still applies.
+message ExecutionToken {
+  // Complete run identity. A token cannot authorize a different run or namespace.
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
+  // Durable store incarnation, changed only by an explicit store migration.
+  // It prevents old authority from reviving when a backend is recreated.
+  string store_incarnation = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Exact owner identity accepted by acquisition.
+  string owner_id = 3 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Exact caller acquisition identity, distinct even for the same worker name.
+  string acquisition_id = 4 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Store-allocated monotonic generation. Release and retention keep a tombstone
+  // rather than resetting it. Exhaustion fails closed instead of wrapping.
+  uint64 generation = 5 [(buf.validate.field).uint64 = {
+    gt: 0
+    lte: 9223372036854775807
+  }];
+}
+
+// ExecutionLease is an observed lease, not proof that it remains held later.
+// Every write still needs the store's atomic token and expiry check.
+message ExecutionLease {
+  // Authority accepted by the store.
+  ExecutionToken token = 1 [(buf.validate.field).required = true];
+  // Expiration according to the store's authoritative clock.
+  google.protobuf.Timestamp expires_at = 2 [(buf.validate.field).required = true];
+  // Store time at which this lease result was produced.
+  google.protobuf.Timestamp observed_at = 3 [(buf.validate.field).required = true];
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_lease.deadline"
+    message: "execution lease must expire after the observed store time"
+    expression: "this.expires_at > this.observed_at"
+  };
+}
+
+// ExecutionMutation is one typed authoritative change within a run batch.
+// The enclosing token must match every embedded key, including deletes.
+// Records keep their existing validation and binary encoding. Terminal results
+// are immutable; deletion must not permit an old run identity to execute again.
+// A timer mutation also owns its due-ledger transition and any canonical repair;
+// no scanner may publish a shadow outside this same atomic authority boundary.
+message ExecutionMutation {
+  // Exactly one record mutation, with identity carried by its protobuf key.
+  oneof mutation {
+    option (buf.validate.oneof).required = true;
+    // Write initial, annotated or terminal workflow state.
+    WorkflowRecord put_workflow = 1;
+    // Write completed, failed, retrying or inherited activity state.
+    ActivityRecord put_activity = 2;
+    // Write a durable sleep, poll, retry or wake-consumption transition.
+    TimerRecord put_timer = 3;
+    // Replace an event under execution authority; external producers instead
+    // use immutable DeliverEvent, whose fenced-store semantics are separate.
+    EventRecord put_event = 4;
+    // Remove an activity while preserving the run's authority tombstone.
+    ActivityKey delete_activity = 5;
+    // Remove a timer and its discovery state within the same boundary.
+    TimerKey delete_timer = 6;
+    // Remove an execution-owned event.
+    EventKey delete_event = 7;
+    // Remove workflow payload without removing its generation/retirement fence.
+    WorkflowKey delete_workflow = 8;
+  }
+}
+
+// ExecutionMutationResult reports one applied mutation in request order.
+message ExecutionMutationResult {
+  // True when the addressed authoritative record existed before this mutation.
+  // For deletion, false is an idempotent missing-record result.
+  bool existed = 1;
+}
+
+// ExecutionMutationResults is the all-or-nothing result of a fenced batch.
+message ExecutionMutationResults {
+  // One result for each requested mutation, in the same order.
+  repeated ExecutionMutationResult results = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+  }];
+}
+
+// ExecutionOperationReceipt binds a committed operation to its exact request.
+// Store this atomically with its ownership/record changes. Operation identities
+// are unique within a store incarnation and run, across ALL operation kinds.
+// Reusing an identity for another validated request is a conflict. Recovery is
+// read-only and never reexecutes the request. A receipt proves a past commit,
+// not current ownership: even a recovered lease must pass the next atomic check.
+message ExecutionOperationReceipt {
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_receipt.acquired.identity"
+    message: "acquired result must match the receipt run and incarnation"
+    expression: "!has(this.acquired) || (this.acquired.token.key == this.key && this.acquired.token.store_incarnation == this.store_incarnation)"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_receipt.renewed.identity"
+    message: "renewed result must match the receipt run and incarnation"
+    expression: "!has(this.renewed) || (this.renewed.token.key == this.key && this.renewed.token.store_incarnation == this.store_incarnation)"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_receipt.released.identity"
+    message: "released result must match the receipt run and incarnation"
+    expression: "!has(this.released) || (this.released.key == this.key && this.released.store_incarnation == this.store_incarnation)"
+  };
+  // The run whose operation committed.
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
+  // Caller-supplied identity retained across uncertain outcomes.
+  string operation_id = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Server-computed SHA-256 of its deterministically serialized validated typed
+  // request, prefixed by the fully qualified protobuf type name and a zero byte.
+  // Deterministic protobuf is not cross-language canonical encoding: clients
+  // treat this as an opaque receipt binding and must not precompute it. A store
+  // must keep request comparison/digest normalization stable within an
+  // incarnation and compare request identity before returning an existing receipt.
+  bytes request_sha256 = 3 [(buf.validate.field).bytes.len = 32];
+  // Durable store incarnation in which the operation committed.
+  string store_incarnation = 4 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Exactly one committed operation result. Busy, expired/stale authority,
+  // invalid requests and unsupported operations are typed errors, not receipts.
+  oneof result {
+    option (buf.validate.oneof).required = true;
+    // Successful acquisition or takeover; never authority to bypass later checks.
+    ExecutionLease acquired = 5;
+    // Successful conditional renewal of the exact still-live token.
+    ExecutionLease renewed = 6;
+    // Exact token conditionally released, with its generation retained.
+    ExecutionToken released = 7;
+    // Complete successful record batch; no partial success can be returned.
+    ExecutionMutationResults applied = 8;
+  }
+}
+
+// AcquireExecutionRequest atomically claims an unowned run or takes over an
+// expired holder. A live holder is busy even if the owner name matches. A
+// successful takeover increments generation; retired runs refuse acquisition.
+// No workflow body may start after an uncertain response until its receipt is
+// recovered and the lease's current authority is established. No bundled store
+// supports this operation in the contract-foundation release.
+message AcquireExecutionRequest {
+  // Run whose authority is requested, including before its first record exists.
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
+  // Caller identity and requested lease lifetime.
+  FencedExecutionOptions options = 2 [(buf.validate.field).required = true];
+  // Unique operation identity, reused only for this exact acquisition request.
+  string operation_id = 3 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Expected store incarnation obtained before acquisition. A mismatch refuses
+  // the request, allowing uncertain initial acquisition to recover by identity.
+  string store_incarnation = 4 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+}
+
+// AcquireExecutionResponse carries only a committed acquisition receipt.
+message AcquireExecutionResponse {
+  option (buf.validate.message).cel = {
+    id: "temporaless.acquired_execution_response.result"
+    message: "receipt must carry the acquired result"
+    expression: "has(this.receipt.acquired)"
+  };
+  // Receipt whose result must be acquired and whose key matches the request.
+  ExecutionOperationReceipt receipt = 1 [(buf.validate.field).required = true];
+}
+
+// RenewExecutionRequest extends only the exact still-live authority. Renewal
+// after expiry, takeover or release fails; it never recreates or reacquires.
+message RenewExecutionRequest {
+  // Exact authority to compare inside the renewal transaction.
+  ExecutionToken token = 1 [(buf.validate.field).required = true];
+  // Requested positive remaining lifetime measured by the store clock.
+  google.protobuf.Duration lease_duration = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration.gt = {}
+  ];
+  // Unique identity for this renewal, retained if its outcome is uncertain.
+  string operation_id = 3 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+}
+
+// RenewExecutionResponse carries only a committed renewal receipt.
+message RenewExecutionResponse {
+  option (buf.validate.message).cel = {
+    id: "temporaless.renewed_execution_response.result"
+    message: "receipt must carry the renewed result"
+    expression: "has(this.receipt.renewed)"
+  };
+  // Receipt whose result must be renewed and whose token matches the request.
+  ExecutionOperationReceipt receipt = 1 [(buf.validate.field).required = true];
+}
+
+// ReleaseExecutionRequest conditionally releases the exact live token. A stale
+// release cannot delete or change a successor's ownership. Retain its generation
+// and operation receipt; an unconditional claim delete cannot implement this.
+message ReleaseExecutionRequest {
+  // Exact authority to release; expired or replaced authority is rejected.
+  ExecutionToken token = 1 [(buf.validate.field).required = true];
+  // Unique identity for this release, retained if its outcome is uncertain.
+  string operation_id = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+}
+
+// ReleaseExecutionResponse carries only a committed conditional release receipt.
+message ReleaseExecutionResponse {
+  option (buf.validate.message).cel = {
+    id: "temporaless.released_execution_response.result"
+    message: "receipt must carry the released result"
+    expression: "has(this.receipt.released)"
+  };
+  // Receipt whose result must be released and whose token matches the request.
+  ExecutionOperationReceipt receipt = 1 [(buf.validate.field).required = true];
+}
+
+// ApplyExecutionMutationsRequest atomically validates the live token and applies
+// every mutation, derived authoritative timer transition and operation receipt.
+// Cross-run keys, partial application and check-then-write adapters are forbidden.
+// A stale holder must receive a coordination error, never publish FAILED or
+// schedule a retry using its old token. Retry seeding must hold target authority
+// before its first mutation and through workflow execution/terminal publication.
+message ApplyExecutionMutationsRequest {
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.put_workflow.scope"
+    message: "put_workflow must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.put_workflow) || (m.put_workflow.key.namespace == this.token.key.namespace && m.put_workflow.key.workflow_id == this.token.key.workflow_id && m.put_workflow.key.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.put_activity.scope"
+    message: "put_activity must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.put_activity) || (m.put_activity.key.namespace == this.token.key.namespace && m.put_activity.key.workflow_id == this.token.key.workflow_id && m.put_activity.key.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.put_timer.scope"
+    message: "put_timer must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.put_timer) || (m.put_timer.key.namespace == this.token.key.namespace && m.put_timer.key.workflow_id == this.token.key.workflow_id && m.put_timer.key.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.put_event.scope"
+    message: "put_event must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.put_event) || (m.put_event.key.namespace == this.token.key.namespace && m.put_event.key.workflow_id == this.token.key.workflow_id && m.put_event.key.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.delete_activity.scope"
+    message: "delete_activity must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.delete_activity) || (m.delete_activity.namespace == this.token.key.namespace && m.delete_activity.workflow_id == this.token.key.workflow_id && m.delete_activity.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.delete_timer.scope"
+    message: "delete_timer must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.delete_timer) || (m.delete_timer.namespace == this.token.key.namespace && m.delete_timer.workflow_id == this.token.key.workflow_id && m.delete_timer.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.delete_event.scope"
+    message: "delete_event must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.delete_event) || (m.delete_event.namespace == this.token.key.namespace && m.delete_event.workflow_id == this.token.key.workflow_id && m.delete_event.run_id == this.token.key.run_id))"
+  };
+  option (buf.validate.message).cel = {
+    id: "temporaless.execution_mutations.delete_workflow.scope"
+    message: "delete_workflow must belong to the execution token run"
+    expression: "this.mutations.all(m, !has(m.delete_workflow) || (m.delete_workflow.namespace == this.token.key.namespace && m.delete_workflow.workflow_id == this.token.key.workflow_id && m.delete_workflow.run_id == this.token.key.run_id))"
+  };
+  // Exact authority for the entire batch.
+  ExecutionToken token = 1 [(buf.validate.field).required = true];
+  // Unique identity for this exact batch; a lost response must use receipt lookup.
+  string operation_id = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Bounded batch; every embedded key must identify the token's run. Stores may
+  // enforce an additional byte bound and reject before any change is committed.
+  repeated ExecutionMutation mutations = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+  }];
+}
+
+// ApplyExecutionMutationsResponse carries only a committed all-or-nothing receipt.
+message ApplyExecutionMutationsResponse {
+  option (buf.validate.message).cel = {
+    id: "temporaless.applied_execution_response.result"
+    message: "receipt must carry the applied result"
+    expression: "has(this.receipt.applied)"
+  };
+  // Receipt whose result must be applied with one result per requested mutation.
+  ExecutionOperationReceipt receipt = 1 [(buf.validate.field).required = true];
+}
+
+// GetExecutionOperationRequest recovers a past outcome without repeating work.
+// Missing is not proof that an interrupted request cannot still commit. Callers
+// must not substitute a new operation identity to bypass an uncertain outcome.
+message GetExecutionOperationRequest {
+  // Run and store incarnation containing the receipt.
+  WorkflowKey key = 1 [(buf.validate.field).required = true];
+  // Exact durable store incarnation; a different incarnation cannot prove it.
+  string store_incarnation = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  // Exact operation identity whose committed result is requested.
+  string operation_id = 3 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+}
+
+// GetExecutionOperationResponse never grants fresh execution authority.
+message GetExecutionOperationResponse {
+  // Whether this exact operation receipt is durably visible.
+  bool found = 1;
+  // The immutable receipt; present exactly when found is true.
+  ExecutionOperationReceipt receipt = 2;
+  option (buf.validate.message).cel = {
+    id: "temporaless.get_execution_operation_response.presence"
+    message: "receipt must be present exactly when found is true"
+    expression: "this.found == has(this.receipt)"
+  };
 }
 
 // SweepRequest deletes every externally quiesced COMPLETED workflow run whose
@@ -1751,6 +2149,17 @@ message RecordQueryServiceDueTimersResponse {
 service RecordStoreService {
   // Report what the configured store can do (claim coordination tier, etc.).
   rpc GetStoreCapabilities(GetStoreCapabilitiesRequest) returns (GetStoreCapabilitiesResponse);
+
+  // Reserved atomic execution acquisition; current handlers return UNIMPLEMENTED.
+  rpc AcquireExecution(AcquireExecutionRequest) returns (AcquireExecutionResponse);
+  // Reserved conditional renewal; current handlers return UNIMPLEMENTED.
+  rpc RenewExecution(RenewExecutionRequest) returns (RenewExecutionResponse);
+  // Reserved conditional release; current handlers return UNIMPLEMENTED.
+  rpc ReleaseExecution(ReleaseExecutionRequest) returns (ReleaseExecutionResponse);
+  // Reserved atomic fenced mutation batch; current handlers return UNIMPLEMENTED.
+  rpc ApplyExecutionMutations(ApplyExecutionMutationsRequest) returns (ApplyExecutionMutationsResponse);
+  // Reserved read-only outcome recovery; current handlers return UNIMPLEMENTED.
+  rpc GetExecutionOperation(GetExecutionOperationRequest) returns (GetExecutionOperationResponse);
 
   // Read a single workflow record by key.
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);

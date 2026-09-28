@@ -18,6 +18,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from protovalidate import ValidationError, validate
 
 from temporaless._cache import RunScopedCache
+from temporaless.execution import FencedExecutionUnsupportedError
 from temporaless.storage import (
     ACTIVITY_RECORD_SCHEMA_VERSION,
     CLAIM_RECORD_SCHEMA_VERSION,
@@ -2254,6 +2255,8 @@ def wrap_activity(
 def normalized_workflow_options(options: Options) -> Options:
     if options is None:
         raise ValueError("workflow options are required")
+    if options.HasField("fenced_execution"):
+        raise FencedExecutionUnsupportedError("fenced execution is not implemented")
     normalized = Options()
     normalized.CopyFrom(options)
     validate(normalized)

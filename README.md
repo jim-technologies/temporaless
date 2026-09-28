@@ -27,6 +27,11 @@ analytical table convention; the point records remain authoritative.
 - [`docs/canonical-workflows.md`](docs/canonical-workflows.md) — make a generated protobuf service method a durable workflow and project it through Invariant Protocol
 - [`docs/deployment.md`](docs/deployment.md) — production patterns (S3/GCS, ConnectRPC, multi-process, multi-region)
 
+Fenced execution is a [disabled contract foundation](docs/fenced-execution.md).
+No store or runtime implements recoverable execution leases yet. Requesting
+`WorkflowOptions.fenced_execution` fails before storage access or execution;
+existing claim behavior is unchanged.
+
 ## Application Service Adoption
 
 Temporaless is optional infrastructure for work that benefits from durable replay: idempotent, retriable, scheduled, or long-running operations. Application services should keep normal API reads and routine request/response actions on a direct in-process path.

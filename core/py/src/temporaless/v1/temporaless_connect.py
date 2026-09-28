@@ -18,7 +18,7 @@ from connectrpc.protocol import ProtocolType
 from connectrpc.server import ConnectASGIApplication, DEFAULT_READ_MAX_BYTES, Endpoint
 from pyqwest import Client
 
-from .temporaless_pb2 import DeleteActivityRequest, DeleteActivityResponse, DeleteClaimRequest, DeleteClaimResponse, DeleteEventRequest, DeleteEventResponse, DeleteRunRequest, DeleteRunResponse, DeleteTimerRequest, DeleteTimerResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeliverEventRequest, DeliverEventResponse, DueTimersRequest, DueTimersResponse, GetActivityRequest, GetActivityResponse, GetClaimRequest, GetClaimResponse, GetEventRequest, GetEventResponse, GetLatestWorkflowRunRequest, GetLatestWorkflowRunResponse, GetStoreCapabilitiesRequest, GetStoreCapabilitiesResponse, GetTimerRequest, GetTimerResponse, GetWorkflowRequest, GetWorkflowResponse, ListActivitiesRequest, ListActivitiesResponse, ListClaimsRequest, ListClaimsResponse, ListEventsRequest, ListEventsResponse, ListTimersRequest, ListTimersResponse, ListWorkflowsRequest, ListWorkflowsResponse, PutActivityRequest, PutActivityResponse, PutEventRequest, PutEventResponse, PutTimerRequest, PutTimerResponse, PutWorkflowRequest, PutWorkflowResponse, RecordQueryServiceDueTimersRequest, RecordQueryServiceDueTimersResponse, RecordQueryServiceListActivitiesRequest, RecordQueryServiceListActivitiesResponse, SweepRequest, SweepResponse, TryCreateClaimRequest, TryCreateClaimResponse
+from .temporaless_pb2 import AcquireExecutionRequest, AcquireExecutionResponse, ApplyExecutionMutationsRequest, ApplyExecutionMutationsResponse, DeleteActivityRequest, DeleteActivityResponse, DeleteClaimRequest, DeleteClaimResponse, DeleteEventRequest, DeleteEventResponse, DeleteRunRequest, DeleteRunResponse, DeleteTimerRequest, DeleteTimerResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeliverEventRequest, DeliverEventResponse, DueTimersRequest, DueTimersResponse, GetActivityRequest, GetActivityResponse, GetClaimRequest, GetClaimResponse, GetEventRequest, GetEventResponse, GetExecutionOperationRequest, GetExecutionOperationResponse, GetLatestWorkflowRunRequest, GetLatestWorkflowRunResponse, GetStoreCapabilitiesRequest, GetStoreCapabilitiesResponse, GetTimerRequest, GetTimerResponse, GetWorkflowRequest, GetWorkflowResponse, ListActivitiesRequest, ListActivitiesResponse, ListClaimsRequest, ListClaimsResponse, ListEventsRequest, ListEventsResponse, ListTimersRequest, ListTimersResponse, ListWorkflowsRequest, ListWorkflowsResponse, PutActivityRequest, PutActivityResponse, PutEventRequest, PutEventResponse, PutTimerRequest, PutTimerResponse, PutWorkflowRequest, PutWorkflowResponse, RecordQueryServiceDueTimersRequest, RecordQueryServiceDueTimersResponse, RecordQueryServiceListActivitiesRequest, RecordQueryServiceListActivitiesResponse, ReleaseExecutionRequest, ReleaseExecutionResponse, RenewExecutionRequest, RenewExecutionResponse, SweepRequest, SweepResponse, TryCreateClaimRequest, TryCreateClaimResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -48,6 +48,36 @@ class RecordStoreService(Protocol):
     async def get_store_capabilities(self, request: GetStoreCapabilitiesRequest, ctx: RequestContext[GetStoreCapabilitiesRequest, GetStoreCapabilitiesResponse], /) -> GetStoreCapabilitiesResponse:
         """
         Report what the configured store can do (claim coordination tier, etc.).
+        """
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def acquire_execution(self, request: AcquireExecutionRequest, ctx: RequestContext[AcquireExecutionRequest, AcquireExecutionResponse], /) -> AcquireExecutionResponse:
+        """
+        Reserved atomic execution acquisition; current handlers return UNIMPLEMENTED.
+        """
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def renew_execution(self, request: RenewExecutionRequest, ctx: RequestContext[RenewExecutionRequest, RenewExecutionResponse], /) -> RenewExecutionResponse:
+        """
+        Reserved conditional renewal; current handlers return UNIMPLEMENTED.
+        """
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def release_execution(self, request: ReleaseExecutionRequest, ctx: RequestContext[ReleaseExecutionRequest, ReleaseExecutionResponse], /) -> ReleaseExecutionResponse:
+        """
+        Reserved conditional release; current handlers return UNIMPLEMENTED.
+        """
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def apply_execution_mutations(self, request: ApplyExecutionMutationsRequest, ctx: RequestContext[ApplyExecutionMutationsRequest, ApplyExecutionMutationsResponse], /) -> ApplyExecutionMutationsResponse:
+        """
+        Reserved atomic fenced mutation batch; current handlers return UNIMPLEMENTED.
+        """
+        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
+
+    async def get_execution_operation(self, request: GetExecutionOperationRequest, ctx: RequestContext[GetExecutionOperationRequest, GetExecutionOperationResponse], /) -> GetExecutionOperationResponse:
+        """
+        Reserved read-only outcome recovery; current handlers return UNIMPLEMENTED.
         """
         raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
 
@@ -228,6 +258,56 @@ class RecordStoreServiceASGIApplication(ConnectASGIApplication[RecordStoreServic
                         idempotency_level=IdempotencyLevel.UNKNOWN,
                     ),
                     function=svc.get_store_capabilities,
+                ),
+                "/temporaless.v1.RecordStoreService/AcquireExecution": Endpoint.unary(
+                    method=MethodInfo(
+                        name="AcquireExecution",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=AcquireExecutionRequest,
+                        output=AcquireExecutionResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.acquire_execution,
+                ),
+                "/temporaless.v1.RecordStoreService/RenewExecution": Endpoint.unary(
+                    method=MethodInfo(
+                        name="RenewExecution",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=RenewExecutionRequest,
+                        output=RenewExecutionResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.renew_execution,
+                ),
+                "/temporaless.v1.RecordStoreService/ReleaseExecution": Endpoint.unary(
+                    method=MethodInfo(
+                        name="ReleaseExecution",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=ReleaseExecutionRequest,
+                        output=ReleaseExecutionResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.release_execution,
+                ),
+                "/temporaless.v1.RecordStoreService/ApplyExecutionMutations": Endpoint.unary(
+                    method=MethodInfo(
+                        name="ApplyExecutionMutations",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=ApplyExecutionMutationsRequest,
+                        output=ApplyExecutionMutationsResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.apply_execution_mutations,
+                ),
+                "/temporaless.v1.RecordStoreService/GetExecutionOperation": Endpoint.unary(
+                    method=MethodInfo(
+                        name="GetExecutionOperation",
+                        service_name="temporaless.v1.RecordStoreService",
+                        input=GetExecutionOperationRequest,
+                        output=GetExecutionOperationResponse,
+                        idempotency_level=IdempotencyLevel.UNKNOWN,
+                    ),
+                    function=svc.get_execution_operation,
                 ),
                 "/temporaless.v1.RecordStoreService/GetWorkflow": Endpoint.unary(
                     method=MethodInfo(
@@ -524,6 +604,121 @@ class RecordStoreServiceClient(ConnectClient):
                 service_name="temporaless.v1.RecordStoreService",
                 input=GetStoreCapabilitiesRequest,
                 output=GetStoreCapabilitiesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def acquire_execution(
+        self,
+        request: AcquireExecutionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> AcquireExecutionResponse:
+        """
+        Reserved atomic execution acquisition; current handlers return UNIMPLEMENTED.
+        """
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="AcquireExecution",
+                service_name="temporaless.v1.RecordStoreService",
+                input=AcquireExecutionRequest,
+                output=AcquireExecutionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def renew_execution(
+        self,
+        request: RenewExecutionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> RenewExecutionResponse:
+        """
+        Reserved conditional renewal; current handlers return UNIMPLEMENTED.
+        """
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="RenewExecution",
+                service_name="temporaless.v1.RecordStoreService",
+                input=RenewExecutionRequest,
+                output=RenewExecutionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def release_execution(
+        self,
+        request: ReleaseExecutionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ReleaseExecutionResponse:
+        """
+        Reserved conditional release; current handlers return UNIMPLEMENTED.
+        """
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ReleaseExecution",
+                service_name="temporaless.v1.RecordStoreService",
+                input=ReleaseExecutionRequest,
+                output=ReleaseExecutionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def apply_execution_mutations(
+        self,
+        request: ApplyExecutionMutationsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ApplyExecutionMutationsResponse:
+        """
+        Reserved atomic fenced mutation batch; current handlers return UNIMPLEMENTED.
+        """
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ApplyExecutionMutations",
+                service_name="temporaless.v1.RecordStoreService",
+                input=ApplyExecutionMutationsRequest,
+                output=ApplyExecutionMutationsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+    async def get_execution_operation(
+        self,
+        request: GetExecutionOperationRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetExecutionOperationResponse:
+        """
+        Reserved read-only outcome recovery; current handlers return UNIMPLEMENTED.
+        """
+        return await self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetExecutionOperation",
+                service_name="temporaless.v1.RecordStoreService",
+                input=GetExecutionOperationRequest,
+                output=GetExecutionOperationResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

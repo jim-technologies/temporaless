@@ -1,0 +1,2953 @@
+[
+  {
+    "name": "acquire",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "operation_id": "acquire-1",
+      "store_incarnation": "store-1"
+    },
+    "valid": true
+  },
+  {
+    "name": "acquire missing key",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "operation_id": "acquire-1",
+      "store_incarnation": "store-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "acquire missing options",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "store_incarnation": "store-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "acquire missing operation_id",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "store_incarnation": "store-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "acquire missing store_incarnation",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "operation_id": "acquire-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid lease 0s",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "0s"
+      },
+      "operation_id": "acquire-1",
+      "store_incarnation": "store-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid lease -1s",
+    "type": "AcquireExecutionRequest",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "options": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "-1s"
+      },
+      "operation_id": "acquire-1",
+      "store_incarnation": "store-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "token",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "store_incarnation": "store-1",
+      "owner_id": "worker",
+      "acquisition_id": "invocation-1",
+      "generation": "7"
+    },
+    "valid": true
+  },
+  {
+    "name": "token missing store_incarnation",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "owner_id": "worker",
+      "acquisition_id": "invocation-1",
+      "generation": "7"
+    },
+    "valid": false
+  },
+  {
+    "name": "token missing owner_id",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "store_incarnation": "store-1",
+      "acquisition_id": "invocation-1",
+      "generation": "7"
+    },
+    "valid": false
+  },
+  {
+    "name": "token missing acquisition_id",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "store_incarnation": "store-1",
+      "owner_id": "worker",
+      "generation": "7"
+    },
+    "valid": false
+  },
+  {
+    "name": "token missing key",
+    "type": "ExecutionToken",
+    "message": {
+      "store_incarnation": "store-1",
+      "owner_id": "worker",
+      "acquisition_id": "invocation-1",
+      "generation": "7"
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid generation 0",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "store_incarnation": "store-1",
+      "owner_id": "worker",
+      "acquisition_id": "invocation-1",
+      "generation": "0"
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid generation 9223372036854775808",
+    "type": "ExecutionToken",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "store_incarnation": "store-1",
+      "owner_id": "worker",
+      "acquisition_id": "invocation-1",
+      "generation": "9223372036854775808"
+    },
+    "valid": false
+  },
+  {
+    "name": "lease",
+    "type": "ExecutionLease",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "observed_at": "2026-09-28T00:00:00Z",
+      "expires_at": "2026-09-28T00:00:30Z"
+    },
+    "valid": true
+  },
+  {
+    "name": "expired observation",
+    "type": "ExecutionLease",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "observed_at": "2026-09-28T00:00:00Z",
+      "expires_at": "2026-09-28T00:00:00Z"
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt",
+    "type": "AcquireExecutionResponse",
+    "message": {
+      "receipt": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "operation_id": "acquire-1",
+        "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "store_incarnation": "store-1",
+        "acquired": {
+          "token": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            },
+            "store_incarnation": "store-1",
+            "owner_id": "worker",
+            "acquisition_id": "invocation-1",
+            "generation": "7"
+          },
+          "observed_at": "2026-09-28T00:00:00Z",
+          "expires_at": "2026-09-28T00:00:30Z"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "receipt wrong run_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "acquired": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt wrong namespace",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "acquired": {
+        "token": {
+          "key": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt wrong workflow_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "acquired": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt wrong incarnation",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "acquired": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          },
+          "store_incarnation": "other",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "acquire wrong result",
+    "type": "AcquireExecutionResponse",
+    "message": {
+      "receipt": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "operation_id": "acquire-1",
+        "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "store_incarnation": "store-1",
+        "renewed": {
+          "token": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            },
+            "store_incarnation": "store-1",
+            "owner_id": "worker",
+            "acquisition_id": "invocation-1",
+            "generation": "7"
+          },
+          "observed_at": "2026-09-28T00:00:00Z",
+          "expires_at": "2026-09-28T00:00:30Z"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "outcome found=False present=False",
+    "type": "GetExecutionOperationResponse",
+    "message": {
+      "found": false
+    },
+    "valid": true
+  },
+  {
+    "name": "outcome found=True present=True",
+    "type": "GetExecutionOperationResponse",
+    "message": {
+      "found": true,
+      "receipt": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "operation_id": "acquire-1",
+        "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "store_incarnation": "store-1",
+        "acquired": {
+          "token": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            },
+            "store_incarnation": "store-1",
+            "owner_id": "worker",
+            "acquisition_id": "invocation-1",
+            "generation": "7"
+          },
+          "observed_at": "2026-09-28T00:00:00Z",
+          "expires_at": "2026-09-28T00:00:30Z"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "outcome found=True present=False",
+    "type": "GetExecutionOperationResponse",
+    "message": {
+      "found": true
+    },
+    "valid": false
+  },
+  {
+    "name": "outcome found=False present=True",
+    "type": "GetExecutionOperationResponse",
+    "message": {
+      "found": false,
+      "receipt": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "operation_id": "acquire-1",
+        "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "store_incarnation": "store-1",
+        "acquired": {
+          "token": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            },
+            "store_incarnation": "store-1",
+            "owner_id": "worker",
+            "acquisition_id": "invocation-1",
+            "generation": "7"
+          },
+          "observed_at": "2026-09-28T00:00:00Z",
+          "expires_at": "2026-09-28T00:00:30Z"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "put_workflow",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "put_workflow crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "other",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_workflow crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "other",
+              "run_id": "run"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_workflow crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "other"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_activity",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "activity_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "put_activity crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "other",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "activity_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_activity crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "other",
+              "run_id": "run",
+              "activity_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_activity crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "other",
+              "activity_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_timer",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "timer_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "put_timer crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "other",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "timer_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_timer crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "other",
+              "run_id": "run",
+              "timer_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_timer crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "other",
+              "timer_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_event",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_event": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "event_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "put_event crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_event": {
+            "key": {
+              "namespace": "other",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "event_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_event crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_event": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "other",
+              "run_id": "run",
+              "event_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "put_event crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_event": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "other",
+              "event_id": "record"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_workflow",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_workflow": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "delete_workflow crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_workflow": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_workflow crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_workflow": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_workflow crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_workflow": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_activity",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_activity": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "activity_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "delete_activity crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_activity": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "activity_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_activity crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_activity": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run",
+            "activity_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_activity crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_activity": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other",
+            "activity_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_timer",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_timer": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "timer_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "delete_timer crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_timer": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "timer_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_timer crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_timer": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run",
+            "timer_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_timer crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_timer": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other",
+            "timer_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_event",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_event": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "delete_event crosses namespace",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_event": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_event crosses workflow_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_event": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "delete_event crosses run_id",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "delete_event": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "mixed same-run batch",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "activity_id": "record"
+            }
+          }
+        },
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "timer_id": "record"
+            }
+          }
+        },
+        {
+          "put_event": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "event_id": "record"
+            }
+          }
+        },
+        {
+          "delete_workflow": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          }
+        },
+        {
+          "delete_activity": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "activity_id": "record"
+          }
+        },
+        {
+          "delete_timer": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "timer_id": "record"
+          }
+        },
+        {
+          "delete_event": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "missing token",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_activity": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "activity_id": "record"
+            }
+          }
+        },
+        {
+          "put_timer": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "timer_id": "record"
+            }
+          }
+        },
+        {
+          "put_event": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run",
+              "event_id": "record"
+            }
+          }
+        },
+        {
+          "delete_workflow": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          }
+        },
+        {
+          "delete_activity": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "activity_id": "record"
+          }
+        },
+        {
+          "delete_timer": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "timer_id": "record"
+          }
+        },
+        {
+          "delete_event": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run",
+            "event_id": "record"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty batch",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "unbounded batch",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        },
+        {
+          "put_workflow": {
+            "key": {
+              "namespace": "default",
+              "workflow_id": "workflow",
+              "run_id": "run"
+            }
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing mutation",
+    "type": "ApplyExecutionMutationsRequest",
+    "message": {
+      "token": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      },
+      "operation_id": "batch-1",
+      "mutations": [
+        {}
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "fenced workflow option",
+    "type": "WorkflowOptions",
+    "message": {
+      "workflow_id": "workflow",
+      "run_id": "run",
+      "fenced_execution": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "mixing create-only claims",
+    "type": "WorkflowOptions",
+    "message": {
+      "workflow_id": "workflow",
+      "run_id": "run",
+      "fenced_execution": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "claim_owner_id": "worker"
+    },
+    "valid": false
+  },
+  {
+    "name": "mixing concurrency slots",
+    "type": "WorkflowOptions",
+    "message": {
+      "workflow_id": "workflow",
+      "run_id": "run",
+      "fenced_execution": {
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "lease_duration": "30s"
+      },
+      "claim_owner_id": "worker",
+      "concurrency_key": "vendor",
+      "concurrency_limit": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt renewed valid",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "renewed": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "receipt renewed wrong namespace",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "renewed": {
+        "token": {
+          "key": {
+            "namespace": "other",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt renewed wrong workflow_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "renewed": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "other",
+            "run_id": "run"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt renewed wrong run_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "renewed": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "other"
+          },
+          "store_incarnation": "store-1",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt renewed wrong store_incarnation",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "renewed": {
+        "token": {
+          "key": {
+            "namespace": "default",
+            "workflow_id": "workflow",
+            "run_id": "run"
+          },
+          "store_incarnation": "other",
+          "owner_id": "worker",
+          "acquisition_id": "invocation-1",
+          "generation": "7"
+        },
+        "observed_at": "2026-09-28T00:00:00Z",
+        "expires_at": "2026-09-28T00:00:30Z"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt released valid",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "released": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "receipt released wrong namespace",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "released": {
+        "key": {
+          "namespace": "other",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt released wrong workflow_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "released": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "other",
+          "run_id": "run"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt released wrong run_id",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "released": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "other"
+        },
+        "store_incarnation": "store-1",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "receipt released wrong store_incarnation",
+    "type": "ExecutionOperationReceipt",
+    "message": {
+      "key": {
+        "namespace": "default",
+        "workflow_id": "workflow",
+        "run_id": "run"
+      },
+      "operation_id": "acquire-1",
+      "request_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "store_incarnation": "store-1",
+      "released": {
+        "key": {
+          "namespace": "default",
+          "workflow_id": "workflow",
+          "run_id": "run"
+        },
+        "store_incarnation": "other",
+        "owner_id": "worker",
+        "acquisition_id": "invocation-1",
+        "generation": "7"
+      }
+    },
+    "valid": false
+  }
+]

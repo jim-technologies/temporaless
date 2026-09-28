@@ -821,6 +821,66 @@ func (EventDeliveryFailureReason) EnumDescriptor() ([]byte, []int) {
 	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{12}
 }
 
+// FencedExecutionCapability describes the complete run mutation boundary.
+// No bundled store or runtime implements the reserved atomic capability yet.
+type FencedExecutionCapability int32
+
+const (
+	// Missing/unknown support. A caller requiring fencing must refuse execution.
+	FencedExecutionCapability_FENCED_EXECUTION_CAPABILITY_UNSPECIFIED FencedExecutionCapability = 0
+	// This store cannot atomically fence execution; legacy semantics still apply.
+	FencedExecutionCapability_FENCED_EXECUTION_CAPABILITY_UNSUPPORTED FencedExecutionCapability = 1
+	// Reserved for a fully qualified store/runtime: ownership transitions and
+	// EVERY authoritative mutation share one atomic boundary. This includes retry
+	// seeding, workflow/activity/timer/event writes, terminal publication, timer
+	// shadow repair and deletion. Tokenless legacy mutations must refuse protected
+	// runs. External immutable delivery and retirement must serialize against the
+	// same persistent run fence. A lease check followed by an independent write
+	// does not satisfy this capability. Current adapters must not advertise it.
+	FencedExecutionCapability_FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS FencedExecutionCapability = 2
+)
+
+// Enum value maps for FencedExecutionCapability.
+var (
+	FencedExecutionCapability_name = map[int32]string{
+		0: "FENCED_EXECUTION_CAPABILITY_UNSPECIFIED",
+		1: "FENCED_EXECUTION_CAPABILITY_UNSUPPORTED",
+		2: "FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS",
+	}
+	FencedExecutionCapability_value = map[string]int32{
+		"FENCED_EXECUTION_CAPABILITY_UNSPECIFIED":          0,
+		"FENCED_EXECUTION_CAPABILITY_UNSUPPORTED":          1,
+		"FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS": 2,
+	}
+)
+
+func (x FencedExecutionCapability) Enum() *FencedExecutionCapability {
+	p := new(FencedExecutionCapability)
+	*p = x
+	return p
+}
+
+func (x FencedExecutionCapability) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (FencedExecutionCapability) Descriptor() protoreflect.EnumDescriptor {
+	return file_temporaless_v1_temporaless_proto_enumTypes[13].Descriptor()
+}
+
+func (FencedExecutionCapability) Type() protoreflect.EnumType {
+	return &file_temporaless_v1_temporaless_proto_enumTypes[13]
+}
+
+func (x FencedExecutionCapability) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use FencedExecutionCapability.Descriptor instead.
+func (FencedExecutionCapability) EnumDescriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{13}
+}
+
 // WorkflowOptions identifies a single workflow run plus its replay context.
 //
 // IDs are caller-provided. The framework validates segment-safe ASCII but never
@@ -870,9 +930,14 @@ type WorkflowOptions struct {
 	// the latest-run pointer for a newer fire. When unset, stores use the
 	// workflow record's lifecycle time. The framework never derives this value
 	// from run_id because run IDs are opaque application-owned identifiers.
-	RunOrderTime  *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=run_order_time,json=runOrderTime" json:"run_order_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RunOrderTime *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=run_order_time,json=runOrderTime" json:"run_order_time,omitempty"`
+	// Request atomic, recoverable execution fencing. This contract is reserved:
+	// current runtimes reject it before reading or mutating any run. It must not
+	// be combined with create-only claims or concurrency slots. Absence preserves
+	// existing execution semantics; presence never silently falls back to them.
+	FencedExecution *FencedExecutionOptions `protobuf:"bytes,8,opt,name=fenced_execution,json=fencedExecution" json:"fenced_execution,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WorkflowOptions) Reset() {
@@ -943,6 +1008,13 @@ func (x *WorkflowOptions) GetConcurrencyLimit() uint32 {
 func (x *WorkflowOptions) GetRunOrderTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.RunOrderTime
+	}
+	return nil
+}
+
+func (x *WorkflowOptions) GetFencedExecution() *FencedExecutionOptions {
+	if x != nil {
+		return x.FencedExecution
 	}
 	return nil
 }
@@ -5694,8 +5766,16 @@ type GetStoreCapabilitiesResponse struct {
 	ClaimCapability ClaimCapability `protobuf:"varint,1,opt,name=claim_capability,json=claimCapability,enum=temporaless.v1.ClaimCapability" json:"claim_capability,omitempty"`
 	// Whether DeliverEvent has distributed atomic create-if-absent semantics.
 	EventDeliveryCapability EventDeliveryCapability `protobuf:"varint,2,opt,name=event_delivery_capability,json=eventDeliveryCapability,enum=temporaless.v1.EventDeliveryCapability" json:"event_delivery_capability,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Atomic execution fencing is a separate guarantee from conditional claims.
+	// This release always reports UNSUPPORTED. Missing or unknown values cannot
+	// authorize fenced execution, including against an older service.
+	FencedExecutionCapability FencedExecutionCapability `protobuf:"varint,3,opt,name=fenced_execution_capability,json=fencedExecutionCapability,enum=temporaless.v1.FencedExecutionCapability" json:"fenced_execution_capability,omitempty"`
+	// Stable incarnation for a qualified fenced store, empty when unsupported.
+	// Callers bind acquisition and receipt recovery to this exact identity; a
+	// recreated/migrated store must not impersonate the previous incarnation.
+	FencedExecutionStoreIncarnation string `protobuf:"bytes,4,opt,name=fenced_execution_store_incarnation,json=fencedExecutionStoreIncarnation" json:"fenced_execution_store_incarnation,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *GetStoreCapabilitiesResponse) Reset() {
@@ -5742,6 +5822,1272 @@ func (x *GetStoreCapabilitiesResponse) GetEventDeliveryCapability() EventDeliver
 	return EventDeliveryCapability_EVENT_DELIVERY_CAPABILITY_UNSPECIFIED
 }
 
+func (x *GetStoreCapabilitiesResponse) GetFencedExecutionCapability() FencedExecutionCapability {
+	if x != nil {
+		return x.FencedExecutionCapability
+	}
+	return FencedExecutionCapability_FENCED_EXECUTION_CAPABILITY_UNSPECIFIED
+}
+
+func (x *GetStoreCapabilitiesResponse) GetFencedExecutionStoreIncarnation() string {
+	if x != nil {
+		return x.FencedExecutionStoreIncarnation
+	}
+	return ""
+}
+
+// FencedExecutionOptions requests one recoverable run execution session.
+// Durable fencing excludes stale publications, not arbitrary provider effects:
+// a paused owner may finish a provider call after expiry. Applications retain
+// responsibility for side-effect idempotency, reconciliation and quota ledgers.
+type FencedExecutionOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Caller-provided diagnostic worker identity. Matching it never grants reentry.
+	OwnerId string `protobuf:"bytes,1,opt,name=owner_id,json=ownerId" json:"owner_id,omitempty"`
+	// Caller-provided unique identity for this acquisition, retained across an
+	// uncertain acquire response. A new invocation must use a different identity.
+	AcquisitionId string `protobuf:"bytes,2,opt,name=acquisition_id,json=acquisitionId" json:"acquisition_id,omitempty"`
+	// Positive requested lease lifetime; a backend may refuse an unsupported bound.
+	// The authoritative store's clock decides expiry, never an invoker's clock.
+	LeaseDuration *durationpb.Duration `protobuf:"bytes,3,opt,name=lease_duration,json=leaseDuration" json:"lease_duration,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FencedExecutionOptions) Reset() {
+	*x = FencedExecutionOptions{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FencedExecutionOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FencedExecutionOptions) ProtoMessage() {}
+
+func (x *FencedExecutionOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FencedExecutionOptions.ProtoReflect.Descriptor instead.
+func (*FencedExecutionOptions) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *FencedExecutionOptions) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *FencedExecutionOptions) GetAcquisitionId() string {
+	if x != nil {
+		return x.AcquisitionId
+	}
+	return ""
+}
+
+func (x *FencedExecutionOptions) GetLeaseDuration() *durationpb.Duration {
+	if x != nil {
+		return x.LeaseDuration
+	}
+	return nil
+}
+
+// ExecutionToken identifies one authority generation for exactly one run.
+// It is compared atomically with every execution-owned mutation. It is not an
+// authentication credential; the transport's normal authorization still applies.
+type ExecutionToken struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Complete run identity. A token cannot authorize a different run or namespace.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Durable store incarnation, changed only by an explicit store migration.
+	// It prevents old authority from reviving when a backend is recreated.
+	StoreIncarnation string `protobuf:"bytes,2,opt,name=store_incarnation,json=storeIncarnation" json:"store_incarnation,omitempty"`
+	// Exact owner identity accepted by acquisition.
+	OwnerId string `protobuf:"bytes,3,opt,name=owner_id,json=ownerId" json:"owner_id,omitempty"`
+	// Exact caller acquisition identity, distinct even for the same worker name.
+	AcquisitionId string `protobuf:"bytes,4,opt,name=acquisition_id,json=acquisitionId" json:"acquisition_id,omitempty"`
+	// Store-allocated monotonic generation. Release and retention keep a tombstone
+	// rather than resetting it. Exhaustion fails closed instead of wrapping.
+	Generation    uint64 `protobuf:"varint,5,opt,name=generation" json:"generation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionToken) Reset() {
+	*x = ExecutionToken{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionToken) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionToken) ProtoMessage() {}
+
+func (x *ExecutionToken) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionToken.ProtoReflect.Descriptor instead.
+func (*ExecutionToken) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *ExecutionToken) GetKey() *WorkflowKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *ExecutionToken) GetStoreIncarnation() string {
+	if x != nil {
+		return x.StoreIncarnation
+	}
+	return ""
+}
+
+func (x *ExecutionToken) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *ExecutionToken) GetAcquisitionId() string {
+	if x != nil {
+		return x.AcquisitionId
+	}
+	return ""
+}
+
+func (x *ExecutionToken) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+// ExecutionLease is an observed lease, not proof that it remains held later.
+// Every write still needs the store's atomic token and expiry check.
+type ExecutionLease struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Authority accepted by the store.
+	Token *ExecutionToken `protobuf:"bytes,1,opt,name=token" json:"token,omitempty"`
+	// Expiration according to the store's authoritative clock.
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt" json:"expires_at,omitempty"`
+	// Store time at which this lease result was produced.
+	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=observed_at,json=observedAt" json:"observed_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionLease) Reset() {
+	*x = ExecutionLease{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionLease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionLease) ProtoMessage() {}
+
+func (x *ExecutionLease) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionLease.ProtoReflect.Descriptor instead.
+func (*ExecutionLease) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *ExecutionLease) GetToken() *ExecutionToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *ExecutionLease) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *ExecutionLease) GetObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ObservedAt
+	}
+	return nil
+}
+
+// ExecutionMutation is one typed authoritative change within a run batch.
+// The enclosing token must match every embedded key, including deletes.
+// Records keep their existing validation and binary encoding. Terminal results
+// are immutable; deletion must not permit an old run identity to execute again.
+// A timer mutation also owns its due-ledger transition and any canonical repair;
+// no scanner may publish a shadow outside this same atomic authority boundary.
+type ExecutionMutation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exactly one record mutation, with identity carried by its protobuf key.
+	//
+	// Types that are valid to be assigned to Mutation:
+	//
+	//	*ExecutionMutation_PutWorkflow
+	//	*ExecutionMutation_PutActivity
+	//	*ExecutionMutation_PutTimer
+	//	*ExecutionMutation_PutEvent
+	//	*ExecutionMutation_DeleteActivity
+	//	*ExecutionMutation_DeleteTimer
+	//	*ExecutionMutation_DeleteEvent
+	//	*ExecutionMutation_DeleteWorkflow
+	Mutation      isExecutionMutation_Mutation `protobuf_oneof:"mutation"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionMutation) Reset() {
+	*x = ExecutionMutation{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionMutation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionMutation) ProtoMessage() {}
+
+func (x *ExecutionMutation) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionMutation.ProtoReflect.Descriptor instead.
+func (*ExecutionMutation) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *ExecutionMutation) GetMutation() isExecutionMutation_Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetPutWorkflow() *WorkflowRecord {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_PutWorkflow); ok {
+			return x.PutWorkflow
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetPutActivity() *ActivityRecord {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_PutActivity); ok {
+			return x.PutActivity
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetPutTimer() *TimerRecord {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_PutTimer); ok {
+			return x.PutTimer
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetPutEvent() *EventRecord {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_PutEvent); ok {
+			return x.PutEvent
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetDeleteActivity() *ActivityKey {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_DeleteActivity); ok {
+			return x.DeleteActivity
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetDeleteTimer() *TimerKey {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_DeleteTimer); ok {
+			return x.DeleteTimer
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetDeleteEvent() *EventKey {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_DeleteEvent); ok {
+			return x.DeleteEvent
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionMutation) GetDeleteWorkflow() *WorkflowKey {
+	if x != nil {
+		if x, ok := x.Mutation.(*ExecutionMutation_DeleteWorkflow); ok {
+			return x.DeleteWorkflow
+		}
+	}
+	return nil
+}
+
+type isExecutionMutation_Mutation interface {
+	isExecutionMutation_Mutation()
+}
+
+type ExecutionMutation_PutWorkflow struct {
+	// Write initial, annotated or terminal workflow state.
+	PutWorkflow *WorkflowRecord `protobuf:"bytes,1,opt,name=put_workflow,json=putWorkflow,oneof"`
+}
+
+type ExecutionMutation_PutActivity struct {
+	// Write completed, failed, retrying or inherited activity state.
+	PutActivity *ActivityRecord `protobuf:"bytes,2,opt,name=put_activity,json=putActivity,oneof"`
+}
+
+type ExecutionMutation_PutTimer struct {
+	// Write a durable sleep, poll, retry or wake-consumption transition.
+	PutTimer *TimerRecord `protobuf:"bytes,3,opt,name=put_timer,json=putTimer,oneof"`
+}
+
+type ExecutionMutation_PutEvent struct {
+	// Replace an event under execution authority; external producers instead
+	// use immutable DeliverEvent, whose fenced-store semantics are separate.
+	PutEvent *EventRecord `protobuf:"bytes,4,opt,name=put_event,json=putEvent,oneof"`
+}
+
+type ExecutionMutation_DeleteActivity struct {
+	// Remove an activity while preserving the run's authority tombstone.
+	DeleteActivity *ActivityKey `protobuf:"bytes,5,opt,name=delete_activity,json=deleteActivity,oneof"`
+}
+
+type ExecutionMutation_DeleteTimer struct {
+	// Remove a timer and its discovery state within the same boundary.
+	DeleteTimer *TimerKey `protobuf:"bytes,6,opt,name=delete_timer,json=deleteTimer,oneof"`
+}
+
+type ExecutionMutation_DeleteEvent struct {
+	// Remove an execution-owned event.
+	DeleteEvent *EventKey `protobuf:"bytes,7,opt,name=delete_event,json=deleteEvent,oneof"`
+}
+
+type ExecutionMutation_DeleteWorkflow struct {
+	// Remove workflow payload without removing its generation/retirement fence.
+	DeleteWorkflow *WorkflowKey `protobuf:"bytes,8,opt,name=delete_workflow,json=deleteWorkflow,oneof"`
+}
+
+func (*ExecutionMutation_PutWorkflow) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_PutActivity) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_PutTimer) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_PutEvent) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_DeleteActivity) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_DeleteTimer) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_DeleteEvent) isExecutionMutation_Mutation() {}
+
+func (*ExecutionMutation_DeleteWorkflow) isExecutionMutation_Mutation() {}
+
+// ExecutionMutationResult reports one applied mutation in request order.
+type ExecutionMutationResult struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True when the addressed authoritative record existed before this mutation.
+	// For deletion, false is an idempotent missing-record result.
+	Existed       bool `protobuf:"varint,1,opt,name=existed" json:"existed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionMutationResult) Reset() {
+	*x = ExecutionMutationResult{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionMutationResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionMutationResult) ProtoMessage() {}
+
+func (x *ExecutionMutationResult) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionMutationResult.ProtoReflect.Descriptor instead.
+func (*ExecutionMutationResult) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *ExecutionMutationResult) GetExisted() bool {
+	if x != nil {
+		return x.Existed
+	}
+	return false
+}
+
+// ExecutionMutationResults is the all-or-nothing result of a fenced batch.
+type ExecutionMutationResults struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One result for each requested mutation, in the same order.
+	Results       []*ExecutionMutationResult `protobuf:"bytes,1,rep,name=results" json:"results,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionMutationResults) Reset() {
+	*x = ExecutionMutationResults{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionMutationResults) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionMutationResults) ProtoMessage() {}
+
+func (x *ExecutionMutationResults) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionMutationResults.ProtoReflect.Descriptor instead.
+func (*ExecutionMutationResults) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *ExecutionMutationResults) GetResults() []*ExecutionMutationResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
+// ExecutionOperationReceipt binds a committed operation to its exact request.
+// Store this atomically with its ownership/record changes. Operation identities
+// are unique within a store incarnation and run, across ALL operation kinds.
+// Reusing an identity for another validated request is a conflict. Recovery is
+// read-only and never reexecutes the request. A receipt proves a past commit,
+// not current ownership: even a recovered lease must pass the next atomic check.
+type ExecutionOperationReceipt struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run whose operation committed.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Caller-supplied identity retained across uncertain outcomes.
+	OperationId string `protobuf:"bytes,2,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	// Server-computed SHA-256 of its deterministically serialized validated typed
+	// request, prefixed by the fully qualified protobuf type name and a zero byte.
+	// Deterministic protobuf is not cross-language canonical encoding: clients
+	// treat this as an opaque receipt binding and must not precompute it. A store
+	// must keep request comparison/digest normalization stable within an
+	// incarnation and compare request identity before returning an existing receipt.
+	RequestSha256 []byte `protobuf:"bytes,3,opt,name=request_sha256,json=requestSha256" json:"request_sha256,omitempty"`
+	// Durable store incarnation in which the operation committed.
+	StoreIncarnation string `protobuf:"bytes,4,opt,name=store_incarnation,json=storeIncarnation" json:"store_incarnation,omitempty"`
+	// Exactly one committed operation result. Busy, expired/stale authority,
+	// invalid requests and unsupported operations are typed errors, not receipts.
+	//
+	// Types that are valid to be assigned to Result:
+	//
+	//	*ExecutionOperationReceipt_Acquired
+	//	*ExecutionOperationReceipt_Renewed
+	//	*ExecutionOperationReceipt_Released
+	//	*ExecutionOperationReceipt_Applied
+	Result        isExecutionOperationReceipt_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecutionOperationReceipt) Reset() {
+	*x = ExecutionOperationReceipt{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionOperationReceipt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionOperationReceipt) ProtoMessage() {}
+
+func (x *ExecutionOperationReceipt) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionOperationReceipt.ProtoReflect.Descriptor instead.
+func (*ExecutionOperationReceipt) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{82}
+}
+
+func (x *ExecutionOperationReceipt) GetKey() *WorkflowKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *ExecutionOperationReceipt) GetRequestSha256() []byte {
+	if x != nil {
+		return x.RequestSha256
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetStoreIncarnation() string {
+	if x != nil {
+		return x.StoreIncarnation
+	}
+	return ""
+}
+
+func (x *ExecutionOperationReceipt) GetResult() isExecutionOperationReceipt_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetAcquired() *ExecutionLease {
+	if x != nil {
+		if x, ok := x.Result.(*ExecutionOperationReceipt_Acquired); ok {
+			return x.Acquired
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetRenewed() *ExecutionLease {
+	if x != nil {
+		if x, ok := x.Result.(*ExecutionOperationReceipt_Renewed); ok {
+			return x.Renewed
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetReleased() *ExecutionToken {
+	if x != nil {
+		if x, ok := x.Result.(*ExecutionOperationReceipt_Released); ok {
+			return x.Released
+		}
+	}
+	return nil
+}
+
+func (x *ExecutionOperationReceipt) GetApplied() *ExecutionMutationResults {
+	if x != nil {
+		if x, ok := x.Result.(*ExecutionOperationReceipt_Applied); ok {
+			return x.Applied
+		}
+	}
+	return nil
+}
+
+type isExecutionOperationReceipt_Result interface {
+	isExecutionOperationReceipt_Result()
+}
+
+type ExecutionOperationReceipt_Acquired struct {
+	// Successful acquisition or takeover; never authority to bypass later checks.
+	Acquired *ExecutionLease `protobuf:"bytes,5,opt,name=acquired,oneof"`
+}
+
+type ExecutionOperationReceipt_Renewed struct {
+	// Successful conditional renewal of the exact still-live token.
+	Renewed *ExecutionLease `protobuf:"bytes,6,opt,name=renewed,oneof"`
+}
+
+type ExecutionOperationReceipt_Released struct {
+	// Exact token conditionally released, with its generation retained.
+	Released *ExecutionToken `protobuf:"bytes,7,opt,name=released,oneof"`
+}
+
+type ExecutionOperationReceipt_Applied struct {
+	// Complete successful record batch; no partial success can be returned.
+	Applied *ExecutionMutationResults `protobuf:"bytes,8,opt,name=applied,oneof"`
+}
+
+func (*ExecutionOperationReceipt_Acquired) isExecutionOperationReceipt_Result() {}
+
+func (*ExecutionOperationReceipt_Renewed) isExecutionOperationReceipt_Result() {}
+
+func (*ExecutionOperationReceipt_Released) isExecutionOperationReceipt_Result() {}
+
+func (*ExecutionOperationReceipt_Applied) isExecutionOperationReceipt_Result() {}
+
+// AcquireExecutionRequest atomically claims an unowned run or takes over an
+// expired holder. A live holder is busy even if the owner name matches. A
+// successful takeover increments generation; retired runs refuse acquisition.
+// No workflow body may start after an uncertain response until its receipt is
+// recovered and the lease's current authority is established. No bundled store
+// supports this operation in the contract-foundation release.
+type AcquireExecutionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run whose authority is requested, including before its first record exists.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Caller identity and requested lease lifetime.
+	Options *FencedExecutionOptions `protobuf:"bytes,2,opt,name=options" json:"options,omitempty"`
+	// Unique operation identity, reused only for this exact acquisition request.
+	OperationId string `protobuf:"bytes,3,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	// Expected store incarnation obtained before acquisition. A mismatch refuses
+	// the request, allowing uncertain initial acquisition to recover by identity.
+	StoreIncarnation string `protobuf:"bytes,4,opt,name=store_incarnation,json=storeIncarnation" json:"store_incarnation,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AcquireExecutionRequest) Reset() {
+	*x = AcquireExecutionRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcquireExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcquireExecutionRequest) ProtoMessage() {}
+
+func (x *AcquireExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcquireExecutionRequest.ProtoReflect.Descriptor instead.
+func (*AcquireExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *AcquireExecutionRequest) GetKey() *WorkflowKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *AcquireExecutionRequest) GetOptions() *FencedExecutionOptions {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *AcquireExecutionRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *AcquireExecutionRequest) GetStoreIncarnation() string {
+	if x != nil {
+		return x.StoreIncarnation
+	}
+	return ""
+}
+
+// AcquireExecutionResponse carries only a committed acquisition receipt.
+type AcquireExecutionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Receipt whose result must be acquired and whose key matches the request.
+	Receipt       *ExecutionOperationReceipt `protobuf:"bytes,1,opt,name=receipt" json:"receipt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcquireExecutionResponse) Reset() {
+	*x = AcquireExecutionResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcquireExecutionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcquireExecutionResponse) ProtoMessage() {}
+
+func (x *AcquireExecutionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcquireExecutionResponse.ProtoReflect.Descriptor instead.
+func (*AcquireExecutionResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *AcquireExecutionResponse) GetReceipt() *ExecutionOperationReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+// RenewExecutionRequest extends only the exact still-live authority. Renewal
+// after expiry, takeover or release fails; it never recreates or reacquires.
+type RenewExecutionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact authority to compare inside the renewal transaction.
+	Token *ExecutionToken `protobuf:"bytes,1,opt,name=token" json:"token,omitempty"`
+	// Requested positive remaining lifetime measured by the store clock.
+	LeaseDuration *durationpb.Duration `protobuf:"bytes,2,opt,name=lease_duration,json=leaseDuration" json:"lease_duration,omitempty"`
+	// Unique identity for this renewal, retained if its outcome is uncertain.
+	OperationId   string `protobuf:"bytes,3,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewExecutionRequest) Reset() {
+	*x = RenewExecutionRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewExecutionRequest) ProtoMessage() {}
+
+func (x *RenewExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewExecutionRequest.ProtoReflect.Descriptor instead.
+func (*RenewExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *RenewExecutionRequest) GetToken() *ExecutionToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *RenewExecutionRequest) GetLeaseDuration() *durationpb.Duration {
+	if x != nil {
+		return x.LeaseDuration
+	}
+	return nil
+}
+
+func (x *RenewExecutionRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+// RenewExecutionResponse carries only a committed renewal receipt.
+type RenewExecutionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Receipt whose result must be renewed and whose token matches the request.
+	Receipt       *ExecutionOperationReceipt `protobuf:"bytes,1,opt,name=receipt" json:"receipt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewExecutionResponse) Reset() {
+	*x = RenewExecutionResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewExecutionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewExecutionResponse) ProtoMessage() {}
+
+func (x *RenewExecutionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewExecutionResponse.ProtoReflect.Descriptor instead.
+func (*RenewExecutionResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *RenewExecutionResponse) GetReceipt() *ExecutionOperationReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+// ReleaseExecutionRequest conditionally releases the exact live token. A stale
+// release cannot delete or change a successor's ownership. Retain its generation
+// and operation receipt; an unconditional claim delete cannot implement this.
+type ReleaseExecutionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact authority to release; expired or replaced authority is rejected.
+	Token *ExecutionToken `protobuf:"bytes,1,opt,name=token" json:"token,omitempty"`
+	// Unique identity for this release, retained if its outcome is uncertain.
+	OperationId   string `protobuf:"bytes,2,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseExecutionRequest) Reset() {
+	*x = ReleaseExecutionRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseExecutionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseExecutionRequest) ProtoMessage() {}
+
+func (x *ReleaseExecutionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseExecutionRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseExecutionRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *ReleaseExecutionRequest) GetToken() *ExecutionToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *ReleaseExecutionRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+// ReleaseExecutionResponse carries only a committed conditional release receipt.
+type ReleaseExecutionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Receipt whose result must be released and whose token matches the request.
+	Receipt       *ExecutionOperationReceipt `protobuf:"bytes,1,opt,name=receipt" json:"receipt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseExecutionResponse) Reset() {
+	*x = ReleaseExecutionResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseExecutionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseExecutionResponse) ProtoMessage() {}
+
+func (x *ReleaseExecutionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseExecutionResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseExecutionResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *ReleaseExecutionResponse) GetReceipt() *ExecutionOperationReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+// ApplyExecutionMutationsRequest atomically validates the live token and applies
+// every mutation, derived authoritative timer transition and operation receipt.
+// Cross-run keys, partial application and check-then-write adapters are forbidden.
+// A stale holder must receive a coordination error, never publish FAILED or
+// schedule a retry using its old token. Retry seeding must hold target authority
+// before its first mutation and through workflow execution/terminal publication.
+type ApplyExecutionMutationsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact authority for the entire batch.
+	Token *ExecutionToken `protobuf:"bytes,1,opt,name=token" json:"token,omitempty"`
+	// Unique identity for this exact batch; a lost response must use receipt lookup.
+	OperationId string `protobuf:"bytes,2,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	// Bounded batch; every embedded key must identify the token's run. Stores may
+	// enforce an additional byte bound and reject before any change is committed.
+	Mutations     []*ExecutionMutation `protobuf:"bytes,3,rep,name=mutations" json:"mutations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyExecutionMutationsRequest) Reset() {
+	*x = ApplyExecutionMutationsRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[89]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyExecutionMutationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyExecutionMutationsRequest) ProtoMessage() {}
+
+func (x *ApplyExecutionMutationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[89]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyExecutionMutationsRequest.ProtoReflect.Descriptor instead.
+func (*ApplyExecutionMutationsRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *ApplyExecutionMutationsRequest) GetToken() *ExecutionToken {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *ApplyExecutionMutationsRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *ApplyExecutionMutationsRequest) GetMutations() []*ExecutionMutation {
+	if x != nil {
+		return x.Mutations
+	}
+	return nil
+}
+
+// ApplyExecutionMutationsResponse carries only a committed all-or-nothing receipt.
+type ApplyExecutionMutationsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Receipt whose result must be applied with one result per requested mutation.
+	Receipt       *ExecutionOperationReceipt `protobuf:"bytes,1,opt,name=receipt" json:"receipt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyExecutionMutationsResponse) Reset() {
+	*x = ApplyExecutionMutationsResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[90]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyExecutionMutationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyExecutionMutationsResponse) ProtoMessage() {}
+
+func (x *ApplyExecutionMutationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[90]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyExecutionMutationsResponse.ProtoReflect.Descriptor instead.
+func (*ApplyExecutionMutationsResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{90}
+}
+
+func (x *ApplyExecutionMutationsResponse) GetReceipt() *ExecutionOperationReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+// GetExecutionOperationRequest recovers a past outcome without repeating work.
+// Missing is not proof that an interrupted request cannot still commit. Callers
+// must not substitute a new operation identity to bypass an uncertain outcome.
+type GetExecutionOperationRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Run and store incarnation containing the receipt.
+	Key *WorkflowKey `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	// Exact durable store incarnation; a different incarnation cannot prove it.
+	StoreIncarnation string `protobuf:"bytes,2,opt,name=store_incarnation,json=storeIncarnation" json:"store_incarnation,omitempty"`
+	// Exact operation identity whose committed result is requested.
+	OperationId   string `protobuf:"bytes,3,opt,name=operation_id,json=operationId" json:"operation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionOperationRequest) Reset() {
+	*x = GetExecutionOperationRequest{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[91]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionOperationRequest) ProtoMessage() {}
+
+func (x *GetExecutionOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[91]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionOperationRequest.ProtoReflect.Descriptor instead.
+func (*GetExecutionOperationRequest) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{91}
+}
+
+func (x *GetExecutionOperationRequest) GetKey() *WorkflowKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *GetExecutionOperationRequest) GetStoreIncarnation() string {
+	if x != nil {
+		return x.StoreIncarnation
+	}
+	return ""
+}
+
+func (x *GetExecutionOperationRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+// GetExecutionOperationResponse never grants fresh execution authority.
+type GetExecutionOperationResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether this exact operation receipt is durably visible.
+	Found bool `protobuf:"varint,1,opt,name=found" json:"found,omitempty"`
+	// The immutable receipt; present exactly when found is true.
+	Receipt       *ExecutionOperationReceipt `protobuf:"bytes,2,opt,name=receipt" json:"receipt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionOperationResponse) Reset() {
+	*x = GetExecutionOperationResponse{}
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[92]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionOperationResponse) ProtoMessage() {}
+
+func (x *GetExecutionOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[92]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionOperationResponse.ProtoReflect.Descriptor instead.
+func (*GetExecutionOperationResponse) Descriptor() ([]byte, []int) {
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{92}
+}
+
+func (x *GetExecutionOperationResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetExecutionOperationResponse) GetReceipt() *ExecutionOperationReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
 // SweepRequest deletes every externally quiesced COMPLETED workflow run whose
 // `completed_at` is older than `now - max_age`. Run-scoped claims are deleted
 // before activities, timers, events, and the workflow record. Sweep is a
@@ -5765,7 +7111,7 @@ type SweepRequest struct {
 
 func (x *SweepRequest) Reset() {
 	*x = SweepRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5777,7 +7123,7 @@ func (x *SweepRequest) String() string {
 func (*SweepRequest) ProtoMessage() {}
 
 func (x *SweepRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[76]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5790,7 +7136,7 @@ func (x *SweepRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepRequest.ProtoReflect.Descriptor instead.
 func (*SweepRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{76}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *SweepRequest) GetNamespace() string {
@@ -5825,7 +7171,7 @@ type SweepResponse struct {
 
 func (x *SweepResponse) Reset() {
 	*x = SweepResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5837,7 +7183,7 @@ func (x *SweepResponse) String() string {
 func (*SweepResponse) ProtoMessage() {}
 
 func (x *SweepResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[77]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5850,7 +7196,7 @@ func (x *SweepResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SweepResponse.ProtoReflect.Descriptor instead.
 func (*SweepResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{77}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *SweepResponse) GetDeleted() uint32 {
@@ -5878,7 +7224,7 @@ type DueTimer struct {
 
 func (x *DueTimer) Reset() {
 	*x = DueTimer{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5890,7 +7236,7 @@ func (x *DueTimer) String() string {
 func (*DueTimer) ProtoMessage() {}
 
 func (x *DueTimer) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[78]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5903,7 +7249,7 @@ func (x *DueTimer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimer.ProtoReflect.Descriptor instead.
 func (*DueTimer) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{78}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *DueTimer) GetKey() *TimerKey {
@@ -5943,7 +7289,7 @@ type DueTimersRequest struct {
 
 func (x *DueTimersRequest) Reset() {
 	*x = DueTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5955,7 +7301,7 @@ func (x *DueTimersRequest) String() string {
 func (*DueTimersRequest) ProtoMessage() {}
 
 func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[79]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5968,7 +7314,7 @@ func (x *DueTimersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersRequest.ProtoReflect.Descriptor instead.
 func (*DueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{79}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *DueTimersRequest) GetNamespace() string {
@@ -5996,7 +7342,7 @@ type DueTimersResponse struct {
 
 func (x *DueTimersResponse) Reset() {
 	*x = DueTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6008,7 +7354,7 @@ func (x *DueTimersResponse) String() string {
 func (*DueTimersResponse) ProtoMessage() {}
 
 func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[80]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6021,7 +7367,7 @@ func (x *DueTimersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DueTimersResponse.ProtoReflect.Descriptor instead.
 func (*DueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{80}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *DueTimersResponse) GetDue() []*DueTimer {
@@ -6045,7 +7391,7 @@ type RecordQueryServiceDueTimersRequest struct {
 
 func (x *RecordQueryServiceDueTimersRequest) Reset() {
 	*x = RecordQueryServiceDueTimersRequest{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6057,7 +7403,7 @@ func (x *RecordQueryServiceDueTimersRequest) String() string {
 func (*RecordQueryServiceDueTimersRequest) ProtoMessage() {}
 
 func (x *RecordQueryServiceDueTimersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[81]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6070,7 +7416,7 @@ func (x *RecordQueryServiceDueTimersRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RecordQueryServiceDueTimersRequest.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceDueTimersRequest) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{81}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *RecordQueryServiceDueTimersRequest) GetNamespace() string {
@@ -6098,7 +7444,7 @@ type RecordQueryServiceDueTimersResponse struct {
 
 func (x *RecordQueryServiceDueTimersResponse) Reset() {
 	*x = RecordQueryServiceDueTimersResponse{}
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6110,7 +7456,7 @@ func (x *RecordQueryServiceDueTimersResponse) String() string {
 func (*RecordQueryServiceDueTimersResponse) ProtoMessage() {}
 
 func (x *RecordQueryServiceDueTimersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_temporaless_v1_temporaless_proto_msgTypes[82]
+	mi := &file_temporaless_v1_temporaless_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6123,7 +7469,7 @@ func (x *RecordQueryServiceDueTimersResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RecordQueryServiceDueTimersResponse.ProtoReflect.Descriptor instead.
 func (*RecordQueryServiceDueTimersResponse) Descriptor() ([]byte, []int) {
-	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{82}
+	return file_temporaless_v1_temporaless_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *RecordQueryServiceDueTimersResponse) GetDue() []*DueTimer {
@@ -6137,7 +7483,7 @@ var File_temporaless_v1_temporaless_proto protoreflect.FileDescriptor
 
 const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\n" +
-	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe5\v\n" +
+	" temporaless/v1/temporaless.proto\x12\x0etemporaless.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19google/protobuf/any.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\x0e\n" +
 	"\x0fWorkflowOptions\x12\xb0\x02\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x8e\x02\xbaH\x8a\x02\xba\x01u\n" +
 	"5temporaless.workflow_options.workflow_id.not_dot_path\x12\x1fworkflow_id must not be . or ..\x1a\x1bthis != '.' && this != '..'\xba\x01v\n" +
@@ -6150,9 +7496,11 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x0fconcurrency_key\x18\x05 \x01(\tB\xaf\x01\xbaH\xab\x01\xba\x01\x8d\x01\n" +
 	"9temporaless.workflow_options.concurrency_key.not_dot_path\x12#concurrency_key must not be . or ..\x1a+this == '' || (this != '.' && this != '..')r\x182\x16^$|^[A-Za-z0-9._:=-]+$R\x0econcurrencyKey\x125\n" +
 	"\x11concurrency_limit\x18\x06 \x01(\rB\b\xbaH\x05*\x03\x18\xe8\aR\x10concurrencyLimit\x12@\n" +
-	"\x0erun_order_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\frunOrderTime:\xb8\x03\xbaH\xb4\x03\x1a\xfe\x01\n" +
+	"\x0erun_order_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\frunOrderTime\x12Q\n" +
+	"\x10fenced_execution\x18\b \x01(\v2&.temporaless.v1.FencedExecutionOptionsR\x0ffencedExecution:\xb0\x05\xbaH\xac\x05\x1a\xfe\x01\n" +
 	"9temporaless.workflow_options.concurrency_key_limit_paired\x12Dconcurrency_key and concurrency_limit must both be set or both empty\x1a{(this.concurrency_key == '' && this.concurrency_limit == 0u) || (this.concurrency_key != '' && this.concurrency_limit > 0u)\x1a\xb0\x01\n" +
-	"=temporaless.workflow_options.concurrency_requires_claim_owner\x126claim_owner_id must be set when concurrency_key is set\x1a7this.concurrency_key == '' || this.claim_owner_id != ''J\x04\b\x03\x10\x04R\fcode_version\"\xba\x06\n" +
+	"=temporaless.workflow_options.concurrency_requires_claim_owner\x126claim_owner_id must be set when concurrency_key is set\x1a7this.concurrency_key == '' || this.claim_owner_id != ''\x1a\xf5\x01\n" +
+	"4temporaless.workflow_options.fencing_excludes_claims\x12Cfenced execution cannot use create-only claims or concurrency slots\x1ax!has(this.fenced_execution) || (this.claim_owner_id == '' && this.concurrency_key == '' && this.concurrency_limit == 0u)J\x04\b\x03\x10\x04R\fcode_version\"\xba\x06\n" +
 	"\x0fActivityOptions\x12\xa9\x01\n" +
 	"\vactivity_id\x18\x01 \x01(\tB\x87\x01\xbaH\x83\x01\xba\x01g\n" +
 	"'temporaless.id.activity_id.not_dot_path\x12\x1factivity_id must not be . or ..\x1a\x1bthis != '.' && this != '..'r\x17\x10\x012\x13^[A-Za-z0-9._:=-]+$R\n" +
@@ -6502,10 +7850,118 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\v2\x18.temporaless.v1.ClaimKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\"/\n" +
 	"\x13DeleteClaimResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x1d\n" +
-	"\x1bGetStoreCapabilitiesRequest\"\xcf\x01\n" +
+	"\x1bGetStoreCapabilitiesRequest\"\x87\x03\n" +
 	"\x1cGetStoreCapabilitiesResponse\x12J\n" +
 	"\x10claim_capability\x18\x01 \x01(\x0e2\x1f.temporaless.v1.ClaimCapabilityR\x0fclaimCapability\x12c\n" +
-	"\x19event_delivery_capability\x18\x02 \x01(\x0e2'.temporaless.v1.EventDeliveryCapabilityR\x17eventDeliveryCapability\"\xa3\x01\n" +
+	"\x19event_delivery_capability\x18\x02 \x01(\x0e2'.temporaless.v1.EventDeliveryCapabilityR\x17eventDeliveryCapability\x12i\n" +
+	"\x1bfenced_execution_capability\x18\x03 \x01(\x0e2).temporaless.v1.FencedExecutionCapabilityR\x19fencedExecutionCapability\x12K\n" +
+	"\"fenced_execution_store_incarnation\x18\x04 \x01(\tR\x1ffencedExecutionStoreIncarnation\"\xc1\x01\n" +
+	"\x16FencedExecutionOptions\x12%\n" +
+	"\bowner_id\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\aownerId\x121\n" +
+	"\x0eacquisition_id\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\racquisitionId\x12M\n" +
+	"\x0elease_duration\x18\x03 \x01(\v2\x19.google.protobuf.DurationB\v\xbaH\b\xc8\x01\x01\xaa\x01\x02*\x00R\rleaseDuration\"\x8d\x02\n" +
+	"\x0eExecutionToken\x125\n" +
+	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\x127\n" +
+	"\x11store_incarnation\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x10storeIncarnation\x12%\n" +
+	"\bowner_id\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\aownerId\x121\n" +
+	"\x0eacquisition_id\x18\x04 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\racquisitionId\x121\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\x04B\x11\xbaH\x0e2\f\x18\xff\xff\xff\xff\xff\xff\xff\xff\x7f \x00R\n" +
+	"generation\"\xe5\x02\n" +
+	"\x0eExecutionLease\x12<\n" +
+	"\x05token\x18\x01 \x01(\v2\x1e.temporaless.v1.ExecutionTokenB\x06\xbaH\x03\xc8\x01\x01R\x05token\x12A\n" +
+	"\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\texpiresAt\x12C\n" +
+	"\vobserved_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\n" +
+	"observedAt:\x8c\x01\xbaH\x88\x01\x1a\x85\x01\n" +
+	"$temporaless.execution_lease.deadline\x129execution lease must expire after the observed store time\x1a\"this.expires_at > this.observed_at\"\xb6\x04\n" +
+	"\x11ExecutionMutation\x12C\n" +
+	"\fput_workflow\x18\x01 \x01(\v2\x1e.temporaless.v1.WorkflowRecordH\x00R\vputWorkflow\x12C\n" +
+	"\fput_activity\x18\x02 \x01(\v2\x1e.temporaless.v1.ActivityRecordH\x00R\vputActivity\x12:\n" +
+	"\tput_timer\x18\x03 \x01(\v2\x1b.temporaless.v1.TimerRecordH\x00R\bputTimer\x12:\n" +
+	"\tput_event\x18\x04 \x01(\v2\x1b.temporaless.v1.EventRecordH\x00R\bputEvent\x12F\n" +
+	"\x0fdelete_activity\x18\x05 \x01(\v2\x1b.temporaless.v1.ActivityKeyH\x00R\x0edeleteActivity\x12=\n" +
+	"\fdelete_timer\x18\x06 \x01(\v2\x18.temporaless.v1.TimerKeyH\x00R\vdeleteTimer\x12=\n" +
+	"\fdelete_event\x18\a \x01(\v2\x18.temporaless.v1.EventKeyH\x00R\vdeleteEvent\x12F\n" +
+	"\x0fdelete_workflow\x18\b \x01(\v2\x1b.temporaless.v1.WorkflowKeyH\x00R\x0edeleteWorkflowB\x11\n" +
+	"\bmutation\x12\x05\xbaH\x02\b\x01\"3\n" +
+	"\x17ExecutionMutationResult\x12\x18\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\"i\n" +
+	"\x18ExecutionMutationResults\x12M\n" +
+	"\aresults\x18\x01 \x03(\v2'.temporaless.v1.ExecutionMutationResultB\n" +
+	"\xbaH\a\x92\x01\x04\b\x01\x10dR\aresults\"\xc2\t\n" +
+	"\x19ExecutionOperationReceipt\x125\n" +
+	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\x12-\n" +
+	"\foperation_id\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\x12.\n" +
+	"\x0erequest_sha256\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\rrequestSha256\x127\n" +
+	"\x11store_incarnation\x18\x04 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x10storeIncarnation\x12<\n" +
+	"\bacquired\x18\x05 \x01(\v2\x1e.temporaless.v1.ExecutionLeaseH\x00R\bacquired\x12:\n" +
+	"\arenewed\x18\x06 \x01(\v2\x1e.temporaless.v1.ExecutionLeaseH\x00R\arenewed\x12<\n" +
+	"\breleased\x18\a \x01(\v2\x1e.temporaless.v1.ExecutionTokenH\x00R\breleased\x12D\n" +
+	"\aapplied\x18\b \x01(\v2(.temporaless.v1.ExecutionMutationResultsH\x00R\aapplied:\xc6\x05\xbaH\xc2\x05\x1a\xee\x01\n" +
+	"/temporaless.execution_receipt.acquired.identity\x12:acquired result must match the receipt run and incarnation\x1a\x7f!has(this.acquired) || (this.acquired.token.key == this.key && this.acquired.token.store_incarnation == this.store_incarnation)\x1a\xe9\x01\n" +
+	".temporaless.execution_receipt.renewed.identity\x129renewed result must match the receipt run and incarnation\x1a|!has(this.renewed) || (this.renewed.token.key == this.key && this.renewed.token.store_incarnation == this.store_incarnation)\x1a\xe2\x01\n" +
+	"/temporaless.execution_receipt.released.identity\x12:released result must match the receipt run and incarnation\x1as!has(this.released) || (this.released.key == this.key && this.released.store_incarnation == this.store_incarnation)B\x0f\n" +
+	"\x06result\x12\x05\xbaH\x02\b\x01\"\x82\x02\n" +
+	"\x17AcquireExecutionRequest\x125\n" +
+	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\x12H\n" +
+	"\aoptions\x18\x02 \x01(\v2&.temporaless.v1.FencedExecutionOptionsB\x06\xbaH\x03\xc8\x01\x01R\aoptions\x12-\n" +
+	"\foperation_id\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\x127\n" +
+	"\x11store_incarnation\x18\x04 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x10storeIncarnation\"\xe2\x01\n" +
+	"\x18AcquireExecutionResponse\x12K\n" +
+	"\areceipt\x18\x01 \x01(\v2).temporaless.v1.ExecutionOperationReceiptB\x06\xbaH\x03\xc8\x01\x01R\areceipt:y\xbaHv\x1at\n" +
+	".temporaless.acquired_execution_response.result\x12&receipt must carry the acquired result\x1a\x1ahas(this.receipt.acquired)\"\xd3\x01\n" +
+	"\x15RenewExecutionRequest\x12<\n" +
+	"\x05token\x18\x01 \x01(\v2\x1e.temporaless.v1.ExecutionTokenB\x06\xbaH\x03\xc8\x01\x01R\x05token\x12M\n" +
+	"\x0elease_duration\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\v\xbaH\b\xc8\x01\x01\xaa\x01\x02*\x00R\rleaseDuration\x12-\n" +
+	"\foperation_id\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\"\xdd\x01\n" +
+	"\x16RenewExecutionResponse\x12K\n" +
+	"\areceipt\x18\x01 \x01(\v2).temporaless.v1.ExecutionOperationReceiptB\x06\xbaH\x03\xc8\x01\x01R\areceipt:v\xbaHs\x1aq\n" +
+	"-temporaless.renewed_execution_response.result\x12%receipt must carry the renewed result\x1a\x19has(this.receipt.renewed)\"\x86\x01\n" +
+	"\x17ReleaseExecutionRequest\x12<\n" +
+	"\x05token\x18\x01 \x01(\v2\x1e.temporaless.v1.ExecutionTokenB\x06\xbaH\x03\xc8\x01\x01R\x05token\x12-\n" +
+	"\foperation_id\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\"\xe2\x01\n" +
+	"\x18ReleaseExecutionResponse\x12K\n" +
+	"\areceipt\x18\x01 \x01(\v2).temporaless.v1.ExecutionOperationReceiptB\x06\xbaH\x03\xc8\x01\x01R\areceipt:y\xbaHv\x1at\n" +
+	".temporaless.released_execution_response.result\x12&receipt must carry the released result\x1a\x1ahas(this.receipt.released)\"\xa1\x16\n" +
+	"\x1eApplyExecutionMutationsRequest\x12<\n" +
+	"\x05token\x18\x01 \x01(\v2\x1e.temporaless.v1.ExecutionTokenB\x06\xbaH\x03\xc8\x01\x01R\x05token\x12-\n" +
+	"\foperation_id\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\x12K\n" +
+	"\tmutations\x18\x03 \x03(\v2!.temporaless.v1.ExecutionMutationB\n" +
+	"\xbaH\a\x92\x01\x04\b\x01\x10dR\tmutations:\xc4\x14\xbaH\xc0\x14\x1a\xcb\x02\n" +
+	"2temporaless.execution_mutations.put_workflow.scope\x123put_workflow must belong to the execution token run\x1a\xdf\x01this.mutations.all(m, !has(m.put_workflow) || (m.put_workflow.key.namespace == this.token.key.namespace && m.put_workflow.key.workflow_id == this.token.key.workflow_id && m.put_workflow.key.run_id == this.token.key.run_id))\x1a\xcb\x02\n" +
+	"2temporaless.execution_mutations.put_activity.scope\x123put_activity must belong to the execution token run\x1a\xdf\x01this.mutations.all(m, !has(m.put_activity) || (m.put_activity.key.namespace == this.token.key.namespace && m.put_activity.key.workflow_id == this.token.key.workflow_id && m.put_activity.key.run_id == this.token.key.run_id))\x1a\xb9\x02\n" +
+	"/temporaless.execution_mutations.put_timer.scope\x120put_timer must belong to the execution token run\x1a\xd3\x01this.mutations.all(m, !has(m.put_timer) || (m.put_timer.key.namespace == this.token.key.namespace && m.put_timer.key.workflow_id == this.token.key.workflow_id && m.put_timer.key.run_id == this.token.key.run_id))\x1a\xb9\x02\n" +
+	"/temporaless.execution_mutations.put_event.scope\x120put_event must belong to the execution token run\x1a\xd3\x01this.mutations.all(m, !has(m.put_event) || (m.put_event.key.namespace == this.token.key.namespace && m.put_event.key.workflow_id == this.token.key.workflow_id && m.put_event.key.run_id == this.token.key.run_id))\x1a\xd1\x02\n" +
+	"5temporaless.execution_mutations.delete_activity.scope\x126delete_activity must belong to the execution token run\x1a\xdf\x01this.mutations.all(m, !has(m.delete_activity) || (m.delete_activity.namespace == this.token.key.namespace && m.delete_activity.workflow_id == this.token.key.workflow_id && m.delete_activity.run_id == this.token.key.run_id))\x1a\xbf\x02\n" +
+	"2temporaless.execution_mutations.delete_timer.scope\x123delete_timer must belong to the execution token run\x1a\xd3\x01this.mutations.all(m, !has(m.delete_timer) || (m.delete_timer.namespace == this.token.key.namespace && m.delete_timer.workflow_id == this.token.key.workflow_id && m.delete_timer.run_id == this.token.key.run_id))\x1a\xbf\x02\n" +
+	"2temporaless.execution_mutations.delete_event.scope\x123delete_event must belong to the execution token run\x1a\xd3\x01this.mutations.all(m, !has(m.delete_event) || (m.delete_event.namespace == this.token.key.namespace && m.delete_event.workflow_id == this.token.key.workflow_id && m.delete_event.run_id == this.token.key.run_id))\x1a\xd1\x02\n" +
+	"5temporaless.execution_mutations.delete_workflow.scope\x126delete_workflow must belong to the execution token run\x1a\xdf\x01this.mutations.all(m, !has(m.delete_workflow) || (m.delete_workflow.namespace == this.token.key.namespace && m.delete_workflow.workflow_id == this.token.key.workflow_id && m.delete_workflow.run_id == this.token.key.run_id))\"\xe6\x01\n" +
+	"\x1fApplyExecutionMutationsResponse\x12K\n" +
+	"\areceipt\x18\x01 \x01(\v2).temporaless.v1.ExecutionOperationReceiptB\x06\xbaH\x03\xc8\x01\x01R\areceipt:v\xbaHs\x1aq\n" +
+	"-temporaless.applied_execution_response.result\x12%receipt must carry the applied result\x1a\x19has(this.receipt.applied)\"\xbd\x01\n" +
+	"\x1cGetExecutionOperationRequest\x125\n" +
+	"\x03key\x18\x01 \x01(\v2\x1b.temporaless.v1.WorkflowKeyB\x06\xbaH\x03\xc8\x01\x01R\x03key\x127\n" +
+	"\x11store_incarnation\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x10storeIncarnation\x12-\n" +
+	"\foperation_id\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\voperationId\"\x90\x02\n" +
+	"\x1dGetExecutionOperationResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12C\n" +
+	"\areceipt\x18\x02 \x01(\v2).temporaless.v1.ExecutionOperationReceiptR\areceipt:\x93\x01\xbaH\x8f\x01\x1a\x8c\x01\n" +
+	"5temporaless.get_execution_operation_response.presence\x122receipt must be present exactly when found is true\x1a\x1fthis.found == has(this.receipt)\"\xa3\x01\n" +
 	"\fSweepRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x124\n" +
 	"\x03now\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\x03now\x12?\n" +
@@ -6597,9 +8053,18 @@ const file_temporaless_v1_temporaless_proto_rawDesc = "" +
 	"\x1aEventDeliveryFailureReason\x12-\n" +
 	")EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED\x10\x00\x12-\n" +
 	")EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED\x10\x01\x12*\n" +
-	"&EVENT_DELIVERY_FAILURE_REASON_CONFLICT\x10\x022\xef\x10\n" +
+	"&EVENT_DELIVERY_FAILURE_REASON_CONFLICT\x10\x02*\xab\x01\n" +
+	"\x19FencedExecutionCapability\x12+\n" +
+	"'FENCED_EXECUTION_CAPABILITY_UNSPECIFIED\x10\x00\x12+\n" +
+	"'FENCED_EXECUTION_CAPABILITY_UNSUPPORTED\x10\x01\x124\n" +
+	"0FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS\x10\x022\x90\x15\n" +
 	"\x12RecordStoreService\x12q\n" +
-	"\x14GetStoreCapabilities\x12+.temporaless.v1.GetStoreCapabilitiesRequest\x1a,.temporaless.v1.GetStoreCapabilitiesResponse\x12V\n" +
+	"\x14GetStoreCapabilities\x12+.temporaless.v1.GetStoreCapabilitiesRequest\x1a,.temporaless.v1.GetStoreCapabilitiesResponse\x12e\n" +
+	"\x10AcquireExecution\x12'.temporaless.v1.AcquireExecutionRequest\x1a(.temporaless.v1.AcquireExecutionResponse\x12_\n" +
+	"\x0eRenewExecution\x12%.temporaless.v1.RenewExecutionRequest\x1a&.temporaless.v1.RenewExecutionResponse\x12e\n" +
+	"\x10ReleaseExecution\x12'.temporaless.v1.ReleaseExecutionRequest\x1a(.temporaless.v1.ReleaseExecutionResponse\x12z\n" +
+	"\x17ApplyExecutionMutations\x12..temporaless.v1.ApplyExecutionMutationsRequest\x1a/.temporaless.v1.ApplyExecutionMutationsResponse\x12t\n" +
+	"\x15GetExecutionOperation\x12,.temporaless.v1.GetExecutionOperationRequest\x1a-.temporaless.v1.GetExecutionOperationResponse\x12V\n" +
 	"\vGetWorkflow\x12\".temporaless.v1.GetWorkflowRequest\x1a#.temporaless.v1.GetWorkflowResponse\x12V\n" +
 	"\vPutWorkflow\x12\".temporaless.v1.PutWorkflowRequest\x1a#.temporaless.v1.PutWorkflowResponse\x12q\n" +
 	"\x14GetLatestWorkflowRun\x12+.temporaless.v1.GetLatestWorkflowRunRequest\x1a,.temporaless.v1.GetLatestWorkflowRunResponse\x12M\n" +
@@ -6644,8 +8109,8 @@ func file_temporaless_v1_temporaless_proto_rawDescGZIP() []byte {
 	return file_temporaless_v1_temporaless_proto_rawDescData
 }
 
-var file_temporaless_v1_temporaless_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
+var file_temporaless_v1_temporaless_proto_enumTypes = make([]protoimpl.EnumInfo, 14)
+var file_temporaless_v1_temporaless_proto_msgTypes = make([]protoimpl.MessageInfo, 104)
 var file_temporaless_v1_temporaless_proto_goTypes = []any{
 	(WorkflowPlanNodeKind)(0),                        // 0: temporaless.v1.WorkflowPlanNodeKind
 	(WorkflowPlanEdgeKind)(0),                        // 1: temporaless.v1.WorkflowPlanEdgeKind
@@ -6660,280 +8125,342 @@ var file_temporaless_v1_temporaless_proto_goTypes = []any{
 	(EventDeliveryCapability)(0),                     // 10: temporaless.v1.EventDeliveryCapability
 	(EventDeliveryDisposition)(0),                    // 11: temporaless.v1.EventDeliveryDisposition
 	(EventDeliveryFailureReason)(0),                  // 12: temporaless.v1.EventDeliveryFailureReason
-	(*WorkflowOptions)(nil),                          // 13: temporaless.v1.WorkflowOptions
-	(*ActivityOptions)(nil),                          // 14: temporaless.v1.ActivityOptions
-	(*PollOptions)(nil),                              // 15: temporaless.v1.PollOptions
-	(*DispatchOptions)(nil),                          // 16: temporaless.v1.DispatchOptions
-	(*WorkflowPlan)(nil),                             // 17: temporaless.v1.WorkflowPlan
-	(*WorkflowPlanNode)(nil),                         // 18: temporaless.v1.WorkflowPlanNode
-	(*WorkflowPlanEdge)(nil),                         // 19: temporaless.v1.WorkflowPlanEdge
-	(*TaskInfo)(nil),                                 // 20: temporaless.v1.TaskInfo
-	(*RetryPolicy)(nil),                              // 21: temporaless.v1.RetryPolicy
-	(*ReservedNames)(nil),                            // 22: temporaless.v1.ReservedNames
-	(*RuntimeDefaults)(nil),                          // 23: temporaless.v1.RuntimeDefaults
-	(*EventDeliveryErrorDetail)(nil),                 // 24: temporaless.v1.EventDeliveryErrorDetail
-	(*WorkflowKey)(nil),                              // 25: temporaless.v1.WorkflowKey
-	(*ActivityKey)(nil),                              // 26: temporaless.v1.ActivityKey
-	(*TimerKey)(nil),                                 // 27: temporaless.v1.TimerKey
-	(*EventKey)(nil),                                 // 28: temporaless.v1.EventKey
-	(*ClaimKey)(nil),                                 // 29: temporaless.v1.ClaimKey
-	(*ActivityFailure)(nil),                          // 30: temporaless.v1.ActivityFailure
-	(*ActivityAttempt)(nil),                          // 31: temporaless.v1.ActivityAttempt
-	(*ActivityRecord)(nil),                           // 32: temporaless.v1.ActivityRecord
-	(*WorkflowRecord)(nil),                           // 33: temporaless.v1.WorkflowRecord
-	(*TimerRecord)(nil),                              // 34: temporaless.v1.TimerRecord
-	(*EventRecord)(nil),                              // 35: temporaless.v1.EventRecord
-	(*ClaimRecord)(nil),                              // 36: temporaless.v1.ClaimRecord
-	(*LatestWorkflowRunPointer)(nil),                 // 37: temporaless.v1.LatestWorkflowRunPointer
-	(*DueTimerEntry)(nil),                            // 38: temporaless.v1.DueTimerEntry
-	(*GetWorkflowRequest)(nil),                       // 39: temporaless.v1.GetWorkflowRequest
-	(*GetWorkflowResponse)(nil),                      // 40: temporaless.v1.GetWorkflowResponse
-	(*PutWorkflowRequest)(nil),                       // 41: temporaless.v1.PutWorkflowRequest
-	(*PutWorkflowResponse)(nil),                      // 42: temporaless.v1.PutWorkflowResponse
-	(*GetLatestWorkflowRunRequest)(nil),              // 43: temporaless.v1.GetLatestWorkflowRunRequest
-	(*GetLatestWorkflowRunResponse)(nil),             // 44: temporaless.v1.GetLatestWorkflowRunResponse
-	(*GetTimerRequest)(nil),                          // 45: temporaless.v1.GetTimerRequest
-	(*GetTimerResponse)(nil),                         // 46: temporaless.v1.GetTimerResponse
-	(*PutTimerRequest)(nil),                          // 47: temporaless.v1.PutTimerRequest
-	(*PutTimerResponse)(nil),                         // 48: temporaless.v1.PutTimerResponse
-	(*GetActivityRequest)(nil),                       // 49: temporaless.v1.GetActivityRequest
-	(*GetActivityResponse)(nil),                      // 50: temporaless.v1.GetActivityResponse
-	(*PutActivityRequest)(nil),                       // 51: temporaless.v1.PutActivityRequest
-	(*PutActivityResponse)(nil),                      // 52: temporaless.v1.PutActivityResponse
-	(*GetEventRequest)(nil),                          // 53: temporaless.v1.GetEventRequest
-	(*GetEventResponse)(nil),                         // 54: temporaless.v1.GetEventResponse
-	(*PutEventRequest)(nil),                          // 55: temporaless.v1.PutEventRequest
-	(*PutEventResponse)(nil),                         // 56: temporaless.v1.PutEventResponse
-	(*DeliverEventRequest)(nil),                      // 57: temporaless.v1.DeliverEventRequest
-	(*DeliverEventResponse)(nil),                     // 58: temporaless.v1.DeliverEventResponse
-	(*ListWorkflowsRequest)(nil),                     // 59: temporaless.v1.ListWorkflowsRequest
-	(*ListWorkflowsResponse)(nil),                    // 60: temporaless.v1.ListWorkflowsResponse
-	(*ListActivitiesRequest)(nil),                    // 61: temporaless.v1.ListActivitiesRequest
-	(*ListActivitiesResponse)(nil),                   // 62: temporaless.v1.ListActivitiesResponse
-	(*ListTimersRequest)(nil),                        // 63: temporaless.v1.ListTimersRequest
-	(*ListTimersResponse)(nil),                       // 64: temporaless.v1.ListTimersResponse
-	(*ListEventsRequest)(nil),                        // 65: temporaless.v1.ListEventsRequest
-	(*ListEventsResponse)(nil),                       // 66: temporaless.v1.ListEventsResponse
-	(*ListClaimsRequest)(nil),                        // 67: temporaless.v1.ListClaimsRequest
-	(*ListClaimsResponse)(nil),                       // 68: temporaless.v1.ListClaimsResponse
-	(*RecordQueryServiceListActivitiesRequest)(nil),  // 69: temporaless.v1.RecordQueryServiceListActivitiesRequest
-	(*RecordQueryServiceListActivitiesResponse)(nil), // 70: temporaless.v1.RecordQueryServiceListActivitiesResponse
-	(*DeleteWorkflowRequest)(nil),                    // 71: temporaless.v1.DeleteWorkflowRequest
-	(*DeleteWorkflowResponse)(nil),                   // 72: temporaless.v1.DeleteWorkflowResponse
-	(*DeleteRunRequest)(nil),                         // 73: temporaless.v1.DeleteRunRequest
-	(*DeleteRunResponse)(nil),                        // 74: temporaless.v1.DeleteRunResponse
-	(*DeleteActivityRequest)(nil),                    // 75: temporaless.v1.DeleteActivityRequest
-	(*DeleteActivityResponse)(nil),                   // 76: temporaless.v1.DeleteActivityResponse
-	(*DeleteTimerRequest)(nil),                       // 77: temporaless.v1.DeleteTimerRequest
-	(*DeleteTimerResponse)(nil),                      // 78: temporaless.v1.DeleteTimerResponse
-	(*DeleteEventRequest)(nil),                       // 79: temporaless.v1.DeleteEventRequest
-	(*DeleteEventResponse)(nil),                      // 80: temporaless.v1.DeleteEventResponse
-	(*GetClaimRequest)(nil),                          // 81: temporaless.v1.GetClaimRequest
-	(*GetClaimResponse)(nil),                         // 82: temporaless.v1.GetClaimResponse
-	(*TryCreateClaimRequest)(nil),                    // 83: temporaless.v1.TryCreateClaimRequest
-	(*TryCreateClaimResponse)(nil),                   // 84: temporaless.v1.TryCreateClaimResponse
-	(*DeleteClaimRequest)(nil),                       // 85: temporaless.v1.DeleteClaimRequest
-	(*DeleteClaimResponse)(nil),                      // 86: temporaless.v1.DeleteClaimResponse
-	(*GetStoreCapabilitiesRequest)(nil),              // 87: temporaless.v1.GetStoreCapabilitiesRequest
-	(*GetStoreCapabilitiesResponse)(nil),             // 88: temporaless.v1.GetStoreCapabilitiesResponse
-	(*SweepRequest)(nil),                             // 89: temporaless.v1.SweepRequest
-	(*SweepResponse)(nil),                            // 90: temporaless.v1.SweepResponse
-	(*DueTimer)(nil),                                 // 91: temporaless.v1.DueTimer
-	(*DueTimersRequest)(nil),                         // 92: temporaless.v1.DueTimersRequest
-	(*DueTimersResponse)(nil),                        // 93: temporaless.v1.DueTimersResponse
-	(*RecordQueryServiceDueTimersRequest)(nil),       // 94: temporaless.v1.RecordQueryServiceDueTimersRequest
-	(*RecordQueryServiceDueTimersResponse)(nil),      // 95: temporaless.v1.RecordQueryServiceDueTimersResponse
-	nil,                           // 96: temporaless.v1.WorkflowPlan.AnnotationsEntry
-	nil,                           // 97: temporaless.v1.WorkflowPlanNode.AnnotationsEntry
-	nil,                           // 98: temporaless.v1.ActivityRecord.AnnotationsEntry
-	nil,                           // 99: temporaless.v1.WorkflowRecord.AnnotationsEntry
-	(*timestamppb.Timestamp)(nil), // 100: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 101: google.protobuf.Duration
-	(*anypb.Any)(nil),             // 102: google.protobuf.Any
+	(FencedExecutionCapability)(0),                   // 13: temporaless.v1.FencedExecutionCapability
+	(*WorkflowOptions)(nil),                          // 14: temporaless.v1.WorkflowOptions
+	(*ActivityOptions)(nil),                          // 15: temporaless.v1.ActivityOptions
+	(*PollOptions)(nil),                              // 16: temporaless.v1.PollOptions
+	(*DispatchOptions)(nil),                          // 17: temporaless.v1.DispatchOptions
+	(*WorkflowPlan)(nil),                             // 18: temporaless.v1.WorkflowPlan
+	(*WorkflowPlanNode)(nil),                         // 19: temporaless.v1.WorkflowPlanNode
+	(*WorkflowPlanEdge)(nil),                         // 20: temporaless.v1.WorkflowPlanEdge
+	(*TaskInfo)(nil),                                 // 21: temporaless.v1.TaskInfo
+	(*RetryPolicy)(nil),                              // 22: temporaless.v1.RetryPolicy
+	(*ReservedNames)(nil),                            // 23: temporaless.v1.ReservedNames
+	(*RuntimeDefaults)(nil),                          // 24: temporaless.v1.RuntimeDefaults
+	(*EventDeliveryErrorDetail)(nil),                 // 25: temporaless.v1.EventDeliveryErrorDetail
+	(*WorkflowKey)(nil),                              // 26: temporaless.v1.WorkflowKey
+	(*ActivityKey)(nil),                              // 27: temporaless.v1.ActivityKey
+	(*TimerKey)(nil),                                 // 28: temporaless.v1.TimerKey
+	(*EventKey)(nil),                                 // 29: temporaless.v1.EventKey
+	(*ClaimKey)(nil),                                 // 30: temporaless.v1.ClaimKey
+	(*ActivityFailure)(nil),                          // 31: temporaless.v1.ActivityFailure
+	(*ActivityAttempt)(nil),                          // 32: temporaless.v1.ActivityAttempt
+	(*ActivityRecord)(nil),                           // 33: temporaless.v1.ActivityRecord
+	(*WorkflowRecord)(nil),                           // 34: temporaless.v1.WorkflowRecord
+	(*TimerRecord)(nil),                              // 35: temporaless.v1.TimerRecord
+	(*EventRecord)(nil),                              // 36: temporaless.v1.EventRecord
+	(*ClaimRecord)(nil),                              // 37: temporaless.v1.ClaimRecord
+	(*LatestWorkflowRunPointer)(nil),                 // 38: temporaless.v1.LatestWorkflowRunPointer
+	(*DueTimerEntry)(nil),                            // 39: temporaless.v1.DueTimerEntry
+	(*GetWorkflowRequest)(nil),                       // 40: temporaless.v1.GetWorkflowRequest
+	(*GetWorkflowResponse)(nil),                      // 41: temporaless.v1.GetWorkflowResponse
+	(*PutWorkflowRequest)(nil),                       // 42: temporaless.v1.PutWorkflowRequest
+	(*PutWorkflowResponse)(nil),                      // 43: temporaless.v1.PutWorkflowResponse
+	(*GetLatestWorkflowRunRequest)(nil),              // 44: temporaless.v1.GetLatestWorkflowRunRequest
+	(*GetLatestWorkflowRunResponse)(nil),             // 45: temporaless.v1.GetLatestWorkflowRunResponse
+	(*GetTimerRequest)(nil),                          // 46: temporaless.v1.GetTimerRequest
+	(*GetTimerResponse)(nil),                         // 47: temporaless.v1.GetTimerResponse
+	(*PutTimerRequest)(nil),                          // 48: temporaless.v1.PutTimerRequest
+	(*PutTimerResponse)(nil),                         // 49: temporaless.v1.PutTimerResponse
+	(*GetActivityRequest)(nil),                       // 50: temporaless.v1.GetActivityRequest
+	(*GetActivityResponse)(nil),                      // 51: temporaless.v1.GetActivityResponse
+	(*PutActivityRequest)(nil),                       // 52: temporaless.v1.PutActivityRequest
+	(*PutActivityResponse)(nil),                      // 53: temporaless.v1.PutActivityResponse
+	(*GetEventRequest)(nil),                          // 54: temporaless.v1.GetEventRequest
+	(*GetEventResponse)(nil),                         // 55: temporaless.v1.GetEventResponse
+	(*PutEventRequest)(nil),                          // 56: temporaless.v1.PutEventRequest
+	(*PutEventResponse)(nil),                         // 57: temporaless.v1.PutEventResponse
+	(*DeliverEventRequest)(nil),                      // 58: temporaless.v1.DeliverEventRequest
+	(*DeliverEventResponse)(nil),                     // 59: temporaless.v1.DeliverEventResponse
+	(*ListWorkflowsRequest)(nil),                     // 60: temporaless.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),                    // 61: temporaless.v1.ListWorkflowsResponse
+	(*ListActivitiesRequest)(nil),                    // 62: temporaless.v1.ListActivitiesRequest
+	(*ListActivitiesResponse)(nil),                   // 63: temporaless.v1.ListActivitiesResponse
+	(*ListTimersRequest)(nil),                        // 64: temporaless.v1.ListTimersRequest
+	(*ListTimersResponse)(nil),                       // 65: temporaless.v1.ListTimersResponse
+	(*ListEventsRequest)(nil),                        // 66: temporaless.v1.ListEventsRequest
+	(*ListEventsResponse)(nil),                       // 67: temporaless.v1.ListEventsResponse
+	(*ListClaimsRequest)(nil),                        // 68: temporaless.v1.ListClaimsRequest
+	(*ListClaimsResponse)(nil),                       // 69: temporaless.v1.ListClaimsResponse
+	(*RecordQueryServiceListActivitiesRequest)(nil),  // 70: temporaless.v1.RecordQueryServiceListActivitiesRequest
+	(*RecordQueryServiceListActivitiesResponse)(nil), // 71: temporaless.v1.RecordQueryServiceListActivitiesResponse
+	(*DeleteWorkflowRequest)(nil),                    // 72: temporaless.v1.DeleteWorkflowRequest
+	(*DeleteWorkflowResponse)(nil),                   // 73: temporaless.v1.DeleteWorkflowResponse
+	(*DeleteRunRequest)(nil),                         // 74: temporaless.v1.DeleteRunRequest
+	(*DeleteRunResponse)(nil),                        // 75: temporaless.v1.DeleteRunResponse
+	(*DeleteActivityRequest)(nil),                    // 76: temporaless.v1.DeleteActivityRequest
+	(*DeleteActivityResponse)(nil),                   // 77: temporaless.v1.DeleteActivityResponse
+	(*DeleteTimerRequest)(nil),                       // 78: temporaless.v1.DeleteTimerRequest
+	(*DeleteTimerResponse)(nil),                      // 79: temporaless.v1.DeleteTimerResponse
+	(*DeleteEventRequest)(nil),                       // 80: temporaless.v1.DeleteEventRequest
+	(*DeleteEventResponse)(nil),                      // 81: temporaless.v1.DeleteEventResponse
+	(*GetClaimRequest)(nil),                          // 82: temporaless.v1.GetClaimRequest
+	(*GetClaimResponse)(nil),                         // 83: temporaless.v1.GetClaimResponse
+	(*TryCreateClaimRequest)(nil),                    // 84: temporaless.v1.TryCreateClaimRequest
+	(*TryCreateClaimResponse)(nil),                   // 85: temporaless.v1.TryCreateClaimResponse
+	(*DeleteClaimRequest)(nil),                       // 86: temporaless.v1.DeleteClaimRequest
+	(*DeleteClaimResponse)(nil),                      // 87: temporaless.v1.DeleteClaimResponse
+	(*GetStoreCapabilitiesRequest)(nil),              // 88: temporaless.v1.GetStoreCapabilitiesRequest
+	(*GetStoreCapabilitiesResponse)(nil),             // 89: temporaless.v1.GetStoreCapabilitiesResponse
+	(*FencedExecutionOptions)(nil),                   // 90: temporaless.v1.FencedExecutionOptions
+	(*ExecutionToken)(nil),                           // 91: temporaless.v1.ExecutionToken
+	(*ExecutionLease)(nil),                           // 92: temporaless.v1.ExecutionLease
+	(*ExecutionMutation)(nil),                        // 93: temporaless.v1.ExecutionMutation
+	(*ExecutionMutationResult)(nil),                  // 94: temporaless.v1.ExecutionMutationResult
+	(*ExecutionMutationResults)(nil),                 // 95: temporaless.v1.ExecutionMutationResults
+	(*ExecutionOperationReceipt)(nil),                // 96: temporaless.v1.ExecutionOperationReceipt
+	(*AcquireExecutionRequest)(nil),                  // 97: temporaless.v1.AcquireExecutionRequest
+	(*AcquireExecutionResponse)(nil),                 // 98: temporaless.v1.AcquireExecutionResponse
+	(*RenewExecutionRequest)(nil),                    // 99: temporaless.v1.RenewExecutionRequest
+	(*RenewExecutionResponse)(nil),                   // 100: temporaless.v1.RenewExecutionResponse
+	(*ReleaseExecutionRequest)(nil),                  // 101: temporaless.v1.ReleaseExecutionRequest
+	(*ReleaseExecutionResponse)(nil),                 // 102: temporaless.v1.ReleaseExecutionResponse
+	(*ApplyExecutionMutationsRequest)(nil),           // 103: temporaless.v1.ApplyExecutionMutationsRequest
+	(*ApplyExecutionMutationsResponse)(nil),          // 104: temporaless.v1.ApplyExecutionMutationsResponse
+	(*GetExecutionOperationRequest)(nil),             // 105: temporaless.v1.GetExecutionOperationRequest
+	(*GetExecutionOperationResponse)(nil),            // 106: temporaless.v1.GetExecutionOperationResponse
+	(*SweepRequest)(nil),                             // 107: temporaless.v1.SweepRequest
+	(*SweepResponse)(nil),                            // 108: temporaless.v1.SweepResponse
+	(*DueTimer)(nil),                                 // 109: temporaless.v1.DueTimer
+	(*DueTimersRequest)(nil),                         // 110: temporaless.v1.DueTimersRequest
+	(*DueTimersResponse)(nil),                        // 111: temporaless.v1.DueTimersResponse
+	(*RecordQueryServiceDueTimersRequest)(nil),       // 112: temporaless.v1.RecordQueryServiceDueTimersRequest
+	(*RecordQueryServiceDueTimersResponse)(nil),      // 113: temporaless.v1.RecordQueryServiceDueTimersResponse
+	nil,                           // 114: temporaless.v1.WorkflowPlan.AnnotationsEntry
+	nil,                           // 115: temporaless.v1.WorkflowPlanNode.AnnotationsEntry
+	nil,                           // 116: temporaless.v1.ActivityRecord.AnnotationsEntry
+	nil,                           // 117: temporaless.v1.WorkflowRecord.AnnotationsEntry
+	(*timestamppb.Timestamp)(nil), // 118: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 119: google.protobuf.Duration
+	(*anypb.Any)(nil),             // 120: google.protobuf.Any
 }
 var file_temporaless_v1_temporaless_proto_depIdxs = []int32{
-	100, // 0: temporaless.v1.WorkflowOptions.run_order_time:type_name -> google.protobuf.Timestamp
-	21,  // 1: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
-	101, // 2: temporaless.v1.PollOptions.interval:type_name -> google.protobuf.Duration
-	101, // 3: temporaless.v1.DispatchOptions.drain_timeout:type_name -> google.protobuf.Duration
-	101, // 4: temporaless.v1.DispatchOptions.task_ttl:type_name -> google.protobuf.Duration
-	18,  // 5: temporaless.v1.WorkflowPlan.nodes:type_name -> temporaless.v1.WorkflowPlanNode
-	19,  // 6: temporaless.v1.WorkflowPlan.edges:type_name -> temporaless.v1.WorkflowPlanEdge
-	96,  // 7: temporaless.v1.WorkflowPlan.annotations:type_name -> temporaless.v1.WorkflowPlan.AnnotationsEntry
-	0,   // 8: temporaless.v1.WorkflowPlanNode.kind:type_name -> temporaless.v1.WorkflowPlanNodeKind
-	97,  // 9: temporaless.v1.WorkflowPlanNode.annotations:type_name -> temporaless.v1.WorkflowPlanNode.AnnotationsEntry
-	1,   // 10: temporaless.v1.WorkflowPlanEdge.kind:type_name -> temporaless.v1.WorkflowPlanEdgeKind
-	2,   // 11: temporaless.v1.TaskInfo.status:type_name -> temporaless.v1.TaskStatus
-	102, // 12: temporaless.v1.TaskInfo.response:type_name -> google.protobuf.Any
-	100, // 13: temporaless.v1.TaskInfo.submitted_at:type_name -> google.protobuf.Timestamp
-	100, // 14: temporaless.v1.TaskInfo.completed_at:type_name -> google.protobuf.Timestamp
-	101, // 15: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	101, // 16: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
-	101, // 17: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
-	12,  // 18: temporaless.v1.EventDeliveryErrorDetail.reason:type_name -> temporaless.v1.EventDeliveryFailureReason
-	28,  // 19: temporaless.v1.EventDeliveryErrorDetail.key:type_name -> temporaless.v1.EventKey
-	101, // 20: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
-	100, // 21: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
-	100, // 22: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
-	30,  // 23: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
-	7,   // 24: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	26,  // 25: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
-	102, // 26: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
-	3,   // 27: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
-	102, // 28: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
-	30,  // 29: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	100, // 30: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
-	100, // 31: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
-	31,  // 32: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
-	98,  // 33: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
-	100, // 34: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
-	21,  // 35: temporaless.v1.ActivityRecord.retry_policy:type_name -> temporaless.v1.RetryPolicy
-	7,   // 36: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	25,  // 37: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
-	102, // 38: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
-	4,   // 39: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
-	102, // 40: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
-	30,  // 41: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
-	100, // 42: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
-	100, // 43: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
-	99,  // 44: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
-	100, // 45: temporaless.v1.WorkflowRecord.run_order_time:type_name -> google.protobuf.Timestamp
-	7,   // 46: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	27,  // 47: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
-	6,   // 48: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
-	101, // 49: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
-	5,   // 50: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
-	100, // 51: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
-	100, // 52: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
-	100, // 53: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
-	7,   // 54: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	28,  // 55: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
-	102, // 56: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
-	100, // 57: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
-	7,   // 58: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
-	29,  // 59: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
-	8,   // 60: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
-	100, // 61: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
-	100, // 62: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
-	100, // 63: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
-	25,  // 64: temporaless.v1.LatestWorkflowRunPointer.key:type_name -> temporaless.v1.WorkflowKey
-	4,   // 65: temporaless.v1.LatestWorkflowRunPointer.status:type_name -> temporaless.v1.WorkflowStatus
-	100, // 66: temporaless.v1.LatestWorkflowRunPointer.record_time:type_name -> google.protobuf.Timestamp
-	100, // 67: temporaless.v1.LatestWorkflowRunPointer.updated_at:type_name -> google.protobuf.Timestamp
-	100, // 68: temporaless.v1.LatestWorkflowRunPointer.run_order_time:type_name -> google.protobuf.Timestamp
-	27,  // 69: temporaless.v1.DueTimerEntry.key:type_name -> temporaless.v1.TimerKey
-	25,  // 70: temporaless.v1.DueTimerEntry.workflow_key:type_name -> temporaless.v1.WorkflowKey
-	100, // 71: temporaless.v1.DueTimerEntry.fire_at:type_name -> google.protobuf.Timestamp
-	34,  // 72: temporaless.v1.DueTimerEntry.record:type_name -> temporaless.v1.TimerRecord
-	25,  // 73: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	33,  // 74: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
-	33,  // 75: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
-	37,  // 76: temporaless.v1.GetLatestWorkflowRunResponse.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
-	27,  // 77: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	34,  // 78: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
-	34,  // 79: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
-	26,  // 80: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	32,  // 81: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
-	32,  // 82: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
-	28,  // 83: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
-	35,  // 84: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
-	35,  // 85: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
-	35,  // 86: temporaless.v1.DeliverEventRequest.record:type_name -> temporaless.v1.EventRecord
-	11,  // 87: temporaless.v1.DeliverEventResponse.disposition:type_name -> temporaless.v1.EventDeliveryDisposition
-	4,   // 88: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
-	33,  // 89: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
-	25,  // 90: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
-	32,  // 91: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
-	25,  // 92: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
-	5,   // 93: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
-	34,  // 94: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
-	25,  // 95: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
-	35,  // 96: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
-	25,  // 97: temporaless.v1.ListClaimsRequest.key:type_name -> temporaless.v1.WorkflowKey
-	36,  // 98: temporaless.v1.ListClaimsResponse.records:type_name -> temporaless.v1.ClaimRecord
-	3,   // 99: temporaless.v1.RecordQueryServiceListActivitiesRequest.status:type_name -> temporaless.v1.ActivityStatus
-	32,  // 100: temporaless.v1.RecordQueryServiceListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
-	25,  // 101: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
-	25,  // 102: temporaless.v1.DeleteRunRequest.key:type_name -> temporaless.v1.WorkflowKey
-	26,  // 103: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
-	27,  // 104: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
-	28,  // 105: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
-	29,  // 106: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
-	36,  // 107: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
-	36,  // 108: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
-	29,  // 109: temporaless.v1.DeleteClaimRequest.key:type_name -> temporaless.v1.ClaimKey
-	9,   // 110: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
-	10,  // 111: temporaless.v1.GetStoreCapabilitiesResponse.event_delivery_capability:type_name -> temporaless.v1.EventDeliveryCapability
-	100, // 112: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
-	101, // 113: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
-	27,  // 114: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
-	34,  // 115: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
-	33,  // 116: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
-	100, // 117: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	91,  // 118: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	100, // 119: temporaless.v1.RecordQueryServiceDueTimersRequest.now:type_name -> google.protobuf.Timestamp
-	91,  // 120: temporaless.v1.RecordQueryServiceDueTimersResponse.due:type_name -> temporaless.v1.DueTimer
-	87,  // 121: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
-	39,  // 122: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
-	41,  // 123: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
-	43,  // 124: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:input_type -> temporaless.v1.GetLatestWorkflowRunRequest
-	45,  // 125: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
-	47,  // 126: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
-	49,  // 127: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
-	51,  // 128: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
-	81,  // 129: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
-	83,  // 130: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
-	85,  // 131: temporaless.v1.RecordStoreService.DeleteClaim:input_type -> temporaless.v1.DeleteClaimRequest
-	53,  // 132: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
-	55,  // 133: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
-	57,  // 134: temporaless.v1.RecordStoreService.DeliverEvent:input_type -> temporaless.v1.DeliverEventRequest
-	61,  // 135: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
-	63,  // 136: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
-	65,  // 137: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
-	67,  // 138: temporaless.v1.RecordStoreService.ListClaims:input_type -> temporaless.v1.ListClaimsRequest
-	71,  // 139: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
-	75,  // 140: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
-	77,  // 141: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
-	79,  // 142: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
-	73,  // 143: temporaless.v1.RecordStoreService.DeleteRun:input_type -> temporaless.v1.DeleteRunRequest
-	92,  // 144: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
-	59,  // 145: temporaless.v1.RecordQueryService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
-	69,  // 146: temporaless.v1.RecordQueryService.ListActivities:input_type -> temporaless.v1.RecordQueryServiceListActivitiesRequest
-	89,  // 147: temporaless.v1.RecordQueryService.Sweep:input_type -> temporaless.v1.SweepRequest
-	94,  // 148: temporaless.v1.RecordQueryService.DueTimers:input_type -> temporaless.v1.RecordQueryServiceDueTimersRequest
-	88,  // 149: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
-	40,  // 150: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
-	42,  // 151: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
-	44,  // 152: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:output_type -> temporaless.v1.GetLatestWorkflowRunResponse
-	46,  // 153: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
-	48,  // 154: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
-	50,  // 155: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
-	52,  // 156: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
-	82,  // 157: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
-	84,  // 158: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
-	86,  // 159: temporaless.v1.RecordStoreService.DeleteClaim:output_type -> temporaless.v1.DeleteClaimResponse
-	54,  // 160: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
-	56,  // 161: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
-	58,  // 162: temporaless.v1.RecordStoreService.DeliverEvent:output_type -> temporaless.v1.DeliverEventResponse
-	62,  // 163: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
-	64,  // 164: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
-	66,  // 165: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
-	68,  // 166: temporaless.v1.RecordStoreService.ListClaims:output_type -> temporaless.v1.ListClaimsResponse
-	72,  // 167: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
-	76,  // 168: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
-	78,  // 169: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
-	80,  // 170: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
-	74,  // 171: temporaless.v1.RecordStoreService.DeleteRun:output_type -> temporaless.v1.DeleteRunResponse
-	93,  // 172: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
-	60,  // 173: temporaless.v1.RecordQueryService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
-	70,  // 174: temporaless.v1.RecordQueryService.ListActivities:output_type -> temporaless.v1.RecordQueryServiceListActivitiesResponse
-	90,  // 175: temporaless.v1.RecordQueryService.Sweep:output_type -> temporaless.v1.SweepResponse
-	95,  // 176: temporaless.v1.RecordQueryService.DueTimers:output_type -> temporaless.v1.RecordQueryServiceDueTimersResponse
-	149, // [149:177] is the sub-list for method output_type
-	121, // [121:149] is the sub-list for method input_type
-	121, // [121:121] is the sub-list for extension type_name
-	121, // [121:121] is the sub-list for extension extendee
-	0,   // [0:121] is the sub-list for field type_name
+	118, // 0: temporaless.v1.WorkflowOptions.run_order_time:type_name -> google.protobuf.Timestamp
+	90,  // 1: temporaless.v1.WorkflowOptions.fenced_execution:type_name -> temporaless.v1.FencedExecutionOptions
+	22,  // 2: temporaless.v1.ActivityOptions.retry_policy:type_name -> temporaless.v1.RetryPolicy
+	119, // 3: temporaless.v1.PollOptions.interval:type_name -> google.protobuf.Duration
+	119, // 4: temporaless.v1.DispatchOptions.drain_timeout:type_name -> google.protobuf.Duration
+	119, // 5: temporaless.v1.DispatchOptions.task_ttl:type_name -> google.protobuf.Duration
+	19,  // 6: temporaless.v1.WorkflowPlan.nodes:type_name -> temporaless.v1.WorkflowPlanNode
+	20,  // 7: temporaless.v1.WorkflowPlan.edges:type_name -> temporaless.v1.WorkflowPlanEdge
+	114, // 8: temporaless.v1.WorkflowPlan.annotations:type_name -> temporaless.v1.WorkflowPlan.AnnotationsEntry
+	0,   // 9: temporaless.v1.WorkflowPlanNode.kind:type_name -> temporaless.v1.WorkflowPlanNodeKind
+	115, // 10: temporaless.v1.WorkflowPlanNode.annotations:type_name -> temporaless.v1.WorkflowPlanNode.AnnotationsEntry
+	1,   // 11: temporaless.v1.WorkflowPlanEdge.kind:type_name -> temporaless.v1.WorkflowPlanEdgeKind
+	2,   // 12: temporaless.v1.TaskInfo.status:type_name -> temporaless.v1.TaskStatus
+	120, // 13: temporaless.v1.TaskInfo.response:type_name -> google.protobuf.Any
+	118, // 14: temporaless.v1.TaskInfo.submitted_at:type_name -> google.protobuf.Timestamp
+	118, // 15: temporaless.v1.TaskInfo.completed_at:type_name -> google.protobuf.Timestamp
+	119, // 16: temporaless.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	119, // 17: temporaless.v1.RetryPolicy.maximum_interval:type_name -> google.protobuf.Duration
+	119, // 18: temporaless.v1.RetryPolicy.durable_backoff_threshold:type_name -> google.protobuf.Duration
+	12,  // 19: temporaless.v1.EventDeliveryErrorDetail.reason:type_name -> temporaless.v1.EventDeliveryFailureReason
+	29,  // 20: temporaless.v1.EventDeliveryErrorDetail.key:type_name -> temporaless.v1.EventKey
+	119, // 21: temporaless.v1.ActivityFailure.retry_after:type_name -> google.protobuf.Duration
+	118, // 22: temporaless.v1.ActivityAttempt.started_at:type_name -> google.protobuf.Timestamp
+	118, // 23: temporaless.v1.ActivityAttempt.completed_at:type_name -> google.protobuf.Timestamp
+	31,  // 24: temporaless.v1.ActivityAttempt.failure:type_name -> temporaless.v1.ActivityFailure
+	7,   // 25: temporaless.v1.ActivityRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	27,  // 26: temporaless.v1.ActivityRecord.key:type_name -> temporaless.v1.ActivityKey
+	120, // 27: temporaless.v1.ActivityRecord.input:type_name -> google.protobuf.Any
+	3,   // 28: temporaless.v1.ActivityRecord.status:type_name -> temporaless.v1.ActivityStatus
+	120, // 29: temporaless.v1.ActivityRecord.result:type_name -> google.protobuf.Any
+	31,  // 30: temporaless.v1.ActivityRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	118, // 31: temporaless.v1.ActivityRecord.created_at:type_name -> google.protobuf.Timestamp
+	118, // 32: temporaless.v1.ActivityRecord.completed_at:type_name -> google.protobuf.Timestamp
+	32,  // 33: temporaless.v1.ActivityRecord.attempts:type_name -> temporaless.v1.ActivityAttempt
+	116, // 34: temporaless.v1.ActivityRecord.annotations:type_name -> temporaless.v1.ActivityRecord.AnnotationsEntry
+	118, // 35: temporaless.v1.ActivityRecord.next_attempt_at:type_name -> google.protobuf.Timestamp
+	22,  // 36: temporaless.v1.ActivityRecord.retry_policy:type_name -> temporaless.v1.RetryPolicy
+	7,   // 37: temporaless.v1.WorkflowRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	26,  // 38: temporaless.v1.WorkflowRecord.key:type_name -> temporaless.v1.WorkflowKey
+	120, // 39: temporaless.v1.WorkflowRecord.input:type_name -> google.protobuf.Any
+	4,   // 40: temporaless.v1.WorkflowRecord.status:type_name -> temporaless.v1.WorkflowStatus
+	120, // 41: temporaless.v1.WorkflowRecord.result:type_name -> google.protobuf.Any
+	31,  // 42: temporaless.v1.WorkflowRecord.failure:type_name -> temporaless.v1.ActivityFailure
+	118, // 43: temporaless.v1.WorkflowRecord.created_at:type_name -> google.protobuf.Timestamp
+	118, // 44: temporaless.v1.WorkflowRecord.completed_at:type_name -> google.protobuf.Timestamp
+	117, // 45: temporaless.v1.WorkflowRecord.annotations:type_name -> temporaless.v1.WorkflowRecord.AnnotationsEntry
+	118, // 46: temporaless.v1.WorkflowRecord.run_order_time:type_name -> google.protobuf.Timestamp
+	7,   // 47: temporaless.v1.TimerRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	28,  // 48: temporaless.v1.TimerRecord.key:type_name -> temporaless.v1.TimerKey
+	6,   // 49: temporaless.v1.TimerRecord.timer_kind:type_name -> temporaless.v1.TimerKind
+	119, // 50: temporaless.v1.TimerRecord.duration:type_name -> google.protobuf.Duration
+	5,   // 51: temporaless.v1.TimerRecord.status:type_name -> temporaless.v1.TimerStatus
+	118, // 52: temporaless.v1.TimerRecord.fire_at:type_name -> google.protobuf.Timestamp
+	118, // 53: temporaless.v1.TimerRecord.created_at:type_name -> google.protobuf.Timestamp
+	118, // 54: temporaless.v1.TimerRecord.fired_at:type_name -> google.protobuf.Timestamp
+	7,   // 55: temporaless.v1.EventRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	29,  // 56: temporaless.v1.EventRecord.key:type_name -> temporaless.v1.EventKey
+	120, // 57: temporaless.v1.EventRecord.payload:type_name -> google.protobuf.Any
+	118, // 58: temporaless.v1.EventRecord.received_at:type_name -> google.protobuf.Timestamp
+	7,   // 59: temporaless.v1.ClaimRecord.schema_version:type_name -> temporaless.v1.RecordSchemaVersion
+	30,  // 60: temporaless.v1.ClaimRecord.key:type_name -> temporaless.v1.ClaimKey
+	8,   // 61: temporaless.v1.ClaimRecord.resource_type:type_name -> temporaless.v1.ClaimResourceType
+	118, // 62: temporaless.v1.ClaimRecord.lease_expires_at:type_name -> google.protobuf.Timestamp
+	118, // 63: temporaless.v1.ClaimRecord.created_at:type_name -> google.protobuf.Timestamp
+	118, // 64: temporaless.v1.ClaimRecord.heartbeat_at:type_name -> google.protobuf.Timestamp
+	26,  // 65: temporaless.v1.LatestWorkflowRunPointer.key:type_name -> temporaless.v1.WorkflowKey
+	4,   // 66: temporaless.v1.LatestWorkflowRunPointer.status:type_name -> temporaless.v1.WorkflowStatus
+	118, // 67: temporaless.v1.LatestWorkflowRunPointer.record_time:type_name -> google.protobuf.Timestamp
+	118, // 68: temporaless.v1.LatestWorkflowRunPointer.updated_at:type_name -> google.protobuf.Timestamp
+	118, // 69: temporaless.v1.LatestWorkflowRunPointer.run_order_time:type_name -> google.protobuf.Timestamp
+	28,  // 70: temporaless.v1.DueTimerEntry.key:type_name -> temporaless.v1.TimerKey
+	26,  // 71: temporaless.v1.DueTimerEntry.workflow_key:type_name -> temporaless.v1.WorkflowKey
+	118, // 72: temporaless.v1.DueTimerEntry.fire_at:type_name -> google.protobuf.Timestamp
+	35,  // 73: temporaless.v1.DueTimerEntry.record:type_name -> temporaless.v1.TimerRecord
+	26,  // 74: temporaless.v1.GetWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	34,  // 75: temporaless.v1.GetWorkflowResponse.record:type_name -> temporaless.v1.WorkflowRecord
+	34,  // 76: temporaless.v1.PutWorkflowRequest.record:type_name -> temporaless.v1.WorkflowRecord
+	38,  // 77: temporaless.v1.GetLatestWorkflowRunResponse.pointer:type_name -> temporaless.v1.LatestWorkflowRunPointer
+	28,  // 78: temporaless.v1.GetTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	35,  // 79: temporaless.v1.GetTimerResponse.record:type_name -> temporaless.v1.TimerRecord
+	35,  // 80: temporaless.v1.PutTimerRequest.record:type_name -> temporaless.v1.TimerRecord
+	27,  // 81: temporaless.v1.GetActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	33,  // 82: temporaless.v1.GetActivityResponse.record:type_name -> temporaless.v1.ActivityRecord
+	33,  // 83: temporaless.v1.PutActivityRequest.record:type_name -> temporaless.v1.ActivityRecord
+	29,  // 84: temporaless.v1.GetEventRequest.key:type_name -> temporaless.v1.EventKey
+	36,  // 85: temporaless.v1.GetEventResponse.record:type_name -> temporaless.v1.EventRecord
+	36,  // 86: temporaless.v1.PutEventRequest.record:type_name -> temporaless.v1.EventRecord
+	36,  // 87: temporaless.v1.DeliverEventRequest.record:type_name -> temporaless.v1.EventRecord
+	11,  // 88: temporaless.v1.DeliverEventResponse.disposition:type_name -> temporaless.v1.EventDeliveryDisposition
+	4,   // 89: temporaless.v1.ListWorkflowsRequest.status:type_name -> temporaless.v1.WorkflowStatus
+	34,  // 90: temporaless.v1.ListWorkflowsResponse.records:type_name -> temporaless.v1.WorkflowRecord
+	26,  // 91: temporaless.v1.ListActivitiesRequest.key:type_name -> temporaless.v1.WorkflowKey
+	33,  // 92: temporaless.v1.ListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
+	26,  // 93: temporaless.v1.ListTimersRequest.key:type_name -> temporaless.v1.WorkflowKey
+	5,   // 94: temporaless.v1.ListTimersRequest.status:type_name -> temporaless.v1.TimerStatus
+	35,  // 95: temporaless.v1.ListTimersResponse.records:type_name -> temporaless.v1.TimerRecord
+	26,  // 96: temporaless.v1.ListEventsRequest.key:type_name -> temporaless.v1.WorkflowKey
+	36,  // 97: temporaless.v1.ListEventsResponse.records:type_name -> temporaless.v1.EventRecord
+	26,  // 98: temporaless.v1.ListClaimsRequest.key:type_name -> temporaless.v1.WorkflowKey
+	37,  // 99: temporaless.v1.ListClaimsResponse.records:type_name -> temporaless.v1.ClaimRecord
+	3,   // 100: temporaless.v1.RecordQueryServiceListActivitiesRequest.status:type_name -> temporaless.v1.ActivityStatus
+	33,  // 101: temporaless.v1.RecordQueryServiceListActivitiesResponse.records:type_name -> temporaless.v1.ActivityRecord
+	26,  // 102: temporaless.v1.DeleteWorkflowRequest.key:type_name -> temporaless.v1.WorkflowKey
+	26,  // 103: temporaless.v1.DeleteRunRequest.key:type_name -> temporaless.v1.WorkflowKey
+	27,  // 104: temporaless.v1.DeleteActivityRequest.key:type_name -> temporaless.v1.ActivityKey
+	28,  // 105: temporaless.v1.DeleteTimerRequest.key:type_name -> temporaless.v1.TimerKey
+	29,  // 106: temporaless.v1.DeleteEventRequest.key:type_name -> temporaless.v1.EventKey
+	30,  // 107: temporaless.v1.GetClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	37,  // 108: temporaless.v1.GetClaimResponse.record:type_name -> temporaless.v1.ClaimRecord
+	37,  // 109: temporaless.v1.TryCreateClaimRequest.record:type_name -> temporaless.v1.ClaimRecord
+	30,  // 110: temporaless.v1.DeleteClaimRequest.key:type_name -> temporaless.v1.ClaimKey
+	9,   // 111: temporaless.v1.GetStoreCapabilitiesResponse.claim_capability:type_name -> temporaless.v1.ClaimCapability
+	10,  // 112: temporaless.v1.GetStoreCapabilitiesResponse.event_delivery_capability:type_name -> temporaless.v1.EventDeliveryCapability
+	13,  // 113: temporaless.v1.GetStoreCapabilitiesResponse.fenced_execution_capability:type_name -> temporaless.v1.FencedExecutionCapability
+	119, // 114: temporaless.v1.FencedExecutionOptions.lease_duration:type_name -> google.protobuf.Duration
+	26,  // 115: temporaless.v1.ExecutionToken.key:type_name -> temporaless.v1.WorkflowKey
+	91,  // 116: temporaless.v1.ExecutionLease.token:type_name -> temporaless.v1.ExecutionToken
+	118, // 117: temporaless.v1.ExecutionLease.expires_at:type_name -> google.protobuf.Timestamp
+	118, // 118: temporaless.v1.ExecutionLease.observed_at:type_name -> google.protobuf.Timestamp
+	34,  // 119: temporaless.v1.ExecutionMutation.put_workflow:type_name -> temporaless.v1.WorkflowRecord
+	33,  // 120: temporaless.v1.ExecutionMutation.put_activity:type_name -> temporaless.v1.ActivityRecord
+	35,  // 121: temporaless.v1.ExecutionMutation.put_timer:type_name -> temporaless.v1.TimerRecord
+	36,  // 122: temporaless.v1.ExecutionMutation.put_event:type_name -> temporaless.v1.EventRecord
+	27,  // 123: temporaless.v1.ExecutionMutation.delete_activity:type_name -> temporaless.v1.ActivityKey
+	28,  // 124: temporaless.v1.ExecutionMutation.delete_timer:type_name -> temporaless.v1.TimerKey
+	29,  // 125: temporaless.v1.ExecutionMutation.delete_event:type_name -> temporaless.v1.EventKey
+	26,  // 126: temporaless.v1.ExecutionMutation.delete_workflow:type_name -> temporaless.v1.WorkflowKey
+	94,  // 127: temporaless.v1.ExecutionMutationResults.results:type_name -> temporaless.v1.ExecutionMutationResult
+	26,  // 128: temporaless.v1.ExecutionOperationReceipt.key:type_name -> temporaless.v1.WorkflowKey
+	92,  // 129: temporaless.v1.ExecutionOperationReceipt.acquired:type_name -> temporaless.v1.ExecutionLease
+	92,  // 130: temporaless.v1.ExecutionOperationReceipt.renewed:type_name -> temporaless.v1.ExecutionLease
+	91,  // 131: temporaless.v1.ExecutionOperationReceipt.released:type_name -> temporaless.v1.ExecutionToken
+	95,  // 132: temporaless.v1.ExecutionOperationReceipt.applied:type_name -> temporaless.v1.ExecutionMutationResults
+	26,  // 133: temporaless.v1.AcquireExecutionRequest.key:type_name -> temporaless.v1.WorkflowKey
+	90,  // 134: temporaless.v1.AcquireExecutionRequest.options:type_name -> temporaless.v1.FencedExecutionOptions
+	96,  // 135: temporaless.v1.AcquireExecutionResponse.receipt:type_name -> temporaless.v1.ExecutionOperationReceipt
+	91,  // 136: temporaless.v1.RenewExecutionRequest.token:type_name -> temporaless.v1.ExecutionToken
+	119, // 137: temporaless.v1.RenewExecutionRequest.lease_duration:type_name -> google.protobuf.Duration
+	96,  // 138: temporaless.v1.RenewExecutionResponse.receipt:type_name -> temporaless.v1.ExecutionOperationReceipt
+	91,  // 139: temporaless.v1.ReleaseExecutionRequest.token:type_name -> temporaless.v1.ExecutionToken
+	96,  // 140: temporaless.v1.ReleaseExecutionResponse.receipt:type_name -> temporaless.v1.ExecutionOperationReceipt
+	91,  // 141: temporaless.v1.ApplyExecutionMutationsRequest.token:type_name -> temporaless.v1.ExecutionToken
+	93,  // 142: temporaless.v1.ApplyExecutionMutationsRequest.mutations:type_name -> temporaless.v1.ExecutionMutation
+	96,  // 143: temporaless.v1.ApplyExecutionMutationsResponse.receipt:type_name -> temporaless.v1.ExecutionOperationReceipt
+	26,  // 144: temporaless.v1.GetExecutionOperationRequest.key:type_name -> temporaless.v1.WorkflowKey
+	96,  // 145: temporaless.v1.GetExecutionOperationResponse.receipt:type_name -> temporaless.v1.ExecutionOperationReceipt
+	118, // 146: temporaless.v1.SweepRequest.now:type_name -> google.protobuf.Timestamp
+	119, // 147: temporaless.v1.SweepRequest.max_age:type_name -> google.protobuf.Duration
+	28,  // 148: temporaless.v1.DueTimer.key:type_name -> temporaless.v1.TimerKey
+	35,  // 149: temporaless.v1.DueTimer.record:type_name -> temporaless.v1.TimerRecord
+	34,  // 150: temporaless.v1.DueTimer.workflow:type_name -> temporaless.v1.WorkflowRecord
+	118, // 151: temporaless.v1.DueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	109, // 152: temporaless.v1.DueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	118, // 153: temporaless.v1.RecordQueryServiceDueTimersRequest.now:type_name -> google.protobuf.Timestamp
+	109, // 154: temporaless.v1.RecordQueryServiceDueTimersResponse.due:type_name -> temporaless.v1.DueTimer
+	88,  // 155: temporaless.v1.RecordStoreService.GetStoreCapabilities:input_type -> temporaless.v1.GetStoreCapabilitiesRequest
+	97,  // 156: temporaless.v1.RecordStoreService.AcquireExecution:input_type -> temporaless.v1.AcquireExecutionRequest
+	99,  // 157: temporaless.v1.RecordStoreService.RenewExecution:input_type -> temporaless.v1.RenewExecutionRequest
+	101, // 158: temporaless.v1.RecordStoreService.ReleaseExecution:input_type -> temporaless.v1.ReleaseExecutionRequest
+	103, // 159: temporaless.v1.RecordStoreService.ApplyExecutionMutations:input_type -> temporaless.v1.ApplyExecutionMutationsRequest
+	105, // 160: temporaless.v1.RecordStoreService.GetExecutionOperation:input_type -> temporaless.v1.GetExecutionOperationRequest
+	40,  // 161: temporaless.v1.RecordStoreService.GetWorkflow:input_type -> temporaless.v1.GetWorkflowRequest
+	42,  // 162: temporaless.v1.RecordStoreService.PutWorkflow:input_type -> temporaless.v1.PutWorkflowRequest
+	44,  // 163: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:input_type -> temporaless.v1.GetLatestWorkflowRunRequest
+	46,  // 164: temporaless.v1.RecordStoreService.GetTimer:input_type -> temporaless.v1.GetTimerRequest
+	48,  // 165: temporaless.v1.RecordStoreService.PutTimer:input_type -> temporaless.v1.PutTimerRequest
+	50,  // 166: temporaless.v1.RecordStoreService.GetActivity:input_type -> temporaless.v1.GetActivityRequest
+	52,  // 167: temporaless.v1.RecordStoreService.PutActivity:input_type -> temporaless.v1.PutActivityRequest
+	82,  // 168: temporaless.v1.RecordStoreService.GetClaim:input_type -> temporaless.v1.GetClaimRequest
+	84,  // 169: temporaless.v1.RecordStoreService.TryCreateClaim:input_type -> temporaless.v1.TryCreateClaimRequest
+	86,  // 170: temporaless.v1.RecordStoreService.DeleteClaim:input_type -> temporaless.v1.DeleteClaimRequest
+	54,  // 171: temporaless.v1.RecordStoreService.GetEvent:input_type -> temporaless.v1.GetEventRequest
+	56,  // 172: temporaless.v1.RecordStoreService.PutEvent:input_type -> temporaless.v1.PutEventRequest
+	58,  // 173: temporaless.v1.RecordStoreService.DeliverEvent:input_type -> temporaless.v1.DeliverEventRequest
+	62,  // 174: temporaless.v1.RecordStoreService.ListActivities:input_type -> temporaless.v1.ListActivitiesRequest
+	64,  // 175: temporaless.v1.RecordStoreService.ListTimers:input_type -> temporaless.v1.ListTimersRequest
+	66,  // 176: temporaless.v1.RecordStoreService.ListEvents:input_type -> temporaless.v1.ListEventsRequest
+	68,  // 177: temporaless.v1.RecordStoreService.ListClaims:input_type -> temporaless.v1.ListClaimsRequest
+	72,  // 178: temporaless.v1.RecordStoreService.DeleteWorkflow:input_type -> temporaless.v1.DeleteWorkflowRequest
+	76,  // 179: temporaless.v1.RecordStoreService.DeleteActivity:input_type -> temporaless.v1.DeleteActivityRequest
+	78,  // 180: temporaless.v1.RecordStoreService.DeleteTimer:input_type -> temporaless.v1.DeleteTimerRequest
+	80,  // 181: temporaless.v1.RecordStoreService.DeleteEvent:input_type -> temporaless.v1.DeleteEventRequest
+	74,  // 182: temporaless.v1.RecordStoreService.DeleteRun:input_type -> temporaless.v1.DeleteRunRequest
+	110, // 183: temporaless.v1.RecordStoreService.DueTimers:input_type -> temporaless.v1.DueTimersRequest
+	60,  // 184: temporaless.v1.RecordQueryService.ListWorkflows:input_type -> temporaless.v1.ListWorkflowsRequest
+	70,  // 185: temporaless.v1.RecordQueryService.ListActivities:input_type -> temporaless.v1.RecordQueryServiceListActivitiesRequest
+	107, // 186: temporaless.v1.RecordQueryService.Sweep:input_type -> temporaless.v1.SweepRequest
+	112, // 187: temporaless.v1.RecordQueryService.DueTimers:input_type -> temporaless.v1.RecordQueryServiceDueTimersRequest
+	89,  // 188: temporaless.v1.RecordStoreService.GetStoreCapabilities:output_type -> temporaless.v1.GetStoreCapabilitiesResponse
+	98,  // 189: temporaless.v1.RecordStoreService.AcquireExecution:output_type -> temporaless.v1.AcquireExecutionResponse
+	100, // 190: temporaless.v1.RecordStoreService.RenewExecution:output_type -> temporaless.v1.RenewExecutionResponse
+	102, // 191: temporaless.v1.RecordStoreService.ReleaseExecution:output_type -> temporaless.v1.ReleaseExecutionResponse
+	104, // 192: temporaless.v1.RecordStoreService.ApplyExecutionMutations:output_type -> temporaless.v1.ApplyExecutionMutationsResponse
+	106, // 193: temporaless.v1.RecordStoreService.GetExecutionOperation:output_type -> temporaless.v1.GetExecutionOperationResponse
+	41,  // 194: temporaless.v1.RecordStoreService.GetWorkflow:output_type -> temporaless.v1.GetWorkflowResponse
+	43,  // 195: temporaless.v1.RecordStoreService.PutWorkflow:output_type -> temporaless.v1.PutWorkflowResponse
+	45,  // 196: temporaless.v1.RecordStoreService.GetLatestWorkflowRun:output_type -> temporaless.v1.GetLatestWorkflowRunResponse
+	47,  // 197: temporaless.v1.RecordStoreService.GetTimer:output_type -> temporaless.v1.GetTimerResponse
+	49,  // 198: temporaless.v1.RecordStoreService.PutTimer:output_type -> temporaless.v1.PutTimerResponse
+	51,  // 199: temporaless.v1.RecordStoreService.GetActivity:output_type -> temporaless.v1.GetActivityResponse
+	53,  // 200: temporaless.v1.RecordStoreService.PutActivity:output_type -> temporaless.v1.PutActivityResponse
+	83,  // 201: temporaless.v1.RecordStoreService.GetClaim:output_type -> temporaless.v1.GetClaimResponse
+	85,  // 202: temporaless.v1.RecordStoreService.TryCreateClaim:output_type -> temporaless.v1.TryCreateClaimResponse
+	87,  // 203: temporaless.v1.RecordStoreService.DeleteClaim:output_type -> temporaless.v1.DeleteClaimResponse
+	55,  // 204: temporaless.v1.RecordStoreService.GetEvent:output_type -> temporaless.v1.GetEventResponse
+	57,  // 205: temporaless.v1.RecordStoreService.PutEvent:output_type -> temporaless.v1.PutEventResponse
+	59,  // 206: temporaless.v1.RecordStoreService.DeliverEvent:output_type -> temporaless.v1.DeliverEventResponse
+	63,  // 207: temporaless.v1.RecordStoreService.ListActivities:output_type -> temporaless.v1.ListActivitiesResponse
+	65,  // 208: temporaless.v1.RecordStoreService.ListTimers:output_type -> temporaless.v1.ListTimersResponse
+	67,  // 209: temporaless.v1.RecordStoreService.ListEvents:output_type -> temporaless.v1.ListEventsResponse
+	69,  // 210: temporaless.v1.RecordStoreService.ListClaims:output_type -> temporaless.v1.ListClaimsResponse
+	73,  // 211: temporaless.v1.RecordStoreService.DeleteWorkflow:output_type -> temporaless.v1.DeleteWorkflowResponse
+	77,  // 212: temporaless.v1.RecordStoreService.DeleteActivity:output_type -> temporaless.v1.DeleteActivityResponse
+	79,  // 213: temporaless.v1.RecordStoreService.DeleteTimer:output_type -> temporaless.v1.DeleteTimerResponse
+	81,  // 214: temporaless.v1.RecordStoreService.DeleteEvent:output_type -> temporaless.v1.DeleteEventResponse
+	75,  // 215: temporaless.v1.RecordStoreService.DeleteRun:output_type -> temporaless.v1.DeleteRunResponse
+	111, // 216: temporaless.v1.RecordStoreService.DueTimers:output_type -> temporaless.v1.DueTimersResponse
+	61,  // 217: temporaless.v1.RecordQueryService.ListWorkflows:output_type -> temporaless.v1.ListWorkflowsResponse
+	71,  // 218: temporaless.v1.RecordQueryService.ListActivities:output_type -> temporaless.v1.RecordQueryServiceListActivitiesResponse
+	108, // 219: temporaless.v1.RecordQueryService.Sweep:output_type -> temporaless.v1.SweepResponse
+	113, // 220: temporaless.v1.RecordQueryService.DueTimers:output_type -> temporaless.v1.RecordQueryServiceDueTimersResponse
+	188, // [188:221] is the sub-list for method output_type
+	155, // [155:188] is the sub-list for method input_type
+	155, // [155:155] is the sub-list for extension type_name
+	155, // [155:155] is the sub-list for extension extendee
+	0,   // [0:155] is the sub-list for field type_name
 }
 
 func init() { file_temporaless_v1_temporaless_proto_init() }
@@ -6941,13 +8468,29 @@ func file_temporaless_v1_temporaless_proto_init() {
 	if File_temporaless_v1_temporaless_proto != nil {
 		return
 	}
+	file_temporaless_v1_temporaless_proto_msgTypes[79].OneofWrappers = []any{
+		(*ExecutionMutation_PutWorkflow)(nil),
+		(*ExecutionMutation_PutActivity)(nil),
+		(*ExecutionMutation_PutTimer)(nil),
+		(*ExecutionMutation_PutEvent)(nil),
+		(*ExecutionMutation_DeleteActivity)(nil),
+		(*ExecutionMutation_DeleteTimer)(nil),
+		(*ExecutionMutation_DeleteEvent)(nil),
+		(*ExecutionMutation_DeleteWorkflow)(nil),
+	}
+	file_temporaless_v1_temporaless_proto_msgTypes[82].OneofWrappers = []any{
+		(*ExecutionOperationReceipt_Acquired)(nil),
+		(*ExecutionOperationReceipt_Renewed)(nil),
+		(*ExecutionOperationReceipt_Released)(nil),
+		(*ExecutionOperationReceipt_Applied)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_temporaless_v1_temporaless_proto_rawDesc), len(file_temporaless_v1_temporaless_proto_rawDesc)),
-			NumEnums:      13,
-			NumMessages:   87,
+			NumEnums:      14,
+			NumMessages:   104,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -109,6 +109,12 @@ class EventDeliveryFailureReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapp
     EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED: _ClassVar[EventDeliveryFailureReason]
     EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED: _ClassVar[EventDeliveryFailureReason]
     EVENT_DELIVERY_FAILURE_REASON_CONFLICT: _ClassVar[EventDeliveryFailureReason]
+
+class FencedExecutionCapability(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    FENCED_EXECUTION_CAPABILITY_UNSPECIFIED: _ClassVar[FencedExecutionCapability]
+    FENCED_EXECUTION_CAPABILITY_UNSUPPORTED: _ClassVar[FencedExecutionCapability]
+    FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS: _ClassVar[FencedExecutionCapability]
 WORKFLOW_PLAN_NODE_KIND_UNSPECIFIED: WorkflowPlanNodeKind
 WORKFLOW_PLAN_NODE_KIND_ACTIVITY: WorkflowPlanNodeKind
 WORKFLOW_PLAN_NODE_KIND_BRANCH: WorkflowPlanNodeKind
@@ -167,22 +173,27 @@ EVENT_DELIVERY_DISPOSITION_IDEMPOTENT: EventDeliveryDisposition
 EVENT_DELIVERY_FAILURE_REASON_UNSPECIFIED: EventDeliveryFailureReason
 EVENT_DELIVERY_FAILURE_REASON_UNSUPPORTED: EventDeliveryFailureReason
 EVENT_DELIVERY_FAILURE_REASON_CONFLICT: EventDeliveryFailureReason
+FENCED_EXECUTION_CAPABILITY_UNSPECIFIED: FencedExecutionCapability
+FENCED_EXECUTION_CAPABILITY_UNSUPPORTED: FencedExecutionCapability
+FENCED_EXECUTION_CAPABILITY_ATOMIC_RUN_MUTATIONS: FencedExecutionCapability
 
 class WorkflowOptions(_message.Message):
-    __slots__ = ("workflow_id", "run_id", "claim_owner_id", "concurrency_key", "concurrency_limit", "run_order_time")
+    __slots__ = ("workflow_id", "run_id", "claim_owner_id", "concurrency_key", "concurrency_limit", "run_order_time", "fenced_execution")
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     CLAIM_OWNER_ID_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_LIMIT_FIELD_NUMBER: _ClassVar[int]
     RUN_ORDER_TIME_FIELD_NUMBER: _ClassVar[int]
+    FENCED_EXECUTION_FIELD_NUMBER: _ClassVar[int]
     workflow_id: str
     run_id: str
     claim_owner_id: str
     concurrency_key: str
     concurrency_limit: int
     run_order_time: _timestamp_pb2.Timestamp
-    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., claim_owner_id: _Optional[str] = ..., concurrency_key: _Optional[str] = ..., concurrency_limit: _Optional[int] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    fenced_execution: FencedExecutionOptions
+    def __init__(self, workflow_id: _Optional[str] = ..., run_id: _Optional[str] = ..., claim_owner_id: _Optional[str] = ..., concurrency_key: _Optional[str] = ..., concurrency_limit: _Optional[int] = ..., run_order_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., fenced_execution: _Optional[_Union[FencedExecutionOptions, _Mapping]] = ...) -> None: ...
 
 class ActivityOptions(_message.Message):
     __slots__ = ("activity_id", "retry_policy", "retry_timer_id")
@@ -899,12 +910,184 @@ class GetStoreCapabilitiesRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class GetStoreCapabilitiesResponse(_message.Message):
-    __slots__ = ("claim_capability", "event_delivery_capability")
+    __slots__ = ("claim_capability", "event_delivery_capability", "fenced_execution_capability", "fenced_execution_store_incarnation")
     CLAIM_CAPABILITY_FIELD_NUMBER: _ClassVar[int]
     EVENT_DELIVERY_CAPABILITY_FIELD_NUMBER: _ClassVar[int]
+    FENCED_EXECUTION_CAPABILITY_FIELD_NUMBER: _ClassVar[int]
+    FENCED_EXECUTION_STORE_INCARNATION_FIELD_NUMBER: _ClassVar[int]
     claim_capability: ClaimCapability
     event_delivery_capability: EventDeliveryCapability
-    def __init__(self, claim_capability: _Optional[_Union[ClaimCapability, str]] = ..., event_delivery_capability: _Optional[_Union[EventDeliveryCapability, str]] = ...) -> None: ...
+    fenced_execution_capability: FencedExecutionCapability
+    fenced_execution_store_incarnation: str
+    def __init__(self, claim_capability: _Optional[_Union[ClaimCapability, str]] = ..., event_delivery_capability: _Optional[_Union[EventDeliveryCapability, str]] = ..., fenced_execution_capability: _Optional[_Union[FencedExecutionCapability, str]] = ..., fenced_execution_store_incarnation: _Optional[str] = ...) -> None: ...
+
+class FencedExecutionOptions(_message.Message):
+    __slots__ = ("owner_id", "acquisition_id", "lease_duration")
+    OWNER_ID_FIELD_NUMBER: _ClassVar[int]
+    ACQUISITION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_DURATION_FIELD_NUMBER: _ClassVar[int]
+    owner_id: str
+    acquisition_id: str
+    lease_duration: _duration_pb2.Duration
+    def __init__(self, owner_id: _Optional[str] = ..., acquisition_id: _Optional[str] = ..., lease_duration: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
+class ExecutionToken(_message.Message):
+    __slots__ = ("key", "store_incarnation", "owner_id", "acquisition_id", "generation")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    STORE_INCARNATION_FIELD_NUMBER: _ClassVar[int]
+    OWNER_ID_FIELD_NUMBER: _ClassVar[int]
+    ACQUISITION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    store_incarnation: str
+    owner_id: str
+    acquisition_id: str
+    generation: int
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., store_incarnation: _Optional[str] = ..., owner_id: _Optional[str] = ..., acquisition_id: _Optional[str] = ..., generation: _Optional[int] = ...) -> None: ...
+
+class ExecutionLease(_message.Message):
+    __slots__ = ("token", "expires_at", "observed_at")
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    token: ExecutionToken
+    expires_at: _timestamp_pb2.Timestamp
+    observed_at: _timestamp_pb2.Timestamp
+    def __init__(self, token: _Optional[_Union[ExecutionToken, _Mapping]] = ..., expires_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class ExecutionMutation(_message.Message):
+    __slots__ = ("put_workflow", "put_activity", "put_timer", "put_event", "delete_activity", "delete_timer", "delete_event", "delete_workflow")
+    PUT_WORKFLOW_FIELD_NUMBER: _ClassVar[int]
+    PUT_ACTIVITY_FIELD_NUMBER: _ClassVar[int]
+    PUT_TIMER_FIELD_NUMBER: _ClassVar[int]
+    PUT_EVENT_FIELD_NUMBER: _ClassVar[int]
+    DELETE_ACTIVITY_FIELD_NUMBER: _ClassVar[int]
+    DELETE_TIMER_FIELD_NUMBER: _ClassVar[int]
+    DELETE_EVENT_FIELD_NUMBER: _ClassVar[int]
+    DELETE_WORKFLOW_FIELD_NUMBER: _ClassVar[int]
+    put_workflow: WorkflowRecord
+    put_activity: ActivityRecord
+    put_timer: TimerRecord
+    put_event: EventRecord
+    delete_activity: ActivityKey
+    delete_timer: TimerKey
+    delete_event: EventKey
+    delete_workflow: WorkflowKey
+    def __init__(self, put_workflow: _Optional[_Union[WorkflowRecord, _Mapping]] = ..., put_activity: _Optional[_Union[ActivityRecord, _Mapping]] = ..., put_timer: _Optional[_Union[TimerRecord, _Mapping]] = ..., put_event: _Optional[_Union[EventRecord, _Mapping]] = ..., delete_activity: _Optional[_Union[ActivityKey, _Mapping]] = ..., delete_timer: _Optional[_Union[TimerKey, _Mapping]] = ..., delete_event: _Optional[_Union[EventKey, _Mapping]] = ..., delete_workflow: _Optional[_Union[WorkflowKey, _Mapping]] = ...) -> None: ...
+
+class ExecutionMutationResult(_message.Message):
+    __slots__ = ("existed",)
+    EXISTED_FIELD_NUMBER: _ClassVar[int]
+    existed: bool
+    def __init__(self, existed: _Optional[bool] = ...) -> None: ...
+
+class ExecutionMutationResults(_message.Message):
+    __slots__ = ("results",)
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[ExecutionMutationResult]
+    def __init__(self, results: _Optional[_Iterable[_Union[ExecutionMutationResult, _Mapping]]] = ...) -> None: ...
+
+class ExecutionOperationReceipt(_message.Message):
+    __slots__ = ("key", "operation_id", "request_sha256", "store_incarnation", "acquired", "renewed", "released", "applied")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_SHA256_FIELD_NUMBER: _ClassVar[int]
+    STORE_INCARNATION_FIELD_NUMBER: _ClassVar[int]
+    ACQUIRED_FIELD_NUMBER: _ClassVar[int]
+    RENEWED_FIELD_NUMBER: _ClassVar[int]
+    RELEASED_FIELD_NUMBER: _ClassVar[int]
+    APPLIED_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    operation_id: str
+    request_sha256: bytes
+    store_incarnation: str
+    acquired: ExecutionLease
+    renewed: ExecutionLease
+    released: ExecutionToken
+    applied: ExecutionMutationResults
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., operation_id: _Optional[str] = ..., request_sha256: _Optional[bytes] = ..., store_incarnation: _Optional[str] = ..., acquired: _Optional[_Union[ExecutionLease, _Mapping]] = ..., renewed: _Optional[_Union[ExecutionLease, _Mapping]] = ..., released: _Optional[_Union[ExecutionToken, _Mapping]] = ..., applied: _Optional[_Union[ExecutionMutationResults, _Mapping]] = ...) -> None: ...
+
+class AcquireExecutionRequest(_message.Message):
+    __slots__ = ("key", "options", "operation_id", "store_incarnation")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    STORE_INCARNATION_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    options: FencedExecutionOptions
+    operation_id: str
+    store_incarnation: str
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., options: _Optional[_Union[FencedExecutionOptions, _Mapping]] = ..., operation_id: _Optional[str] = ..., store_incarnation: _Optional[str] = ...) -> None: ...
+
+class AcquireExecutionResponse(_message.Message):
+    __slots__ = ("receipt",)
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    receipt: ExecutionOperationReceipt
+    def __init__(self, receipt: _Optional[_Union[ExecutionOperationReceipt, _Mapping]] = ...) -> None: ...
+
+class RenewExecutionRequest(_message.Message):
+    __slots__ = ("token", "lease_duration", "operation_id")
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    LEASE_DURATION_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    token: ExecutionToken
+    lease_duration: _duration_pb2.Duration
+    operation_id: str
+    def __init__(self, token: _Optional[_Union[ExecutionToken, _Mapping]] = ..., lease_duration: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., operation_id: _Optional[str] = ...) -> None: ...
+
+class RenewExecutionResponse(_message.Message):
+    __slots__ = ("receipt",)
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    receipt: ExecutionOperationReceipt
+    def __init__(self, receipt: _Optional[_Union[ExecutionOperationReceipt, _Mapping]] = ...) -> None: ...
+
+class ReleaseExecutionRequest(_message.Message):
+    __slots__ = ("token", "operation_id")
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    token: ExecutionToken
+    operation_id: str
+    def __init__(self, token: _Optional[_Union[ExecutionToken, _Mapping]] = ..., operation_id: _Optional[str] = ...) -> None: ...
+
+class ReleaseExecutionResponse(_message.Message):
+    __slots__ = ("receipt",)
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    receipt: ExecutionOperationReceipt
+    def __init__(self, receipt: _Optional[_Union[ExecutionOperationReceipt, _Mapping]] = ...) -> None: ...
+
+class ApplyExecutionMutationsRequest(_message.Message):
+    __slots__ = ("token", "operation_id", "mutations")
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    MUTATIONS_FIELD_NUMBER: _ClassVar[int]
+    token: ExecutionToken
+    operation_id: str
+    mutations: _containers.RepeatedCompositeFieldContainer[ExecutionMutation]
+    def __init__(self, token: _Optional[_Union[ExecutionToken, _Mapping]] = ..., operation_id: _Optional[str] = ..., mutations: _Optional[_Iterable[_Union[ExecutionMutation, _Mapping]]] = ...) -> None: ...
+
+class ApplyExecutionMutationsResponse(_message.Message):
+    __slots__ = ("receipt",)
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    receipt: ExecutionOperationReceipt
+    def __init__(self, receipt: _Optional[_Union[ExecutionOperationReceipt, _Mapping]] = ...) -> None: ...
+
+class GetExecutionOperationRequest(_message.Message):
+    __slots__ = ("key", "store_incarnation", "operation_id")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    STORE_INCARNATION_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    key: WorkflowKey
+    store_incarnation: str
+    operation_id: str
+    def __init__(self, key: _Optional[_Union[WorkflowKey, _Mapping]] = ..., store_incarnation: _Optional[str] = ..., operation_id: _Optional[str] = ...) -> None: ...
+
+class GetExecutionOperationResponse(_message.Message):
+    __slots__ = ("found", "receipt")
+    FOUND_FIELD_NUMBER: _ClassVar[int]
+    RECEIPT_FIELD_NUMBER: _ClassVar[int]
+    found: bool
+    receipt: ExecutionOperationReceipt
+    def __init__(self, found: _Optional[bool] = ..., receipt: _Optional[_Union[ExecutionOperationReceipt, _Mapping]] = ...) -> None: ...
 
 class SweepRequest(_message.Message):
     __slots__ = ("namespace", "now", "max_age")

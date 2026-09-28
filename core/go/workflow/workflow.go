@@ -2910,6 +2910,9 @@ func normalizedWorkflowOptions(options *Options) (*Options, error) {
 	if options == nil {
 		return nil, fmt.Errorf("workflow options are required")
 	}
+	if options.GetFencedExecution() != nil {
+		return nil, storage.ErrFencedExecutionUnsupported
+	}
 	normalized := proto.Clone(options).(*temporalessv1.WorkflowOptions)
 	if normalized.GetRunOrderTime() != nil {
 		if err := normalized.GetRunOrderTime().CheckValid(); err != nil {

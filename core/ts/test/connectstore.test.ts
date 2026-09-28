@@ -12,6 +12,7 @@ import {
   EventDeliveryDisposition,
   EventKeySchema,
   EventRecordSchema,
+  FencedExecutionCapability,
   GetStoreCapabilitiesResponseSchema,
   GetWorkflowResponseSchema,
   ListClaimsResponseSchema,
@@ -28,6 +29,19 @@ import {
 } from "../src/index.js";
 
 describe("ConnectStore", () => {
+  it.each([0, 1, 2, 99])("refuses unavailable fencing capability %i", async (remote) => {
+    const store = new ConnectStore({
+      getStoreCapabilities: async () => create(GetStoreCapabilitiesResponseSchema, {
+        fencedExecutionCapability: remote,
+      }),
+    } as unknown as RecordStoreClient);
+    if (remote === 0 || remote === 1) {
+      await expect(store.fencedExecutionCapability()).resolves.toBe(FencedExecutionCapability.UNSUPPORTED);
+    } else {
+      await expect(store.fencedExecutionCapability()).rejects.toThrow("fenced execution");
+    }
+  });
+
   it("returns undefined for missing workflow records", async () => {
     const key = create(WorkflowKeySchema, {
       namespace: "default",

@@ -722,3 +722,32 @@ async fn current_workflow_accessor_works_from_activity_body() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn run_refuses_fencing_before_read_or_body() {
+    let (tmp, store) = new_store();
+    let mut options = WorkflowOptions::new("wf", "run");
+    options.fenced_execution = Some(temporaless::v1::FencedExecutionOptions {
+        owner_id: "worker".into(),
+        acquisition_id: "invocation".into(),
+        lease_duration: Some(prost_types::Duration {
+            seconds: 30,
+            nanos: 0,
+        }),
+    });
+    // A corrupt record makes any accidental read fail before the body. The
+    // typed unsupported result must take precedence and leave it untouched.
+    let record = tmp
+        .path()
+        .join("temporaless/v2/default/wf/run/workflow.binpb");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(&record, [0xff]).unwrap();
+    let result = run(store, options, s("input"), |_w: Workflow, _input| async {
+        panic!("unsupported fencing entered workflow body");
+        #[allow(unreachable_code)]
+        Ok::<StringValue, RunError>(s("unreachable"))
+    })
+    .await;
+    assert!(matches!(result, Err(RunError::FencedExecutionUnsupported)));
+    assert_eq!(std::fs::read(record).unwrap(), [0xff]);
+}

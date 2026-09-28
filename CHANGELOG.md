@@ -13,6 +13,24 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Added
+
+- Reserve a protobuf execution-fencing contract: run/incarnation/owner/generation
+  tokens, conditional acquire/renew/release, bounded typed mutation batches and
+  durable operation receipts. Shared Go/Python validation fixtures reject
+  cross-run mutations and inconsistent receipt identities.
+- This is a disabled foundation: bundled record services report unsupported, the new RPCs
+  return UNIMPLEMENTED, and Go/Python/Rust reject the new workflow option before
+  accessing records or running user code. Existing stores and record layouts
+  retain their semantics. Durable backends, execution sessions, retention and
+  timer-repair fencing remain required before any capability can be enabled.
+- Experimental Rust struct-literal users must set the new
+  `WorkflowOptions.fenced_execution` field to `None`; constructor users are
+  unaffected. Exhaustive error matches and custom generated service
+  implementations must account for the additive APIs.
+- Document the complete mutation audit, future crash/takeover/stale-holder proof
+  matrix, migration boundaries and the limit on external provider side effects.
+
 ## [0.12.2] - 2026-09-28
 
 ### Fixed
