@@ -14,7 +14,7 @@
 
 GO        ?= go
 GO_PKGS   ?= ./...
-GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+GOLANGCI_LINT ?= $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
 .DEFAULT_GOAL := help
 

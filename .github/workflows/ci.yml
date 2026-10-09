@@ -26,6 +26,7 @@ jobs:
           # release tag, so the gate needs full history and tags to check
           # exactly what it checks on a maintainer's machine.
           fetch-depth: 0
+          persist-credentials: false
       - uses: flox/install-flox-action@1128abd73431089ab9d871c893b4e72a729354e1 # v2.6.0
         with:
           disable-metrics: "true"

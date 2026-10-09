@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-10-09
+
 ### Added
 
 - Reserve a protobuf execution-fencing contract: run/incarnation/owner/generation
@@ -33,6 +35,9 @@ lockstep policy.
 
 ### Changed
 
+- Go builds require 1.27.2, including the digest-pinned console builder.
+  The locked HTTP/2 dependency moves to `golang.org/x/net` 0.60.0 to address
+  the reachable vulnerabilities reported by the October 9 audit.
 - The optional Python SQLite index accepts an injected async transaction executor
   through `IndexedStore.from_executor`. Existing constructors, memory/file
   defaults, per-operation commits, query tokens and derived schema are unchanged.

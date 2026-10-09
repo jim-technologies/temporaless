@@ -48,7 +48,7 @@ trivy.version = "0.74.0"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"
-GOTOOLCHAIN = "go1.26.6+auto"
+GOTOOLCHAIN = "go1.27.2+auto"
 
 [hook]
 on-activate = '''

@@ -421,7 +421,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "../../../core/py" }
 dependencies = [
     { name = "bufbuild-protovalidate-protocolbuffers-pyi" },
@@ -461,7 +461,7 @@ dev = [
 
 [[package]]
 name = "temporaless-temporalcompat"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "." }
 dependencies = [
     { name = "temporaless" },

@@ -71,7 +71,7 @@
       }
     },
     "vars": {
-      "GOTOOLCHAIN": "go1.26.6+auto",
+      "GOTOOLCHAIN": "go1.27.2+auto",
       "UV_PYTHON_DOWNLOADS": "never"
     },
     "hook": {

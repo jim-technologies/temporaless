@@ -44,7 +44,7 @@ developers use their language-native toolchains. The bootstrap group pins Go
 Protocol (locked at 0.11.28). Buf 1.72.0, Node 24.20.0, the Rust toolchain,
 and the audit tools live in their own package groups so their pins resolve
 alongside the bootstrap group.
-`go.mod` requires Go 1.26.6, so `GOTOOLCHAIN=go1.26.6+auto` selects that exact
+`go.mod` requires Go 1.27.2, so `GOTOOLCHAIN=go1.27.2+auto` selects that exact
 checksum-verified security patch while the catalog package acts only as the
 bootstrap command.
 The production image uses the same upstream Python 3.14.6 and uv 0.11.28.

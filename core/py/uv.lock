@@ -364,7 +364,7 @@ wheels = [
 
 [[package]]
 name = "temporaless"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "." }
 dependencies = [
     { name = "bufbuild-protovalidate-protocolbuffers-pyi" },
@@ -422,7 +422,7 @@ dev = [
 
 [[package]]
 name = "temporaless-connectworkflow"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "../../adapters/py/connectworkflow" }
 dependencies = [
     { name = "connectrpc" },
@@ -446,7 +446,7 @@ dev = [
 
 [[package]]
 name = "temporaless-indexstore"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "../../adapters/py/indexstore" }
 dependencies = [
     { name = "temporaless" },
