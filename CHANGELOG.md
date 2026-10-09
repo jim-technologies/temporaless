@@ -15,6 +15,11 @@ lockstep policy.
 
 ## [0.12.3] - 2026-10-09
 
+### Security
+
+- Update both locked UI build graphs to `source-map-js` 1.2.2 to address
+  GHSA-68fv-2mgg-jv7q without suppressing the dependency audit.
+
 ### Added
 
 - Reserve a protobuf execution-fencing contract: run/incarnation/owner/generation
