@@ -17,6 +17,9 @@ lockstep policy.
 
 ### Security
 
+- Refresh the digest-pinned Debian 13 distroless console runtime after the
+  actual-image check reported fixed HIGH OpenSSL vulnerabilities.
+
 - Update both locked UI build graphs to `source-map-js` 1.2.2 to address
   GHSA-68fv-2mgg-jv7q without suppressing the dependency audit.
 
