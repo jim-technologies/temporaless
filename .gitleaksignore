@@ -1,0 +1,2 @@
+# Immutable pagination compatibility fixture; this is a query cursor, not auth.
+dc6de288cc0fb78c741f933253eaefc79379ad23:adapters/py/indexstore/tests/test_indexstore.py:generic-api-key:1783
