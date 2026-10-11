@@ -39,14 +39,15 @@ golangci-lint.
 The manifest resolves for the three systems Invariant Protocol also supports
 (`aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`); the catalog no longer
 publishes every current toolchain for `x86_64-darwin`, so Intel macOS
-developers use their language-native toolchains. The bootstrap group pins Go
-1.26.4 and Python 3.14.6 with uv at the same `>=0.11.26` floor as Invariant
-Protocol (locked at 0.11.28). Buf 1.72.0, Node 24.20.0, the Rust toolchain,
-and the audit tools live in their own package groups so their pins resolve
-alongside the bootstrap group.
-`go.mod` requires Go 1.27.2, so `GOTOOLCHAIN=go1.27.2+auto` selects that exact
-checksum-verified security patch while the catalog package acts only as the
-bootstrap command.
+developers use their language-native toolchains. The bootstrap group pins
+Python 3.14.6 with uv at the same `>=0.11.26` floor as Invariant Protocol
+(locked at 0.11.28). Go, Buf 1.72.0, Node 24.20.0, the Rust toolchain, and the
+audit tools live in their own package groups so their pins resolve alongside
+the bootstrap group.
+`go.mod` requires Go 1.27.2 and Flox installs exactly that release
+(`go_1_27`), so no toolchain is downloaded at run time;
+`scripts/check_versions.py` fails the gate when the two differ or when the
+manifest sets `GOTOOLCHAIN`.
 The production image uses the same upstream Python 3.14.6 and uv 0.11.28.
 
 ## Go

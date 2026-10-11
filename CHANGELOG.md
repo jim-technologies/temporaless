@@ -13,6 +13,17 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Changed
+
+- Flox installs Go 1.27.2 directly (`go_1_27`), and the version check now
+  requires the Flox Go pin to equal `go.mod`'s `go` directive.
+
+### Removed
+
+- The `GOTOOLCHAIN=go1.27.2+auto` Flox variable, which downloaded that
+  toolchain at run time on top of a Flox Go 1.26.4 bootstrap, and the
+  dependency-document text describing that arrangement.
+
 ## [0.12.3] - 2026-10-09
 
 ### Security

@@ -1,10 +1,13 @@
 schema-version = "1.12.0"
 
 [install]
-# Go's checksum-verified toolchain selector below supplies the patched Go
-# release while Flox continues to provide the portable bootstrap command.
-go.pkg-path = "go"
-go.version = "1.26.4"
+# Flox supplies the exact patched Go release go.mod declares, so nothing
+# downloads a toolchain at run time. The catalog's 1.27 line is its own
+# package, resolved in its own group; scripts/check_versions.py keeps this
+# version equal to go.mod's `go` directive.
+go.pkg-path = "go_1_27"
+go.pkg-group = "go"
+go.version = "1.27.2"
 python314.pkg-path = "python314"
 python314.version = "python3-3.14.6"
 uv.pkg-path = "uv"
@@ -48,7 +51,6 @@ trivy.version = "0.74.0"
 
 [vars]
 UV_PYTHON_DOWNLOADS = "never"
-GOTOOLCHAIN = "go1.27.2+auto"
 
 [hook]
 on-activate = '''
