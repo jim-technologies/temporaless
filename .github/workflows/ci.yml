@@ -27,7 +27,7 @@ jobs:
           # exactly what it checks on a maintainer's machine.
           fetch-depth: 0
           persist-credentials: false
-      - uses: flox/install-flox-action@1128abd73431089ab9d871c893b4e72a729354e1 # v2.6.0
+      - uses: flox/install-flox-action@5bb9eaaffbeaa699a8251a1ae21ecf4c8e0e37d4 # v2.7.0
         with:
           disable-metrics: "true"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

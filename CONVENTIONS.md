@@ -8,14 +8,14 @@ Strict audit of this repo against the agreed conventions (source of truth:
 
 The gate is `flox activate -- make validate` — the one gate verb, delegating
 to `scripts/validate` (Buf, TypeScript, Go, Python/uv, and Rust — the whole
-toolchain, Rust 1.97.1 included, comes from the Flox manifest). Go-only
+toolchain, Rust 1.99.0 included, comes from the Flox manifest). Go-only
 changes get fast feedback from individual Makefile sub-targets (`fmt-check`,
 `tidy-check`, `vet`, `lint`, `test-go`). CI runs the identical Flox
 environment, so both paths are the same path.
 
 | # | Convention | Status | Notes |
 |---|------------|--------|-------|
-| 1 | Deps via Flox: `.flox/env/manifest.toml` installs every toolchain — `go`, `python314`, `uv`, `buf`, `libffi`, the `gcc-unwrapped` lib output, Node 24, the Rust 1.97.1 toolchain, `cargo-audit`, `gitleaks`, and `trivy`; language libraries live in `go.mod`/uv locks/`Cargo.lock`/`package-lock.json`. | **Conforms** | golangci-lint runs as a pinned Go module. Flox is the only toolchain provider, locally and in CI; `rust-toolchain.toml` is gone. |
+| 1 | Deps via Flox: `.flox/env/manifest.toml` installs every toolchain — `go`, `python314`, `uv`, `buf`, `libffi`, the `gcc-unwrapped` lib output, Node 24, the Rust 1.99.0 toolchain, `cargo-audit`, `gitleaks`, and `trivy`; language libraries live in `go.mod`/uv locks/`Cargo.lock`/`package-lock.json`. | **Conforms** | golangci-lint runs as a pinned Go module. Flox is the only toolchain provider, locally and in CI; `rust-toolchain.toml` is gone. |
 | 2 | `flox activate -- make validate` clean. | **Conforms** | Verified green: golangci-lint `0 issues`, `go vet` clean, `go test -race ./...` all `ok`. |
 | 3 | ONE gate verb: `make validate` runs gofmt-check + `go vet` + golangci-lint + `go test -race` (plus the cross-language suites). | **Conforms** | `Makefile` `validate:` delegates to `scripts/validate`; Go tests use `-race`; `check`/`gate` no longer exist. |
 | 3a | "gofumpt-check" in the brief. | **Intentional deviation** | Repo formats with `gofmt` only (manifest + `.golangci.yml` `formatters: [gofmt]`); gofumpt is not installed and adding it would reformat sources (a change). gofmt + golangci-lint is the agreed Google-Go gate here. |
@@ -60,7 +60,7 @@ block and existing config differed, the stricter of the two was adopted.
 
 | Convention | Status | Notes |
 |---|---|---|
-| buf comes from the Flox manifest (pinned); never installed in CI steps | **Conforms** | `.flox/env/manifest.toml` pins `buf` 1.72.0; both workflows run only `flox activate -- make <verb>` with no setup or install steps. |
+| buf comes from the Flox manifest (pinned); never installed in CI steps | **Conforms** | `.flox/env/manifest.toml` pins `buf` 1.73.0; both workflows run only `flox activate -- make <verb>` with no setup or install steps. |
 | One `buf.yaml` at module root; lint DEFAULT plus COMMENTS on public RPCs/messages/fields | **Fixed** (stricter adopted) | The root `buf.yaml` is the one module config (module `api`). v2 `STANDARD` (the v2 name of DEFAULT) was already on; `COMMENT_SERVICE`/`COMMENT_RPC`/`COMMENT_MESSAGE`/`COMMENT_FIELD` are now also enforced, and every previously undocumented public message and field gained a doc comment. The `dagstercompat` test-fixture proto lints with Buf defaults — it is a test fixture, not a published surface. |
 | Breaking-change detection against main runs inside `make validate` for any proto published or consumed outside the repo | **Intentional deviation** (stricter kept) | `scripts/validate` runs `buf breaking` against the newest reachable release tag — a superset of against-main for the published `temporaless.v1` module, since it also catches breakage already merged since the last release. The one narrow documented exception is the v0.8.2 → v0.9.0 `code_version` field deletions (`scripts/check_buf_breaking.py`). Never weakened. |
 | `make generate` regenerates all bindings; generated code is committed; `make validate` fails on drift | **Conforms** | `generate` delegates to `scripts/generate` (all language bindings + the descriptor). Every gate byte-compares the checked-in descriptor; CI additionally requires a clean tree after formatting/generation. Remote-plugin regeneration is skipped in secretless CI (the Makefile contract forbids CI secrets); maintainers prove it with `TEMPORALESS_REQUIRE_BUF_GENERATE=1` before releasing schema changes. |
@@ -79,7 +79,7 @@ block and existing config differed, the stricter of the two was adopted.
 - **Skipped (risky) items:** none within the first-class Go/Python scope. CAS
   claim takeover and full Rust parity remain explicitly outside the current
   core contract rather than being implied as complete.
-- **Gate:** `flox activate -- make validate` is GREEN, Rust 1.97.1
+- **Gate:** `flox activate -- make validate` is GREEN, Rust 1.99.0
   format/Clippy/tests included via the Flox toolchain. The console image
   build, smoke, and scan is `make image-check` (`scripts/image-check`), the
   maintainer step before `make release`: it needs a Docker daemon, which

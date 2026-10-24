@@ -28,6 +28,8 @@ pythonpath = ["tests/gen"]
 [dependency-groups]
 dev = [
     "connectrpc==0.12.1",
+    # connectrpc 0.12.1 breaks on protobuf-py 0.7.0 (removed protobuf.wkt names).
+    "protobuf-py<0.7",
     "dagster==1.13.24",
     "protobuf==6.33.6",
     "pytest>=9.1.1",

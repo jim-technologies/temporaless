@@ -52,9 +52,9 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.15.0",
+    "@bufbuild/protobuf": "^2.16.0",
     "@connectrpc/connect": "^2.2.0",
-    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#f5922050342ce883f8e3f66435e266948e341ba0"
+    "@jim-technologies/invariant-protocol": "git+https://github.com/jim-technologies/invariantprotocol.git#79ead8726b4d79ee7c024b85441daf6f46851830"
   },
   "peerDependencies": {
     "@connectrpc/connect-node": ">=2.1.2",
@@ -70,12 +70,12 @@
   },
   "devDependencies": {
     "@connectrpc/connect-node": "^2.2.0",
-    "@types/node": "^24.13.6",
+    "@types/node": "^24.19.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.5"
   },
   "allowScripts": {
-    "github:jim-technologies/invariantprotocol#f5922050342ce883f8e3f66435e266948e341ba0": true,
+    "github:jim-technologies/invariantprotocol#79ead8726b4d79ee7c024b85441daf6f46851830": true,
     "protobufjs": false
   }
 }

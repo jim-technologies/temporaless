@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Protocol
@@ -114,7 +114,7 @@ class SQLiteExecutor:
             raise
 
     @asynccontextmanager
-    async def transaction(self, *, immediate: bool = False) -> AsyncIterator[IndexSession]:
+    async def transaction(self, *, immediate: bool = False) -> AsyncGenerator[IndexSession]:
         if self._owner is asyncio.current_task():
             raise RuntimeError("nested index transactions are unsupported")
         async with self._lock:

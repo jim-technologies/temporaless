@@ -176,7 +176,7 @@ flox activate -- scripts/bench-py    # Python benchmarks (same suite, same outpu
 ```
 
 The Flox manifest is the only toolchain source, locally and in CI: `go`,
-`python314`, `uv`, `buf`, Node, the pinned Rust 1.97.1 toolchain, the audit
+`python314`, `uv`, `buf`, Node, the pinned Rust 1.99.0 toolchain, the audit
 tools, and the C runtime libraries OpenDAL and Protovalidate need. The Go
 linter runs as a pinned Go module. Application libraries stay in `go.mod`,
 `Cargo.lock`, the uv locks, `package-lock.json`, or Buf configuration.

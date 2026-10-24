@@ -13,6 +13,9 @@ dependencies = [
     "croniter>=6.2.4",
     "opendal>=0.47.3",
     "protobuf>=7.36.2",
+    # connectrpc 0.12.1 (the newest release) imports protobuf.wkt names that
+    # protobuf-py 0.7.0 removed; hold it until a compatible connectrpc ships.
+    "protobuf-py>=0.3,<0.7",
     "protovalidate>=1.2.0",
 ]
 

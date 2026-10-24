@@ -6,10 +6,9 @@ import json
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
-
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_COMPONENT = r"(?:0|[1-9][0-9]*)"

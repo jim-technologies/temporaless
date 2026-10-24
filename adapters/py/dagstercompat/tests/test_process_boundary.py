@@ -8,7 +8,7 @@ import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -67,7 +67,7 @@ def _terminate(process: subprocess.Popen[str]) -> tuple[str, str]:
 def _running_temporaless_server(
     tmp_path: Path,
     descriptor_set_path: Path,
-) -> Iterator[tuple[str, Path, Path]]:
+) -> Generator[tuple[str, Path, Path]]:
     uv = shutil.which("uv")
     if uv is None:
         pytest.fail("uv is required to launch the isolated Temporaless environment")

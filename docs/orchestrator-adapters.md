@@ -34,7 +34,7 @@ activity dispatch, durable waits, and caller-owned IDs.
 ## Prefect
 
 `adapters/py/prefectcompat` wraps async unary protobuf handlers with the real,
-exactly pinned Prefect 3.8.6 flow/task APIs. It supports explicit name/retry
+exactly pinned Prefect 3.9.0 flow/task APIs. It supports explicit name/retry
 options and encodes
 workflow requests as deterministic protobuf binary inside a typed,
 JSON-safe deployment parameter. A scheduled worker therefore reconstructs the

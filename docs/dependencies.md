@@ -26,7 +26,7 @@ and every tool the gate or the audits need comes from the manifest:
 - `libffi`: required by the Apache OpenDAL Go binding.
 - `gcc-unwrapped` `lib` output: provides `libstdc++.so.6` for the native protobuf and Protovalidate Python extensions.
 - `nodejs` 24: the TypeScript SDK's package and test runtime.
-- `cargo`/`rustc`/`clippy`/`rustfmt` 1.97.1: the one pinned Rust toolchain.
+- `cargo`/`rustc`/`clippy`/`rustfmt` 1.99.0: the one pinned Rust toolchain.
 - `cargo-audit` and `gitleaks`: back the scheduled `make audit` verb.
 - `trivy` 0.74.0: scans the console image in the maintainer's `make image-check` (Docker comes from the host).
 
@@ -40,15 +40,15 @@ The manifest resolves for the three systems Invariant Protocol also supports
 (`aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`); the catalog no longer
 publishes every current toolchain for `x86_64-darwin`, so Intel macOS
 developers use their language-native toolchains. The bootstrap group pins
-Python 3.14.6 with uv at the same `>=0.11.26` floor as Invariant Protocol
-(locked at 0.11.28). Go, Buf 1.72.0, Node 24.20.0, the Rust toolchain, and the
+Python 3.14.8 with uv at a `>=0.13.1` floor
+(locked at 0.13.1). Go, Buf 1.73.0, Node 24.21.0, the Rust toolchain, and the
 audit tools live in their own package groups so their pins resolve alongside
 the bootstrap group.
-`go.mod` requires Go 1.27.2 and Flox installs exactly that release
+`go.mod` requires Go 1.27.3 and Flox installs exactly that release
 (`go_1_27`), so no toolchain is downloaded at run time;
 `scripts/check_versions.py` fails the gate when the two differ or when the
 manifest sets `GOTOOLCHAIN`.
-The production image uses the same upstream Python 3.14.6 and uv 0.11.28.
+The production image uses the same upstream Python 3.14.8 and uv 0.13.1.
 
 ## Go
 
@@ -98,7 +98,7 @@ workflow replay.
 
 ## Python Prefect Adapter
 
-`adapters/py/prefectcompat` is separately locked to Prefect 3.8.6. It wraps
+`adapters/py/prefectcompat` is separately locked to Prefect 3.9.0. It wraps
 async unary protobuf handlers as real Prefect flows/tasks and keeps Prefect's
 deployment, scheduling, retry, and UI state out of Temporaless core.
 
@@ -126,7 +126,7 @@ Their tests and package/version checks run in the common validation gate.
 
 Rust dependencies live in `core/rs/temporaless/Cargo.toml`. The repository
 root has a small `Cargo.toml` workspace so Cargo can install the crate directly
-from git without a registry. The Flox manifest pins Rust 1.97.1 plus Clippy
+from git without a registry. The Flox manifest pins Rust 1.99.0 plus Clippy
 and rustfmt, so the same toolchain gates the Rust SDK locally and in CI.
 
 ## TypeScript

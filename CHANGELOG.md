@@ -13,18 +13,7 @@ lockstep policy.
 
 ## [Unreleased]
 
-### Changed
-
-- Flox installs Go 1.27.2 directly (`go_1_27`), and the version check now
-  requires the Flox Go pin to equal `go.mod`'s `go` directive.
-
-### Removed
-
-- The `GOTOOLCHAIN=go1.27.2+auto` Flox variable, which downloaded that
-  toolchain at run time on top of a Flox Go 1.26.4 bootstrap, and the
-  dependency-document text describing that arrangement.
-
-## [0.12.3] - 2026-10-09
+## [0.12.3] - 2026-10-24
 
 ### Security
 
@@ -63,6 +52,34 @@ lockstep policy.
   Explicit owned/borrowed close and cancellation draining preserve connection
   ownership; failed rebuild cleanup now rolls back its DDL atomically. No remote
   backend, buffering, core SQL dependency or execution fencing is introduced.
+- Flox installs Go 1.27.2 directly (`go_1_27`), and the version check now
+  requires the Flox Go pin to equal `go.mod`'s `go` directive.
+- Toolchain currency: Go 1.27.3 (Flox `go_1_27`, `go.mod`, and the
+  digest-pinned console builder), Rust 1.99.0, Python 3.14.8, uv 0.13.1,
+  Node.js 24.21.0, buf 1.73.0 and Trivy 0.76.0; every container base image
+  (Node, Go, Debian, distroless, Python and uv) is re-pinned to its current
+  digest. CI uses the SHA-pinned Flox 2.7.0 installer.
+- Dependency currency: Invariant Protocol v0.16.8 (commit `79ead872`) for Go
+  and TypeScript, OpenTelemetry-Go 1.47.0, the Temporal SDK 1.50.0,
+  gocloud.dev 0.47.0, `golang.org/x/net` 0.61.0 and the current cloud SDKs;
+  every Python project relocks (OpenTelemetry API 1.45.1, protovalidate
+  2.1.0), and the Prefect adapter targets Prefect 3.9.0, which bounds FastAPI
+  below 0.151 (FastAPI 0.162 breaks the Prefect 3.8.6 server); `@bufbuild/protobuf` 2.16.0 and Vitest 5; the console UI moves to
+  React 19.3.1, MapLibre GL 6.15.0, Vite 8.3.5 and Vitest 5, and its lock
+  takes DOMPurify 3.4.17 (GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr,
+  GHSA-c6gr-qvv4-5v3f). `google.golang.org/grpc` stays held at 1.83.2 (no
+  patched 1.84.x yet).
+- Context managers are annotated with `Generator`/`AsyncGenerator`, as ty
+  0.0.91 deprecates `Iterator` return annotations on `@contextmanager`.
+- The Python core requires `protobuf-py>=0.3,<0.7`: `connectrpc` 0.12.1, the
+  newest release, imports `protobuf.wkt` names that `protobuf-py` 0.7.0
+  (released 2026-10-22) removed, so a fresh install failed at import time.
+
+### Removed
+
+- The `GOTOOLCHAIN=go1.27.2+auto` Flox variable, which downloaded that
+  toolchain at run time on top of a Flox Go 1.26.4 bootstrap, and the
+  dependency-document text describing that arrangement.
 
 ## [0.12.2] - 2026-09-28
 
