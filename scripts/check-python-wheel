@@ -81,6 +81,53 @@ uv pip install --python "$tmp/env/bin/python" --no-deps "$wheel"
 "$tmp/env/bin/python" -I -c 'from temporaless.connectstore import ConnectStore; import buf.validate.validate_pb2'
 uv pip check --python "$tmp/env/bin/python"
 
+# A fresh consumer resolves wheel metadata rather than the development lock.
+uv venv --quiet "$tmp/fresh"
+uv pip install --python "$tmp/fresh/bin/python" "$wheel"
+"$tmp/fresh/bin/python" -I - <<'PY'
+import asyncio
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from temporaless.connectstore import ConnectStore
+from temporaless.v1 import temporaless_pb2
+
+expected = temporaless_pb2.CLAIM_CAPABILITY_CREATE_ONLY_CLAIMS
+paths = []
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        paths.append(self.path)
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        body = temporaless_pb2.GetStoreCapabilitiesResponse(
+            claim_capability=expected
+        ).SerializeToString()
+        self.send_response(200)
+        self.send_header("content-type", "application/proto")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+try:
+    store = ConnectStore.from_address(
+        f"http://127.0.0.1:{server.server_address[1]}", timeout_ms=1000
+    )
+    assert asyncio.run(store.claim_capability()) == expected
+    assert paths == ["/temporaless.v1.RecordStoreService/GetStoreCapabilities"]
+finally:
+    server.shutdown()
+    thread.join(timeout=2)
+    server.server_close()
+PY
+
 # Build the released old owner, then exercise the documented pip migration.
 cd "$root"
 mkdir "$tmp/legacy"

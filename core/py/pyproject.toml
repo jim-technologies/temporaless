@@ -9,12 +9,12 @@ classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "bufbuild-protovalidate-protocolbuffers-python @ https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-python/bufbuild_protovalidate_protocolbuffers_python-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl#sha256=1fc540461329e0768d897fb7641d7bd42eaf6a0409caed93ba8b968e07f89551",
     "bufbuild-protovalidate-protocolbuffers-pyi @ https://buf.build/gen/python/bufbuild-protovalidate-protocolbuffers-pyi/bufbuild_protovalidate_protocolbuffers_pyi-36.2.0.1.20260825204119+511051f7f437-py3-none-any.whl#sha256=4bce3808f220e4476cc6b2b82bcbd55aae608161837576aacb6e48c13a0cfcd6",
-    "connectrpc>=0.12.1",
+    "connectrpc>=0.12.1,<0.13",
     "croniter>=6.2.4",
     "opendal>=0.47.3",
     "protobuf>=7.36.2",
-    # connectrpc 0.12.1 (the newest release) imports protobuf.wkt names that
-    # protobuf-py 0.7.0 removed; hold it until a compatible connectrpc ships.
+    # The generated 0.12 client requires that runtime's MethodInfo ABI and
+    # protobuf.wkt names that protobuf-py 0.7.0 removed.
     "protobuf-py>=0.3,<0.7",
     "protovalidate>=1.2.0",
 ]

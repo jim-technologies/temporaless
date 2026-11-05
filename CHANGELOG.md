@@ -13,6 +13,12 @@ lockstep policy.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fresh Python wheel installations bound ConnectRPC below 0.13 to match the
+  generated client's `MethodInfo` ABI. The wheel gate now exercises a real
+  ConnectRPC capability handshake from an unseeded consumer environment.
+
 ## [0.12.3] - 2026-10-24
 
 ### Security

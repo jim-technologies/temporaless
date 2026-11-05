@@ -28,6 +28,10 @@ Use the same root `vX.Y.Z` release tag or immutable commit for core and every
 adapter. All Temporaless Python distributions share the repository `VERSION`;
 there is no adapter-specific version stream.
 
+The package bounds ConnectRPC below 0.13 to match its generated client. This
+also protects fresh wheel installations that do not use the repository lock;
+importing the package alone does not exercise the generated RPC calls.
+
 The shared `buf.validate` Python module comes from Buf's generated packages,
 pinned by wheel URL and SHA256. Ordinary pip installs resolve those wheels
 without extra index configuration. Temporaless does not ship a second copy,
