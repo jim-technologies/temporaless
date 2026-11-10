@@ -13,6 +13,8 @@ lockstep policy.
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-11-10
+
 ### Fixed
 
 - Fresh Python wheel installations bound ConnectRPC below 0.13 to match the
